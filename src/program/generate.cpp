@@ -14,6 +14,7 @@
 // AND IT IS PHASE 2, so hit rate is `h = 0` and the number it prints is slow on purpose
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
+#include "strata/artifact/gguf_split.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
@@ -27,7 +28,9 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/kernels/shared_expert.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_gdn.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_qsa.hpp"
@@ -251,7 +254,8 @@ void usage() {
                  "  --pack DIR           the pack directory (default pack/full)\n"
                  "  --tokens LIST        the prompt as comma-separated token IDS (required)\n"
                  "  --tokens-file PATH   pretokenized prompt, commas or whitespace (alternative to --tokens)\n"
-                 "  --ple-gguf PATH      required PLE table (original second GGUF shard)\n"
+                 "  --ple-gguf PATH      the PLE table: the model shard holding per_layer_token_embd (with --native,\n"
+                 "                       the --native model's shard that holds it by default)\n"
                  "  --no-ple             explicit diagnostic ablation of the PLE layer\n"
                  "  --ple-io direct|mmap  n-gram table reads (plan v0.3 P2). direct (default): unbuffered SSD\n"
                  "                       reads, the table never enters RAM or the file cache; mmap: A/B arm\n"
@@ -277,11 +281,12 @@ void usage() {
                  "  --native-ple-postops  experimental pinned PLE postprojection arithmetic\n"
                  "  --native-router       experimental pinned CUDA 512-expert top-10 routing\n"
                  "  --cpu-oracle-q8-0     experimental pinned CPU expert quantization and dot reduction\n"
-                 "  --native SHARD1      every full-context native path at once (plan v0.3 P1): stream-token,\n"
+                 "  --native SHARD1      the model's first GGUF shard (the others of a split model are found by\n"
+                 "                       name) and every full-context native path at once (plan v0.3 P1): stream-token,\n"
                  "                       GR MMVF, BF16, head, dense + PLE key, MoE combine, GDN, router, QSA,\n"
                  "                       indexer, RoPE, PLE postops, and the CPU q8_0 contract unless the\n"
                  "                       expert cache is on. Individual --native-* flags stay for A/B.\n"
-                 "  --native-head-gguf PATH  native Q5_K head from model shard 1; requires --stream-token\n"
+                 "  --native-head-gguf PATH  native head from the model with this first shard; requires --stream-token\n"
                  "  --native-dense-gguf PATH native GDN/QSA/shared projections; repeat for each source model shard\n"
                  "  --expert-cache-cpu-order  experimental GPU expert reduction matching CPU order\n"
                  "  --max-new N          tokens to generate (default 16)\n"
@@ -312,8 +317,6 @@ void usage() {
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
-                 "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
-                 "                       which changes every number downstream - pass it for any real run\n"
                  "  --dump-mixed PATH    write the post-attention residual (n_embd, f32)\n"
                  "  --stage-timing       per-stage KERNEL-COUNT shares.  NOT a time profile: an uncaptured\n"
                  "                       event interval includes host gaps, so run with --gpu-only-full first\n"
@@ -604,9 +607,22 @@ int main(int argc, char** argv) {
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::layer_set_shared_early(!o.shared_late);
+    std::vector<std::string> native_shards;   // the --native model's GGUF shards
     if (!o.native_preset.empty()) {
-        if (o.no_ple || o.ple_gguf.empty()) {
-            std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too)\n");
+        if (o.no_ple) {
+            std::fprintf(stderr, "strata generate: --native requires the PLE (the PLE key is native too)\n");
+            return 2;
+        }
+        try {
+            native_shards = strata::gguf_split_paths(o.native_preset);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata generate: --native: %s\n", e.what());
+            return 2;
+        }
+        if (o.ple_gguf.empty()) o.ple_gguf = strata::kernels::ple_table_shard(native_shards);
+        if (o.ple_gguf.empty()) {
+            std::fprintf(stderr, "strata generate: no shard of the --native model holds per_layer_token_embd; "
+                                 "name the file with --ple-gguf\n");
             return 2;
         }
         o.stream_token = true;
@@ -615,7 +631,11 @@ int main(int argc, char** argv) {
         o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
         o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
-        if (o.native_dense_gguf.empty()) o.native_dense_gguf = {o.native_preset, o.ple_gguf};
+        if (o.native_dense_gguf.empty()) {
+            o.native_dense_gguf = native_shards;
+            if (std::find(native_shards.begin(), native_shards.end(), o.ple_gguf) == native_shards.end())
+                o.native_dense_gguf.push_back(o.ple_gguf);
+        }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
     }
@@ -689,6 +709,15 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    if (native_pack)
+        for (int64_t l = 0; l < strata::kernels::cpu::expert_layout().n_layers; ++l) {
+            const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) l];
+            if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                std::fprintf(stderr, "strata generate: layer %lld's experts (GGML types %d / %d) have no GPU kernels\n",
+                             (long long) l, f.gu_type, f.d_type);
+                return 1;
+            }
+        }
     // plan v0.3 P6: the PCIe share of the missed experts, measured per kind of pack (the paper, finding on PCIe)
     if (o.pcie_frac < 0.0) o.pcie_frac = native_pack ? 0.55 : 0.2;
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
@@ -704,7 +733,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         const strata::core::ModelGeometry g0;
-        if (!native_embed.load(o.native_preset, g0.n_embd, 248320, err)) {
+        if (!native_embed.load(native_shards, g0.n_embd, 248320, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -900,7 +929,8 @@ int main(int argc, char** argv) {
             ss.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
         }
         if (o.native_ple_key && wk->quantized()) {
-            if (!wk->native_data || wk->native_type != 42 || !wk->native_q8_1) {
+            // Q2_0 in the Q2_0 file, Q8_0 in UD-Q4_K_XL
+            if (!wk->native_data || !strata::kernels::native_mmvq_supported(wk->native_type) || !wk->native_q8_1) {
                 std::fprintf(stderr, "strata generate: native PLE key is absent or incompatible\n");
                 return 1;
             }
@@ -977,7 +1007,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; the A/B arm of R2.1)\n");
         srcp = &src;
     } else {
-        arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
+        arena_src.set_gguf(native_shards);   // plan v0.3 P6: a native pack may take its experts from the GGUF
         if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -1295,11 +1325,18 @@ int main(int argc, char** argv) {
     const int64_t n_vocab = wo->ne1;
     strata::core::NativeHead native_head;
     if (!o.native_head_gguf.empty()) {
-        if (!native_head.load(o.native_head_gguf, g.n_embd, n_vocab, err)) {
+        std::vector<std::string> head_shards;
+        try {
+            head_shards = strata::gguf_split_paths(o.native_head_gguf);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata generate: native head: %s\n", e.what());
+            return 1;
+        }
+        if (!native_head.load(head_shards, g.n_embd, n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes\n",
+        std::fprintf(stderr, "strata generate: native head, type %d, %llu bytes\n", native_head.type(),
                      (unsigned long long) native_head.weight_bytes());
     }
     std::vector<float> logits((size_t) n_vocab);

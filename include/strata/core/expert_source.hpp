@@ -321,8 +321,9 @@ public:
     /// Allocates and loads `<pack_dir>/experts.bin`.  Prints nothing; the caller reports `note()` and the load
     /// rate, because those are the two numbers that say whether the arena is the one that was asked for.
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads, std::string& err);
-    /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's shard 1.
-    void set_gguf(const std::string& shard1) { gguf_ = shard1; }
+    /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF shards
+    /// (strata::gguf_split_paths), found by tensor name.
+    void set_gguf(const std::vector<std::string>& shards) { gguf_ = shards; }
     void close();
 
     bool mapped() const { return base_ != nullptr; }
@@ -348,7 +349,7 @@ private:
     std::string note_;
     double gib_per_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
-    std::string gguf_;
+    std::vector<std::string> gguf_;
 };
 
 }  // namespace strata::core

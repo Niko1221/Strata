@@ -1,4 +1,4 @@
-// src/kernels/ngram.cpp - P2.S4: the PLE n-gram hash and the IQ4_NL table read.
+// src/kernels/ngram.cpp - P2.S4: the PLE n-gram hash and the table read (IQ4_NL or Q8_0).
 //
 // See include/strata/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
 #include "strata/kernels/ngram.hpp"
@@ -107,11 +107,37 @@ void iq4nl_dequant_row(const uint8_t* row, float* out160) {
     }
 }
 
+void ple_dequant_row(int type, const uint8_t* row, float* out160) {
+    if (type != 8) {
+        iq4nl_dequant_row(row, out160);
+        return;
+    }
+    for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) {                     // Q8_0: fp16 scale + 32 int8
+        const uint8_t* blk = row + (size_t) b * 34;
+        uint16_t dbits;
+        std::memcpy(&dbits, blk, 2);
+        const float d = f32_from_f16(dbits);
+        for (int j = 0; j < 32; ++j) out160[b * 32 + j] = d * (float) (int8_t) blk[2 + j];
+    }
+}
+
+std::string ple_table_shard(const std::vector<std::string>& shards) {
+    for (const auto& path : shards) {
+        try {
+            if (GgufFile(path).find("per_layer_token_embd.weight") != nullptr) return path;
+        } catch (const std::exception&) {
+        }
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------------------------------------------
 struct PleTable::Impl {
     GgufFile* file = nullptr;
     const uint8_t* data = nullptr;
     uint64_t n_rows = 0;
+    int type = 20;                        // IQ4_NL or Q8_0
+    uint32_t row_bytes = PLE_ROW_BYTES;
     mutable uint64_t bytes_read = 0;
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
@@ -120,7 +146,7 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     uint32_t rows[PLE_N_HEADS] = {};
-    uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES] = {};
+    uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_Q8_0] = {};
 };
 
 PleTable::PleTable() : impl_(new Impl) {}
@@ -150,11 +176,13 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    if (std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL";
+    if (t->type != 20 && t->type != 8) {
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL or Q8_0";
         close();
         return false;
     }
+    impl_->type = (int) t->type;
+    impl_->row_bytes = t->type == 8 ? PLE_ROW_BYTES_Q8_0 : PLE_ROW_BYTES;
     impl_->n_rows = t->shape[1];
     impl_->data = impl_->file->tensor_data(*t);
 
@@ -162,16 +190,21 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // the offset within the GGUF's DATA SECTION: the file's first 192 bytes are a header, and reading at 0
     // would decode the header plus 192 bytes of shifted rows - still plausible IQ4_NL, and wrong for every
     // row.  `GgufFile` parses the header, so `tensor_data` is already correct; this asserts the tensor
-    // exactly fills the file from there, which is what makes the whole arrangement checkable rather than
-    // assumed.  A wrong data offset would leave a different remainder.
-    const uint64_t need = impl_->n_rows * (uint64_t) PLE_ROW_BYTES;
-    const uint64_t have = impl_->file->file_size() - impl_->file->data_start();
-    if (need != have) {
+    // exactly fills its span - up to the next tensor or the end of the file, less the alignment padding -
+    // which is what makes the whole arrangement checkable rather than assumed.  A wrong data offset would
+    // leave a different remainder.  (The table fills the ISTA shard 2 alone; the unsloth shard 2 holds other
+    // tensors too.)
+    const uint64_t need = impl_->n_rows * (uint64_t) impl_->row_bytes;
+    uint64_t end = impl_->file->file_size() - impl_->file->data_start();
+    for (const auto& o : impl_->file->tensors())
+        if (o.offset > t->offset && o.offset < end) end = o.offset;
+    const uint64_t have = end - t->offset;
+    if (need > have || have - need >= impl_->file->alignment()) {
         char buf[256];
         std::snprintf(buf, sizeof buf,
-                      "PLE table size mismatch: %llu rows x %d B = %llu, but the file holds %llu from "
-                      "data_start %llu",
-                      (unsigned long long) impl_->n_rows, PLE_ROW_BYTES, (unsigned long long) need,
+                      "PLE table size mismatch: %llu rows x %d B = %llu, but its span in the file is %llu B "
+                      "(data_start %llu)",
+                      (unsigned long long) impl_->n_rows, (int) impl_->row_bytes, (unsigned long long) need,
                       (unsigned long long) have, (unsigned long long) impl_->file->data_start());
         err = buf;
         close();
@@ -185,7 +218,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         delete impl_->file;
         impl_->file = nullptr;
         impl_->data = nullptr;
-        if (!impl_->reader.open(gguf_path, table_offset, n_rows, io.max_inflight, io.cache_rows, err, io.io_thread)) {
+        if (!impl_->reader.open(gguf_path, table_offset, n_rows, io.max_inflight, io.cache_rows, err, io.io_thread,
+                                impl_->row_bytes)) {
             close();
             return false;
         }
@@ -212,23 +246,23 @@ uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
 
 void PleTable::read_row(uint32_t row, float* out160) const {
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
-        uint8_t raw[PLE_ROW_BYTES];
+        uint8_t raw[PLE_ROW_BYTES_Q8_0];
         std::string err;
         const auto t = impl_->reader.issue(&row, 1, raw);
         if (!impl_->reader.collect(t, err)) {
             std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
             return;
         }
-        iq4nl_dequant_row(raw, out160);
-        impl_->bytes_read += PLE_ROW_BYTES;
+        ple_dequant_row(impl_->type, raw, out160);
+        impl_->bytes_read += impl_->row_bytes;
         return;
     }
     if (impl_->data == nullptr || row >= impl_->n_rows) {
         std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
         return;
     }
-    iq4nl_dequant_row(impl_->data + (size_t) row * PLE_ROW_BYTES, out160);
-    impl_->bytes_read += PLE_ROW_BYTES;
+    ple_dequant_row(impl_->type, impl_->data + (size_t) row * impl_->row_bytes, out160);
+    impl_->bytes_read += impl_->row_bytes;
 }
 
 bool PleTable::issue(const uint32_t* rows16) {
@@ -245,8 +279,8 @@ bool PleTable::issue(const uint32_t* rows16) {
         ULONG_PTR n = 0;
         for (int h = 0; h < PLE_N_HEADS; ++h) {
             if (rows16[h] >= impl_->n_rows) continue;
-            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * PLE_ROW_BYTES);
-            ranges[n].NumberOfBytes = PLE_ROW_BYTES;
+            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->row_bytes);
+            ranges[n].NumberOfBytes = impl_->row_bytes;
             ++n;
         }
         if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
@@ -262,8 +296,8 @@ bool PleTable::collect(float* out2560, std::string& err) {
     if (impl_->mode == PleIo::Direct) {
         if (!impl_->reader.collect(impl_->ticket, err)) return false;
         for (int h = 0; h < PLE_N_HEADS; ++h)
-            iq4nl_dequant_row(impl_->raw + (size_t) h * PLE_ROW_BYTES, out2560 + (size_t) h * PLE_HEAD_DIM);
-        impl_->bytes_read += (uint64_t) PLE_N_HEADS * PLE_ROW_BYTES;
+            ple_dequant_row(impl_->type, impl_->raw + (size_t) h * impl_->row_bytes, out2560 + (size_t) h * PLE_HEAD_DIM);
+        impl_->bytes_read += (uint64_t) PLE_N_HEADS * impl_->row_bytes;
         return true;
     }
     for (int h = 0; h < PLE_N_HEADS; ++h) read_row(impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
@@ -274,11 +308,12 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
     if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
     if (impl_->mode == PleIo::Direct) {
-        std::vector<uint8_t> raw(n * PLE_ROW_BYTES);
+        std::vector<uint8_t> raw(n * impl_->row_bytes);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
         if (!impl_->reader.collect(ticket, err)) return false;
-        for (size_t i = 0; i < n; ++i) iq4nl_dequant_row(raw.data() + i * PLE_ROW_BYTES, out + i * PLE_HEAD_DIM);
-        impl_->bytes_read += (uint64_t) n * PLE_ROW_BYTES;
+        for (size_t i = 0; i < n; ++i)
+            ple_dequant_row(impl_->type, raw.data() + i * impl_->row_bytes, out + i * PLE_HEAD_DIM);
+        impl_->bytes_read += (uint64_t) n * impl_->row_bytes;
         return true;
     }
     for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
@@ -332,8 +367,8 @@ void PleTable::gather(const uint32_t* rows16, float* out2560) const {
         for (int h = 0; h < PLE_N_HEADS; ++h) {
             // Out-of-range rows are handled by `read_row` as zeros and have no address to prefetch.
             if (rows16[h] >= impl_->n_rows) continue;
-            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * PLE_ROW_BYTES);
-            ranges[n].NumberOfBytes = PLE_ROW_BYTES;
+            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->row_bytes);
+            ranges[n].NumberOfBytes = impl_->row_bytes;
             ++n;
         }
         if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);

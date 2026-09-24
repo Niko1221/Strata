@@ -74,6 +74,28 @@ of [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next).
 
 With 64 GB of RAM all three fit (close the browser for IQ3_XXS, and keep its context at 128K or less). With 48 GB only Q2_0 / IQ2_XS may fit. 32 GB is not enough.
 
+### unsloth's Unsloth Dynamic 3.0 files
+
+The engine also runs [unsloth's quantizations](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF), which
+START-HERE does not set up. All experts sit in RAM, pinned when they fit the driver's limit:
+
+| Model | Download | Experts in RAM | n-gram table |
+| --- | ---: | ---: | --- |
+| UD-IQ1_S / UD-IQ1_M | 73-75 GB | 40-42 GB | IQ4_NL, 28.8 GB |
+| UD-Q2_K_XL / UD-IQ3_XXS | 79-82 GB | 46-49 GB | IQ4_NL |
+| UD-Q3_K_XL / UD-IQ4_XS | 90-94 GB | 56-60 GB | IQ4_NL |
+| UD-Q4_K_XL | 111 GB | 77 GB | IQ4_NL |
+| UD-Q5_K_XL / UD-Q6_K_XL | 158-169 GB | 98-109 GB | Q8_0, 54.4 GB |
+| Q8_0 | 188 GB | 128 GB | Q8_0 |
+
+Pack a model once (seconds: the tokenizer and the float tensors; the experts are read from the GGUF at start):
+
+    python tools/iq_pack.py --gguf <dir>/<model>-00001-of-0000N.gguf --out packs/<name>
+
+and start it with `--pack packs/<name> --native <dir>/<model>-00001-of-0000N.gguf` plus the usual flags (`--spec`,
+`--mtp`, `--prefill`, ...). The other shards, and the one holding the n-gram table, are found by name.
+UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 529-594 tok/s, generation 49-57 tok/s.
+
 ## Before you start
 
 You need **only an NVIDIA driver** (version 580 or newer; update it with the NVIDIA App or from

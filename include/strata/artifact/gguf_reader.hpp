@@ -23,11 +23,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 #include <map>
 #include <stdexcept>
 #include <algorithm>
+
+#include "strata/artifact/gguf_split.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -338,6 +341,7 @@ public:
     uint32_t version() const { return version_; }
     uint64_t data_start() const { return data_start_; }
     uint64_t file_size() const { return size_; }
+    uint64_t alignment() const { return alignment_; }
 
     const TensorInfo* find(const std::string& name) const {
         for (const auto& t : tensors_)
@@ -355,6 +359,7 @@ public:
         return it == meta_.end() ? nullptr : &it->second;
     }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
+    const std::string& path() const { return path_; }
 
 private:
     void open() {
@@ -449,6 +454,31 @@ private:
 #endif
     std::vector<TensorInfo> tensors_;
     std::map<std::string, MetaValue> meta_;
+};
+
+// The opened shards of one model, tensors looked up across all of them.  Shard 0 holds the metadata.
+class GgufModel {
+public:
+    explicit GgufModel(const std::vector<std::string>& paths) {
+        if (paths.empty()) throw std::runtime_error("GGUF: a model needs at least one shard");
+        for (const auto& p : paths) shards_.push_back(std::make_unique<GgufFile>(p));
+    }
+    size_t size() const { return shards_.size(); }
+    const GgufFile& shard(size_t i) const { return *shards_[i]; }
+    /// The tensor named `name` (its shard index in `*shard`), or nullptr.  Throws when two shards hold it.
+    const TensorInfo* find(const std::string& name, size_t* shard = nullptr) const {
+        const TensorInfo* found = nullptr;
+        for (size_t i = 0; i < shards_.size(); ++i)
+            if (const TensorInfo* t = shards_[i]->find(name)) {
+                if (found) throw std::runtime_error("GGUF: tensor " + name + " is in two shards");
+                found = t;
+                if (shard) *shard = i;
+            }
+        return found;
+    }
+
+private:
+    std::vector<std::unique_ptr<GgufFile>> shards_;
 };
 
 // ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be

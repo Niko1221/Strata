@@ -5,9 +5,9 @@
 //   * `ngram_rows` - the HOST hash.  Sixteen row indices per token from the last three token ids, computed
 //     with 64-bit multiply/xor and no tensor op at all.  `qwen4exp.cpp` L1092-1124, where the source says
 //     outright that it is host-side because "ggml has no int64 and no xor".
-//   * `PleTable`  - the row gather.  `per_layer_token_embd.weight` is IQ4_NL and is NOT IN THE PACK: it is
-//     51.2e9 elements (28.8 GB) in the ORIGINAL second GGUF shard, and it is the only tensor this engine
-//     reads from the GGUF rather than from the canonical pack.
+//   * `PleTable`  - the row gather.  `per_layer_token_embd.weight` is IQ4_NL (Q8_0 in the unsloth UD-Q5_K_XL and
+//     larger files) and is NOT IN THE PACK: it is 51.2e9 elements (28.8 GB; 54.4 GB as Q8_0) in the model's
+//     GGUF, and the engine reads it from there.
 //
 // THE HASH IS THE ONE PLACE IN THIS MODEL WHERE A WRONG BIT IS SILENTLY PLAUSIBLE.  Every one of its
 // properties has a rival reading that produces a valid index in range:
@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::kernels {
 
@@ -45,6 +46,7 @@ inline constexpr float NG_RMS_EPS = 1e-6f;
 // 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
 inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90
+inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;      // 170, the Q8_0 tables
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -95,6 +97,8 @@ int iq4nl_code(int code);
 /// so byte j carries elements j and j+16 - NOT 2j and 2j+1, which is the natural reading and which produces
 /// a perfectly plausible embedding of the wrong 160 values.
 void iq4nl_dequant_row(const uint8_t* row, float* out160);
+/// One row of a table of GGML type `type` (IQ4_NL = 20 or Q8_0 = 8) -> 160 floats.
+void ple_dequant_row(int type, const uint8_t* row, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
@@ -111,6 +115,9 @@ struct PleIoOptions {
     uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
 };
+
+/// The shard among `shards` that holds `per_layer_token_embd.weight`, or "" (headers only).
+std::string ple_table_shard(const std::vector<std::string>& shards);
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every
 /// translation unit that wants the hash.

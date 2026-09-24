@@ -92,11 +92,12 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     L.bytes.assign((size_t) n_layers, 0);
     L.max_blob = 0;
     std::string line;
+    // `layer gu_type d_type offset blob_bytes`; older packs' extra columns (shard-1 offsets) are not read
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') continue;
         std::istringstream ss(line);
         long long l = -1, gt = -1, dt = -1;
-        unsigned long long off = 0, blob = 0, go = 0, uo = 0, dox = 0;
+        unsigned long long off = 0, blob = 0;
         if (!(ss >> l >> gt >> dt >> off >> blob) || l < 0 || l >= n_layers) {
             err = "native_experts.txt: a malformed line: " + line;
             return false;
@@ -107,12 +108,6 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);
             return false;
-        }
-        if (ss >> go >> uo >> dox) {   // v2 lines: the GGUF offsets
-            if (L.gguf_off.empty()) L.gguf_off.assign((size_t) (3 * n_layers), 0);
-            L.gguf_off[(size_t) (3 * l)] = go;
-            L.gguf_off[(size_t) (3 * l + 1)] = uo;
-            L.gguf_off[(size_t) (3 * l + 2)] = dox;
         }
         L.fmt[(size_t) l] = f;
         L.offset[(size_t) l] = off;

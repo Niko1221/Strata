@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -535,19 +536,57 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
 
 // ================================ THE RESIDENT ARENA (R2.1) ================================
 
-// Plan v0.3 P6: the arena from the model's shard 1.  Each layer's gate, up and down tensors hold the 512 experts
-// one after another; they are read in chunks and each expert's slice lands at its place in the blob
+namespace {
+// Plan v0.3 P6: the arena straight from the model's GGUF shards.  Each layer's gate, up and down tensors hold the
+// 512 experts one after another; they are read in chunks and each expert's slice lands at its place in the blob
 // [gate rows | up rows | down rows] - the layout tools/iq_pack.py would have written to experts.bin.
-LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads) {
+struct GgufSpan {
+    size_t shard = 0;
+    uint64_t offset = 0;   ///< in the shard's file
+};
+
+/// Where each layer's gate, up and down tensors are (3 per layer), found by name in whichever shard holds them
+/// and checked against the pack's formats, so a pack and a model that do not belong together are refused.
+bool locate_experts_gguf(const std::vector<std::string>& shards, const strata::kernels::cpu::ExpertLayout& lay,
+                         std::vector<GgufSpan>& out, std::string& err) {
+    static const char* roles[3] = {"gate", "up", "down"};
+    out.assign((size_t) (3 * lay.n_layers), GgufSpan{});
+    try {
+        const strata::GgufModel model(shards);
+        for (int64_t l = 0; l < lay.n_layers; ++l) {
+            const auto& fm = lay.fmt[(size_t) l];
+            const uint64_t per[3] = {fm.up_off, fm.up_off, lay.bytes[(size_t) l] - fm.down_off};
+            for (int r = 0; r < 3; ++r) {
+                const std::string name = "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight";
+                size_t s = 0;
+                const strata::TensorInfo* t = model.find(name, &s);
+                int be = 0, bb = 0;
+                if (t == nullptr || (int) t->type != (r < 2 ? fm.gu_type : fm.d_type) ||
+                    !strata::block_geometry(t->type, be, bb) ||
+                    t->elements() / (uint64_t) be * (uint64_t) bb != per[r] * (uint64_t) lay.n_expert) {
+                    err = "ArenaExpertSource: " + name + " is missing from the model or differs from the pack's "
+                          "native_experts.txt";
+                    return false;
+                }
+                out[(size_t) (3 * l + r)] = GgufSpan{s, model.shard(s).data_start() + t->offset};
+            }
+        }
+        return true;
+    } catch (const std::exception& e) {
+        err = std::string("ArenaExpertSource: ") + e.what();
+        return false;
+    }
+}
+
+LoadStats load_experts_gguf(const std::vector<std::string>& shards, const std::vector<GgufSpan>& spans, uint8_t* dst,
+                            const strata::kernels::cpu::ExpertLayout& lay, int threads) {
     LoadStats st;
     st.layers = (uint64_t) lay.n_layers;
     const auto t0 = std::chrono::steady_clock::now();
     std::atomic<int64_t> next{0};
     std::atomic<bool> bad{false};
     auto worker = [&]() {
-        std::ifstream f(gguf, std::ios::binary);
-        if (!f) { bad = true; return; }
+        std::vector<std::ifstream> files(shards.size());
         std::vector<uint8_t> buf;
         for (;;) {
             const int64_t l = next.fetch_add(1);
@@ -557,7 +596,11 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
             const uint64_t at[3] = {0, fm.up_off, fm.down_off};
             for (int r = 0; r < 3; ++r) {
-                const uint64_t src = lay.gguf_off[(size_t) (3 * l + r)];
+                const GgufSpan& sp = spans[(size_t) (3 * l + r)];
+                std::ifstream& f = files[sp.shard];
+                if (!f.is_open()) f.open(shards[sp.shard], std::ios::binary);
+                if (!f) { bad = true; return; }
+                const uint64_t src = sp.offset;
                 const uint64_t total = per[r] * (uint64_t) lay.n_expert;
                 const uint64_t chunk = per[r] * 16;           // 16 experts per read
                 buf.resize((size_t) chunk);
@@ -586,6 +629,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return st;
 }
+}  // namespace
 
 ArenaExpertSource::~ArenaExpertSource() { close(); }
 
@@ -603,10 +647,13 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     const uint64_t want = lay.total;
 
     // plan v0.3 P6: no experts.bin in a native pack -> the experts come straight from the GGUF
-    const bool from_gguf = !std::ifstream(path, std::ios::binary) && lay.native && !lay.gguf_off.empty() && !gguf_.empty();
+    const bool from_gguf = !std::ifstream(path, std::ios::binary) && lay.native && !gguf_.empty();
     // SIZE CHECK BEFORE THE ALLOCATION, not after.  A wrong pack should name the two numbers rather than spend
     // 34 GB and a minute of loading first.
-    if (!from_gguf) {
+    std::vector<GgufSpan> spans;
+    if (from_gguf) {
+        if (!locate_experts_gguf(gguf_, lay, spans, err)) return false;
+    } else {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) { err = "ArenaExpertSource: cannot open " + path; return false; }
         const uint64_t got = (uint64_t) f.tellg();
@@ -637,7 +684,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         err = "ArenaExpertSource: the arena could not be reserved (" + std::to_string(want) + " B)";
         return false;
     }
-    const LoadStats st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, threads)
+    const LoadStats st = from_gguf ? load_experts_gguf(gguf_, spans, a->data(), lay, threads)
                                    : load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
     if (st.bytes != want) {
         delete a;
