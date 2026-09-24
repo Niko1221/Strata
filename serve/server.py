@@ -6,8 +6,9 @@
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
 non-stream), GET /v1/models, GET /health. One sequence at a time behind a FIFO (plan: one resident sequence).
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
-data, http(s) URLs or local file paths; JPEG/PNG/BMP/GIF) go through `strata-vision` (the model's mmproj file) and
-reach the engine as embeddings (`GENI`).
+data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
+embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
+converted to PNG first with Pillow.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 
 The engine boundary is `Engine.generate(prompt_ids, max_new, sampling, cancel) -> iterator of token ids`.
@@ -155,9 +156,37 @@ class Vision:
             return Path(path).read_bytes()
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
+    @staticmethod
+    def normalize(data: bytes) -> bytes:
+        """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG."""
+        if data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
+                data[:6] in (b"GIF87a", b"GIF89a"):
+            return data
+        try:
+            import io
+            from PIL import Image
+        except ImportError:
+            raise ValueError("this image format needs Pillow (python -m pip install pillow); JPEG, PNG, BMP and "
+                             "GIF work without it") from None
+        try:
+            im = Image.open(io.BytesIO(data))
+            im.load()
+        except Exception as e:
+            raise ValueError(f"the image could not be read ({e})") from None
+        if im.mode in ("RGBA", "LA", "P") and "transparency" in im.info or im.mode in ("RGBA", "LA"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))   # transparent areas become white, not black
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+
     def encode(self, source: str) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens)."""
-        data = self.load(source)
+        data = self.normalize(self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
             if key in self.cache:
