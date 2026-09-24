@@ -333,6 +333,23 @@ void usage() {
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n");
 }
 
+/// All shards of a split GGUF, from shard 1's path ("...-00001-of-00002.gguf"); just the path when it is not split.
+std::vector<std::string> model_shards(const std::string& first) {
+    const std::string tag = "-00001-of-";
+    const size_t at = first.rfind(tag);
+    if (at == std::string::npos || first.size() < at + tag.size() + 10) return {first};
+    const int total = std::atoi(first.substr(at + tag.size(), 5).c_str());
+    std::vector<std::string> out;
+    for (int i = 1; i <= total && i <= 99; ++i) {
+        char num[8];
+        std::snprintf(num, sizeof num, "%05d", i);
+        std::string p = first;
+        p.replace(at + 1, 5, num);
+        if (std::ifstream(p, std::ios::binary)) out.push_back(p);
+    }
+    return out.empty() ? std::vector<std::string>{first} : out;
+}
+
 bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) {
     out.clear();
     std::string text(s);
@@ -592,7 +609,13 @@ int main(int argc, char** argv) {
         o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
         o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
-        if (o.native_dense_gguf.empty()) o.native_dense_gguf = {o.native_preset, o.ple_gguf};
+        if (o.native_dense_gguf.empty()) {
+            // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
+            // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
+            o.native_dense_gguf = model_shards(o.native_preset);
+            if (std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
+                o.native_dense_gguf.push_back(o.ple_gguf);
+        }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
     }

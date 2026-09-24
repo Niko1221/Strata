@@ -3,15 +3,15 @@
 
     START-HERE.bat  (Windows)   /   ./setup.sh  (Linux)      - they install Python if needed and run this file
 
-The first time it asks three questions - which model, how much context, and whether the model should also read
-images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
+The first time it asks four questions - which model (the original Qwen3.8-Flash-Next or the Swift 1.5 fine-tune),
+which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
 API; a small page there shows that it runs). Every later start skips straight to running the model: nothing that
 is already downloaded, installed or prepared is done again.
 
 What the first run does (each step is skipped when it is already done):
 
   1. checks your PC: NVIDIA GPU and driver, RAM, CPU, free disk space
-  2. asks the three questions
+  2. asks the questions
   3. installs the Python packages it needs into .venv (numpy, jinja2, ..., and NVIDIA's CUDA libraries)
   4. gets the Strata engine: a ready-made build for RTX 30/40/50 cards (no compiler needed); if none fits your PC,
      it installs the build tools (asks first) and compiles the engine for your GPU
@@ -19,7 +19,7 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --model Q2_0|IQ2_XS|IQ3_XXS, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
+Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC).
@@ -54,6 +54,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
+MIN_ENGINE = (0, 1, 1)                 # the ready-made engine that reads split models (Swift 1.5)
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja"]
 
 MODELS = {
@@ -64,6 +65,22 @@ MODELS = {
                 "ram_gb": 60, "arena_gb": 42.9},
 }
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
+# The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
+FAMILIES = {
+    "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
+             "about": "the original model",
+             "hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/{q}/",
+             "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "tag": "",
+             "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+             "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next"},
+    "swift": {"title": "Swift 1.5", "by": "UkisAI's fine-tune of Qwen3.8-Flash-Next",
+              "about": "thinks much shorter (-63% thinking tokens, 1.8x sooner answers by its authors' numbers)",
+              "hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+              "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "tag": "swift-",
+              "mmproj_hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+              "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", "name": "swift-1.5",
+              "license": "Swift Open License 1.0: https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"},
+}
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # the image encoder on the GPU: ~0.9 GB of weights + ~0.3 GB of work buffers at 1024 image tokens, kept free of
 # expert slots (the engine's default reserve is 700 MiB)
@@ -384,8 +401,13 @@ def get_prebuilt(url_base, gpu, vision) -> Path | None:
     eng = ROOT / "engine"
     info = eng / "BUILD.json"
     if info.exists() and (eng / EXE).exists():
-        ok("ready-made engine already installed")
-        return eng
+        meta = json.loads(info.read_text())
+        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+        if meta.get("source") == "local" or ver >= MIN_ENGINE:
+            ok("ready-made engine already installed")
+            return eng
+        say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
+        info.unlink()
     if not url_base:
         return None
     z = ROOT / "engine" / PREBUILT_ASSET
@@ -404,6 +426,11 @@ def get_prebuilt(url_base, gpu, vision) -> Path | None:
     with zipfile.ZipFile(z) as f:
         f.extractall(tmp)
     meta = json.loads((tmp / "BUILD.json").read_text())
+    if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit()) < MIN_ENGINE:
+        warn(f"the ready-made engine at {base} is version {meta.get('version')}; this setup needs "
+             f"{'.'.join(map(str, MIN_ENGINE))}: compiling instead")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
     archs = [int(a) for a in meta.get("archs", [])]
     arch = int(gpu["arch"])
     if arch not in archs and not (meta.get("ptx") and arch > max(archs)):
@@ -577,6 +604,7 @@ def write_run_script(model, cfg_path, port):
 # ------------------------------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
@@ -598,12 +626,12 @@ def main() -> int:
 
     # ---- 0. already installed: just start it
     have = installed_configs()
-    if have and not (a.setup or a.model or a.check or a.no_start):
+    if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if len(have) == 1:
             return start(have[0], None)
         say()
         for i, c in enumerate(have, 1):
-            say(f"  {i}) {c.stem[len('strata-'):].upper()}")
+            say(f"  {i}) {json.loads(c.read_text(encoding='utf-8')).get('model_name', c.stem)}")
         say(f"  {len(have) + 1}) install another model / change settings")
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
@@ -640,17 +668,31 @@ def main() -> int:
 
     # ---- 2. the questions
     step(2, "your choices")
+    fams = list(FAMILIES)
+    if a.family:
+        family = a.family
+    else:
+        for i, f in enumerate(fams, 1):
+            d = FAMILIES[f]
+            say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}")
+        family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)], "1", a.yes)) - 1]
+    fam = FAMILIES[family]
+    ok(f"model: {fam['title']}")
+    if fam.get("license"):
+        say(f"  Its license: {fam['license']}")
+    say()
     names = list(MODELS)
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = "3" if ram >= 60 else "1"
-    model = a.model or names[int(ask("Which model?", ["1", "2", "3"], rec, a.yes)) - 1]
+    model = a.model or names[int(ask("Which size?", ["1", "2", "3"], rec, a.yes)) - 1]
     if ram < MODELS[model]["ram_gb"] - 4:
         fail(f"{model} needs about {MODELS[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
              "choose Q2_0 or IQ2_XS, or add RAM")
-    ok(f"model: {model}")
+    ok(f"size: {model}")
+    tag = fam["tag"] + model                           # names of the pack, config and start script
     rec_ctx = 32768 if gpu["vram_gb"] < 14 else 65536 if gpu["vram_gb"] < 20 else 131072
     if a.context:
         ctx = a.context
@@ -673,11 +715,11 @@ def main() -> int:
         say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
-    models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / model
-    shards = [models_dir / f"Qwen3.8-Flash-Next-GSQ-RCO-{model}-0000{i}-of-00002.gguf" for i in (1, 2)]
+    models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
+    shards = [models_dir / fam["file"].format(q=model, i=i) for i in (1, 2)]
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
-        (40 if model == "Q2_0" and avx512 else 0) + (1 if vision != "none" else 0)
+        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
 
@@ -702,15 +744,15 @@ def main() -> int:
     ok(f"engine: {eng / EXE}")
 
     # ---- 5. the model files
-    step(5, f"downloading {model}")
+    step(5, f"downloading {fam['title']} {model}")
     if not a.gguf_dir:
         for s in shards:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
                 continue
-            # shard 2 is the same file for all three models: reuse one that is already here
+            # the original's shard 2 is the same file for all three sizes: reuse one that is already here
             other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf") if done(p)]
-            if s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
+            if family == "qwen" and s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
                 try:
                     os.link(other[0], s)
                     mark(s)
@@ -718,24 +760,24 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(HF + f"{model}/{s.name}", s)
+            download(fam["hf"].format(q=model) + s.name, s)
     for s in shards:
         if not s.exists():
             fail(f"missing {s}")
     ok("model files present")
-    mmproj = Path(a.models_dir) / MMPROJ
+    mmproj = Path(a.models_dir) / fam["mmproj"]
     if vision != "none":
-        if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / MMPROJ).exists():
-            mmproj = Path(a.gguf_dir) / MMPROJ
+        if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
+            mmproj = Path(a.gguf_dir) / fam["mmproj"]
         else:
-            download(HF + MMPROJ, mmproj, "vision encoder")
+            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
         ok(f"vision encoder: {mmproj}")
 
     # ---- 6. the pack and the MTP draft layer
     step(6, "preparing the model for Strata")
-    pack = ROOT / "packs" / model.lower()
+    pack = ROOT / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
-    if model == "Q2_0" and avx512:
+    if model == "Q2_0" and avx512 and family == "qwen":
         # the Q2_0 experts repacked for the AVX-512 kernel (the measured speed): a one-time ~40 GB conversion
         if not (pack / "index.txt").exists() or not (pack / "experts.bin").exists():   # index.txt is written last
             say("  Converting the Q2_0 experts for the AVX-512 kernel (one time, ~40 GB written, 2-5 min) ...")
@@ -765,7 +807,12 @@ def main() -> int:
 
     # ---- 7. the start script
     step(7, "writing the start script")
-    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1]),
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
+    ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
+    if ple is None:
+        fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(ple),
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "auto",
             "--prefill", "2048", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
@@ -774,16 +821,16 @@ def main() -> int:
     if vision != "none":
         args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"qwen3.8-flash-next-{model.lower()}", "log": str(ROOT / f"strata-{model.lower()}.log"),
+           "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": a.port}
     if vision != "none":
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
                          "gpu": vision == "gpu", "max_tokens": VISION[vision]["max_tokens"]}
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
-    cfg_path = ROOT / f"strata-{model.lower()}.json"
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    script = write_run_script(model, cfg_path, a.port)
+    script = write_run_script(tag, cfg_path, a.port)
     ok(f"start script: {script.name}")
 
     say()

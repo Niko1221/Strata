@@ -545,13 +545,28 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     const auto t0 = std::chrono::steady_clock::now();
     std::atomic<int64_t> next{0};
     std::atomic<bool> bad{false};
+    // a layer's experts may sit in another shard of the model (native_experts.txt v3): a name beside `gguf`
+    const size_t cut = gguf.find_last_of("/\\");
+    const std::string dir = cut == std::string::npos ? std::string() : gguf.substr(0, cut + 1);
+    auto file_of = [&](int64_t l) -> std::string {
+        if (lay.gguf_file.empty() || lay.gguf_file[(size_t) l].empty()) return gguf;
+        return dir + lay.gguf_file[(size_t) l];
+    };
     auto worker = [&]() {
-        std::ifstream f(gguf, std::ios::binary);
-        if (!f) { bad = true; return; }
+        std::ifstream f;
+        std::string open_name;
         std::vector<uint8_t> buf;
         for (;;) {
             const int64_t l = next.fetch_add(1);
             if (l >= lay.n_layers || bad) break;
+            const std::string name = file_of(l);
+            if (name != open_name) {
+                f.close();
+                f.clear();
+                f.open(name, std::ios::binary);
+                if (!f) { bad = true; return; }
+                open_name = name;
+            }
             const auto& fm = lay.fmt[(size_t) l];
             const uint64_t blob = lay.bytes[(size_t) l];
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};

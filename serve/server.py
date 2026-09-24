@@ -580,7 +580,9 @@ def main() -> int:
         engine = StrataEngine(cfg["exe"], cfg["args"], cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
     else:
         engine, vision = MockEngine(tok, a.script), None
-    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+    # the model's own chat template (exported with its tokenizer), else the original model's
+    tpl = tpath / "chat_template.jinja"
+    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision)
     svc.api_key = a.api_key or cfg.get("api_key", "")
     httpd = serve(svc, host=a.host, port=a.port)

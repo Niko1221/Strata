@@ -15,7 +15,12 @@ its GGUF form:
                        With --base: the base (Q2_0) pack's dense.bin, hard-linked - the float tensors are
                        byte-identical in all three model files (checked) - plus extra.bin for tensors that are
                        float here but quantized in the base pack (blk.1.ple_key).
-  tokenizer/           exported from the GGUF (tools/strata_tokenizer.py).
+  tokenizer/           exported from the GGUF (tools/strata_tokenizer.py), with the model's chat template.
+
+Split files: every shard of the model is read (<name>-0000N-of-0000M.gguf beside --gguf), so the layers may be
+split anyhow (Swift 1.5's GGUFs put layers 13-47 in shard 2 and the PLE table in shard 1).  A layer whose experts
+are not in shard 1 names its shard in native_experts.txt (v3).  Router tensors stored as F32 whose values are
+exactly BF16 (Swift 1.5) are written as BF16, the form the engine's router takes; anything else is refused.
 """
 from __future__ import annotations
 
@@ -34,6 +39,33 @@ sys.path.insert(0, str(HERE))
 import gguf_reader as G  # noqa: E402
 
 FLOAT = {"BF16", "F32", "F16"}
+ROUTERS = ("ffn_gate_inp.weight", "ffn_gate_inp_shexp.weight")
+NOT_IN_PACK = {"per_layer_token_embd.weight"}      # the 28.8 GB PLE table: read from its GGUF by the engine
+
+
+class Model:
+    """All shards of one model: name -> (GGUFFile, TensorInfo, memmap, shard path)."""
+
+    def __init__(self, first: pathlib.Path):
+        import re
+        m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", first.name)
+        paths = [first]
+        if m:
+            total = int(m.group(2))
+            paths = [first.with_name(first.name[:m.start()] + "-%05d-of-%05d.gguf" % (i, total))
+                     for i in range(1, total + 1)]
+            paths = [p for p in paths if p.exists()]
+        self.paths = paths
+        self.where = {}
+        for p in paths:
+            g = G.GGUFFile(p)
+            mm = np.memmap(p, dtype=np.uint8, mode="r")
+            for t in g.tensors:
+                self.where[t.name] = (g, t, mm, p)
+
+    def bytes(self, name) -> np.ndarray:
+        g, t, mm, _ = self.where[name]
+        return tensor_bytes(mm, g, t)
 ROLES = ("gate", "up", "down")
 N_EXPERT = 512
 ALIGN = 64
@@ -59,13 +91,14 @@ def is_expert(name: str) -> bool:
     return name.startswith("blk.") and name.endswith(("_exps.weight",))
 
 
-def index_standalone(src, out, g, T, mm) -> int:
-    """Every non-expert tensor of shard 1: floats into dense.bin as stored, quantized ones native-only."""
+def index_standalone(src, out, model: Model) -> int:
+    """Every non-expert tensor of the model: floats into dense.bin as stored (exact-BF16 F32 routers as BF16),
+    quantized ones native-only."""
     rows, at = [], 0
     served = 0
     with open(out / "dense.bin", "wb") as fo:
-        for t in g.tensors:
-            if is_expert(t.name):
+        for name, (g, t, mm, _) in model.where.items():
+            if is_expert(t.name) or t.name in NOT_IN_PACK:
                 continue
             if len(t.shape) > 2:
                 print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
@@ -75,6 +108,13 @@ def index_standalone(src, out, g, T, mm) -> int:
             if t.type_name in FLOAT:
                 raw = tensor_bytes(mm, g, t).tobytes()
                 kind = {"BF16": "4", "F16": "5", "F32": "2"}[t.type_name]
+                if t.type_name == "F32" and t.name.endswith(ROUTERS):
+                    u = np.frombuffer(raw, dtype=np.uint32)
+                    if np.count_nonzero(u & 0xFFFF):
+                        print("router %s is F32 with values that are not BF16; the engine's router is BF16" % t.name)
+                        return 1
+                    raw = (u >> 16).astype(np.uint16).tobytes()     # the exact BF16 values
+                    kind = "4"
                 rows.append([t.name, "0", kind, str(at), str(len(raw)), "0", str(len(raw)), str(ne0), str(ne1),
                              "0", "0", "1"] + ["0"] * 7)
                 fo.write(raw)
@@ -167,15 +207,21 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     g = G.GGUFFile(src)
-    T = {t.name: t for t in g.tensors}
     mm = np.memmap(src, dtype=np.uint8, mode="r")
+    model = Model(src)
+    T = {n: w[1] for n, w in model.where.items()}
+    if len(model.paths) > 1:
+        print("model shards: " + ", ".join(p.name for p in model.paths))
     if a.base:
-        rc = index_from_base(a, src, base, out, g, T, mm)
+        if any(w[3] != src for w in model.where.values() if not w[1].name in NOT_IN_PACK):
+            print("--base needs a model whose tensors are all in shard 1")
+            return 1
+        rc = index_from_base(a, src, base, out, g, {t.name: t for t in g.tensors}, mm)
     else:
-        rc = index_standalone(src, out, g, T, mm)
+        rc = index_standalone(src, out, model)
     if rc:
         return rc
-    if not (out / "tokenizer" / "vocab.json").exists():
+    if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():
         subprocess.run([sys.executable, str(HERE / "strata_tokenizer.py"), "--gguf", str(src), "--out", str(out)],
                        check=True)   # writes <out>/tokenizer/
 
@@ -192,10 +238,17 @@ def main() -> int:
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         offset += blob * N_EXPERT
     with open(out / "native_experts.txt", "w", encoding="utf-8", newline="\n") as fo:
-        fo.write("# strata native experts v2: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
-                 "(n_expert %d, total %d; the last three are absolute offsets in %s)\n" % (N_EXPERT, offset, src.name))
+        fo.write("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
+                 "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
+                 % (N_EXPERT, offset, src.name))
         for l, gt, dt, off, blob, ts in layout:
-            fo.write("%d %d %d %d %d %d %d %d\n" % (l, gt, dt, off, blob, *[g.data_start + t.offset for t in ts]))
+            ws = [model.where[t.name] for t in ts]
+            if len({w[3] for w in ws}) != 1:
+                print("layer %d: its gate/up/down tensors are in different shards" % l)
+                return 1
+            gg, shard = ws[0][0], ws[0][3]
+            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
+            fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)
@@ -206,7 +259,7 @@ def main() -> int:
         return 0
     with open(path, "wb") as fo:
         for l, gt, dt, off, blob, ts in layout:
-            parts = [tensor_bytes(mm, g, t).reshape(N_EXPERT, -1) for t in ts]
+            parts = [model.bytes(t.name).reshape(N_EXPERT, -1) for t in ts]
             chunk = np.concatenate(parts, axis=1)          # (512, blob): gate | up | down per expert
             assert chunk.shape == (N_EXPERT, blob)
             fo.write(chunk.tobytes())

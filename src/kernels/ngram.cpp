@@ -164,15 +164,19 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // row.  `GgufFile` parses the header, so `tensor_data` is already correct; this asserts the tensor
     // exactly fills the file from there, which is what makes the whole arrangement checkable rather than
     // assumed.  A wrong data offset would leave a different remainder.
+    // A shard may hold other tensors too (Swift 1.5's shard 1 holds layers 0-12 and the table): the table must
+    // then fit inside the file at its own offset; alone in its shard (the original's shard 2) it fills it exactly.
     const uint64_t need = impl_->n_rows * (uint64_t) PLE_ROW_BYTES;
     const uint64_t have = impl_->file->file_size() - impl_->file->data_start();
-    if (need != have) {
+    const bool alone = impl_->file->tensors().size() == 1;
+    if (alone ? need != have : t->offset + need > have) {
         char buf[256];
         std::snprintf(buf, sizeof buf,
-                      "PLE table size mismatch: %llu rows x %d B = %llu, but the file holds %llu from "
+                      "PLE table size mismatch: %llu rows x %d B = %llu at offset %llu, but the file holds %llu from "
                       "data_start %llu",
                       (unsigned long long) impl_->n_rows, PLE_ROW_BYTES, (unsigned long long) need,
-                      (unsigned long long) have, (unsigned long long) impl_->file->data_start());
+                      (unsigned long long) t->offset, (unsigned long long) have,
+                      (unsigned long long) impl_->file->data_start());
         err = buf;
         close();
         return false;

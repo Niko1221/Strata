@@ -74,6 +74,23 @@ of [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next).
 
 With 64 GB of RAM all three fit (close the browser for IQ3_XXS, and keep its context at 128K or less). With 48 GB only Q2_0 / IQ2_XS may fit. 32 GB is not enough.
 
+### Or: Swift 1.5 (a fine-tune that thinks shorter)
+
+The setup's first question also offers **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)**,
+UkisAI's fine-tune of Qwen3.8-Flash-Next, trained to reach the answer with much less thinking (its authors: 63% fewer
+thinking tokens, 1.8x sooner answers, under 1% accuracy loss). Same architecture, the same three sizes, its own
+vision encoder; Strata runs it at the same speed (4K, IQ2_XS: 465 prompt / 78.7 output tokens/s, vs 467 / 78.3 for
+the original). Its authors recommend **IQ2_XS** (their Q2_0 is marked experimental). Its license is the Swift Open
+License 1.0 - read it on the model page.
+
+Our small check (8 reasoning questions, default thinking, IQ2_XS): both models got **8/8**; Swift used **1,234**
+output tokens in 28 s, the original **2,682** in 46 s - most of the difference from one question the original
+thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
+
+```
+START-HERE.bat --setup --family swift --model IQ2_XS
+```
+
 ## Before you start
 
 You need **only an NVIDIA driver** (version 580 or newer; update it with the NVIDIA App or from
@@ -99,11 +116,12 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 
 ### Double-click `START-HERE.bat`
 
-**The first time** it asks three questions and does the rest:
+**The first time** it asks four questions and does the rest:
 
-1. **Which model?** Q2_0, IQ2_XS or IQ3_XXS (it recommends one for your RAM).
-2. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
-3. **Images?** yes / no (see [Images](#images-vision)).
+1. **Which model?** Qwen3.8-Flash-Next (the original) or Swift 1.5 (the fine-tune that thinks shorter).
+2. **Which size?** Q2_0, IQ2_XS or IQ3_XXS (it recommends one for your RAM).
+3. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
+4. **Images?** yes / no (see [Images](#images-vision)).
 
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, a small
@@ -135,7 +153,7 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
 ./setup.sh
 ```
 
-The same three questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile,
+The same questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile,
 for the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly. Options as on Windows (`./setup.sh --setup`, `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`).
 Terminal chat: `.venv/bin/python chat.py`.
@@ -304,7 +322,8 @@ The full story, with measurements, bottlenecks and what comes next: **[docs/pape
 
 - Model: [Qwen/Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team; quantizations:
   [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF).
-  Their licenses apply to the weights.
+  Swift 1.5: [ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+  by UkisAI. Their licenses apply to the weights.
 - [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and
   dequantizers transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the
   `mtmd` library behind the image encoder (`tools/vision/`), and `gguf-py` used by the tools. See

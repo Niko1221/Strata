@@ -113,6 +113,11 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             L.gguf_off[(size_t) (3 * l)] = go;
             L.gguf_off[(size_t) (3 * l + 1)] = uo;
             L.gguf_off[(size_t) (3 * l + 2)] = dox;
+            std::string file;             // v3: the shard that holds this layer (a file name beside --native)
+            if (ss >> file) {
+                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) n_layers, std::string());
+                L.gguf_file[(size_t) l] = file;
+            }
         }
         L.fmt[(size_t) l] = f;
         L.offset[(size_t) l] = off;
