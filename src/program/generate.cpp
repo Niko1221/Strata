@@ -38,6 +38,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/core/prompt_cache.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -230,6 +231,16 @@ struct Options {
     bool serve = false;
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
+    /// --serve prompt cache: checkpoints of the sequence state kept in host memory (0 = every request starts
+    /// from an empty sequence).  A request continues from the longest prefix the session or a checkpoint holds.
+    int prompt_cache = 16;
+    /// Host memory for sequences the live one replaced (their K/V cells), in MiB.
+    int64_t cache_ram_mib = 16384;
+    /// Checkpoint interval inside long prompts (positions that are multiples of it).
+    int64_t cache_every = 16384;
+    /// Prompt remainders of up to this many tokens go through verify windows instead of the batched prompt path,
+    /// which lends and refills expert-cache slots on every call.
+    int64_t feed_max = 256;
     int adapt_swaps = 96;
 };
 
@@ -288,6 +299,14 @@ void usage() {
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
+                 "  --prompt-cache N     --serve: keep N checkpoints of the sequence state in host memory and\n"
+                 "                       continue each request from the longest cached prefix (default 16;\n"
+                 "                       0 = every request starts from an empty sequence)\n"
+                 "  --cache-every N      checkpoint interval inside long prompts (default 16384)\n"
+                 "  --cache-ram MIB      --serve: host memory for the K/V cells of sequences a request replaced,\n"
+                 "                       so switching back to them continues where they were (default 16384)\n"
+                 "  --feed-max N         --serve: prompt remainders up to N tokens run through verify windows\n"
+                 "                       instead of the batched prompt path (default 256)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
@@ -527,6 +546,10 @@ int main(int argc, char** argv) {
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
+        else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--cache-every") o.cache_every = std::max<int64_t>(1, std::atoll(next("--cache-every")));
+        else if (a == "--cache-ram") o.cache_ram_mib = std::max<int64_t>(0, std::atoll(next("--cache-ram")));
+        else if (a == "--feed-max") o.feed_max = std::max<int64_t>(0, std::atoll(next("--feed-max")));
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -1852,11 +1875,21 @@ int main(int argc, char** argv) {
             for (float& v : drive.d.usage) v *= 0.7f;
             return true;
         };
+        // ---- the prompt cache (strata/core/prompt_cache.hpp)
+        std::vector<strata::core::QsaState*> kv_states;
+        for (int64_t i = 0; i < g.n_qsa_layers(); ++i) kv_states.push_back(&ss.qsa_states[i]);
+        kv_states.push_back(&mtp.kv_state());
+        strata::core::PromptCache pcache(g, ss, kv_states, main_cs, o.prompt_cache, (uint64_t) o.cache_ram_mib << 20);
+        if (pcache.enabled())
+            std::fprintf(stderr, "strata serve: prompt cache on: up to %d checkpoints of %.1f MiB, %lld MiB for stashed "
+                                 "sequences\n", o.prompt_cache, (double) pcache.ckpt_bytes() / 1048576.0,
+                         (long long) o.cache_ram_mib);
         std::printf("READY %lld\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
         const int S = o.spec;
+        constexpr int64_t kImStart = 248045;   // <|im_start|>: a new turn begins here
         // The vision path (--vision): GENI <max_new> <embeddings file> <id,id,...> carries images.  The file is one
         // or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd floats) in prompt order;
         // each image's rows go to its run of <|image_pad|> tokens, whose M-RoPE positions are mtmd's: t = p,
@@ -1971,41 +2004,92 @@ int main(int argc, char** argv) {
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
-            strata::core::session_zero(ss, g, nullptr, main_cs);
-            cudaStreamSynchronize(main_stream);
+            auto report = [&](const std::string& e) {
+                std::fprintf(stderr, "strata serve: %s\n", e.c_str());
+                std::printf("ERR %s\n", e.c_str());
+            };
+            // ---- the prompt cache: continue from the longest prefix it holds (or start from an empty sequence).
+            // Image requests are not cached: their cells are not identified by the token ids alone.
+            const bool track = pcache.enabled() && !geni;
+            const int64_t reuse = pcache.begin(ids, !geni);
             mtp.set_prompt_len(n);
-            std::vector<std::pair<int32_t, int32_t>> lent_now;
-            apply_pending(true);
-            if (lend_first >= 0) {
-                for (size_t i = 0; i < host_res.size(); ++i)
-                    if (host_res[i] >= lend_first) {
-                        lent_now.emplace_back((int32_t) i, host_res[i]);
-                        host_res[i] = strata::core::kNotResident;
-                    }
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
-            }
-            if (n > 1 && !sp.run(ids.data(), n - 1, 0, err)) {
-                std::fprintf(stderr, "strata serve: %s\n", err.c_str());
-                std::printf("ERR %s\n", err.c_str());
-                return 1;
-            }
-            for (const auto& [i, slot] : lent_now) {
-                const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
-                if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err,
-                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert))) {
-                    std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
-                    return 1;
+            std::vector<int32_t> drafts((size_t) S, 0), window((size_t) S), outv((size_t) S);
+            std::vector<float> dprob((size_t) S, 0.0f);
+            // ---- the rest of the prompt, [reuse, n - 1).  A turn usually shares everything before its prompt's
+            // last <|im_start|> with the next one (chat templates re-render the answer, e.g. without its
+            // reasoning), so that position gets a checkpoint, and so do the prompt's end (a regenerated answer)
+            // and every `cache_every` cells of a long prompt.  A short remainder goes through verify windows.
+            int64_t q = 0;
+            if (track)
+                for (int64_t i = n - 2; i > reuse; --i)
+                    if (ids[(size_t) i] == kImStart) { q = i; break; }
+            int64_t batched_end = reuse;   // [reuse, batched_end) through the batched prompt path
+            if (n - 1 - reuse > o.feed_max) batched_end = (q > reuse && n - 1 - q <= o.feed_max) ? q : n - 1;
+            if (batched_end > reuse) {
+                std::vector<std::pair<int32_t, int32_t>> lent_now;
+                apply_pending(true);
+                if (lend_first >= 0) {
+                    for (size_t i = 0; i < host_res.size(); ++i)
+                        if (host_res[i] >= lend_first) {
+                            lent_now.emplace_back((int32_t) i, host_res[i]);
+                            host_res[i] = strata::core::kNotResident;
+                        }
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
                 }
-                host_res[(size_t) i] = slot;
+                for (int64_t a0 = reuse; a0 < batched_end;) {
+                    const int64_t b0 = track ? std::min(batched_end, (a0 / o.cache_every + 1) * o.cache_every)
+                                             : batched_end;
+                    if (!sp.run(ids.data() + a0, b0 - a0, a0, err)) { report(err); return 1; }
+                    if (track) {
+                        pcache.set(a0, ids.data() + a0, b0 - a0);
+                        if (b0 % o.cache_every == 0 || b0 == q || b0 == n - 1) pcache.checkpoint(b0);
+                    }
+                    a0 = b0;
+                }
+                for (const auto& [i, slot] : lent_now) {
+                    const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
+                    if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err,
+                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert))) {
+                        std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                        return 1;
+                    }
+                    host_res[(size_t) i] = slot;
+                }
+                if (!lent_now.empty())
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
             }
-            if (!lent_now.empty())
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+            // prompt tokens through verify windows: each window is committed whole, and the draft layer catches up
+            // on the same cells (its drafts are not used)
+            auto feed = [&](int64_t from, int64_t to) -> bool {
+                for (int64_t j = from; j < to;) {
+                    const int T = (int) std::min<int64_t>(S, to - j);
+                    for (int i = 0; i < T; ++i) window[(size_t) i] = (int32_t) ids[(size_t) (j + i)];
+                    drive.d.layers = 0;
+                    drive.d.experts = 0;
+                    drive.d.failed = false;
+                    apply_pending(false);
+                    if (!ver.run(T, window.data(), j, &drive_pool_multi, &drive, outv.data(), err) || drive.d.failed) {
+                        if (drive.d.failed && drive.d.fail) err = drive.d.fail;
+                        return false;
+                    }
+                    if (!ver.commit(T, err)) return false;
+                    for (int i = 0; i < T; ++i) outv[(size_t) i] = (int32_t) ids[(size_t) (j + i + 1)];
+                    if (!mtp.draft(T, outv.data(), j, T - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p))
+                        return false;
+                    if (track) pcache.set(j, ids.data() + j, T);
+                    j += T;
+                }
+                return true;
+            };
+            const int64_t split = q > batched_end ? q : batched_end;
+            if (!feed(batched_end, split)) { report(err); return 1; }
+            if (track && split == q) pcache.checkpoint(q);
+            if (!feed(split, n - 1)) { report(err); return 1; }
+            if (track) pcache.checkpoint(n - 1);
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
             int32_t x = (int32_t) ids[(size_t) (n - 1)];
-            std::vector<int32_t> drafts((size_t) S, 0), window((size_t) S), outv((size_t) S);
-            std::vector<float> dprob((size_t) S, 0.0f);
             bool first_window = true;
             int64_t produced_n = 0;
             const char* finish = "length";
@@ -2017,6 +2101,15 @@ int main(int argc, char** argv) {
                     while (T < S && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
                 }
                 if (first_window) T = 1;
+                // Never verify past what this request emits: the committed cells then hold exactly the tokens the
+                // client saw, so its next turn continues from them.  So the window stops at the output limit and
+                // at a drafted end-of-turn token.
+                T = (int) std::min<int64_t>(T, max_new - produced_n);
+                for (int i = 1; i < T; ++i)
+                    if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) drafts[(size_t) i - 1]) != o.eos_ids.end()) {
+                        T = i + 1;
+                        break;
+                    }
                 if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T; ++i) window[(size_t) i] = drafts[(size_t) i - 1];
@@ -2039,6 +2132,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                if (track) pcache.set(p, window.data(), a + 1);   // the committed cells p .. p + a
                 first_window = false;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
@@ -2064,12 +2158,15 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
-            std::printf("DONE %lld %lld %.1f %.1f %s\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
-                        finish);
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
+                        finish, (long long) reuse);
             std::fflush(stdout);
-            std::fprintf(stderr, "strata serve: %lld prompt tokens in %.0f ms (%.1f tok/s), %lld generated in %.0f ms "
-                                 "(%.1f tok/s)\n", (long long) n, prompt_ms, prompt_ms > 0 ? 1000.0 * n / prompt_ms : 0.0,
-                         (long long) produced_n, decode_ms, decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0);
+            const int64_t fresh = n - reuse;
+            std::fprintf(stderr, "strata serve: %lld prompt tokens (%lld cached) in %.0f ms (%.1f tok/s), %lld generated "
+                                 "in %.0f ms (%.1f tok/s)\n", (long long) n, (long long) reuse, prompt_ms,
+                         prompt_ms > 0 ? 1000.0 * fresh / prompt_ms : 0.0, (long long) produced_n, decode_ms,
+                         decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0);
+            if (pcache.enabled()) std::fprintf(stderr, "strata serve: prompt cache: %s\n", pcache.summary().c_str());
         }
         return 0;
     }

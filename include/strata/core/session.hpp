@@ -83,6 +83,22 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);
 
+// ================================ prompt-cache checkpoints ================================
+//
+// The K/V caches are indexed by position, so the cells before a position stay valid when a later sequence
+// overwrites the ones after it.  What a position does NOT recover is the state that folds the whole prefix
+// into a fixed size: every GDN layer's recurrence and conv history, each QSA indexer's raw block tail (plus
+// its spare key, the pooled row of the open block and the block position), and the PLE's conv history and
+// token window.  A checkpoint is exactly that state at one position; restoring it and overwriting the cells
+// from that position on continues the sequence as if it had been processed up to there.
+
+/// Bytes of one checkpoint (host memory).
+uint64_t session_ckpt_bytes(const ModelGeometry& g);
+/// Copies the sequence state at `pos` (positions [0, pos) processed) into `host`; synchronous.
+bool session_ckpt_save(const SessionState& s, const ModelGeometry& g, int64_t pos, void* host, void* stream);
+/// The inverse: the session continues at `pos`.  The K/V cells [0, pos) must still hold the same prefix.
+bool session_ckpt_load(SessionState& s, const ModelGeometry& g, int64_t pos, const void* host, void* stream);
+
 /// One token: layers 0..47 in order, each a `block_layer`, and the residual is updated in place.
 ///
 /// `parts` is (k, n_embd) DEVICE memory, filled by the caller - by the CPU expert pool and the VRAM-resident

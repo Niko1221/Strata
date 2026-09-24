@@ -178,15 +178,23 @@ print(r.choices[0].message.content)
   think briefly, on hard ones `high` thinks longest and is most accurate.
 - **Chat apps.** Any app with an "OpenAI-compatible" provider works: base URL `http://127.0.0.1:8080/v1`, any API key.
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut.
+- **Prompt cache.** A request continues from the longest start of its prompt the engine still holds, so the next turn
+  of a chat or an agent processes only what is new (a 16K-token conversation: ~0.3 s instead of ~25 s before the first
+  token). It keeps checkpoints of the sequence state in RAM (at every turn's start and end, and every 16K tokens of a
+  long prompt: regenerated and edited answers resume from them) and moves a conversation that another request replaces
+  (a chat app's title request, a subagent) to RAM with its key/value cache, so switching back continues where it was.
+  Responses report the reused tokens (`usage.prompt_tokens_details.cached_tokens`; Anthropic:
+  `cache_read_input_tokens`). Engine options: `--prompt-cache N` checkpoints (default 16, ~110 MB each; 0 = off),
+  `--cache-ram MIB` for replaced conversations (default 16384), `--cache-every N` (default 16384). A changed system
+  prompt or reasoning effort changes the prompt from its first tokens, so nothing is reused.
 - **From other devices / the internet.** The server listens on your PC only (`127.0.0.1`). To reach it from elsewhere,
   put a tunnel in front of it, for example [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/):
   `cloudflared tunnel --url http://127.0.0.1:8080`. **Set a key first**, or anyone with the link can use your PC:
   add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
   clients then send it as their API key.
 
-**Current limits (v1):** one request at a time; greedy decoding (temperature is ignored); every request processes its
-whole prompt again (no conversation cache yet, so long chats have a long time-to-first-token); images only when set up
-with them (below); no video.
+**Current limits (v1):** one request at a time; greedy decoding (temperature is ignored); requests with images are
+not cached; images only when set up with them (below); no video.
 
 ---
 

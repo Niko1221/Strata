@@ -85,8 +85,14 @@ class StrataEngine:
         if self.max_context <= 0:
             raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
 
+    def _done(self, line):
+        f = line.split()
+        self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
+                     "decode_ms": float(f[4]), "finish": f[5], "cached": int(f[6]) if len(f) > 6 else 0}
+
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         head = f"GENI {int(max_new)} {embeddings}" if embeddings else f"GEN {int(max_new)}"
+        self.last = {}
         self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
         self.proc.stdin.flush()
         done = False
@@ -96,9 +102,7 @@ class StrataEngine:
                     if not cancel.is_set():
                         yield int(line[2:])
                 elif line.startswith("DONE"):
-                    f = line.split()
-                    self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
-                                 "decode_ms": float(f[4]), "finish": f[5]}
+                    self._done(line)
                     done = True
                     return
                 elif line.startswith("ERR"):
@@ -108,7 +112,10 @@ class StrataEngine:
         finally:
             if not done:                                  # the consumer stopped early: drain to DONE
                 for line in self.proc.stdout:
-                    if line.startswith("DONE") or line.startswith("ERR"):
+                    if line.startswith("DONE"):
+                        self._done(line)
+                        break
+                    if line.startswith("ERR"):
                         break
 
     def close(self):
@@ -287,19 +294,23 @@ class Service:
             with self.fifo:
                 gen = self.engine.generate(ids, max_new, sampling, cancel, embeddings=emb) if emb else \
                     self.engine.generate(ids, max_new, sampling, cancel)
-                for t in gen:
-                    n += 1
-                    if t in self.stop_ids:
-                        finish = "stop"
-                        break
-                    for ev in parser.feed(detok.push(t)):
-                        yield "event", ev
+                try:
+                    for t in gen:
+                        n += 1
+                        if t in self.stop_ids:
+                            finish = "stop"
+                            break
+                        for ev in parser.feed(detok.push(t)):
+                            yield "event", ev
+                finally:
+                    gen.close()                           # drains the engine to DONE before the next request
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
         for ev in parser.finish():
             yield "event", ev
-        yield "done", {"finish": finish, "completion_tokens": n}
+        yield "done", {"finish": finish, "completion_tokens": n,
+                       "cached_tokens": getattr(self.engine, "last", {}).get("cached", 0)}
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -328,7 +339,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             finish = "tool_calls" if calls and x["finish"] == "stop" else x["finish"]
             last = chunk({}, finish)
             last["usage"] = {"prompt_tokens": len(ids), "completion_tokens": x["completion_tokens"],
-                             "total_tokens": len(ids) + x["completion_tokens"]}
+                             "total_tokens": len(ids) + x["completion_tokens"],
+                             "prompt_tokens_details": {"cached_tokens": x["cached_tokens"]}}
             yield last
 
 
@@ -393,7 +405,9 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "tool_use" if used_tool and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens"}[x["finish"]]
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
-                                    "usage": {"output_tokens": x["completion_tokens"]}}
+                                    "usage": {"input_tokens": len(ids) - x["cached_tokens"],
+                                              "cache_read_input_tokens": x["cached_tokens"],
+                                              "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
 
@@ -414,7 +428,7 @@ def anthropic_collect(events) -> dict:
                 b["input"] = json.loads(d["partial_json"])
         elif name == "message_delta":
             msg["stop_reason"] = e["delta"]["stop_reason"]
-            msg["usage"]["output_tokens"] = e["usage"]["output_tokens"]
+            msg["usage"].update(e["usage"])
     msg["content"] = blocks
     return msg
 

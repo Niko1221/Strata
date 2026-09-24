@@ -129,6 +129,69 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
     s.ple_token = -1;
 }
 
+namespace {
+
+/// One region of a checkpoint: `bytes` of device memory at `dev`, stored back to back in the host buffer.
+struct CkptPart { void* dev; uint64_t bytes; };
+
+/// The parts of a checkpoint at `pos`, in storage order (the PLE token window follows them on the host).
+std::vector<CkptPart> ckpt_parts(const SessionState& s, const ModelGeometry& g, int64_t pos) {
+    strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+    sh.idx_dim = g.idx_key_dim;
+    const uint64_t row = (uint64_t) sh.idx_dim * sizeof(float);
+    std::vector<CkptPart> parts;
+    parts.push_back({s.gdn_state, (uint64_t) g.n_gdn_layers() * gdn_state_floats(g) * sizeof(float)});
+    parts.push_back({s.ple_hist, ple_hist_bytes()});
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+        const QsaState& st = s.qsa_states[i];
+        parts.push_back({st.idx_tail, (uint64_t) (sh.idx_block - 1) * row});
+        parts.push_back({st.idx_dead, row});
+        parts.push_back({(uint8_t*) st.idx_pooled + (uint64_t) (pos / sh.idx_block) * row, row});
+        parts.push_back({st.idx_block_pos, sizeof(int32_t)});
+    }
+    return parts;
+}
+
+constexpr uint64_t kCkptHostInts = 3;   // ple_prev[0], ple_prev[1], ple_token
+
+}  // namespace
+
+uint64_t session_ckpt_bytes(const ModelGeometry& g) {
+    SessionState probe;   // only the sizes are read: null device pointers are never dereferenced here
+    std::vector<QsaState> qsa((size_t) g.n_qsa_layers());
+    probe.qsa_states = qsa.data();
+    uint64_t n = kCkptHostInts * sizeof(int32_t);
+    for (const CkptPart& p : ckpt_parts(probe, g, 0)) n += p.bytes;
+    return n;
+}
+
+bool session_ckpt_save(const SessionState& s, const ModelGeometry& g, int64_t pos, void* host, void* stream) {
+    cudaStream_t cs = (cudaStream_t) stream;
+    uint8_t* h = (uint8_t*) host;
+    for (const CkptPart& p : ckpt_parts(s, g, pos)) {
+        if (cudaMemcpyAsync(h, p.dev, (size_t) p.bytes, cudaMemcpyDeviceToHost, cs) != cudaSuccess) return false;
+        h += p.bytes;
+    }
+    const int32_t ints[kCkptHostInts] = {s.ple_prev[0], s.ple_prev[1], s.ple_token};
+    std::memcpy(h, ints, sizeof ints);
+    return cudaStreamSynchronize(cs) == cudaSuccess;
+}
+
+bool session_ckpt_load(SessionState& s, const ModelGeometry& g, int64_t pos, const void* host, void* stream) {
+    cudaStream_t cs = (cudaStream_t) stream;
+    const uint8_t* h = (const uint8_t*) host;
+    for (const CkptPart& p : ckpt_parts(s, g, pos)) {
+        if (cudaMemcpyAsync(p.dev, h, (size_t) p.bytes, cudaMemcpyHostToDevice, cs) != cudaSuccess) return false;
+        h += p.bytes;
+    }
+    int32_t ints[kCkptHostInts];
+    std::memcpy(ints, h, sizeof ints);
+    s.ple_prev[0] = ints[0];
+    s.ple_prev[1] = ints[1];
+    s.ple_token = ints[2];
+    return cudaStreamSynchronize(cs) == cudaSuccess;
+}
+
 /// Sets `s.gdn.state`/`conv_state` for `layer`, which is what makes one layer's GDN state its own.  Shared by
 /// the direct and captured paths so the two cannot disagree about which slice a layer owns.
 void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
