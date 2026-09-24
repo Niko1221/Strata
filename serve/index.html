@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#667085; --line:#e3e6ea; --acc:#2f6fed; --me:#e9f0ff; --ok:#1a7f37; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --card:#1a1e24; --fg:#e7e9ec; --mute:#9aa3ae; --line:#2b313a; --acc:#6b9bff; --me:#1f2b44; --ok:#3fb950; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:860px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:12px; min-height:100vh; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  h1 { font-size:20px; margin:0; display:flex; align-items:center; gap:8px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--mute); display:inline-block; }
+  .dot.on { background:var(--ok); }
+  .mute { color:var(--mute); font-size:13px; }
+  code { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:13px; }
+  .grid { display:grid; grid-template-columns: max-content 1fr; gap:4px 12px; margin-top:8px; font-size:14px; }
+  #log { flex:1; display:flex; flex-direction:column; gap:10px; overflow-y:auto; min-height:240px; }
+  .msg { padding:10px 12px; border-radius:10px; white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { background:var(--me); align-self:flex-end; max-width:85%; }
+  .msg.bot { background:var(--card); border:1px solid var(--line); }
+  .msg img { max-width:220px; max-height:160px; display:block; border-radius:6px; margin-bottom:6px; }
+  details { color:var(--mute); font-size:13px; margin-bottom:6px; }
+  form { display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
+  textarea { flex:1; min-width:200px; min-height:52px; max-height:200px; resize:vertical; padding:10px; border-radius:10px;
+             border:1px solid var(--line); background:var(--card); color:var(--fg); font:inherit; }
+  button, label.btn { border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:10px; padding:10px 14px;
+                      font:inherit; cursor:pointer; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--mute); }
+  #att { font-size:13px; color:var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1><span id="dot" class="dot"></span> Strata <span id="state" class="mute">connecting ...</span></h1>
+    <div class="grid">
+      <span class="mute">Model</span><span id="model">-</span>
+      <span class="mute">Context</span><span id="ctx">-</span>
+      <span class="mute">Images</span><span id="img">-</span>
+      <span class="mute">OpenAI API</span><span><code id="oai"></code> (any API key<span id="keynote"></span>)</span>
+      <span class="mute">Anthropic API</span><span><code id="ant"></code></span>
+    </div>
+    <p class="mute" style="margin:10px 0 0">Point any app with an "OpenAI-compatible" or "Anthropic" provider at these
+      addresses. Close the Strata window to stop the model.</p>
+  </div>
+
+  <div id="log" class="card"></div>
+
+  <div class="card">
+    <form id="f">
+      <textarea id="q" placeholder="Ask something ... (Enter sends, Shift+Enter = new line)"></textarea>
+      <label class="btn" id="attbtn" hidden>Picture<input id="file" type="file" accept="image/png,image/jpeg,image/gif,image/bmp" hidden></label>
+      <button class="primary" id="send">Send</button>
+      <button type="button" id="stop" disabled>Stop</button>
+    </form>
+    <div class="row" style="margin-top:8px">
+      <label>Thinking <select id="think" style="padding:4px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)">
+        <option value="none">off - answer at once</option>
+        <option value="low">low</option>
+        <option value="medium" selected>medium</option>
+        <option value="high">high - best on hard questions, slowest</option>
+      </select></label>
+      <span id="att"></span>
+      <button type="button" id="clear" style="padding:4px 10px">New chat</button>
+      <input id="key" type="password" placeholder="API key" hidden style="padding:6px;border-radius:8px;border:1px solid var(--line)">
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const base = location.origin;
+$("oai").textContent = base + "/v1";
+$("ant").textContent = base + "/v1/messages";
+let history = [], image = null, ctrl = null;
+
+async function status() {
+  try {
+    const h = await (await fetch("/health")).json();
+    $("dot").classList.add("on"); $("state").textContent = "running";
+    $("model").textContent = h.model; $("ctx").textContent = h.max_context.toLocaleString() + " tokens";
+    $("img").textContent = h.images ? "on" : "off (run setup again and answer yes to images)";
+    $("attbtn").hidden = !h.images;
+    if (h.api_key) { $("key").hidden = false; $("keynote").textContent = " - this server needs its key"; }
+  } catch (e) { $("state").textContent = "not reachable - is the Strata window still open?"; }
+}
+status();
+
+function bubble(cls, text) {
+  const d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text || "";
+  $("log").appendChild(d); $("log").scrollTop = $("log").scrollHeight; return d;
+}
+
+$("file").onchange = () => {
+  const f = $("file").files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { image = r.result; $("att").textContent = "picture: " + f.name; };
+  r.readAsDataURL(f);
+};
+$("clear").onclick = () => { history = []; $("log").innerHTML = ""; };
+$("stop").onclick = () => ctrl && ctrl.abort();
+$("q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("f").requestSubmit(); } });
+
+$("f").onsubmit = async e => {
+  e.preventDefault();
+  const text = $("q").value.trim(); if (!text) return;
+  $("q").value = "";
+  const content = image ? [{type: "image_url", image_url: {url: image}}, {type: "text", text}] : text;
+  const u = bubble("user", "");
+  if (image) { const im = document.createElement("img"); im.src = image; u.appendChild(im); }
+  u.appendChild(document.createTextNode(text));
+  history.push({role: "user", content});
+  image = null; $("att").textContent = ""; $("file").value = "";
+  const b = bubble("bot", ""); const det = document.createElement("details"); const sum = document.createElement("summary");
+  sum.textContent = "thinking"; det.appendChild(sum); const th = document.createElement("div"); det.appendChild(th);
+  const ans = document.createElement("div"); b.appendChild(ans);
+  $("send").disabled = true; $("stop").disabled = false; ctrl = new AbortController();
+  let answer = "";
+  try {
+    const headers = {"Content-Type": "application/json"};
+    if ($("key").value) headers["Authorization"] = "Bearer " + $("key").value;
+    const body = {model: "strata", messages: history, stream: true, max_tokens: 8192};
+    body.reasoning_effort = $("think").value;
+    const r = await fetch("/v1/chat/completions", {method: "POST", headers, body: JSON.stringify(body), signal: ctrl.signal});
+    if (!r.ok) { ans.textContent = "error: " + ((await r.json()).error || {}).message; throw 0; }
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const {value, done} = await rd.read(); if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        const d = JSON.parse(line.slice(6)).choices[0].delta;
+        if (d.reasoning_content) { if (!det.parentNode) b.insertBefore(det, ans); th.textContent += d.reasoning_content; }
+        if (d.content) { answer += d.content; ans.textContent = answer; }
+        $("log").scrollTop = $("log").scrollHeight;
+      }
+    }
+  } catch (err) { if (err && err.name === "AbortError") ans.textContent = answer + " [stopped]"; }
+  history.push({role: "assistant", content: answer});
+  $("send").disabled = false; $("stop").disabled = true; ctrl = null;
+};
+</script>
+</body>
+</html>
