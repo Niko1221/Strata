@@ -333,7 +333,8 @@ void usage() {
                  "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
                  "  --mtp DIR            the MTP draft layer's runtime files (tools/mtp_rt.py)\n"
                  "  --mtp-window N       the draft layer attends to the last N cells (default 32768; 0 = every cell)\n"
-                 "  --main-gpu N         run on CUDA device N of the visible ones (default 0)\n"
+                 "  --main-gpu N         run on CUDA device N of the visible ones, in nvidia-smi's order unless\n"
+                 "                       CUDA_DEVICE_ORDER says otherwise (default 0)\n"
                  "  --second-gpu N       CUDA device N (of the visible ones, not --main-gpu) as another\n"
                  "                       expert tier: it holds the profile's next experts, then the conversation's,\n"
                  "                       and computes them beside the CPU pool (native packs, verify windows)\n"
@@ -472,6 +473,14 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    // device ordinals in nvidia-smi's order, not CUDA's fastest-first guess (before the first CUDA call)
+    if (std::getenv("CUDA_DEVICE_ORDER") == nullptr) {
+#if defined(_WIN32)
+        _putenv_s("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+#else
+        setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
+#endif
+    }
     Options o;
     bool have_tokens = false;
     bool have_logits_stride = false;
