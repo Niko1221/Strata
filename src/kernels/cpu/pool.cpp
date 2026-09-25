@@ -49,11 +49,15 @@ std::vector<int> physical_cores(bool skip_first) {
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
-    if (sched_getaffinity(0, sizeof set, &set) == 0)
+    // The `else` MUST brace the outer `if`: unbraced, it dangles off the inner `if (CPU_ISSET...)` and the
+    // fallback list is pushed once per UNSET mask bit (measured: 54,263 "cores" on a 56-CPU machine - the
+    // pool then spawns that many 8 MB-stack workers and the main thread spends minutes in the ctor).
+    if (sched_getaffinity(0, sizeof set, &set) == 0) {
         for (int i = 0; i < CPU_SETSIZE; ++i)
             if (CPU_ISSET(i, &set)) cores.push_back(i);
-    else
+    } else {
         for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cores.push_back((int) i);
+    }
 #endif
     if (skip_first && !cores.empty()) cores.erase(cores.begin());
     return cores;
