@@ -63,6 +63,10 @@ struct LoadStats {
 LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_bytes, uint64_t blobs_per_layer,
                        uint64_t layers, int threads, uint64_t chunk);
 /// Plan v0.3 P6: the same with one byte range per layer (`layer_off[L]`, `layer_bytes[L]`).
+/// Layer L's `layer_bytes[L]` bytes at file offset `layer_off[L]` go to `layer_dst[L]`.
+LoadStats load_experts_ranges(const std::string& path, const std::vector<uint8_t*>& layer_dst,
+                              const std::vector<uint64_t>& layer_off, const std::vector<uint64_t>& layer_bytes, int threads,
+                              uint64_t chunk);
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
 

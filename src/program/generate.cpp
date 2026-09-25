@@ -17,6 +17,7 @@
 #include "strata/artifact/gguf_split.hpp"
 #include "strata/core/adaptive_tier.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/second_gpu.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
@@ -221,6 +222,12 @@ struct Options {
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
+    /// A second GPU (device ordinal) as another expert tier, with this much VRAM for experts (0 = all but
+    /// `second_gpu_reserve_mib`).
+    int second_gpu = -1;
+    double second_gpu_gib = 0.0;
+    int second_gpu_reserve_mib = 2048;
+    double second_gpu_min_mb = 4.0;   ///< a layer's misses from which it takes its share (smaller: the CPU is quicker)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -325,6 +332,12 @@ void usage() {
                  "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
                  "  --mtp DIR            the MTP draft layer's runtime files (tools/mtp_rt.py)\n"
                  "  --mtp-window N       the draft layer attends to the last N cells (default 32768; 0 = every cell)\n"
+                 "  --second-gpu N       CUDA device N (of the visible ones; the engine runs on device 0) as another\n"
+                 "                       expert tier: it holds the profile's next experts, then the conversation's,\n"
+                 "                       and computes them beside the CPU pool (native packs, verify windows)\n"
+                 "  --second-gpu-gib G   its VRAM for experts (default: all but --second-gpu-reserve-mib, 2048)\n"
+                 "  --second-gpu-min-mb M  a layer's missed experts from which it takes its share (default 4; below\n"
+                 "                       it the CPU is quicker than its ~100 us round trip)\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
                  "                       accept the drafts that match it, so speculation settings compare on the\n"
                  "                       same text (not --serve)\n"
@@ -558,6 +571,10 @@ int main(int argc, char** argv) {
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
+        else if (a == "--second-gpu") o.second_gpu = std::atoi(next("--second-gpu"));
+        else if (a == "--second-gpu-gib") o.second_gpu_gib = std::atof(next("--second-gpu-gib"));
+        else if (a == "--second-gpu-reserve-mib") o.second_gpu_reserve_mib = std::atoi(next("--second-gpu-reserve-mib"));
+        else if (a == "--second-gpu-min-mb") o.second_gpu_min_mb = std::atof(next("--second-gpu-min-mb"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
@@ -1779,16 +1796,102 @@ int main(int argc, char** argv) {
                      (long long) resident);
     }
     // plan v0.3 P6: the VRAM tier follows the conversation in both decode loops (--serve and the speculative loop):
-    // swaps every --adapt-every rounds on the adapt thread, admitted once their copies have landed
+    // moves every --adapt-every rounds on the adapt thread, admitted once their copies have landed
     strata::core::AdaptiveTier tier;
-    if (!host_res.empty() && o.adapt_every > 0 && o.adapt_swaps > 0 &&
-        !tier.init(xcache, *srcp, host_res, d_res, g.n_layers, g.n_expert, o.adapt_swaps, err)) {
+    const bool adaptive = !host_res.empty() && o.adapt_every > 0 && o.adapt_swaps > 0;
+    if (adaptive && !tier.init(xcache, *srcp, host_res, d_res, g.n_layers, g.n_expert, o.adapt_swaps, err)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
+    // ---- a second GPU as another expert tier: the profile's pairs the first GPU's cache does not hold, then empty
+    // slots for every layer, which its own adaptive tier fills with the conversation's experts the first tier has not
+    strata::core::SecondGpu gpu2;
+    std::vector<int32_t> host_res2;
+    strata::core::AdaptiveTier tier2;
+    if (o.second_gpu >= 0) {
+        if (!native_pack || host_res.empty() || o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --second-gpu needs a native pack, --expert-profile and --spec\n");
+            return 2;
+        }
+        int main_dev = 0;
+        cudaGetDevice(&main_dev);
+        cudaDeviceProp prop{};
+        if (o.second_gpu == main_dev || cudaGetDeviceProperties(&prop, o.second_gpu) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: --second-gpu %d is not another visible CUDA device\n", o.second_gpu);
+            return 2;
+        }
+        if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        cudaSetDevice(o.second_gpu);
+        size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        const uint64_t reserve = (uint64_t) o.second_gpu_reserve_mib << 20;
+        const uint64_t budget = o.second_gpu_gib > 0 ? (uint64_t) (o.second_gpu_gib * 1073741824.0)
+                                                     : (free_b > reserve ? (uint64_t) free_b - reserve : 0);
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        std::vector<int64_t> sizes;
+        std::vector<std::pair<int32_t, int32_t>> pre;
+        std::vector<int32_t> empty2;
+        uint64_t used = 0;
+        for (size_t i = (size_t) prefilled; i < profile.size(); ++i) {
+            const auto& pr = profile[i];
+            if (host_res[(size_t) (pr.first * g.n_expert + pr.second)] >= 0) continue;   // the first GPU holds it
+            const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
+            if (used + b > budget) break;
+            used += b;
+            sizes.push_back((int64_t) lay.blob_bytes(pr.first));
+            pre.push_back(pr);
+        }
+        if (adaptive) {
+            uint64_t round = 0;
+            for (int64_t l = 0; l < g.n_layers; ++l) round += (lay.blob_bytes(l) + 255) / 256 * 256;
+            for (uint64_t q = (budget - used) / round; q > 0; --q)
+                for (int64_t l = 0; l < g.n_layers; ++l) {
+                    sizes.push_back((int64_t) lay.blob_bytes(l));
+                    empty2.push_back((int32_t) l);
+                }
+        }
+        bool ok = !sizes.empty() && gpu2.cache().open_sized(sizes, g.n_layers, g.n_expert, err);
+        for (size_t i = 0; ok && i < pre.size(); ++i) {
+            const int32_t slot = gpu2.cache().admit(pre[i].first, pre[i].second);
+            const uint8_t* b = srcp->blob(pre[i].first, pre[i].second);
+            ok = slot != strata::core::kNotResident && b != nullptr &&
+                 gpu2.cache().fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pre[i].first));
+        }
+        cudaSetDevice(main_dev);
+        if (ok) {
+            host_res2.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e) host_res2[(size_t) (l * g.n_expert + e)] = gpu2.cache().slot_of(l, e);
+        }
+        if (ok && adaptive) {
+            ok = tier2.init(gpu2.cache(), *srcp, host_res2, nullptr, g.n_layers, g.n_expert, o.adapt_swaps, err,
+                            o.second_gpu, main_dev);
+            for (size_t i = 0; ok && i < empty2.size(); ++i) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
+            tier2.set_upper(&tier);
+        }
+        if (!ok) {
+            std::fprintf(stderr, "strata generate: second GPU: %s\n", sizes.empty() ? "no VRAM for experts" : err.c_str());
+            return 1;
+        }
+        drive.d.gpu2 = &gpu2;
+        drive.d.host_res2 = host_res2.data();
+        drive.d.gpu2_min_bytes = (uint64_t) (o.second_gpu_min_mb * 1048576.0);
+        std::fprintf(stderr, "strata generate: second GPU %d (%s): %zu experts from the profile and %zu empty slots, "
+                             "%.2f GiB\n", o.second_gpu, prop.name, pre.size(), empty2.size(), gpu2.cache().gib());
+    }
+    // the second tier ranks after the first on the same counts, and decays them
     std::string adapt_err;
-    auto adapt = [&]() -> bool { return tier.adapt(drive.d.usage, adapt_err); };
-    auto apply_pending = [&](bool wait) { tier.apply_pending(wait); };
+    auto adapt = [&]() -> bool {
+        const bool two = tier2.on();
+        return tier.adapt(drive.d.usage, adapt_err, !two) && (!two || tier2.adapt(drive.d.usage, adapt_err));
+    };
+    auto apply_pending = [&](bool wait) {
+        tier.apply_pending(wait);
+        tier2.apply_pending(wait);
+    };
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
         (hit_fn == nullptr || thits.on()) && !native_pack) {
         if (!strata::core::session_capture_token(wt, g, ss, d_parts, loop_scratch.y_miss, loop_scratch.parts_bytes,
@@ -2689,6 +2792,14 @@ int main(int argc, char** argv) {
         if (rounds > 0 && !drive.d.usage.empty())
             std::printf("%-24s %lld experts swapped into the VRAM tier (every %d rounds, %.3f ms/round)\n", "adaptive tier",
                         (long long) tier.swaps, o.adapt_every, tier.ms / rounds);
+        if (rounds > 0 && drive.d.gpu2 != nullptr)
+            std::printf("%-24s %.2f routed entries and %.2f experts per round in %.2f layers (%.2f left to the CPU), "
+                        "%.3f ms/round waiting for it after the CPU pool; %lld experts swapped in and %lld into empty "
+                        "slots (%lld still empty)\n", "second GPU",
+                        (double) gpu2.entries_done / (double) rounds, (double) gpu2.experts / (double) rounds,
+                        (double) gpu2.layers / (double) rounds, (double) drive.d.gpu2_skipped / (double) rounds,
+                        gpu2.ms_wait / (double) rounds, (long long) tier2.swaps, (long long) tier2.fills,
+                        (long long) tier2.free_slots());
         if (rounds > 0 && !drive.d.routed.empty()) {
             // the share of the routed entries the N most-routed experts of this run take
             std::vector<uint32_t> c = drive.d.routed;

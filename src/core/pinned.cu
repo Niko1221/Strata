@@ -192,6 +192,14 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+    std::vector<uint8_t*> layer_dst;
+    for (uint64_t off : layer_off) layer_dst.push_back(dst + off);
+    return load_experts_ranges(path, layer_dst, layer_off, layer_bytes, threads, chunk);
+}
+
+LoadStats load_experts_ranges(const std::string& path, const std::vector<uint8_t*>& layer_dst,
+                              const std::vector<uint64_t>& layer_off, const std::vector<uint64_t>& layer_bytes, int threads,
+                              uint64_t chunk) {
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
@@ -231,7 +239,7 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                     err = "short read in layer " + std::to_string(L);
                     return;
                 }
-                std::memcpy(dst + off + pos, buf.data(), (size_t) n);
+                std::memcpy(layer_dst[(size_t) L] + pos, buf.data(), (size_t) n);
                 h = fnv1a64(buf.data(), n, h);
                 pos += n;
                 remaining -= n;

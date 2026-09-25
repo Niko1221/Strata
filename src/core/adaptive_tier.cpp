@@ -7,22 +7,35 @@
 #include <chrono>
 
 namespace strata::core {
+namespace {
+struct OnDevice {   // the tier's GPU current for one call (when it has one), the main one again afterwards
+    int main;
+    bool set;
+    OnDevice(int dev, int main_dev) : main(main_dev), set(dev >= 0) { if (set) cudaSetDevice(dev); }
+    ~OnDevice() { if (set) cudaSetDevice(main); }
+};
+}  // namespace
 
 AdaptiveTier::~AdaptiveTier() {
+    OnDevice on(dev_, main_);
     if (stream_) cudaStreamSynchronize(stream_);
     if (ev_) cudaEventDestroy(ev_);
     if (stream_) cudaStreamDestroy(stream_);
 }
 
 bool AdaptiveTier::init(ExpertCache& cache, ExpertSource& src, std::vector<int32_t>& host_res, int32_t* d_res,
-                        int64_t n_layers, int64_t n_expert, int max_swaps, std::string& err) {
+                        int64_t n_layers, int64_t n_expert, int max_moves, std::string& err, int device, int main_device) {
     cache_ = &cache;
     src_ = &src;
     res_ = &host_res;
     d_res_ = d_res;
     n_layers_ = n_layers;
     n_expert_ = n_expert;
-    max_swaps_ = max_swaps;
+    max_moves_ = max_moves;
+    dev_ = device;
+    main_ = main_device;
+    free_.assign((size_t) n_layers, {});
+    OnDevice on(dev_, main_);
     if (cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev_, cudaEventDisableTiming) != cudaSuccess) {
         err = "adaptive tier: cannot create the refill stream";
@@ -31,11 +44,22 @@ bool AdaptiveTier::init(ExpertCache& cache, ExpertSource& src, std::vector<int32
     return true;
 }
 
-bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err) {
+int64_t AdaptiveTier::free_slots() const {
+    int64_t n = 0;
+    for (const auto& f : free_) n += (int64_t) f.size();
+    return n;
+}
+
+bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay) {
     const auto t0 = std::chrono::steady_clock::now();
-    if (!pending_.empty()) return true;   // the previous swaps are still in flight
-    struct Swap { float gain; int32_t layer, in, out; };
-    std::vector<Swap> todo;
+    if (!pending_.empty()) return true;   // the previous moves are still in flight
+    if (upper_ != nullptr) {
+        upper_has_.assign((size_t) (n_layers_ * n_expert_), 0);
+        for (size_t i = 0; i < upper_has_.size(); ++i) upper_has_[i] = (*upper_->res_)[i] >= 0;
+        for (const auto& pr : upper_->pending_) upper_has_[(size_t) pr.first] = 1;
+    }
+    struct Move { float gain; int32_t layer, in, out, slot; };   // out < 0: an empty slot
+    std::vector<Move> moves;
     std::vector<std::pair<float, int32_t>> cand, vict;
     std::vector<int32_t>& res = *res_;
     for (int64_t l = 0; l < n_layers_; ++l) {
@@ -43,39 +67,51 @@ bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err) {
         vict.clear();
         const float* u = usage.data() + l * n_expert_;
         const int32_t* r = res.data() + l * n_expert_;
+        const uint8_t* up = upper_ != nullptr ? upper_has_.data() + l * n_expert_ : nullptr;
         for (int32_t e = 0; e < (int32_t) n_expert_; ++e) {
-            if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
-            else vict.emplace_back(u[e], e);
+            if (r[e] < 0) { if (u[e] >= 2.0f && (up == nullptr || !up[e])) cand.emplace_back(u[e], e); }
+            else vict.emplace_back(up != nullptr && up[e] ? -1.0f : u[e], e);   // the upper tier's copy goes first
         }
-        if (cand.empty() || vict.empty()) continue;
+        if (cand.empty()) continue;
         std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-        const size_t nc = std::min(cand.size(), vict.size());
-        std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
+        const std::vector<int32_t>& fr = free_[(size_t) l];
+        size_t c = 0;
+        for (; c < cand.size() && c < fr.size(); ++c)
+            moves.push_back({cand[c].first, (int32_t) l, cand[c].second, -1, fr[fr.size() - 1 - c]});
+        const size_t nv = std::min(cand.size() - c, vict.size());
+        std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nv, vict.end(),
                           [](auto& a, auto& b) { return a.first < b.first; });
-        for (size_t i = 0; i < nc; ++i) {
-            if (cand[i].first < vict[i].first + 1.5f) break;
-            todo.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
+        for (size_t i = 0; i < nv; ++i, ++c) {
+            if (cand[c].first < vict[i].first + 1.5f) break;
+            moves.push_back({cand[c].first - vict[i].first, (int32_t) l, cand[c].second, vict[i].second,
+                             r[vict[i].second]});
         }
     }
-    std::sort(todo.begin(), todo.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
-    if ((int) todo.size() > max_swaps_) todo.resize((size_t) max_swaps_);
+    std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) { return a.gain > b.gain; });
+    if ((int) moves.size() > max_moves_) moves.resize((size_t) max_moves_);
     const auto& lay = strata::kernels::cpu::expert_layout();
-    for (const Swap& s : todo) {
-        const size_t in = (size_t) (s.layer * n_expert_ + s.in), out = (size_t) (s.layer * n_expert_ + s.out);
-        const int32_t slot = res[out];
-        const uint8_t* b = src_->blob(s.layer, s.in);
+    OnDevice on(dev_, main_);
+    for (const Move& m : moves) {
+        const uint8_t* b = src_->blob(m.layer, m.in);
         // asynchronous: the copies run while the MTP drafts; the next window waits for them
-        if (slot < 0 || b == nullptr || cudaMemcpyAsync(cache_->device_slot(slot), b, (size_t) lay.blob_bytes(s.layer),
-                                                        cudaMemcpyHostToDevice, stream_) != cudaSuccess) {
+        if (b == nullptr || cudaMemcpyAsync(cache_->device_slot(m.slot), b, (size_t) lay.blob_bytes(m.layer),
+                                            cudaMemcpyHostToDevice, stream_) != cudaSuccess) {
             err = "adaptive tier: a refill copy failed";
             return false;
         }
-        res[out] = kNotResident;                  // evicted now: the CPU computes it meanwhile
-        pending_.emplace_back((int32_t) in, slot);   // resident once the copy has landed
+        if (m.out >= 0) {
+            res[(size_t) (m.layer * n_expert_ + m.out)] = kNotResident;   // evicted now: a miss meanwhile
+            ++swaps;
+        } else {
+            std::vector<int32_t>& fr = free_[(size_t) m.layer];
+            fr.erase(std::find(fr.begin(), fr.end(), m.slot));
+            ++fills;
+        }
+        pending_.emplace_back((int32_t) (m.layer * n_expert_ + m.in), m.slot);   // resident once the copy has landed
     }
-    if (!todo.empty()) cudaEventRecord(ev_, stream_);
-    for (float& v : usage) v *= 0.7f;
-    swaps += (int64_t) todo.size();
+    if (!moves.empty()) cudaEventRecord(ev_, stream_);
+    if (decay)
+        for (float& v : usage) v *= 0.7f;
     ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return true;
 }

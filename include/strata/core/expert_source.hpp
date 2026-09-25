@@ -31,6 +31,8 @@
 
 namespace strata::core {
 
+class SecondGpu;
+
 /// Where one routed expert's bytes come from.
 ///
 /// Phase 2 has NO cache (`phase-2-correct-engine.md`: hit rate `h = 0`), so the only implementation is a
@@ -215,6 +217,15 @@ struct ExpertDispatch {
     /// Routed (token, expert) entries per (layer, expert) in verify windows, when the caller sizes it: how many of
     /// the entries a cache of the N most-routed experts would serve.
     std::vector<uint32_t> routed;
+    /// A second GPU's expert tier (verify windows) and its residency table (n_layers x n_expert, slot or -1): the
+    /// experts it holds and the first GPU's cache does not are computed there, beside the CPU pool.
+    SecondGpu* gpu2 = nullptr;
+    const int32_t* host_res2 = nullptr;
+    int64_t gpu2_entries = 0;      ///< routed entries the second GPU served
+    int64_t gpu2_skipped = 0;      ///< layers the CPU took the second GPU's share of (it was quicker)
+    bool gpu2_used = false;        ///< this layer's decision
+    uint64_t gpu2_min_bytes = 0;   ///< a layer's miss bytes from which the second GPU takes its share
+    std::string gpu2_err;          ///< `fail` points here when the second GPU failed
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
@@ -311,9 +322,12 @@ private:
 // ordinary (anonymous, resident) memory; the engine reads `MapViewOfFile`.  That is the whole difference, and it
 // is why this class exists.
 //
-// It reads `experts.bin` into a `PinnedArena` once at startup, so the expert stream comes from anonymous memory
-// the OS has no cheaper reason to evict.  `PinnedArena` also tries `cudaHostRegister`, which the GPU needs for
-// Phase 3's cache fills and the CPU/PCIe miss split - but registration is best-effort and reported, not assumed.
+// It reads the experts once at startup into anonymous memory the OS has no cheaper reason to evict: one pinned
+// block per layer (cudaHostAlloc, portable and mapped), which the GPUs need for cache fills, the prompt path and the
+// PCIe share of the misses.  Registering one reserved range instead (cudaHostRegister) is limited to ~42 GiB on
+// Windows once a second GPU's context exists, and past that limit every CUDA allocation fails; allocated blocks reach
+// ~75 GiB with one or two GPUs.  The layers past the pinning budget share one locked, pageable range; the note says
+// how many layers were pinned.
 class ArenaExpertSource : public ExpertSource {
 public:
     ArenaExpertSource() = default;
@@ -329,7 +343,7 @@ public:
     void set_gguf(const std::vector<std::string>& shards) { gguf_ = shards; }
     void close();
 
-    bool mapped() const { return base_ != nullptr; }
+    bool mapped() const { return !layer_base_.empty(); }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     int64_t reads() const { return reads_; }
@@ -342,16 +356,16 @@ public:
     double load_gib_per_second() const { return gib_per_s_; }
 
 private:
-    void* arena_ = nullptr;          ///< the PinnedArena, owned
-    std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)
-    uint64_t slice_bytes_ = 0;
-    const uint8_t* base_ = nullptr;
+    std::vector<uint8_t*> layer_base_;       ///< each layer's experts: a pinned block, or a part of `tail_`
+    std::vector<const uint8_t*> layer_dev_;  ///< the device alias of each pinned layer (null for the others)
+    std::vector<uint8_t*> blocks_;           ///< the pinned blocks, owned (layers [0, blocks_.size()))
+    void* tail_ = nullptr;                   ///< the layers past the pinning budget, locked resident, owned
+    uint64_t tail_bytes_ = 0;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;
     int64_t reads_ = 0;
     std::string note_;
     double gib_per_s_ = 0.0;
-    uint64_t pinned_bytes_ = 0;
     std::vector<std::string> gguf_;
 };
 
