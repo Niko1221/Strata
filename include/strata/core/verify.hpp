@@ -29,6 +29,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -77,6 +78,10 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// Diagnostics: GPU timestamps between the stages of every layer (`--window-profile`; each costs a kernel
+    /// launch, ~2 us).  Set before the first `run`; `print_profile` writes the per-stage table to stdout.
+    void set_profile(bool on) { profile_ = on; }
+    void print_profile() const;
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
@@ -155,6 +160,15 @@ private:
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
+
+    // --window-profile: stamps [window size][layer, then one row for the window][stage]
+    static constexpr int kStamps = 13;
+    bool profile_ = false;
+    unsigned long long* stamps_ = nullptr;
+    std::vector<unsigned long long> h_stamps_;
+    std::vector<double> prof_ns_;                             // [mixer kind (GDN, QSA)][stage], summed
+    double prof_window_ns_[4] = {};                           // inputs + embeddings, head, whole window, stamp gap
+    int64_t prof_windows_ = 0, prof_layers_[2] = {};
 };
 
 }  // namespace strata::core

@@ -432,6 +432,19 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     check("wait_flag_ge");
 }
 
+namespace {
+__global__ void gpu_stamp_kernel(unsigned long long* dst) {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    *dst = t;
+}
+}  // namespace
+
+void gpu_stamp(unsigned long long* dst, void* stream) {
+    gpu_stamp_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(dst);
+    check("gpu_stamp");
+}
+
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,
                           int n_tok, int64_t n, int code_bits, int code_bias, int group_elems, uint64_t row_codes,
                           uint64_t row_groups, float* out, void* stream) {

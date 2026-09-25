@@ -97,6 +97,7 @@ Verifier::~Verifier() {
     if (cs_) cudaStreamDestroy(cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (arena_) cudaFree(arena_);
+    if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_};
     for (void* h : hosts)
@@ -278,6 +279,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int G = (split_ && T >= 2) ? 2 : 1;
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     groups_[T] = G;
+    // --window-profile: row l < n_layers holds layer l's stages, row n_layers the window's own stamps
+    auto stamp = [&](int64_t row, int i) {
+        if (stamps_ != nullptr && G == 1)
+            gpu_stamp(stamps_ + ((size_t) T * (size_t) (g.n_layers + 1) + (size_t) row) * kStamps + i, cs);
+    };
+    stamp(g.n_layers, 0);
 
     // ---- the window's inputs, from mapped staging
     copy_i32_from_mapped(tok_, m_tok_, T, cs);
@@ -318,6 +325,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
+        stamp(l, 0);
         const LayerView v(wt, l);
         const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
         const WeightRef *wn[2], *wd[2], *wu[2], *wi[2];
@@ -361,6 +369,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs);
         };
         gr_read_group(0, pending, inj2_, inj_);
+        stamp(l, 1);
         float* xm = mixed_ + tb * N;
         try {
             if (!is_qsa_layer(g, l)) {
@@ -474,14 +483,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
             return false;
         }
+        stamp(l, 2);
         gr_read_group(1, true, inj_, inj2_);
+        stamp(l, 3);
         for (int t = tb; t < te; ++t) {
             MoEBuffers mb = ss.moe;
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        stamp(l, 4);
         doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                          m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
+        stamp(l, 5);
         {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
                             *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
@@ -507,6 +520,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
         else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+        stamp(l, 6);
         return true;
     };
 
@@ -515,6 +529,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
         const uint32_t ring = (uint32_t) (l * G + grp + 1);
         wait_flag_ge(m_flagA_, ring, cs);                      // the pool published this group's GPU plan
+        stamp(l, 7);
         const int64_t cap = (int64_t) n * K, capx = (int64_t) max_t_ * K;
         int32_t* pl = plan_ + (size_t) grp * (size_t) (plan_i32_ + 16);
         copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
@@ -542,6 +557,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         };
         grouped(p_ptr, p_start, p_counts);
+        stamp(l, 8);
         wait_flag_ge(m_flagB_, ring, cs);                      // the PCIe share is in staging (DMA) or mapped
         if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
             const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
@@ -550,8 +566,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
         }
         grouped(p_ptr2, p_start2, p_counts + 2);
+        stamp(l, 9);
         wait_flag_ge(m_flag_, ring, cs);                       // the CPU's share is in the mapped rows
+        stamp(l, 10);
         copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+        stamp(l, 11);
         moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, cap, N, cs);
         for (int t = tb; t < te; ++t) {
             MoEBuffers mb = ss.moe;
@@ -560,9 +579,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (l == g.n_layers - 1)
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+        stamp(l, 12);
         return true;
     };
 
+    stamp(g.n_layers, 1);
     for (int grp = 0; grp < G; ++grp)
         if (!pre(0, grp)) return false;
     for (int64_t l = 0; l < g.n_layers; ++l)
@@ -570,6 +591,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (!post(l, grp)) return false;
             if (l + 1 < g.n_layers && !pre(l + 1, grp)) return false;
         }
+    stamp(g.n_layers, 2);
 
     // ---- the head, T columns, and the argmax of each
     {
@@ -600,11 +622,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         sp.temperature = 0.0f;
         sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
     }
+    stamp(g.n_layers, 3);
+    stamp(g.n_layers, 4);   // right after the last: one stamp's own cost
     return true;
 }
 
 bool Verifier::capture(int T, std::string& err) {
     if (exec_[T] != nullptr) return true;
+    if (profile_ && stamps_ == nullptr &&
+        cudaMalloc(&stamps_, (size_t) (strata::kernels::kVerifyMaxT + 1) * (size_t) (g_->n_layers + 1) * kStamps *
+                                 sizeof(unsigned long long)) != cudaSuccess) {
+        err = "verify: the profile's stamp buffer does not fit";
+        return false;
+    }
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin capture failed";
         return false;
@@ -795,9 +825,50 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
     cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    if (stamps_ != nullptr && G == 1) {
+        const int64_t NL = g.n_layers;
+        h_stamps_.resize((size_t) (NL + 1) * kStamps);
+        cudaMemcpy(h_stamps_.data(), stamps_ + (size_t) T * (size_t) (NL + 1) * kStamps,
+                   h_stamps_.size() * sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        if (prof_ns_.empty()) prof_ns_.assign(2 * kStamps, 0.0);
+        const unsigned long long* w = h_stamps_.data() + (size_t) NL * kStamps;
+        for (int64_t l = 0; l < NL; ++l) {
+            const unsigned long long* st = h_stamps_.data() + (size_t) l * kStamps;
+            const int kind = is_qsa_layer(g, l) ? 1 : 0;
+            const unsigned long long before = l == 0 ? w[1] : (st - kStamps)[kStamps - 1];
+            prof_ns_[(size_t) kind * kStamps] += (double) (st[0] - before);
+            for (int i = 1; i < kStamps; ++i) prof_ns_[(size_t) kind * kStamps + i] += (double) (st[i] - st[i - 1]);
+            ++prof_layers_[kind];
+        }
+        prof_window_ns_[0] += (double) (w[1] - w[0]);
+        prof_window_ns_[1] += (double) (w[3] - w[2]);
+        prof_window_ns_[2] += (double) (w[3] - w[0]);
+        prof_window_ns_[3] += (double) (w[4] - w[3]);
+        ++prof_windows_;
+    }
     VDBG("window done\n");
     ++windows;
     return true;
+}
+
+void Verifier::print_profile() const {
+    if (prof_windows_ == 0) return;
+    static const char* const names[kStamps] = {"stamp gap",    "HC read, mixer", "mixer",         "HC read, FFN",
+                                               "router",       "doorbell",       "shared expert", "wait for plan",
+                                               "VRAM experts", "PCIe experts",   "wait for CPU",  "CPU rows copy",
+                                               "combine"};
+    const double nw = (double) prof_windows_;
+    std::printf("%-24s GPU time over %lld windows, ms per window: inputs %.3f, head %.3f, whole window %.3f; "
+                "one stamp %.2f us (each stage below includes one)\n", "window profile", (long long) prof_windows_,
+                prof_window_ns_[0] / nw / 1e6, prof_window_ns_[1] / nw / 1e6, prof_window_ns_[2] / nw / 1e6,
+                prof_window_ns_[3] / nw / 1e3);
+    std::printf("  %-22s %12s %12s %14s\n", "stage", "GDN us/layer", "QSA us/layer", "ms per window");
+    for (int i = 0; i < kStamps; ++i) {
+        const double a = prof_ns_[(size_t) i], b = prof_ns_[(size_t) kStamps + i];
+        std::printf("  %-22s %12.1f %12.1f %14.3f\n", names[i],
+                    prof_layers_[0] ? a / (double) prof_layers_[0] / 1e3 : 0.0,
+                    prof_layers_[1] ? b / (double) prof_layers_[1] / 1e3 : 0.0, (a + b) / nw / 1e6);
+    }
 }
 
 void Verifier::set_plan_slot(int grp) {
