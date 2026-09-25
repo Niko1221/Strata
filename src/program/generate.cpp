@@ -15,6 +15,7 @@
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
 #include "strata/artifact/gguf_split.hpp"
+#include "strata/core/adaptive_tier.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
@@ -58,6 +59,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <set>
@@ -1776,6 +1778,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
                      (long long) resident);
     }
+    // plan v0.3 P6: the VRAM tier follows the conversation in both decode loops (--serve and the speculative loop):
+    // swaps every --adapt-every rounds on the adapt thread, admitted once their copies have landed
+    strata::core::AdaptiveTier tier;
+    if (!host_res.empty() && o.adapt_every > 0 && o.adapt_swaps > 0 &&
+        !tier.init(xcache, *srcp, host_res, d_res, g.n_layers, g.n_expert, o.adapt_swaps, err)) {
+        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        return 1;
+    }
+    std::string adapt_err;
+    auto adapt = [&]() -> bool { return tier.adapt(drive.d.usage, adapt_err); };
+    auto apply_pending = [&](bool wait) { tier.apply_pending(wait); };
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
         (hit_fn == nullptr || thits.on()) && !native_pack) {
         if (!strata::core::session_capture_token(wt, g, ss, d_parts, loop_scratch.y_miss, loop_scratch.parts_bytes,
@@ -1867,66 +1880,6 @@ int main(int argc, char** argv) {
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
-        cudaStream_t adapt_stream = nullptr;
-        if (cudaStreamCreateWithFlags(&adapt_stream, cudaStreamNonBlocking) != cudaSuccess) {
-            std::fprintf(stderr, "strata serve: cannot create the refill stream\n");
-            return 1;
-        }
-        // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
-        std::vector<std::pair<int32_t, int32_t>> pending;
-        cudaEvent_t adapt_ev = nullptr;
-        cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
-        auto apply_pending = [&](bool wait) {
-            if (pending.empty()) return;
-            if (wait) cudaEventSynchronize(adapt_ev);
-            else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
-            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
-            pending.clear();
-            if (d_res != nullptr)
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
-        };
-        // the VRAM tier follows the conversation (the same rule as the speculative loop below)
-        auto adapt = [&]() -> bool {
-            if (!pending.empty()) return true;   // the previous swaps are still in flight
-            struct Swap { float gain; int32_t layer, in, out; };
-            std::vector<Swap> swaps;
-            std::vector<std::pair<float, int32_t>> cand, vict;
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                cand.clear();
-                vict.clear();
-                const float* u = drive.d.usage.data() + l * g.n_expert;
-                const int32_t* r = host_res.data() + l * g.n_expert;
-                for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
-                }
-                if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                const size_t nc = std::min(cand.size(), vict.size());
-                std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { return a.first < b.first; });
-                for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + 1.5f) break;
-                    swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-                }
-            }
-            std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
-            if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
-            for (const Swap& s : swaps) {
-                const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
-                const int32_t slot = host_res[out];
-                const uint8_t* b = srcp->blob(s.layer, s.in);
-                if (slot < 0 || b == nullptr ||
-                    cudaMemcpyAsync(xcache.device_slot(slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                    cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess)
-                    return false;
-                host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
-                pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
-            }
-            if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
-            for (float& v : drive.d.usage) v *= 0.7f;
-            return true;
-        };
         // ---- the prompt cache (strata/core/prompt_cache.hpp)
         std::vector<strata::core::QsaState*> kv_states;
         for (int64_t i = 0; i < g.n_qsa_layers(); ++i) kv_states.push_back(&ss.qsa_states[i]);
@@ -2590,76 +2543,6 @@ int main(int argc, char** argv) {
         if (drive.d.pcie_num > 256) drive.d.pcie_num = 256;
         const int64_t pcie0 = drive.d.pcie_experts;
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
-        int64_t swaps_total = 0;
-        double ms_adapt = 0;
-        cudaStream_t adapt_stream = nullptr;
-        if (!drive.d.usage.empty() && cudaStreamCreateWithFlags(&adapt_stream, cudaStreamNonBlocking) != cudaSuccess) {
-            std::fprintf(stderr, "strata generate: cannot create the refill stream\n");
-            return 1;
-        }
-        // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
-        std::vector<std::pair<int32_t, int32_t>> pending;
-        cudaEvent_t adapt_ev = nullptr;
-        cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
-        auto apply_pending = [&](bool wait) {
-            if (pending.empty()) return;
-            if (wait) cudaEventSynchronize(adapt_ev);
-            else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
-            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
-            pending.clear();
-            if (d_res != nullptr)
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
-        };
-        // Plan v0.3 P6: the VRAM tier follows the conversation.  Candidates are missing experts routed at least
-        // twice (decayed); each is paired with its layer's least-routed resident expert and swapped when it was
-        // routed clearly more often.  Copies run between rounds, when the GPU is idle.
-        auto adapt = [&]() -> bool {
-            const Clock::time_point ta = Clock::now();
-            if (!pending.empty()) return true;   // the previous swaps are still in flight
-            struct Swap { float gain; int32_t layer, in, out; };
-            std::vector<Swap> swaps;
-            std::vector<std::pair<float, int32_t>> cand, vict;
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                cand.clear();
-                vict.clear();
-                const float* u = drive.d.usage.data() + l * g.n_expert;
-                const int32_t* r = host_res.data() + l * g.n_expert;
-                for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
-                }
-                if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                const size_t nc = std::min(cand.size(), vict.size());
-                std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { return a.first < b.first; });
-                for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + 1.5f) break;
-                    swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-                }
-            }
-            std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
-            if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
-            for (const Swap& s : swaps) {
-                const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
-                const int32_t slot = host_res[out];
-                const uint8_t* b = srcp->blob(s.layer, s.in);
-                // asynchronous: the copies run while the MTP drafts; the next window waits for them
-                if (slot < 0 || b == nullptr ||
-                    cudaMemcpyAsync(xcache.device_slot(slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                    cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess) {
-                    std::fprintf(stderr, "strata generate: an adaptive refill failed\n");
-                    return false;
-                }
-                host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
-                pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
-            }
-            if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
-            for (float& v : drive.d.usage) v *= 0.7f;
-            swaps_total += (int64_t) swaps.size();
-            ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
-            return true;
-        };
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
         std::vector<int32_t> drafts((size_t) o.spec, 0);
@@ -2679,6 +2562,7 @@ int main(int argc, char** argv) {
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        if (o.stats) drive.d.routed.assign((size_t) (g.n_layers * g.n_expert), 0);
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = o.spec;
@@ -2755,7 +2639,10 @@ int main(int argc, char** argv) {
             const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new ||
                                  mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
             if (adapt_thr.joinable()) adapt_thr.join();
-            if (!adapt_ok) return 1;
+            if (!adapt_ok) {
+                std::fprintf(stderr, "strata generate: %s\n", adapt_err.c_str());
+                return 1;
+            }
             if (!drafted) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
@@ -2801,7 +2688,22 @@ int main(int argc, char** argv) {
                         drive.d.ms_run / rounds);
         if (rounds > 0 && !drive.d.usage.empty())
             std::printf("%-24s %lld experts swapped into the VRAM tier (every %d rounds, %.3f ms/round)\n", "adaptive tier",
-                        (long long) swaps_total, o.adapt_every, ms_adapt / rounds);
+                        (long long) tier.swaps, o.adapt_every, tier.ms / rounds);
+        if (rounds > 0 && !drive.d.routed.empty()) {
+            // the share of the routed entries the N most-routed experts of this run take
+            std::vector<uint32_t> c = drive.d.routed;
+            std::sort(c.begin(), c.end(), std::greater<uint32_t>());
+            double total = 0;
+            for (uint32_t v : c) total += v;
+            std::printf("%-24s", "routing concentration");
+            double acc = 0;
+            size_t at = 0;
+            for (size_t n : {1000, 2000, 4000, 6000, 8000, 10000, 12000, 16000, 20000}) {
+                for (; at < n && at < c.size(); ++at) acc += c[at];
+                std::printf(" %zu:%.3f", n, total > 0 ? acc / total : 0.0);
+            }
+            std::printf("  (top-N experts' share of %.0f routed entries)\n", total);
+        }
         if (rounds > 0 && drive.d.pcie_num > 0)
             std::printf("%-24s %.2f distinct experts per layer read over PCIe (share %d/256 of the misses)\n",
                         "pcie experts", (double) (drive.d.pcie_experts - pcie0) / (double) (rounds * g.n_layers),

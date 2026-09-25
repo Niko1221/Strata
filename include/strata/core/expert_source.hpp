@@ -212,6 +212,9 @@ struct ExpertDispatch {
     std::vector<float> usage;
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
+    /// Routed (token, expert) entries per (layer, expert) in verify windows, when the caller sizes it: how many of
+    /// the entries a cache of the N most-routed experts would serve.
+    std::vector<uint32_t> routed;
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
