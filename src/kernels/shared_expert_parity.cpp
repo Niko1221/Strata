@@ -436,7 +436,7 @@ int main(int argc, char** argv) {
             }
             return y;
         };
-        const std::vector<float> want = ref(true, false);
+        const std::vector<float> want_mc = ref(true, false);
 
         float *d_p = nullptr, *d_w = nullptr, *d_s = nullptr, *d_y = nullptr;
         check(cudaMalloc(&d_p, parts.size() * 4), "mc p");
@@ -447,12 +447,12 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(d_w, w.data(), w.size() * 4, cudaMemcpyHostToDevice), "mc cw");
         check(cudaMemcpy(d_s, shared.data(), shared.size() * 4, cudaMemcpyHostToDevice), "mc cs");
         strata::kernels::moe_combine(d_p, d_w, d_s, d_y, n_embd2, k2, nullptr);
-        std::vector<float> got((size_t) n_embd2);
-        check(cudaMemcpy(got.data(), d_y, got.size() * 4, cudaMemcpyDeviceToHost), "mc cy");
+        std::vector<float> got_mc((size_t) n_embd2);
+        check(cudaMemcpy(got_mc.data(), d_y, got_mc.size() * 4, cudaMemcpyDeviceToHost), "mc cy");
 
         for (const auto& trap : {std::make_pair(false, false), std::make_pair(true, true)}) {
             const std::vector<float> wrong = ref(trap.first, trap.second);
-            const double rel = rel_l1(want, wrong);
+            const double rel = rel_l1(want_mc, wrong);
             const char* what = (!trap.first && !trap.second) ? "routed sum left UNWEIGHTED is observable"
                               : "shared output router-WEIGHTED is observable";
             const bool visible = rel > 0.05;
@@ -460,15 +460,15 @@ int main(int argc, char** argv) {
             if (!visible) ++bad;
         }
 
-        const double rel_k = rel_l1(want, got);
+        const double rel_k = rel_l1(want_mc, got_mc);
         std::printf("  %-42s rel %.3e\n", "moe_combine vs reference", rel_k);
         // Both sides accumulate in double over the same k terms, so this is order-only.
         if (!(rel_k <= 1e-6)) { std::printf("    *** over 1e-6 ***\n"); ++bad; }
 
         // a null `shared` must mean "no shared expert", not "add nothing but leave it undefined"
         strata::kernels::moe_combine(d_p, d_w, nullptr, d_y, n_embd2, k2, nullptr);
-        check(cudaMemcpy(got.data(), d_y, got.size() * 4, cudaMemcpyDeviceToHost), "mc cy2");
-        const double rel_no_shared = rel_l1(want, got);
+        check(cudaMemcpy(got_mc.data(), d_y, got_mc.size() * 4, cudaMemcpyDeviceToHost), "mc cy2");
+        const double rel_no_shared = rel_l1(want_mc, got_mc);
         const bool differs = rel_no_shared > 0.05;
         std::printf("  %-42s %s (%.2f%% apart - null shared really omits it)\n",
                     "a null `shared` is observable", differs ? "yes" : "*** NO ***", rel_no_shared * 100);

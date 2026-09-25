@@ -68,11 +68,6 @@ __global__ void native_swiglu_kernel(const float* gate, const float* up, float* 
     out[i] = __fdividef(gate[i], 1.0f + __expf(-gate[i])) * up[i];
 }
 
-__global__ void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = f16_from_f32(in[i]);
-}
-
 // The per-token scalar gate: sigmoid(dot(x, w)) with w = `ffn_gate_inp_shexp` (n_embd,).
 //
 // **ONE THREAD WAS THE LARGEST SINGLE KERNEL IN THE MODEL, AND THE COMMENT DEFENDING IT SAID WHY IT SHOULD

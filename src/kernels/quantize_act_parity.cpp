@@ -318,10 +318,10 @@ int main(int argc, char** argv) {
             {0.0f, 0x0000u, "0.0"},
         };
         int fp16_bad = 0;
-        for (const F16Case& c : cases) {
-            const uint16_t got = strata::kernels::f16_from_f32(c.in);
-            if (got != c.want) {
-                std::printf("    *** %s: want 0x%04X got 0x%04X\n", c.what, c.want, got);
+        for (const F16Case& fc : cases) {
+            const uint16_t got = strata::kernels::f16_from_f32(fc.in);
+            if (got != fc.want) {
+                std::printf("    *** %s: want 0x%04X got 0x%04X\n", fc.what, fc.want, got);
                 ++fp16_bad;
             }
         }
@@ -388,16 +388,16 @@ int main(int argc, char** argv) {
         std::vector<float> b127, b128;
         reference_q8_K(ka.data(), NK, r127, b127, -127.0f);
         reference_q8_K(ka.data(), NK, r128, b128, -128.0f);
-        double d = 0, m = 0;
+        double diff = 0, m = 0;
         long long qdiffer = 0;
-        for (long long i = 0; i < NK; ++i) { d += std::fabs(b127[(size_t) i] - b128[(size_t) i]); m += std::fabs(b127[(size_t) i]); }
+        for (long long i = 0; i < NK; ++i) { diff += std::fabs(b127[(size_t) i] - b128[(size_t) i]); m += std::fabs(b127[(size_t) i]); }
         for (size_t i = 4; i < r127.size(); ++i) if (r127[i] != r128[i]) ++qdiffer;
         // The expected size of the effect is exactly (1 - 127/128) = 0.78% of the magnitude, so the floor is
         // 0.5% - below what the rival constant must produce and far above any noise.  The byte count is the
         // blunter evidence and is reported alongside it: 172,017 bytes differ, i.e. a third of the quants.
         std::printf("  %-26s %-4s (%.3f%% of magnitude, %lld bytes differ)\n", "-127 vs -128 scale observable",
-                    d / m > 0.005 ? "yes" : "*** NO ***", 100.0 * d / m, qdiffer);
-        if (!(d / m > 0.005)) ++bad_k;
+                    diff / m > 0.005 ? "yes" : "*** NO ***", 100.0 * diff / m, qdiffer);
+        if (!(diff / m > 0.005)) ++bad_k;
     }
 
     std::printf("\nquantize_act: %d failures over 5 Q8_0 + 4 Q8_K distributions\n", bad + bad_k);

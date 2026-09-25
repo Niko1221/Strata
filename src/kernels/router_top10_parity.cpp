@@ -150,11 +150,11 @@ int main(int argc, char** argv) {
     // distribution).  Here k/n = 10/512 = 0.01953125, which is 320x the 2**-14 = 6.1035e-05 clamp, so no input
     // whatsoever can make this model's renormalisation clamp - not an extreme one, not an adversarial one.
     // Asserting the bound is worth more than a test that cannot reach it.
-    const double min_possible = (double) K / (double) NE;
+    constexpr double min_possible = (double) K / (double) NE;
     std::printf("  %-26s top-%d sum >= k/n = %.5f, clamp is %.3e -> margin %.0fx  %s\n", "clamp reachability",
                 K, min_possible, RENORM_CLAMP, min_possible / RENORM_CLAMP,
                 min_possible > RENORM_CLAMP ? "(CLAMP IS UNREACHABLE, asserted)" : "*** REACHABLE ***");
-    if (min_possible <= RENORM_CLAMP) {
+    if constexpr (min_possible <= RENORM_CLAMP) {
         std::fprintf(stderr, "the clamp CAN trigger, so it needs a test\n");
         ++bad;
     }

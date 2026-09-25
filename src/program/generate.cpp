@@ -1809,7 +1809,7 @@ int main(int argc, char** argv) {
                                  "--expert-cache\n");
             return 2;
         }
-        strata::prefill::Prefill sp;
+        strata::prefill::Prefill prefill;
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;
@@ -1829,7 +1829,7 @@ int main(int argc, char** argv) {
                                                      : (uint64_t) k * (uint64_t) blob;
             }
         }
-        if (!sp.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes)) {
+        if (!prefill.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
@@ -1847,7 +1847,7 @@ int main(int argc, char** argv) {
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         std::vector<int64_t> cur;
-        sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
+        prefill.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
             for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
             return mtp.prefill(R_rows, nxt.data(), T, p0, e);
@@ -2033,7 +2033,7 @@ int main(int argc, char** argv) {
                 }
                 mrope_identity = !geni;
             }
-            sp.embd_rows = geni ? row_ptr.data() : nullptr;
+            prefill.embd_rows = geni ? row_ptr.data() : nullptr;
             if (n + max_new + 8 > o.max_context) {
                 std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
                             (long long) max_new, (long long) o.max_context);
@@ -2086,7 +2086,7 @@ int main(int argc, char** argv) {
                 }
                 for (int64_t a0 = reuse; a0 < batched_end;) {
                     const int64_t b0 = track ? std::min(batched_end, a0 + step) : batched_end;
-                    if (!sp.run(ids.data() + a0, b0 - a0, a0, err)) { report(err); return 1; }
+                    if (!prefill.run(ids.data() + a0, b0 - a0, a0, err)) { report(err); return 1; }
                     if (track) {
                         pcache.set(a0, ids.data() + a0, b0 - a0);
                         pcache.checkpoint(b0);

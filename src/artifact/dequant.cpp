@@ -38,7 +38,6 @@ int main(int argc, char** argv) {
                 // implementation on identical bytes. A single implementation being self-consistent
                 // proves little - two disagreeing is what finds bugs (round 67).
                 double sum = 0, sumabs = 0;
-                const uint8_t* base = g.tensor_data(t);
                 for (uint64_t b = 0; b < nblocks && b < 64; ++b) {
                     float out[64];
                     strata::dequantize_q2_0(base + b * 18, out);

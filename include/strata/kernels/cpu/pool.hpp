@@ -72,6 +72,10 @@ std::vector<int> physical_cores(bool skip_first);
 long long pin_current_thread(int core);
 void restore_thread_affinity(long long previous);
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4324)   // the alignas(64) members pad the class on purpose (one cache line each)
+#endif
 class ExpertPool {
 public:
     /// `n_workers <= 0` means "every physical core except the first".  Workers are pinned to physical cores
@@ -191,5 +195,8 @@ private:
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 }  // namespace strata::kernels::cpu
