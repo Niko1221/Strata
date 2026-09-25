@@ -94,7 +94,7 @@ Pack a model once (seconds: the tokenizer and the float tensors; the experts are
 
 and start it with `--pack packs/<name> --native <dir>/<model>-00001-of-0000N.gguf` plus the usual flags (`--spec`,
 `--mtp`, `--prefill`, ...). The other shards, and the one holding the n-gram table, are found by name.
-UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 529-594 tok/s, generation 49-57 tok/s.
+UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 570-603 tok/s, generation 49-59 tok/s.
 
 ## Before you start
 

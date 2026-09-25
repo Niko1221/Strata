@@ -239,11 +239,13 @@ struct Options {
     int prompt_cache = 16;
     /// Host memory for sequences the live one replaced (their K/V cells), in MiB.
     int64_t cache_ram_mib = 16384;
-    /// Checkpoint interval inside long prompts (positions that are multiples of it).
+    /// Checkpoint interval inside long prompts, in whole prompt chunks (counted from the request's first new cell).
     int64_t cache_every = 16384;
-    /// Prompt remainders of up to this many tokens go through verify windows instead of the batched prompt path,
-    /// which lends and refills expert-cache slots on every call.
-    int64_t feed_max = 256;
+    /// Prompt parts of up to this many tokens go through verify windows instead of the batched prompt path: a new
+    /// part that short, and a last prompt chunk that short.  A batched call costs a fixed ~5-7 s on the 3090 (it
+    /// lends and refills expert-cache slots and streams every expert its tokens use); verify windows cost 15-22 ms
+    /// per token.  They break even at ~480 (IQ3_XXS) and ~530 tokens (UD-Q4_K_XL; bench/feed_test.py).
+    int64_t feed_max = 512;
     int adapt_swaps = 96;
 };
 
@@ -307,11 +309,12 @@ void usage() {
                  "  --prompt-cache N     --serve: keep N checkpoints of the sequence state in host memory and\n"
                  "                       continue each request from the longest cached prefix (default 16;\n"
                  "                       0 = every request starts from an empty sequence)\n"
-                 "  --cache-every N      checkpoint interval inside long prompts (default 16384)\n"
+                 "  --cache-every N      checkpoint interval inside long prompts, rounded down to whole --prefill\n"
+                 "                       chunks (default 16384)\n"
                  "  --cache-ram MIB      --serve: host memory for the K/V cells of sequences a request replaced,\n"
                  "                       so switching back to them continues where they were (default 16384)\n"
-                 "  --feed-max N         --serve: prompt remainders up to N tokens run through verify windows\n"
-                 "                       instead of the batched prompt path (default 256)\n"
+                 "  --feed-max N         --serve: new prompt parts and last prompt chunks of up to N tokens run\n"
+                 "                       through verify windows instead of the batched prompt path (default 512)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
@@ -2055,13 +2058,21 @@ int main(int argc, char** argv) {
             // ---- the rest of the prompt, [reuse, n - 1).  A turn usually shares everything before its prompt's
             // last <|im_start|> with the next one (chat templates re-render the answer, e.g. without its
             // reasoning), so that position gets a checkpoint, and so do the prompt's end (a regenerated answer)
-            // and every `cache_every` cells of a long prompt.  A short remainder goes through verify windows.
+            // and the end of every `step` cells of a long prompt.  Short parts go through verify windows.
             int64_t q = 0;
             if (track)
                 for (int64_t i = n - 2; i > reuse; --i)
                     if (ids[(size_t) i] == kImStart) { q = i; break; }
             int64_t batched_end = reuse;   // [reuse, batched_end) through the batched prompt path
-            if (n - 1 - reuse > o.feed_max) batched_end = (q > reuse && n - 1 - q <= o.feed_max) ? q : n - 1;
+            if (geni) batched_end = n - 1;   // image rows reach the batched path only
+            else if (n - 1 - reuse > o.feed_max) batched_end = (q > reuse && n - 1 - q <= o.feed_max) ? q : n - 1;
+            // Every batched chunk streams each expert its tokens use, however few tokens it holds, so a short last
+            // chunk goes through verify windows too.  Chunks and checkpoint segments start at `reuse`.
+            const int64_t step = std::max<int64_t>(1, o.cache_every / o.prefill_chunk) * o.prefill_chunk;
+            if (!geni && batched_end > reuse) {
+                const int64_t last = reuse + (batched_end - 1 - reuse) / o.prefill_chunk * o.prefill_chunk;
+                if (last > reuse && batched_end - last <= o.feed_max) batched_end = last;
+            }
             if (batched_end > reuse) {
                 std::vector<std::pair<int32_t, int32_t>> lent_now;
                 apply_pending(true);
@@ -2074,12 +2085,11 @@ int main(int argc, char** argv) {
                     cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
                 }
                 for (int64_t a0 = reuse; a0 < batched_end;) {
-                    const int64_t b0 = track ? std::min(batched_end, (a0 / o.cache_every + 1) * o.cache_every)
-                                             : batched_end;
+                    const int64_t b0 = track ? std::min(batched_end, a0 + step) : batched_end;
                     if (!sp.run(ids.data() + a0, b0 - a0, a0, err)) { report(err); return 1; }
                     if (track) {
                         pcache.set(a0, ids.data() + a0, b0 - a0);
-                        if (b0 % o.cache_every == 0 || b0 == q || b0 == n - 1) pcache.checkpoint(b0);
+                        pcache.checkpoint(b0);
                     }
                     a0 = b0;
                 }
