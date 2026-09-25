@@ -91,8 +91,7 @@ struct Prefill::Impl {
     int32_t* sel_ids = nullptr;
     float* sel_scores = nullptr;          // [sel_batch, max_blocks]
     int64_t sel_batch = 256, max_blocks = 0;
-    float* attn_scratch = nullptr;
-    int64_t attn_batch = 32, cap = 0;
+    int64_t cap = 0;
     // MoE
     float *logits = nullptr, *w = nullptr, *GU = nullptr, *Dm = nullptr, *sgate = nullptr, *sup = nullptr,
           *shared = nullptr, *sg = nullptr;
@@ -172,7 +171,6 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.sel_ids = o.take<int32_t>(T * (size_t) m.cap, ok);
     m.max_blocks = ss.qsa_states[0].max_cells / s.idx_block + 2;
     m.sel_scores = o.take<float>((size_t) m.sel_batch * (size_t) m.max_blocks, ok);
-    m.attn_scratch = o.take<float>((size_t) m.attn_batch * strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s), ok);
     m.logits = o.take<float>(T * NE, ok); m.w = o.take<float>(T * K, ok); m.ids = o.take<int32_t>(T * K, ok);
     m.slot_dev = o.take<int32_t>(T * K, ok); m.src_dev = o.take<int32_t>(T * K, ok);
     m.Xs = o.take<uint16_t>(T * K * N, ok); m.GU = o.take<float>(T * K * 1280, ok);
@@ -213,7 +211,6 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     o.take<int32_t>(T * (size_t) cap, ok);
     const int64_t max_blocks = ss.qsa_states[0].max_cells / s.idx_block + 2;
     f(256 * (size_t) max_blocks);
-    f(32 * strata::kernels::qsa_decode_attn_scratch_floats(cap, s));
     f(T * NE); f(T * K); o.take<int32_t>(T * K, ok); o.take<int32_t>(T * K, ok); o.take<int32_t>(T * K, ok);
     o.take<uint16_t>(T * K * N, ok); f(T * K * 1280); o.take<uint16_t>(T * K * 640, ok); f(T * K * N);
     f(T * 640); f(T * 640); o.take<uint16_t>(T * 640, ok); f(T * N); f(T);
@@ -402,8 +399,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
                         const int64_t nb = std::min(m.sel_batch, T - t0);
                         const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
+                        // the batch's last query has completed the most blocks
+                        const int64_t grid_blocks =
+                            m.steps_host[(size_t) (t0 + nb - 1) * strata::kernels::kStepCount + strata::kernels::kStepNBid] + 1;
                         strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
-                                                          m.max_blocks, s, m.sel_scores, m.cs);
+                                                          m.max_blocks, s, m.sel_scores, m.cs, grid_blocks);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs);
                     }
@@ -412,12 +412,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
                     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
                     mark(kPsQsaAttn);
-                    for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
-                        const int64_t nb = std::min(m.attn_batch, T - t0);
-                        strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
-                                                               m.steps_dev + t0 * strata::kernels::kStepCount, m.cap, s,
-                                                               m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
-                    }
+                    strata::kernels::qsa_prefill_attn(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.attn, T, m.cs);
                     mark(kPsQsaOut);
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;

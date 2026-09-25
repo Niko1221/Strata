@@ -29,24 +29,29 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_kernel(const fl
     const int64_t qi = blockIdx.y;
     const int32_t* st = steps + qi * kStepCount;
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid];
-    const int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5);
-    if (b > n_bid || b >= max_blocks) return;
+    const int64_t last = n_bid < max_blocks - 1 ? n_bid : max_blocks - 1;
     const int lane = threadIdx.x & 31;
-    const float* key = (b == n_bid) ? dead : pooled + b * IDX_DIM;
-    const float4 k4 = *reinterpret_cast<const float4*>(key + lane * 4);
     const float* q = q_idx + qi * IDX_HEADS * IDX_DIM + lane * 4;
-    float score = 0.0f;
+    float4 q4[IDX_HEADS];
 #pragma unroll
-    for (int h = 0; h < IDX_HEADS; ++h) {
-        const float4 q4 = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
-        float d = k4.x * q4.x + k4.y * q4.y + k4.z * q4.z + k4.w * q4.w;
+    for (int h = 0; h < IDX_HEADS; ++h) q4[h] = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
+    // a warp per block; the grid covers the first blocks, and warps go round for the rest
+    for (int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5); b <= last;
+         b += (int64_t) gridDim.x * SCORE_WARPS) {
+        const float* key = (b == n_bid) ? dead : pooled + b * IDX_DIM;
+        const float4 k4 = *reinterpret_cast<const float4*>(key + lane * 4);
+        float score = 0.0f;
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
-        score += d > 0.0f ? d : 0.0f;
-    }
-    if (lane == 0) {
-        if (b == n_bid && n_kv % R != 0) score += 1e9f;
-        out[qi * max_blocks + b] = score;
+        for (int h = 0; h < IDX_HEADS; ++h) {
+            float d = k4.x * q4[h].x + k4.y * q4[h].y + k4.z * q4[h].z + k4.w * q4[h].w;
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
+            score += d > 0.0f ? d : 0.0f;
+        }
+        if (lane == 0) {
+            if (b == n_bid && n_kv % R != 0) score += 1e9f;
+            out[qi * max_blocks + b] = score;
+        }
     }
 }
 
@@ -151,13 +156,14 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
 }  // namespace
 
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
-                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream) {
+                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t grid_blocks) {
     if (nq <= 0) return;
-    if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535) {
+    if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 || grid_blocks < 1) {
         std::fprintf(stderr, "qsa_block_scores: unsupported indexer geometry\n");
         std::exit(1);
     }
-    const dim3 grid((unsigned) ((max_blocks + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
+    const int64_t covered = grid_blocks < max_blocks ? grid_blocks : max_blocks;
+    const dim3 grid((unsigned) ((covered + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
     block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, max_blocks,
                                                                               scores);
     const cudaError_t e = cudaGetLastError();

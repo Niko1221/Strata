@@ -23,8 +23,13 @@
 namespace strata::kernels {
 
 /// scores [nq, max_blocks]; q_idx [nq, idx_n_head, idx_dim] (normed and rotated); steps [nq, kStepCount].
+/// The grid holds a warp for each of the first `grid_blocks` blocks of every query and its warps go round for the
+/// rest: a captured graph passes a fixed size (qsa_score_grid_blocks), the prompt path the chunk's largest n_bid + 1.
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
-                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream);
+                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t grid_blocks);
+
+/// The block-score grid of the decode paths, whatever the context: 1024 warps per query.
+constexpr int64_t qsa_score_grid_blocks = 1024;
 
 /// ids [nq, cap] (cells, ascending); `cap` >= the largest selection width.
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,

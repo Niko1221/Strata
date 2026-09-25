@@ -41,4 +41,10 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
 
+/// The prompt path's form of qsa_decode_attn_batch (no scratch): a block per (KV head, query) walks the query's
+/// cells in tiles of 64 with an online softmax, so no partial sums go through memory.  FP32 like the decode
+/// kernel; the sums are ordered differently.
+void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                      const QsaShapes& s, float* attn, int64_t n_q, void* stream);
+
 }  // namespace strata::kernels

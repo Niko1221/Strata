@@ -166,7 +166,210 @@ __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict_
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
+// ---- the prompt path: a block per (KV head, query) walks all of the query's cells in tiles, online softmax
+constexpr int PT = 64;   // cells per tile
+static_assert(KV_Q8_GROUP == 64, "a score thread's 64 dimensions are one int8 scale group");
+
+// Four int8 codes as floats without I2F (a quarter-rate instruction on sm_86): flip the sign bits, put each byte
+// in the mantissa of 2^23 and subtract 2^23 + 128.  Exact.
+__device__ __forceinline__ void i8x4(uint32_t w, float* f) {
+    const uint32_t u = w ^ 0x80808080u;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) f[j] = __int_as_float((int) __byte_perm(u, 0x4B000000u, 0x7650u | j)) - 8388736.0f;
+}
+
+// Scores: thread (cell, quarter) dots its cell's 64 dimensions of that quarter with the 12 query heads, the quarters
+// summed through shared memory.  Values: thread (dimension pair, cell parity) accumulates its two dimensions of the
+// 12 heads over every other cell; the parities are added at the end.
+template <bool INT8>
+__global__ void __launch_bounds__(THREADS) attn_prefill_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                               const int32_t* __restrict__ ids,
+                                                               const int32_t* __restrict__ steps, int n_kv_heads,
+                                                               int page_size, float scale, float* __restrict__ attn,
+                                                               int cap) {
+    const int kvh = blockIdx.x;
+    const size_t qi = blockIdx.y;
+    const size_t head0 = qi * (size_t) (n_kv_heads * G) + (size_t) kvh * G;
+    q += head0 * HD;
+    attn += head0 * HD;
+    ids += qi * (size_t) cap;
+    const int n_ids = __ldg(steps + qi * kStepCount + kStepWidth);
+    __shared__ __align__(16) float sq[G][HD];      // 12 KB: this KV head's query heads
+    __shared__ __align__(16) float spart[4][G][PT];  // 12 KB: the quarters' partial scores; the parity sums at the end
+    __shared__ __align__(16) float sp[PT][G];      // probabilities, cell-major
+    __shared__ long long srow[PT];
+    __shared__ float s_alpha[G], s_m[G], s_l[G];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[i];
+    if (t < G) { s_m[t] = -FLT_MAX; s_l[t] = 0.0f; }
+    const int quarter = warp >> 1, cell = ((warp & 1) << 5) | lane;   // scores
+    const int parity = t >> 7, d0 = 2 * (t & 127);                     // values
+    float acc0[G], acc1[G];
+#pragma unroll
+    for (int h = 0; h < G; ++h) acc0[h] = acc1[h] = 0.0f;
+    for (int c0 = 0; c0 < n_ids; c0 += PT) {
+        const int n_here = min(PT, n_ids - c0);
+        if (t < PT) {
+            long long r = -1;
+            if (t < n_here) {
+                const int id = ids[c0 + t];
+                r = ((long long) p.page_table[id / page_size] * n_kv_heads + kvh) * page_size + id % page_size;
+            }
+            srow[t] = r;
+        }
+        __syncthreads();
+        float s[G];
+#pragma unroll
+        for (int h = 0; h < G; ++h) s[h] = 0.0f;
+        if (cell < n_here) {
+            const long long row = srow[cell];
+#pragma unroll
+            for (int j = 0; j < 64; j += 16) {
+                const int d = quarter * 64 + j;
+                float kf[16];
+                if constexpr (INT8) {
+                    const uint4 raw = *reinterpret_cast<const uint4*>(p.k_q + row * HD + d);
+                    i8x4(raw.x, kf); i8x4(raw.y, kf + 4); i8x4(raw.z, kf + 8); i8x4(raw.w, kf + 12);
+                } else {
+                    const uint4* src = reinterpret_cast<const uint4*>(p.k_pool + row * HD + d);
+#pragma unroll
+                    for (int u = 0; u < 2; ++u) {
+                        const uint4 raw = src[u];
+                        const __half2* h2 = reinterpret_cast<const __half2*>(&raw);
+#pragma unroll
+                        for (int v = 0; v < 4; ++v) {
+                            const float2 f = __half22float2(h2[v]);
+                            kf[8 * u + 2 * v] = f.x;
+                            kf[8 * u + 2 * v + 1] = f.y;
+                        }
+                    }
+                }
+#pragma unroll
+                for (int h = 0; h < G; ++h) {
+                    const float4* qh = reinterpret_cast<const float4*>(&sq[h][d]);
+                    float a = s[h];
+#pragma unroll
+                    for (int v = 0; v < 4; ++v) {
+                        const float4 q4 = qh[v];
+                        a = fmaf(kf[4 * v], q4.x, a);
+                        a = fmaf(kf[4 * v + 1], q4.y, a);
+                        a = fmaf(kf[4 * v + 2], q4.z, a);
+                        a = fmaf(kf[4 * v + 3], q4.w, a);
+                    }
+                    s[h] = a;
+                }
+            }
+            if constexpr (INT8) {
+                const float ks = __half2float(__ushort_as_half(p.k_scale[row * (HD / KV_Q8_GROUP) + quarter]));
+#pragma unroll
+                for (int h = 0; h < G; ++h) s[h] *= ks;
+            }
+        }
+#pragma unroll
+        for (int h = 0; h < G; ++h) spart[quarter][h][cell] = s[h];
+        __syncthreads();
+        // online softmax: warp w takes heads w and w + 8, a lane cells lane and lane + 32
+        for (int h = warp; h < G; h += WARPS) {
+            float a = -FLT_MAX, b = -FLT_MAX;
+            if (lane < n_here) a = (spart[0][h][lane] + spart[1][h][lane] + spart[2][h][lane] + spart[3][h][lane]) * scale;
+            if (lane + 32 < n_here)
+                b = (spart[0][h][lane + 32] + spart[1][h][lane + 32] + spart[2][h][lane + 32] + spart[3][h][lane + 32]) * scale;
+            const float m_old = s_m[h];
+            const float m_new = fmaxf(m_old, warp_max(fmaxf(a, b)));
+            const float ea = lane < n_here ? __expf(a - m_new) : 0.0f;
+            const float eb = lane + 32 < n_here ? __expf(b - m_new) : 0.0f;
+            sp[lane][h] = ea;
+            sp[lane + 32][h] = eb;
+            const float l = warp_sum(ea + eb);
+            if (lane == 0) {
+                const float alpha = __expf(m_old - m_new);
+                s_alpha[h] = alpha;
+                s_l[h] = fmaf(s_l[h], alpha, l);
+                s_m[h] = m_new;
+            }
+        }
+        __syncthreads();
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+            acc0[h] *= s_alpha[h];
+            acc1[h] *= s_alpha[h];
+        }
+        for (int c = parity; c < n_here; c += 2) {
+            const long long r = srow[c];
+            float v0, v1;
+            if constexpr (INT8) {
+                const uint32_t w = *reinterpret_cast<const uint16_t*>(p.v_q + r * HD + d0) ^ 0x8080u;
+                const float sc = __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + d0 / KV_Q8_GROUP]));
+                v0 = (__int_as_float((int) __byte_perm(w, 0x4B000000u, 0x7650u)) - 8388736.0f) * sc;
+                v1 = (__int_as_float((int) __byte_perm(w, 0x4B000000u, 0x7651u)) - 8388736.0f) * sc;
+            } else {
+                const float2 f = __half22float2(*reinterpret_cast<const __half2*>(p.v_pool + r * HD + d0));
+                v0 = f.x;
+                v1 = f.y;
+            }
+            const float4* pc = reinterpret_cast<const float4*>(sp[c]);
+            const float4 pa = pc[0], pb = pc[1], pd = pc[2];
+            const float pr[G] = {pa.x, pa.y, pa.z, pa.w, pb.x, pb.y, pb.z, pb.w, pd.x, pd.y, pd.z, pd.w};
+#pragma unroll
+            for (int h = 0; h < G; ++h) {
+                acc0[h] = fmaf(pr[h], v0, acc0[h]);
+                acc1[h] = fmaf(pr[h], v1, acc1[h]);
+            }
+        }
+        __syncthreads();   // srow, sp and s_alpha are rewritten by the next tile
+    }
+    // the odd cells' sums into shared memory, added to the even ones'
+    float* odd = &spart[0][0][0];   // G x HD floats
+    if (parity == 1) {
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+            odd[h * HD + d0] = acc0[h];
+            odd[h * HD + d0 + 1] = acc1[h];
+        }
+    }
+    __syncthreads();
+    if (parity == 0) {
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+            const float l = s_l[h];
+            attn[(size_t) h * HD + d0] = l > 0.0f ? (acc0[h] + odd[h * HD + d0]) / l : 0.0f;
+            attn[(size_t) h * HD + d0 + 1] = l > 0.0f ? (acc1[h] + odd[h * HD + d0 + 1]) / l : 0.0f;
+        }
+    }
+}
+
 }  // namespace
+
+void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                      const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
+    if (n_q <= 0) return;
+    const bool int8 = pools.k_q != nullptr;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table ||
+        (int8 ? (!pools.v_q || !pools.k_scale || !pools.v_scale) : (!pools.k_pool || !pools.v_pool))) {
+        std::fprintf(stderr, "qsa_prefill_attn: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+    const float scale = 1.0f / sqrtf((float) HD);
+    cudaStream_t st = (cudaStream_t) stream;
+    for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
+        const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
+        const dim3 grid((unsigned) s.n_head_kv, (unsigned) nb);
+        const size_t qo = (size_t) q0 * (size_t) s.n_head * HD;
+        if (int8)
+            attn_prefill_kernel<true><<<grid, THREADS, 0, st>>>(q + qo, pools, ids + (size_t) q0 * (size_t) cap,
+                                                                steps + (size_t) q0 * kStepCount, (int) s.n_head_kv,
+                                                                (int) s.page_size, scale, attn + qo, (int) cap);
+        else
+            attn_prefill_kernel<false><<<grid, THREADS, 0, st>>>(q + qo, pools, ids + (size_t) q0 * (size_t) cap,
+                                                                 steps + (size_t) q0 * kStepCount, (int) s.n_head_kv,
+                                                                 (int) s.page_size, scale, attn + qo, (int) cap);
+    }
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_prefill_attn: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+}
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {

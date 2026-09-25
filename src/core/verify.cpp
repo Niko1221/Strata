@@ -464,7 +464,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (batched) norm_rope_tokens(qidx_ + tb * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + tb * NH);
                 else for (int t = tb; t < te; ++t) norm_rope(qidx_ + t * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
                 qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
-                                 s, scores_ + (size_t) tb * max_blocks_, cs);
+                                 s, scores_ + (size_t) tb * max_blocks_, cs, qsa_score_grid_blocks);
                 qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                sel_ + (size_t) tb * cap_, cs);
                 QsaAttnPools pools;

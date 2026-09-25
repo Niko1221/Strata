@@ -3,7 +3,8 @@
 // A verify window's token t must come out bit for bit as it would in a window of any other size (the drafts are
 // accepted exactly when greedy decode would have produced them), so every batched kernel is checked BITWISE against
 // the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.  The
-// prompt path's batched PLE arithmetic is held to the same standard.
+// prompt path's batched PLE arithmetic is held to the same standard; its attention kernel, which sums in another
+// order, is checked against the decode kernel within a tolerance.
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
@@ -12,6 +13,7 @@
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 
@@ -505,6 +507,87 @@ int test_ple_tokens(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- the prompt path's attention  vs  the decode kernel (INT8 and FP16 pools; 1 to 2051 selected cells)
+int test_prefill_attn(std::mt19937& rng, cudaStream_t s) {
+    const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+    const int HD = (int) sh.head_dim, NH = (int) sh.n_head, NKV = (int) sh.n_head_kv;
+    const int cells = 4096, pages = cells / (int) sh.page_size;
+    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, sh);
+    const size_t n_codes = (size_t) cells * NKV * HD, n_scales = n_codes / strata::kernels::KV_Q8_GROUP;
+    std::vector<int32_t> table((size_t) pages);
+    for (int i = 0; i < pages; ++i) table[(size_t) i] = (i * 3 + 1) % pages;   // a permuted page table
+    int32_t* d_table = dev<int32_t>(table.size());
+    up(d_table, table);
+    auto half_bits = [&](float lo, float hi) {   // a random positive FP16 in [lo, hi)
+        const float f = std::uniform_real_distribution<float>(lo, hi)(rng);
+        uint32_t b;
+        std::memcpy(&b, &f, 4);
+        const int e = (int) ((b >> 23) & 0xFF) - 127 + 15;
+        return (uint16_t) ((e << 10) | ((b >> 13) & 0x3FF));
+    };
+    std::vector<int8_t> kq(n_codes), vq(n_codes);
+    for (auto* v : {&kq, &vq})
+        for (auto& c : *v) c = (int8_t) ((int) (rng() % 255) - 127);
+    std::vector<uint16_t> ks(n_scales), vs(n_scales), kh(n_codes), vh(n_codes);
+    for (auto& x : ks) x = half_bits(0.002f, 0.05f);
+    for (auto& x : vs) x = half_bits(0.002f, 0.05f);
+    for (auto& x : kh) x = (uint16_t) (half_bits(0.01f, 1.0f) | ((rng() & 1u) << 15));
+    for (auto& x : vh) x = (uint16_t) (half_bits(0.01f, 1.0f) | ((rng() & 1u) << 15));
+    int8_t *d_kq = dev<int8_t>(n_codes), *d_vq = dev<int8_t>(n_codes);
+    uint16_t *d_ks = dev<uint16_t>(n_scales), *d_vs = dev<uint16_t>(n_scales), *d_kh = dev<uint16_t>(n_codes),
+             *d_vh = dev<uint16_t>(n_codes);
+    up(d_kq, kq); up(d_vq, vq); up(d_ks, ks); up(d_vs, vs); up(d_kh, kh); up(d_vh, vh);
+    const std::vector<int> widths = {1, 5, 64, 65, 700, 2051};
+    const int n_q = (int) widths.size();
+    std::vector<int32_t> ids((size_t) n_q * cap, 0), steps((size_t) n_q * strata::kernels::kStepCount, 0);
+    for (int i = 0; i < n_q; ++i) {
+        std::vector<int32_t> all(cells);
+        for (int c = 0; c < cells; ++c) all[(size_t) c] = c;
+        std::shuffle(all.begin(), all.end(), rng);
+        std::sort(all.begin(), all.begin() + widths[(size_t) i]);
+        std::copy(all.begin(), all.begin() + widths[(size_t) i], ids.begin() + (size_t) i * cap);
+        steps[(size_t) i * strata::kernels::kStepCount + strata::kernels::kStepWidth] = widths[(size_t) i];
+    }
+    std::vector<float> q((size_t) n_q * NH * HD);
+    for (auto& x : q) x = 3.0f * std::normal_distribution<float>(0.0f, 1.0f)(rng);
+    int32_t *d_ids = dev<int32_t>(ids.size()), *d_steps = dev<int32_t>(steps.size());
+    float *d_q = dev<float>(q.size()), *d_a = dev<float>(q.size()), *d_b = dev<float>(q.size());
+    float* d_scratch = dev<float>((size_t) n_q * strata::kernels::qsa_decode_attn_scratch_floats(cap, sh));
+    up(d_ids, ids); up(d_steps, steps); up(d_q, q);
+    int bad = 0;
+    double worst = 0.0;
+    for (int int8 = 0; int8 < 2; ++int8) {
+        strata::kernels::QsaAttnPools pools;
+        pools.page_table = d_table;
+        if (int8) { pools.k_q = d_kq; pools.v_q = d_vq; pools.k_scale = d_ks; pools.v_scale = d_vs; }
+        else { pools.k_pool = d_kh; pools.v_pool = d_vh; }
+        strata::kernels::qsa_decode_attn_batch(d_q, pools, d_ids, d_steps, cap, sh, d_scratch, d_a, n_q, s);
+        strata::kernels::qsa_prefill_attn(d_q, pools, d_ids, d_steps, cap, sh, d_b, n_q, s);
+        check(cudaStreamSynchronize(s), "prefill attn");
+        const std::vector<float> a = down(d_a, q.size()), b = down(d_b, q.size());
+        for (int r = 0; r < n_q * NH; ++r) {   // relative to the largest value of the head's output row
+            double big = 0.0, diff = 0.0;
+            for (int d = 0; d < HD; ++d) {
+                big = std::max(big, (double) std::fabs(a[(size_t) r * HD + d]));
+                diff = std::max(diff, (double) std::fabs(a[(size_t) r * HD + d] - b[(size_t) r * HD + d]));
+            }
+            const double rel = diff / std::max(big, 1e-30);
+            worst = std::max(worst, rel);
+            if (!(rel <= 2e-5)) {
+                if (bad < 5) std::fprintf(stderr, "prefill attn: %s pools, query %d head %d: relative difference %.3g\n",
+                                          int8 ? "INT8" : "FP16", r / NH, r % NH, rel);
+                ++bad;
+            }
+        }
+    }
+    for (void* p : {(void*) d_table, (void*) d_kq, (void*) d_vq, (void*) d_ks, (void*) d_vs, (void*) d_kh, (void*) d_vh,
+                    (void*) d_ids, (void*) d_steps, (void*) d_q, (void*) d_a, (void*) d_b, (void*) d_scratch})
+        cudaFree(p);
+    std::printf("prefill_attn: %s (INT8 and FP16 pools, 1-2051 cells; largest relative difference %.2g)\n",
+                bad ? "OUTSIDE TOLERANCE" : "within 2e-5 of the decode kernel", worst);
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -526,6 +609,7 @@ int main(int argc, char** argv) {
     bad += test_kv_append(rng, s);
     bad += test_indexer_append(rng, s);
     bad += test_ple_tokens(rng, s);
+    bad += test_prefill_attn(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
