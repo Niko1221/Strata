@@ -213,6 +213,9 @@ struct Options {
     int spec = 0;
     std::string spec_oracle;
     int spec_corrupt = 0;
+    /// Benchmarks: the run emits this continuation (token ids) instead of the window's argmax, and a draft is
+    /// accepted when it matches it, so runs with different speculation settings process the same text.
+    std::string spec_follow;
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
@@ -315,6 +318,14 @@ void usage() {
                  "                       so switching back to them continues where they were (default 16384)\n"
                  "  --feed-max N         --serve: new prompt parts and last prompt chunks of up to N tokens run\n"
                  "                       through verify windows instead of the batched prompt path (default 512)\n"
+                 "  --spec T             verify windows of up to T tokens: the last one and T-1 MTP drafts (2..8)\n"
+                 "  --spec-min-p P       a draft enters the window only while it and the drafts before it have at\n"
+                 "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
+                 "  --mtp DIR            the MTP draft layer's runtime files (tools/mtp_rt.py)\n"
+                 "  --mtp-window N       the draft layer attends to the last N cells (default 32768; 0 = every cell)\n"
+                 "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
+                 "                       accept the drafts that match it, so speculation settings compare on the\n"
+                 "                       same text (not --serve)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
@@ -541,6 +552,7 @@ int main(int argc, char** argv) {
         else if (a == "--dump-final-r") o.dump_final_r = next("--dump-final-r");
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
+        else if (a == "--spec-follow") o.spec_follow = next("--spec-follow");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
@@ -2532,16 +2544,24 @@ int main(int argc, char** argv) {
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
     if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
-        std::vector<int64_t> oracle;
-        if (!o.spec_oracle.empty()) {
-            std::ifstream in(o.spec_oracle);
+        auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
+            std::ifstream in(path);
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             std::string e;
-            if (!in || !parse_i64_list(text.c_str(), oracle, e)) {
-                std::fprintf(stderr, "strata generate: cannot read --spec-oracle %s\n", o.spec_oracle.c_str());
-                return 2;
-            }
+            return (bool) in && parse_i64_list(text.c_str(), ids, e);
+        };
+        std::vector<int64_t> oracle, follow;
+        if (!o.spec_oracle.empty() && !read_ids(o.spec_oracle, oracle)) {
+            std::fprintf(stderr, "strata generate: cannot read --spec-oracle %s\n", o.spec_oracle.c_str());
+            return 2;
         }
+        if (!o.spec_follow.empty() && !read_ids(o.spec_follow, follow)) {
+            std::fprintf(stderr, "strata generate: cannot read --spec-follow %s\n", o.spec_follow.c_str());
+            return 2;
+        }
+        // --spec-follow: the run ends with the continuation
+        const int64_t max_new = follow.empty() ? o.max_new : std::min<int64_t>(o.max_new, (int64_t) follow.size());
+        int64_t follow_differ = 0, follow_emitted = 0;
         if (thits.d_res == nullptr) {
             std::fprintf(stderr, "strata generate: --spec needs the device residency table (--expert-profile, "
                                  "--expert-cache and the token graph)\n");
@@ -2654,11 +2674,12 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::vector<int32_t> window((size_t) o.spec), outv((size_t) o.spec);
+        std::vector<uint8_t> fdiff((size_t) o.spec, 0);
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
-        while ((int64_t) produced.size() < o.max_new) {
+        while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = o.spec;
             if (use_mtp && o.spec_min_p > 0.0) {
@@ -2692,6 +2713,13 @@ int main(int argc, char** argv) {
                              drive.d.fail ? drive.d.fail : "(no message)");
                 return 1;
             }
+            if (!follow.empty()) {   // the continuation stands in for the argmax
+                const size_t k0 = produced.size();
+                for (int i = 0; i < T && k0 + (size_t) i < follow.size(); ++i) {
+                    fdiff[(size_t) i] = outv[(size_t) i] != (int32_t) follow[k0 + (size_t) i];
+                    outv[(size_t) i] = (int32_t) follow[k0 + (size_t) i];
+                }
+            }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
             if (first_window) {
@@ -2714,16 +2742,17 @@ int main(int argc, char** argv) {
             drafts_ok += a;
             ++accepted_hist[(size_t) a];
             bool eos = false;
-            for (int i = 0; i <= a && (int64_t) produced.size() < o.max_new && !eos; ++i) {
+            for (int i = 0; i <= a && (int64_t) produced.size() < max_new && !eos; ++i) {
                 produced.push_back(outv[(size_t) i]);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
+                if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
             }
             if (eos) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= o.max_new ||
+            const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new ||
                                  mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
@@ -2742,6 +2771,9 @@ int main(int argc, char** argv) {
                     "speculation", (long long) rounds, o.spec, (long long) drafts_ok, (long long) drafts_total,
                     drafts_total > 0 ? (double) drafts_ok / (double) drafts_total : 0.0,
                     rounds > 0 ? (double) (drafts_ok + rounds) / (double) rounds : 0.0);
+        if (!follow.empty())
+            std::printf("%-24s %lld of %lld emitted tokens differ from the argmax\n", "follow",
+                        (long long) follow_differ, (long long) follow_emitted);
         if (o.spec_min_p > 0.0) {
             std::printf("%-24s", "window sizes");
             for (size_t i = 1; i < window_hist.size(); ++i) std::printf(" T%zu:%lld", i, (long long) window_hist[i]);
