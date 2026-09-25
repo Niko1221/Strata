@@ -4,7 +4,7 @@
 V100 Stage 1 — COMPLETE (verdict PASS). Awaiting upstream review of the PR.
 
 ## Current commit
-`fa146c9` on branch `feature/v100-moe`
+`dd63449` on branch `feature/v100-moe` (content commits: `fa146c9` docs, `12979f4` fix, `ae7b4fb` ctest, `6bb6b94` sm70, `5f75af7` baseline; state files at `dd63449`)
 - pushed to `origin` = `https://github.com/noorazman/Strata` (own fork of `Niko1221/Strata`)
 - open PR: **Niko1221/Strata#3** (base `main`, maintainer_can_edit=true)
 - remotes in this repo: `origin`=noorazman/Strata (fork), `upstream`=Niko1221/Strata, `local-mirror`=/home/noorazman/dsh/strata/Strata (DO NOT commit there — user's pristine clone of upstream)
