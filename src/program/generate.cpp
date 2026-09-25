@@ -222,6 +222,7 @@ struct Options {
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
+    int main_gpu = 0;   ///< the CUDA device (of the visible ones) the engine runs on
     /// A second GPU (device ordinal) as another expert tier, with this much VRAM for experts (0 = all but
     /// `second_gpu_reserve_mib`).
     int second_gpu = -1;
@@ -332,7 +333,8 @@ void usage() {
                  "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
                  "  --mtp DIR            the MTP draft layer's runtime files (tools/mtp_rt.py)\n"
                  "  --mtp-window N       the draft layer attends to the last N cells (default 32768; 0 = every cell)\n"
-                 "  --second-gpu N       CUDA device N (of the visible ones; the engine runs on device 0) as another\n"
+                 "  --main-gpu N         run on CUDA device N of the visible ones (default 0)\n"
+                 "  --second-gpu N       CUDA device N (of the visible ones, not --main-gpu) as another\n"
                  "                       expert tier: it holds the profile's next experts, then the conversation's,\n"
                  "                       and computes them beside the CPU pool (native packs, verify windows)\n"
                  "  --second-gpu-gib G   its VRAM for experts (default: all but --second-gpu-reserve-mib, 2048)\n"
@@ -571,6 +573,7 @@ int main(int argc, char** argv) {
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
+        else if (a == "--main-gpu") o.main_gpu = std::atoi(next("--main-gpu"));
         else if (a == "--second-gpu") o.second_gpu = std::atoi(next("--second-gpu"));
         else if (a == "--second-gpu-gib") o.second_gpu_gib = std::atof(next("--second-gpu-gib"));
         else if (a == "--second-gpu-reserve-mib") o.second_gpu_reserve_mib = std::atoi(next("--second-gpu-reserve-mib"));
@@ -637,6 +640,18 @@ int main(int argc, char** argv) {
     }
     if (o.kv != "fp16" && o.kv != "int8") {
         std::fprintf(stderr, "strata generate: --kv must be fp16 or int8\n");
+        return 2;
+    }
+    // every CUDA call from here on uses this device; the adaptive tier sets it on its own thread too
+    int n_dev = 0;
+    if (cudaGetDeviceCount(&n_dev) != cudaSuccess || o.main_gpu < 0 || o.main_gpu >= n_dev ||
+        cudaSetDevice(o.main_gpu) != cudaSuccess) {
+        std::fprintf(stderr, "strata generate: --main-gpu %d is not a visible CUDA device (%d visible)\n", o.main_gpu,
+                     n_dev);
+        return 2;
+    }
+    if (o.second_gpu >= 0 && (o.second_gpu == o.main_gpu || o.second_gpu >= n_dev)) {
+        std::fprintf(stderr, "strata generate: --second-gpu %d is not another visible CUDA device\n", o.second_gpu);
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
@@ -1799,7 +1814,8 @@ int main(int argc, char** argv) {
     // moves every --adapt-every rounds on the adapt thread, admitted once their copies have landed
     strata::core::AdaptiveTier tier;
     const bool adaptive = !host_res.empty() && o.adapt_every > 0 && o.adapt_swaps > 0;
-    if (adaptive && !tier.init(xcache, *srcp, host_res, d_res, g.n_layers, g.n_expert, o.adapt_swaps, err)) {
+    if (adaptive && !tier.init(xcache, *srcp, host_res, d_res, g.n_layers, g.n_expert, o.adapt_swaps, err,
+                               o.main_gpu, o.main_gpu)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -1813,13 +1829,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --second-gpu needs a native pack, --expert-profile and --spec\n");
             return 2;
         }
-        int main_dev = 0;
-        cudaGetDevice(&main_dev);
+        const int main_dev = o.main_gpu;
         cudaDeviceProp prop{};
-        if (o.second_gpu == main_dev || cudaGetDeviceProperties(&prop, o.second_gpu) != cudaSuccess) {
-            std::fprintf(stderr, "strata generate: --second-gpu %d is not another visible CUDA device\n", o.second_gpu);
-            return 2;
-        }
+        cudaGetDeviceProperties(&prop, o.second_gpu);
         if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;

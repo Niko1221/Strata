@@ -98,7 +98,7 @@ UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 572-608 tok/s, generation 
 
 ### A second GPU
 
-With `--second-gpu N`, CUDA device N (the engine runs on device 0) holds more experts and computes its share of
+With `--second-gpu N`, CUDA device N (the engine runs on `--main-gpu`, default 0) holds more experts and computes its share of
 each layer while the CPU computes the rest; it may be the card that drives the display. Build for both GPUs'
 architectures (`-DCMAKE_CUDA_ARCHITECTURES="86;120"`). UD-Q4_K_XL on an RTX 3090 plus an RTX 5070 Ti (12.6 GB of
 its VRAM): generation 59-69 tok/s, +9-19%. It pays when the CPU's share of a token is the larger one: with
