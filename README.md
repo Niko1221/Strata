@@ -94,7 +94,15 @@ Pack a model once (seconds: the tokenizer and the float tensors; the experts are
 
 and start it with `--pack packs/<name> --native <dir>/<model>-00001-of-0000N.gguf` plus the usual flags (`--spec`,
 `--mtp`, `--prefill`, ...). The other shards, and the one holding the n-gram table, are found by name.
-UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 570-603 tok/s, generation 49-59 tok/s.
+UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 572-608 tok/s, generation 52-60 tok/s.
+
+### A second GPU
+
+With `--second-gpu N`, CUDA device N (the engine runs on device 0) holds more experts and computes its share of
+each layer while the CPU computes the rest; it may be the card that drives the display. Build for both GPUs'
+architectures (`-DCMAKE_CUDA_ARCHITECTURES="86;120"`). UD-Q4_K_XL on an RTX 3090 plus an RTX 5070 Ti (12.6 GB of
+its VRAM): generation 59-69 tok/s, +9-19%. It pays when the CPU's share of a token is the larger one: with
+IQ3_XXS, whose experts mostly fit the first GPU, it gains nothing.
 
 ## Before you start
 
