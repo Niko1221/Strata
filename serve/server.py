@@ -370,7 +370,7 @@ class Service:
                     s["phase"] = "tool call complete"
                 s["tail"] = (s["tail"] + (ev.text or ""))[-600:]
 
-    def _progress(self, last_print, every=15.0):
+    def _progress(self, last_print, every=1.0):
         """A progress line in the server window every `every` seconds while a request runs."""
         now = time.time()
         if now - last_print < every:
@@ -390,6 +390,7 @@ class Service:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
+        raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
         with self.status_lock:
             self.status["queued"] += 1
@@ -402,33 +403,64 @@ class Service:
                 last_print = time.time()
                 gen = self.engine.generate(ids, max_new, sampling, cancel, embeddings=emb) if emb else \
                     self.engine.generate(ids, max_new, sampling, cancel)
-                for t in gen:
-                    if t is None:                       # heartbeat while the engine is quiet
+                try:
+                    for t in gen:
+                        if t is None:                   # heartbeat while the engine is quiet
+                            last_print = self._progress(last_print)
+                            yield "ping", None
+                            continue
+                        n += 1
+                        if t in self.stop_ids:
+                            finish = "stop"
+                            raw_ids.append(t)
+                            break
+                        raw_ids.append(t)
+                        evs = parser.feed(detok.push(t))
+                        self._note(n, evs)
                         last_print = self._progress(last_print)
-                        yield "ping", None
-                        continue
-                    n += 1
-                    if t in self.stop_ids:
-                        finish = "stop"
-                        break
-                    evs = parser.feed(detok.push(t))
-                    self._note(n, evs)
-                    last_print = self._progress(last_print)
-                    for ev in evs:
-                        yield "event", ev
-                if cancel.is_set():
-                    finish = "cancel"
+                        for ev in evs:
+                            yield "event", ev
+                    if cancel.is_set():
+                        finish = "cancel"
+                finally:
+                    gen.close()                         # STOP+drain to THIS request's DONE while still holding the
+                    #                                     fifo, so a stop-token break can't leave the shared engine
+                    #                                     queue mid-drain for the next request to read as its own DONE
+        except GeneratorExit:                           # the client disconnected mid-stream
+            finish = "disconnect"
+            raise
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
             with self.status_lock:
                 if self.status.get("busy"):
-                    el = time.time() - self.status.get("started", time.time())
-                    print(f"[strata] done: {n} tokens in {el:.0f} s ({finish})", flush=True)
+                    now = time.time()
+                    el = now - self.status.get("started", now)
+                    ft = self.status.get("first_token")
+                    rate = n / max(1e-6, now - ft) if ft else 0.0
+                    print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                          f"({finish}, cancel={cancel.is_set()})", flush=True)
+                    if os.environ.get("STRATA_DEBUG") and raw_ids:
+                        print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                 self.status["busy"] = False
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n}
+
+
+def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
+    """One compact line per request while diagnosing blank/empty turns. Set STRATA_DEBUG=1 to enable."""
+    if not os.environ.get("STRATA_DEBUG"):
+        return
+    last = messages[-1] if messages else {}
+    body = last.get("content")
+    if isinstance(body, list):
+        body = " ".join(p.get("text", "") for p in body if isinstance(p, dict))
+    preview = (str(body or "")[:80]).replace("\n", " ")
+    print(f"[strata] req {api}: msgs={len(messages)} tools={len(tools or [])} "
+          f"max_tokens_raw={req.get('max_tokens')!r}/{req.get('max_completion_tokens')!r} "
+          f"max_new={max_new} thinking={thinking} stream={bool(req.get('stream'))} "
+          f"prompt_tokens={prompt_tokens} last={last.get('role')!r}:{preview!r}", flush=True)
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -668,7 +700,10 @@ def make_handler(svc: Service):
         def _openai(self, req):
             messages, tools, kw = openai_to_messages(req)
             max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 1024)
+            if max_new <= 0:                             # a non-positive budget (some clients send -1) means "unset"
+                max_new = 1024
             ids, thinking = svc.prepare(messages, tools, kw, max_new)
+            _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel)
             if not req.get("stream"):
@@ -689,7 +724,10 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             messages, tools, kw = anthropic_to_messages(req)
             max_new = int(req.get("max_tokens") or 1024)
+            if max_new <= 0:                             # a non-positive budget (some clients send -1) means "unset"
+                max_new = 1024
             ids, thinking = svc.prepare(messages, tools, kw, max_new)
+            _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel)
             if not req.get("stream"):
