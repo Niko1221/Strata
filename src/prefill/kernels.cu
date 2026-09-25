@@ -1,10 +1,12 @@
 // src/prefill/kernels.cu - see include/strata/prefill/kernels.hpp.
 #include "strata/prefill/kernels.hpp"
 #include "strata/kernels/mrope.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -116,88 +118,145 @@ __global__ void gdn_gates_kernel(const float* __restrict__ ab, const float* __re
     gate[i] = (v > 20.0f ? v : log1pf(__expf(v))) * ssm_a[h];
     beta[i] = sigm(ab[t * 2 * HV + HV + h]);
 }
-// one thread per channel, walks the chunk; then a second kernel normalises
-__global__ void gdn_conv_kernel(float* __restrict__ hist, const float* __restrict__ qkv, const float* __restrict__ w,
-                                float* __restrict__ h, int64_t T) {
+// The conv history after a chunk: its last three inputs, older ones moved up when the chunk is shorter.
+__global__ void gdn_conv_hist_kernel(float* __restrict__ hist, const float* __restrict__ qkv, int64_t T) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
-    float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
-    const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
-    for (int64_t t = 0; t < T; ++t) {
-        const float x = qkv[t * C + c];
-        const float s = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
-        h[t * C + c] = s / (1.0f + __expf(-s));
-        v0 = v1; v1 = v2; v2 = x;
+    const float old[3] = {hist[c * 3], hist[c * 3 + 1], hist[c * 3 + 2]};
+#pragma unroll
+    for (int r = 0; r < 3; ++r) {
+        const int64_t j = T - 3 + r;
+        hist[c * 3 + r] = j >= 0 ? qkv[j * C + c] : old[r + T];
     }
-    hist[c * 3] = v0; hist[c * 3 + 1] = v1; hist[c * 3 + 2] = v2;
 }
-__global__ void gdn_l2_kernel(float* __restrict__ h, float eps) {
-    // block (t, head) over the 32 q/k heads, 128 threads
-    const int64_t t = blockIdx.y;
-    const int head = blockIdx.x;
-    float* x = h + t * C + head * S;
-    const float v = x[threadIdx.x];
-    float sq = warp_sum(v * v);
-    __shared__ float part[4];
-    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = sq;
-    __syncthreads();
-    const float ss = part[0] + part[1] + part[2] + part[3];
-    x[threadIdx.x] = v * rsqrtf(ss + eps);
+// cp.async of one 4-byte word into shared memory (sm_80+), and its group bookkeeping.
+__device__ __forceinline__ void cp_async4(float* dst, const float* src) {
+    const unsigned d = (unsigned) __cvta_generic_to_shared(dst);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(d), "l"(src));
 }
-constexpr int RG = 4, RPG = S / RG;
-__global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ state, const float* __restrict__ h,
-                                                         const float* __restrict__ gate,
-                                                         const float* __restrict__ beta, const float* __restrict__ z,
-                                                         const float* __restrict__ gamma, float eps,
-                                                         float* __restrict__ y, uint16_t* __restrict__ y16, int64_t T) {
-    __shared__ float sk[S], sq[S], red[RG][S], wsum[16];
-    const int head = blockIdx.x, col = threadIdx.x, rg = threadIdx.y, tid = rg * S + col;
+__device__ __forceinline__ void cp_async_commit() { asm volatile("cp.async.commit_group;\n" ::); }
+template <int N> __device__ __forceinline__ void cp_async_wait() { asm volatile("cp.async.wait_group %0;\n" ::"n"(N)); }
+
+// The recurrence over the chunk, the arithmetic of gdn_step_norm_multi: a thread per (CPT columns, group of 32
+// state rows), a head's columns split over S / CB blocks.  A column's four row groups sit in adjacent lanes, so
+// both sums over the row groups are shuffles added in the decode kernels' order (group 0 + 1 + 2 + 3).  Each
+// token's q, k, v, gate and beta are copied (cp.async) into a ring of DEPTH token slots DEPTH - 1 tokens ahead, so
+// the reads from memory overlap the steps before them: one barrier per token.  Each thread reads its row group's
+// 32 q and 32 k values into registers with 16-byte loads once for its CPT columns; a row group is padded to 36
+// words, so the four groups a warp reads at once sit in different banks.  Writes o (before the norm) to `out`;
+// gdn_norm_kernel finishes each token.
+constexpr int RG = 4, RPG = S / RG, RP = RPG + 4, DEPTH = 8, SLOT = 2 * RG * RP;
+template <int CB, int CPT>
+__global__ void __launch_bounds__(CB / CPT * RG) gdn_scan_kernel(float* __restrict__ state,
+                                                                 const float* __restrict__ h,
+                                                                 const float* __restrict__ gate,
+                                                                 const float* __restrict__ beta,
+                                                                 float* __restrict__ out, int T) {
+    constexpr int NT = CB / CPT * RG, QL = (2 * S + NT - 1) / NT;   // threads; q/k values each thread copies
+    static_assert(CB % (8 * CPT) == 0 && NT >= CB + 2, "8 column groups a warp; a thread each for v, gate, beta");
+    __shared__ __align__(16) float sqk[DEPTH * SLOT];   // per slot: q, then k, [row group][row]
+    __shared__ float sv[DEPTH * CB], sgb[DEPTH * 2];
+    const int head = blockIdx.x, tid = threadIdx.x, lane = tid & 31;
+    const int cl = ((tid >> 5) * 8 + (lane >> 2)) * CPT, rg = lane & 3, g0 = lane & ~3;   // first local column
     const int qh = head % HK;
-    float s[RPG];
-    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    // what this thread copies for every token: q/k value i = tid + j * NT < 2S (row i & 127 of q or k), then v of
+    // local column tid (tid < CB), the gate (tid == CB) or beta (tid == CB + 1)
+    int qk_off[QL], qk_at[QL];
+#pragma unroll
+    for (int j = 0; j < QL; ++j) {
+        const int i = tid + j * NT;
+        qk_off[j] = i < 2 * S ? (i < S ? 0 : HK * S) + qh * S + (i & (S - 1)) : -1;
+        qk_at[j] = (i >> 7) * RG * RP + ((i & (S - 1)) / RPG) * RP + (i & (RPG - 1));
+    }
+    const int v_off = 2 * HK * S + head * S + blockIdx.y * CB + tid;
+    const float* gb = (tid == CB ? gate : beta) + head;
+    float s[CPT][RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + blockIdx.y * CB + cl;
     const size_t rs = (size_t) HV * S;
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
-    const float g_col = gamma[col];
-    for (int64_t t = 0; t < T; ++t) {
-        const float* ht = h + t * C;
-        __syncthreads();
-        if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
-        __syncthreads();
-        const float g = __expf(gate[t * HV + head]);
-        float kv = 0.0f;
+    for (int c = 0; c < CPT; ++c)
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
-        red[rg][col] = kv;
-        __syncthreads();
-        const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
-        const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
-        float o = 0.0f;
+        for (int r = 0; r < RPG; ++r) s[c][r] = base[r * rs + c];
+    int next = 0;   // the next token to copy
+    auto issue = [&]() {
+        if (next < T) {
+            const int slot = next & (DEPTH - 1);
+            const float* ht = h + (size_t) next * C;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) {
-            s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
-            o = fmaf(s[r], sq[rg * RPG + r], o);
+            for (int j = 0; j < QL; ++j)
+                if (qk_off[j] >= 0) cp_async4(&sqk[slot * SLOT + qk_at[j]], ht + qk_off[j]);
+            if (tid < CB) cp_async4(&sv[slot * CB + tid], ht + v_off);
+            else if (tid < CB + 2) cp_async4(&sgb[slot * 2 + tid - CB], gb + (size_t) next * HV);
         }
-        __syncthreads();
-        red[rg][col] = o;
-        __syncthreads();
-        float oc = 0.0f, sp = 0.0f;
-        if (rg == 0) {
-            oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) * rsqrtf((float) S);
-            sp = oc * oc;
+        cp_async_commit();
+        ++next;
+    };
+    for (int t = 0; t < DEPTH - 1; ++t) issue();
+    for (int t = 0; t < T; ++t) {
+        cp_async_wait<DEPTH - 2>();
+        __syncthreads();   // token t's slot is filled; every thread is done with token t - 1's slot
+        issue();
+        const int slot = t & (DEPTH - 1);
+        float qr[RPG], kr[RPG];
+        const float4* q4 = reinterpret_cast<const float4*>(&sqk[slot * SLOT + rg * RP]);
+        const float4* k4 = reinterpret_cast<const float4*>(&sqk[slot * SLOT + RG * RP + rg * RP]);
+#pragma unroll
+        for (int j = 0; j < RPG / 4; ++j) {
+            const float4 a = k4[j], b = q4[j];
+            kr[4 * j] = a.x; kr[4 * j + 1] = a.y; kr[4 * j + 2] = a.z; kr[4 * j + 3] = a.w;
+            qr[4 * j] = b.x; qr[4 * j + 1] = b.y; qr[4 * j + 2] = b.z; qr[4 * j + 3] = b.w;
         }
-        sp = warp_sum(sp);
-        if ((tid & 31) == 0) wsum[tid >> 5] = sp;
-        __syncthreads();
-        if (rg == 0) {
-            const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-            const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * sigm(z[t * HV * S + head * S + col]);
-            y[t * HV * S + head * S + col] = v;
-            y16[t * HV * S + head * S + col] = hf(v);
+        const float g = __expf(sgb[slot * 2]), bt = sgb[slot * 2 + 1];
+        float kv[CPT], o[CPT];
+#pragma unroll
+        for (int c = 0; c < CPT; ++c) kv[c] = o[c] = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r)
+#pragma unroll
+            for (int c = 0; c < CPT; ++c) kv[c] = fmaf(s[c][r], kr[r], kv[c]);
+        float delta[CPT];
+#pragma unroll
+        for (int c = 0; c < CPT; ++c) {
+            const float k0 = __shfl_sync(0xffffffffu, kv[c], g0), k1 = __shfl_sync(0xffffffffu, kv[c], g0 + 1),
+                        k2 = __shfl_sync(0xffffffffu, kv[c], g0 + 2), k3 = __shfl_sync(0xffffffffu, kv[c], g0 + 3);
+            const float kv_col = k0 + k1 + k2 + k3;
+            delta[c] = (sv[slot * CB + cl + c] - g * kv_col) * bt;
+        }
+#pragma unroll
+        for (int r = 0; r < RPG; ++r)
+#pragma unroll
+            for (int c = 0; c < CPT; ++c) {
+                s[c][r] = fmaf(g, s[c][r], kr[r] * delta[c]);
+                o[c] = fmaf(s[c][r], qr[r], o[c]);
+            }
+        float* ot = out + (size_t) t * HV * S + head * S + blockIdx.y * CB + cl;
+#pragma unroll
+        for (int c = 0; c < CPT; ++c) {
+            const float o0 = __shfl_sync(0xffffffffu, o[c], g0), o1 = __shfl_sync(0xffffffffu, o[c], g0 + 1),
+                        o2 = __shfl_sync(0xffffffffu, o[c], g0 + 2), o3 = __shfl_sync(0xffffffffu, o[c], g0 + 3);
+            if (rg == 0) ot[c] = (o0 + o1 + o2 + o3) * rsqrtf((float) S);
         }
     }
+    cp_async_wait<0>();
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+    for (int c = 0; c < CPT; ++c)
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) base[r * rs + c] = s[c][r];
+}
+// y = rmsnorm(o) * gamma * sigmoid(z) per (token, head), in place over o; also the FP16 image
+__global__ void __launch_bounds__(S) gdn_norm_kernel(float* __restrict__ y, const float* __restrict__ z,
+                                                     const float* __restrict__ gamma, float eps,
+                                                     uint16_t* __restrict__ y16) {
+    __shared__ float wsum[S / 32];
+    const size_t i = ((size_t) blockIdx.y * HV + blockIdx.x) * S + threadIdx.x;
+    const float oc = y[i];
+    const float sp = warp_sum(oc * oc);
+    if ((threadIdx.x & 31) == 0) wsum[threadIdx.x >> 5] = sp;
+    __syncthreads();
+    const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
+    const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[threadIdx.x] * sigm(z[i]);
+    y[i] = v;
+    y16[i] = hf(v);
 }
 
 // ---------------------------------------------------------------- MoE
@@ -420,14 +479,25 @@ void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate
     check("gdn_gates");
 }
 void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
-    gdn_conv_kernel<<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, conv_w, h, T);
-    gdn_l2_kernel<<<dim3(2 * HK, (unsigned) T), S, 0, (cudaStream_t) stream>>>(h, eps);
+    for (int64_t t0 = 0; t0 < T; t0 += 65535)
+        strata::kernels::gdn_conv_l2_multi(history, qkv, conv_w, h, C, 2 * HK, eps, (int) std::min<int64_t>(65535, T - t0),
+                                           stream, (int) t0);
+    gdn_conv_hist_kernel<<<C / 256, 256, 0, (cudaStream_t) stream>>>(history, qkv, T);
     check("gdn_conv");
 }
-void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream) {
-    gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
-    check("gdn_recurrence");
+void gdn_scan(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T, void* stream) {
+    // 32 columns a block, 2 a thread (fastest of 16-128 columns, 1-2 a thread: 0.67 us a token on the 3090)
+    constexpr int CB = 32, CPT = 2;
+    gdn_scan_kernel<CB, CPT><<<dim3(HV, S / CB), CB / CPT * RG, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, (int) T);
+    check("gdn_scan");
+}
+void gdn_out_norm(float* y, const float* z, const float* gamma, float eps, uint16_t* y16, int64_t T, void* stream) {
+    for (int64_t t0 = 0; t0 < T; t0 += 65535) {
+        const int64_t n = std::min<int64_t>(65535, T - t0);
+        gdn_norm_kernel<<<dim3(HV, (unsigned) n), S, 0, (cudaStream_t) stream>>>(y + t0 * HV * S, z + t0 * HV * S, gamma,
+                                                                                eps, y16 + t0 * HV * S);
+    }
+    check("gdn_out_norm");
 }
 void route(const float* logits, int32_t* ids, float* weights, int64_t T, void* stream) {
     route_kernel<<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);

@@ -3,8 +3,8 @@
 // A verify window's token t must come out bit for bit as it would in a window of any other size (the drafts are
 // accepted exactly when greedy decode would have produced them), so every batched kernel is checked BITWISE against
 // the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.  The
-// prompt path's batched PLE arithmetic is held to the same standard; its attention kernel, which sums in another
-// order, is checked against the decode kernel within a tolerance.
+// prompt path's batched PLE and GDN arithmetic is held to the same standard; its attention kernel, which sums in
+// another order, is checked against the decode kernel within a tolerance.
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
@@ -16,6 +16,8 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/verify_kernels.hpp"
+#include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -588,6 +590,83 @@ int test_prefill_attn(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- the prompt path's GDN conv and recurrence over a chunk  vs  the verify window's kernels, 8 tokens at a time
+int test_prefill_gdn(std::mt19937& rng, cudaStream_t s) {
+    const int C = 10240, HK = 16, HV = 48, S = 128, ZV = HV * S;
+    const float eps = 1e-6f;
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    auto uni = [&](float a, float b) { return std::uniform_real_distribution<float>(a, b)(rng); };
+    std::vector<float> w((size_t) C * 4), hist((size_t) C * 3), state((size_t) S * HV * S), gamma((size_t) S);
+    for (auto& x : w) x = 0.5f * nd(rng);
+    for (auto& x : gamma) x = uni(0.5f, 1.5f);
+    float *d_w = dev<float>(w.size()), *d_gamma = dev<float>(gamma.size());
+    up(d_w, w);
+    up(d_gamma, gamma);
+    int bad = 0;
+    for (int T : {1, 2, 3, 5, 37}) {
+        std::vector<float> qkv((size_t) T * C), gate((size_t) T * HV), beta((size_t) T * HV), z((size_t) T * ZV);
+        for (auto& x : qkv) x = nd(rng);
+        for (auto& x : hist) x = nd(rng);
+        for (auto& x : state) x = 0.1f * nd(rng);
+        for (auto& x : gate) x = uni(-2.0f, 0.0f);
+        for (auto& x : beta) x = uni(0.0f, 1.0f);
+        for (auto& x : z) x = nd(rng);
+        float *d_qkv = dev<float>(qkv.size()), *d_gate = dev<float>(gate.size()), *d_beta = dev<float>(beta.size()),
+              *d_z = dev<float>(z.size());
+        up(d_qkv, qkv); up(d_gate, gate); up(d_beta, beta); up(d_z, z);
+        float* d_hist[2];
+        float* d_state[2];
+        float* d_h[2];
+        float* d_y[2];
+        for (int p = 0; p < 2; ++p) {
+            d_hist[p] = dev<float>(hist.size());
+            d_state[p] = dev<float>(state.size());
+            d_h[p] = dev<float>(qkv.size());
+            d_y[p] = dev<float>(z.size());
+            up(d_hist[p], hist);
+            up(d_state[p], state);
+        }
+        uint16_t* d_y16 = dev<uint16_t>(z.size());
+        // the verify window's kernels, a window of up to 8 tokens after another, each committed
+        std::vector<int32_t> counts;
+        for (int t0 = 0; t0 < T; t0 += 8) counts.push_back(std::min(8, T - t0));
+        int32_t* d_counts = dev<int32_t>(counts.size());
+        up(d_counts, counts);
+        for (size_t i = 0; i < counts.size(); ++i) {
+            const size_t t0 = i * 8;
+            const int n = counts[i];
+            strata::kernels::gdn_conv_l2_multi(d_hist[0], d_qkv + t0 * C, d_w, d_h[0] + t0 * C, C, 2 * HK, eps, n, s);
+            strata::kernels::gdn_conv_commit(d_hist[0], d_qkv + t0 * C, C, d_counts + i, s);
+            strata::kernels::gdn_step_norm_multi(d_state[0], d_h[0] + t0 * C, C, d_gate + t0 * HV, d_beta + t0 * HV,
+                                                 d_z + t0 * ZV, d_gamma, eps, d_y[0] + t0 * ZV, HK, HV, n, d_counts + i, s);
+        }
+        // the prompt path, all T at once
+        strata::prefill::gdn_conv(d_hist[1], d_qkv, d_w, d_h[1], T, eps, s);
+        strata::prefill::gdn_scan(d_state[1], d_h[1], d_gate, d_beta, d_y[1], T, s);
+        strata::prefill::gdn_out_norm(d_y[1], d_z, d_gamma, eps, d_y16, T, s);
+        check(cudaStreamSynchronize(s), "prefill gdn");
+        const int b = bitwise_diff(down(d_h[0], qkv.size()), down(d_h[1], qkv.size()), "conv output") +
+                      bitwise_diff(down(d_y[0], z.size()), down(d_y[1], z.size()), "y") +
+                      bitwise_diff(down(d_state[0], state.size()), down(d_state[1], state.size()), "state") +
+                      bitwise_diff(down(d_hist[0], hist.size()), down(d_hist[1], hist.size()), "conv history");
+        if (b) std::fprintf(stderr, "prefill gdn: T %d differs\n", T);
+        bad += b;
+        for (int p = 0; p < 2; ++p) {
+            cudaFree(d_hist[p]);
+            cudaFree(d_state[p]);
+            cudaFree(d_h[p]);
+            cudaFree(d_y[p]);
+        }
+        for (float* p : {d_qkv, d_gate, d_beta, d_z}) cudaFree(p);
+        cudaFree(d_y16);
+        cudaFree(d_counts);
+    }
+    cudaFree(d_w);
+    cudaFree(d_gamma);
+    std::printf("prefill_gdn: %s\n", bad ? "MISMATCH" : "bitwise equal to the verify window's kernels (1-37 tokens)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -610,6 +689,7 @@ int main(int argc, char** argv) {
     bad += test_indexer_append(rng, s);
     bad += test_ple_tokens(rng, s);
     bad += test_prefill_attn(rng, s);
+    bad += test_prefill_gdn(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;

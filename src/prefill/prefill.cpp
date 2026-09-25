@@ -356,8 +356,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV)) return false;
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
+                    mark(kPsGdnConv);
                     gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
-                    gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs);
+                    mark(kPsGdnScan);
+                    gdn_scan(state, m.hbuf, m.gate, m.beta, m.y, T, m.cs);
+                    mark(kPsGdnNorm);
+                    gdn_out_norm(m.y, m.z, (const float*) wnm->data, EPS, m.y_h, T, m.cs);
+                    mark(kPsGdnOut);
                     if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err)) return false;
                     ++gdn_index;
                 } else if (half == 0) {
@@ -562,7 +567,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 
 const char* prefill_section_name(int section) {
     static const char* const names[kPsCount] = {
-        "PLE block", "HC read (mixer)", "GDN mixer", "QSA projections, norms, KV", "QSA indexer appends",
+        "PLE block", "HC read (mixer)", "GDN projections", "GDN conv", "GDN recurrence", "GDN output norm",
+        "GDN output projection",
+        "QSA projections, norms, KV", "QSA indexer appends",
         "QSA block scores + top-k", "QSA attention", "QSA gate + output", "HC write + HC read (FFN)",
         "router, shared, grouping", "experts", "combine + HC write"};
     return section >= 0 && section < kPsCount ? names[section] : "?";

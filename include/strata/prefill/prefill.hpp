@@ -25,7 +25,7 @@ namespace strata::prefill {
 
 /// The sections `Prefill::profile` times, in the order a layer runs them.
 enum PrefillSection {
-    kPsPle, kPsHcRead, kPsGdn, kPsQsaProj, kPsQsaIndexer, kPsQsaScores, kPsQsaAttn, kPsQsaOut, kPsHcFfn, kPsRouter,
+    kPsPle, kPsHcRead, kPsGdn, kPsGdnConv, kPsGdnScan, kPsGdnNorm, kPsGdnOut, kPsQsaProj, kPsQsaIndexer, kPsQsaScores, kPsQsaAttn, kPsQsaOut, kPsHcFfn, kPsRouter,
     kPsExperts, kPsCombine, kPsCount
 };
 const char* prefill_section_name(int section);

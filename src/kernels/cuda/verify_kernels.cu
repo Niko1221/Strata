@@ -381,7 +381,7 @@ void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
 
 void gdn_conv_l2_multi(const float* history, const float* qkv, const float* conv_w, float* h, int channels,
                        int qk_heads, float eps, int n_tok, void* stream, int t_begin) {
-    if (!history || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {
+    if (!history || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > 65535) {
         std::fprintf(stderr, "gdn_conv_l2_multi: invalid arguments\n");
         std::exit(1);
     }

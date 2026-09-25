@@ -21,7 +21,8 @@ namespace strata::kernels {
 inline constexpr int kVerifyMaxT = 8;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
-/// `history` is NOT written.  Bitwise `fused_gdn_conv_l2` per token.
+/// `history` is NOT written.  Bitwise `fused_gdn_conv_l2` per token.  Up to 65535 tokens (the prompt path runs a
+/// whole chunk through it).
 void gdn_conv_l2_multi(const float* history, const float* qkv, const float* conv_w, float* h, int channels,
                        int qk_heads, float eps, int n_tok, void* stream, int t_begin = 0);
 /// history <- the last 3 entries of [history | qkv_0 .. qkv_{n-1}], n = *n_keep (0 leaves it as it was).
