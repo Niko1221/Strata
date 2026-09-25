@@ -35,7 +35,8 @@ namespace strata::core {
 
 class NativeHead;
 
-/// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
+/// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd): the CPU's and the
+/// second GPU's rows, the main GPU's zeroed unless `GpuPlanSink::host_rows_only`.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
 
@@ -78,6 +79,9 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// Whether the pool may give the GPU a PCIe share of the misses (`--pcie-frac` > 0); without one the window
+    /// has no PCIe stage.  Set before the first `run`.
+    void set_pcie_share(bool on) { pcie_share_ = on; }
     /// Diagnostics: GPU timestamps between the stages of every layer (`--window-profile`; each costs a kernel
     /// launch, ~2 us).  Set before the first `run`; `print_profile` writes the per-stage table to stdout.
     void set_profile(bool on) { profile_ = on; }
@@ -131,6 +135,7 @@ private:
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
+    bool pcie_share_ = true;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
 

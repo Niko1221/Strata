@@ -2008,6 +2008,7 @@ int main(int argc, char** argv) {
         };
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
+        ver.set_pcie_share(drive.d.pcie_num > 0);
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         // ---- the prompt cache (strata/core/prompt_cache.hpp)
         std::vector<strata::core::QsaState*> kv_states;
@@ -2671,6 +2672,7 @@ int main(int argc, char** argv) {
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
         if (drive.d.pcie_num > 256) drive.d.pcie_num = 256;
+        ver.set_pcie_share(drive.d.pcie_num > 0);
         const int64_t pcie0 = drive.d.pcie_experts;
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         int64_t p = spec_pos;

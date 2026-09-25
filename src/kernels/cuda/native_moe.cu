@@ -43,6 +43,48 @@ __global__ void combine(const float* __restrict__ parts, const float* __restrict
     if (shared) sum += shared[col];
     output[col] = sum;
 }
+constexpr int kMaxK = 15;
+// One block row per token.  The rows a GPU computed are marked from the plan's entries first; each column then
+// loads its k values (the host's over PCIe, all in flight at once) and sums them as `combine` does.
+__global__ void gather_combine(const float* __restrict__ gpu_rows, const float* host_rows,
+                               const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
+                               const float* __restrict__ weights, const float* __restrict__ shared,
+                               float* __restrict__ output, int64_t n_embd, int k) {
+    __shared__ unsigned on_gpu;   // bit j: row t*k + j is the GPU's
+    const int t = blockIdx.y;
+    if (threadIdx.x == 0) on_gpu = 0u;
+    __syncthreads();
+    const int c = *count;
+    for (int i = threadIdx.x; i < c; i += blockDim.x) {
+        const int r = dst[i] - t * k;
+        if (r >= 0 && r < k) atomicOr(&on_gpu, 1u << r);
+    }
+    __syncthreads();
+    const int64_t col = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (col >= n_embd) return;
+    const unsigned mask = on_gpu;
+    const float* w = weights + int64_t(t) * k;
+    float v[kMaxK];
+#pragma unroll
+    for (int j = 0; j < kMaxK; ++j) {
+        if (j >= k) break;
+        const int64_t at = (int64_t(t) * k + j) * n_embd + col;
+        if ((mask >> j) & 1u) {
+            const float h = gpu_rows[at];
+            v[j] = __float_as_uint(h) == 0x80000000u ? 0.0f : h;   // 0 + h: the host's zeroed row plus the hit
+        } else {
+            v[j] = host_rows[at];
+        }
+    }
+    float sum = v[0] * w[0];
+#pragma unroll
+    for (int j = 1; j < kMaxK; ++j) {
+        if (j >= k) break;
+        sum += v[j] * w[j];
+    }
+    if (shared) sum += shared[int64_t(t) * n_embd + col];
+    output[int64_t(t) * n_embd + col] = sum;
+}
 bool valid_span(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % alignof(float) == 0 && bytes <= UINTPTR_MAX - address;
@@ -68,6 +110,19 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
         throw std::invalid_argument("native MoE combine requires aligned spans and disjoint output");
     combine<<<unsigned((n_embd + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
         parts, weights, shared, output, n_embd, int(k));
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+void native_moe_gather_combine(const float* gpu_rows, const float* host_rows, const int32_t* dst,
+                               const int32_t* count, const float* weights, const float* shared, float* output,
+                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
+    if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > kMaxK || n_tok < 1 ||
+        !gpu_rows || !host_rows || !dst || !count || !weights || !output)
+        throw std::invalid_argument("native MoE gather-combine requires a stream, positive width, 1..15 experts "
+                                    "and its buffers");
+    const dim3 grid(unsigned((n_embd + 255) / 256), unsigned(n_tok));
+    gather_combine<<<grid, 256, 0, static_cast<cudaStream_t>(stream)>>>(gpu_rows, host_rows, dst, count, weights,
+                                                                         shared, output, n_embd, int(k));
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

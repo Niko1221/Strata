@@ -14,6 +14,7 @@
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
@@ -183,6 +184,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sink_.start2 = h_plan_ + ptr_off + 4 * cap;
         sink_.cap = cap;
         sink_.publish = &Verifier::publish_plan;
+        sink_.host_rows_only = strata::kernels::native_moe_combine_enabled();   // the gather-combine (post)
         sink_.fetch = &Verifier::fetch_dma;
         sink_.ctx = this;
     }
@@ -558,25 +560,38 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         };
         grouped(p_ptr, p_start, p_counts);
         stamp(l, 8);
-        wait_flag_ge(m_flagB_, ring, cs);                      // the PCIe share is in staging (DMA) or mapped
-        if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-            const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
-            uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-            fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
-            rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+        if (pcie_share_) {
+            wait_flag_ge(m_flagB_, ring, cs);                  // the PCIe share is in staging (DMA) or mapped
+            if (sink_.pcie_mode == 2) {                        // stage it with a copy kernel, then point at staging
+                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+            }
+            grouped(p_ptr2, p_start2, p_counts + 2);
         }
-        grouped(p_ptr2, p_start2, p_counts + 2);
         stamp(l, 9);
         wait_flag_ge(m_flag_, ring, cs);                       // the CPU's share is in the mapped rows
         stamp(l, 10);
-        copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
-        stamp(l, 11);
-        moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, cap, N, cs);
-        for (int t = tb; t < te; ++t) {
-            MoEBuffers mb = ss.moe;
-            mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
-            if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
+        if (native_moe_combine_enabled()) {
+            // only the host's rows cross PCIe; the GPU's come from `hit_out` (the pool leaves their rows unwritten)
+            try {
+                native_moe_gather_combine(hit_out, m_ymiss_ + (size_t) tb * K * N, p_dst, p_counts + 1, w_ + tb * K,
+                                          shared_ + tb * N, bo_ + tb * N, N, K, n, cs);
+            } catch (const std::exception& e) {
+                err = "verify layer " + std::to_string(l) + " combine: " + e.what();
+                return false;
+            }
+        } else {
+            copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+            moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, cap, N, cs);
+            for (int t = tb; t < te; ++t) {
+                MoEBuffers mb = ss.moe;
+                mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
+                if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
+            }
         }
+        stamp(l, 11);
         if (l == g.n_layers - 1)
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
         stamp(l, 12);
@@ -855,8 +870,8 @@ void Verifier::print_profile() const {
     if (prof_windows_ == 0) return;
     static const char* const names[kStamps] = {"stamp gap",    "HC read, mixer", "mixer",         "HC read, FFN",
                                                "router",       "doorbell",       "shared expert", "wait for plan",
-                                               "VRAM experts", "PCIe experts",   "wait for CPU",  "CPU rows copy",
-                                               "combine"};
+                                               "VRAM experts", "PCIe experts",   "wait for CPU",  "rows + combine",
+                                               "last HC write"};
     const double nw = (double) prof_windows_;
     std::printf("%-24s GPU time over %lld windows, ms per window: inputs %.3f, head %.3f, whole window %.3f; "
                 "one stamp %.2f us (each stage below includes one)\n", "window profile", (long long) prof_windows_,

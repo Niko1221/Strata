@@ -88,6 +88,8 @@ struct GpuPlanSink {
     /// kernel reads the mapped arena directly; 2 = a copy kernel stages it inside the graph.  For 1 and 2 `ptr2`
     /// holds the arena's device alias.
     int pcie_mode = 0;
+    /// The GPU reads only the rows it did not compute, so the pool leaves the GPU's rows of `out` unwritten.
+    bool host_rows_only = false;
 };
 
 /// The adapter's own state.  One per session, reused every layer so the token path allocates nothing (P2.T10).

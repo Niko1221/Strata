@@ -402,6 +402,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                        d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0 : -1;
         }
     }
+    const bool skip_gpu_rows = d.plan != nullptr && d.plan->host_rows_only && n <= 128 && n <= d.plan->cap;
     const auto c1 = std::chrono::steady_clock::now();
     if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
@@ -427,7 +428,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (kind[i] >= 0) {             // a GPU computes this entry (a VRAM hit, a PCIe read, the second GPU)
                 if (kind[i] == 0) ++d.cache_hits;
                 if (kind[i] == 2) ++d.gpu2_entries;
-                std::memset(row, 0, (size_t) H * sizeof(float));
+                if (!skip_gpu_rows) std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
             }
             ++d.cache_refused;
