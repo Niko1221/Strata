@@ -3,8 +3,10 @@
 // A verify window's token t must come out bit for bit as it would in a window of any other size (the drafts are
 // accepted exactly when greedy decode would have produced them), so every batched kernel is checked BITWISE against
 // the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.
+#include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 
 #include <cuda_runtime.h>
@@ -131,6 +133,72 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- BF16 x FP32 MMVF: one call per row  vs  bf16_gemv_fp32_mmvf_multi (the router, indexer and gate shapes)
+int test_mmvf_multi(std::mt19937& rng, cudaStream_t s) {
+    int bad = 0;
+    for (int64_t n_out : {512, 128, 1}) {
+        const int64_t n_in = 2560;
+        std::vector<uint16_t> w((size_t) (n_in * n_out));
+        for (auto& v : w) {
+            const float f = edgy(rng);
+            uint32_t b;
+            std::memcpy(&b, &f, 4);
+            v = (uint16_t) (b >> 16);
+        }
+        uint16_t* d_w = dev<uint16_t>(w.size());
+        up(d_w, w);
+        for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+            std::vector<float> x((size_t) (n_tok * n_in));
+            for (auto& v : x) v = edgy(rng);
+            float *d_x = dev<float>(x.size()), *d_a = dev<float>((size_t) (n_tok * n_out)),
+                  *d_b = dev<float>((size_t) (n_tok * n_out));
+            up(d_x, x);
+            for (int t = 0; t < n_tok; ++t)
+                strata::kernels::bf16_gemv_fp32_mmvf(d_x + t * n_in, d_w, d_a + t * n_out, n_in, n_out, s);
+            strata::kernels::bf16_gemv_fp32_mmvf_multi(d_x, d_w, d_b, n_in, n_out, n_tok, s);
+            check(cudaStreamSynchronize(s), "mmvf");
+            const int b = bitwise_diff(down(d_a, (size_t) (n_tok * n_out)), down(d_b, (size_t) (n_tok * n_out)), "mmvf_multi");
+            if (b) std::fprintf(stderr, "mmvf_multi: n_out %lld n_tok %d: %d differ\n", (long long) n_out, n_tok, b);
+            bad += b;
+            cudaFree(d_x);
+            cudaFree(d_a);
+            cudaFree(d_b);
+        }
+        cudaFree(d_w);
+    }
+    std::printf("mmvf_multi: %s\n", bad ? "MISMATCH" : "bitwise equal (n_out 512, 128, 1; 1-8 rows)");
+    return bad;
+}
+
+// ---- the top-10 router: one launch per token  vs  native_router_top10_multi
+int test_router_multi(std::mt19937& rng, cudaStream_t s) {
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        std::vector<float> logits((size_t) n_tok * 512);
+        std::normal_distribution<float> nd(0.0f, 2.0f);
+        for (auto& v : logits) v = nd(rng);
+        for (int t = 0; t < n_tok; ++t)   // exact ties, which the lower expert index must win
+            for (int i = 0; i < 6; ++i) logits[(size_t) t * 512 + rng() % 512] = logits[(size_t) t * 512 + 7];
+        float *d_l = dev<float>(logits.size()), *d_wa = dev<float>((size_t) n_tok * 10),
+              *d_wb = dev<float>((size_t) n_tok * 10);
+        int32_t *d_ia = dev<int32_t>((size_t) n_tok * 10), *d_ib = dev<int32_t>((size_t) n_tok * 10);
+        up(d_l, logits);
+        for (int t = 0; t < n_tok; ++t)
+            strata::kernels::native_router_top10(d_l + t * 512, d_ia + t * 10, d_wa + t * 10, s);
+        strata::kernels::native_router_top10_multi(d_l, d_ib, d_wb, n_tok, s);
+        check(cudaStreamSynchronize(s), "router");
+        int b = bitwise_diff(down(d_wa, (size_t) n_tok * 10), down(d_wb, (size_t) n_tok * 10), "router weights");
+        if (down(d_ia, (size_t) n_tok * 10) != down(d_ib, (size_t) n_tok * 10)) {
+            std::fprintf(stderr, "router_multi: n_tok %d: the ids differ\n", n_tok);
+            ++b;
+        }
+        bad += b;
+        for (void* p : {(void*) d_l, (void*) d_wa, (void*) d_wb, (void*) d_ia, (void*) d_ib}) cudaFree(p);
+    }
+    std::printf("router_multi: %s\n", bad ? "MISMATCH" : "bitwise equal (1-8 tokens, with ties)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -145,6 +213,8 @@ int main(int argc, char** argv) {
     check(cudaStreamCreate(&s), "stream");
     int bad = 0;
     bad += test_gather_combine(rng, s);
+    bad += test_mmvf_multi(rng, s);
+    bad += test_router_multi(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;

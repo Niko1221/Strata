@@ -44,8 +44,11 @@ __device__ __forceinline__ float warp_max(float value) {
 __launch_bounds__(256, 1)
 __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ ids,
                       float* __restrict__ weights) {
-    // Preserve the pinned 32x8 block geometry; only row zero is active here.
+    // Preserve the pinned 32x8 block geometry; only row zero is active here.  Block b routes token b.
     if (threadIdx.y != 0) return;
+    logits += blockIdx.x * 512;
+    ids += blockIdx.x * 10;
+    weights += blockIdx.x * 10;
     const int lane = threadIdx.x;
     float values[16];
 #pragma unroll
@@ -111,6 +114,15 @@ void native_router_top10(const float* logits, int32_t* ids, float* weights, void
         || overlap(ids, 10 * 4, weights, 10 * 4))
         throw std::invalid_argument("native router requires a stream, aligned spans, and disjoint outputs");
     route<<<1, dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(logits, ids, weights);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream) {
+    const size_t nl = size_t(n_tok) * 512 * 4, no = size_t(n_tok) * 10 * 4;
+    if (!stream || n_tok < 1 || !valid(logits, nl) || !valid(ids, no) || !valid(weights, no)
+        || overlap(logits, nl, ids, no) || overlap(logits, nl, weights, no) || overlap(ids, no, weights, no))
+        throw std::invalid_argument("native router requires a stream, aligned spans, and disjoint outputs");
+    route<<<unsigned(n_tok), dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(logits, ids, weights);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
