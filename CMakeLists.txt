@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -44,15 +44,16 @@ if(STRATA_ENABLE_CUDA)
   endif()
   foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
     string(REGEX REPLACE "-.*$" "" _base "${_a}")     # 120-real / 120-virtual are still 120
-    # Plan v0.3 P6: developed and measured on sm_120 (RTX 50); the kernels need sm_80 or newer (tf32 mma in
-    # the attention scorer, bf16 math), so RTX 30 (86) and RTX 40 (89) build too.  Older cards are refused.
+    # Plan v0.3 P6: developed and measured on sm_120 (RTX 50).  The kernels are plain CUDA everywhere except
+    # the QSA scorer, which uses ldmatrix + tf32 MMA only on sm_80+ (a warp-FMA fallback covers sm_70), so
+    # RTX 30 (86) / 40 (89) build and so do Volta cards (70, e.g. Tesla V100).  Older cards are refused.
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    if(_base LESS 80)
+    if(_base LESS 70)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 8.0 or newer (RTX 30 / 40 / 50 series), but "
-        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.")
+        "Strata needs an NVIDIA GPU of compute capability 7.0 or newer (Volta or newer, e.g. Tesla V100), "
+        "but CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.")
     endif()
   endforeach()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
@@ -355,6 +356,14 @@ if(STRATA_ENABLE_CUDA)
   target_include_directories(kv_q8_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   target_link_libraries(kv_q8_parity PRIVATE strata_kernels CUDA::cudart)
   add_test(NAME kv_q8_parity COMMAND kv_q8_parity)
+
+  # V100 (sm_70): the QSA scorer's warp-FMA fallback vs an independent host reference (synthetic, no
+  # model).  The sm_80 MMA path is pinned to the llama.cpp oracle in the parity suite; this target guards
+  # the FMA path so a regression cannot slip in while developing on a Volta box.
+  add_executable(qsa_score_hostref_test src/kernels/qsa_score_hostref_test.cpp)
+  target_include_directories(qsa_score_hostref_test PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+  target_link_libraries(qsa_score_hostref_test PRIVATE strata_kernels CUDA::cudart)
+  add_test(NAME qsa_score_hostref_test COMMAND qsa_score_hostref_test)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS)

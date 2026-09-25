@@ -29,6 +29,10 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int D=128, HEADS=4, R=4, ROWS=32, WARPS=2, STRIDE=36, COMBINE=68;
+// ldmatrix is sm_75+ and the tf32 MMA is sm_80+; both are absent on sm_70 (Volta, e.g. Tesla V100), where
+// the kernel below falls back to plain warp FMA.  Guard the tensor-core helpers so the sm_70 object has no
+// ldmatrix/tf32 instructions at all.
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 struct TileA { uint32_t x[4]; };
 struct TileB { uint32_t x[2]; };
 struct TileC { float x[4]={0.0f,0.0f,0.0f,0.0f}; };
@@ -48,6 +52,7 @@ __device__ __forceinline__ void mma(TileC& c,const TileA& a,const TileB& b) {
         : "+f"(c.x[0]),"+f"(c.x[1]),"+f"(c.x[2]),"+f"(c.x[3])
         : "r"(a.x[0]),"r"(a.x[1]),"r"(a.x[2]),"r"(a.x[3]),"r"(b.x[0]),"r"(b.x[1]));
 }
+#endif
 __global__ __launch_bounds__(64,1) void score_kernel(
         const float* __restrict__ pooled,const float* __restrict__ query,
         const float* __restrict__ bias,const int32_t* __restrict__ step,
@@ -58,6 +63,7 @@ __global__ __launch_bounds__(64,1) void score_kernel(
     const int row0=blockIdx.x*ROWS;
     if(row0>full)return;
     const int lane=threadIdx.x,warp=threadIdx.y;
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
     __shared__ __align__(16) float shared[WARPS*16*STRIDE];
     float* tile=shared+warp*16*STRIDE;
     TileC c[2];
@@ -118,6 +124,50 @@ __global__ __launch_bounds__(64,1) void score_kernel(
         sum=__fadd_rn(sum,0.0f);
         for(int i=row*R;i<n&&i<(row+1)*R;++i)cells[i]=sum;
     }
+#else
+    // sm_70 (Volta, e.g. Tesla V100): no ldmatrix, no tf32 MMA.  Compute the same 128-dim dot products with
+    // plain warp FMA.  The sm_80 path feeds the MMA raw F32 bits and the MMA unit reads them as tf32 (the
+    // low 13 mantissa bits are ignored), so truncate the inputs the same way; the fp32 accumulation then
+    // matches within the MMA's own per-product rounding.
+    const int rows_per_warp=ROWS/WARPS;
+    const int r0=row0+warp*rows_per_warp;
+    float rsum[rows_per_warp];
+    #pragma unroll
+    for(int i=0;i<rows_per_warp;++i)rsum[i]=0.0f;
+    #pragma unroll
+    for(int i=0;i<rows_per_warp;++i){
+        const int row=r0+i;
+        if(row>full)continue;
+        const float* pr=pooled+size_t(row)*D;
+        #pragma unroll
+        for(int h=0;h<HEADS;++h){
+            const float* qr=query+size_t(h)*D;
+            float acc=0.0f;
+            #pragma unroll
+            for(int k=0;k<D/32;++k){
+                const int d=lane+k*32;
+                const float a=__uint_as_float(__float_as_uint(pr[d])&0xFFFFE000u);
+                const float b=__uint_as_float(__float_as_uint(qr[d])&0xFFFFE000u);
+                acc=fmaf(a,b,acc);
+            }
+            #pragma unroll
+            for(int off=16;off;off>>=1)acc+=__shfl_xor_sync(0xffffffffu,acc,off);
+            rsum[i]+=fmaxf(acc,0.0f);
+        }
+    }
+    #pragma unroll
+    for(int i=0;i<rows_per_warp;++i){
+        const int row=r0+i;
+        if(row>full)continue;
+        float sum=rsum[i];
+        if(bias)sum=__fadd_rn(sum,bias[row]);
+        sum=__fadd_rn(sum,row==full&&n%R?1e9f:0.0f);
+        for(int j=0;j<R;++j){
+            const int cell=row*R+j;
+            if(cell<n)cells[cell]=sum;
+        }
+    }
+#endif
 }
 struct Span{const void* p;size_t n;};
 void validate(Span s){

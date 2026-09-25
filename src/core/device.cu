@@ -30,7 +30,8 @@ DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
-        throw CudaError("no CUDA device is present; Strata targets sm_120 (RTX 5000 series)", -1);
+        throw CudaError("no CUDA device is present; Strata needs sm_70 (Volta) or newer, "
+                           "developed on sm_120 (RTX 5000 series)", -1);
     }
     if (ordinal < 0 || ordinal >= count) {
         throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
@@ -56,13 +57,14 @@ DeviceInfo device_info(int ordinal) {
     check(cudaDriverGetVersion(&d.driver_version), "cudaDriverGetVersion");
     check(cudaRuntimeGetVersion(&d.runtime_version), "cudaRuntimeGetVersion");
 
-    // The engine is written against sm_120.  Compiling for it is enforced by CMake; RUNNING on something else
-    // is caught here, because a binary can be carried to a machine with an older card and would otherwise
-    // silently take whatever path the driver chose.
-    if (d.cc_major != 12) {
+    // The engine is developed and measured against sm_120.  CMake enforces the sm_70 floor at COMPILE time;
+    // RUNNING on something older is caught here, because a binary can be carried to a machine with an older
+    // card and would otherwise silently take whatever path the driver chose.
+    if (d.cc_major < 7) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
                             "." + std::to_string(d.cc_minor) +
-                            "; Strata targets sm_120 (RTX 5000 series / Blackwell) only",
+                            "; Strata needs sm_70 (Volta, e.g. Tesla V100) or newer - sm_120 "
+                            "(RTX 5000 series / Blackwell) is the reference target",
                         -1);
     }
     return d;
