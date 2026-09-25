@@ -6,7 +6,10 @@
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 
@@ -279,6 +282,171 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- RoPE over several tokens' heads: native_rope_apply per token  vs  native_rope_apply_tokens
+int test_rope_tokens(std::mt19937& rng, cudaStream_t s) {
+    const int NH = 24;
+    int bad = 0;
+    for (int heads : {2, 4, 24}) {
+        for (int head_dim : {128, 256}) {
+            for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+                std::vector<float> x((size_t) n_tok * heads * head_dim);
+                for (auto& v : x) v = edgy(rng);
+                std::vector<int32_t> pos((size_t) n_tok * NH);   // a window's per-token position vectors
+                const int p0 = (int) (rng() % 200000);
+                for (int t = 0; t < n_tok; ++t)
+                    for (int h = 0; h < NH; ++h) pos[(size_t) t * NH + h] = p0 + t;
+                float *d_a = dev<float>(x.size()), *d_b = dev<float>(x.size());
+                int32_t* d_pos = dev<int32_t>(pos.size());
+                up(d_a, x);
+                up(d_b, x);
+                up(d_pos, pos);
+                for (int t = 0; t < n_tok; ++t)
+                    strata::kernels::native_rope_apply(d_a + (size_t) t * heads * head_dim, d_a + (size_t) t * heads * head_dim,
+                                                       heads, head_dim, 64, 5000000.0f, d_pos + t * NH, s);
+                strata::kernels::native_rope_apply_tokens(d_b, d_b, n_tok * heads, head_dim, 64, 5000000.0f, d_pos, heads,
+                                                          NH, s);
+                check(cudaStreamSynchronize(s), "rope");
+                bad += bitwise_diff(down(d_a, x.size()), down(d_b, x.size()), "rope_tokens");
+                cudaFree(d_a);
+                cudaFree(d_b);
+                cudaFree(d_pos);
+            }
+        }
+    }
+    std::printf("rope_tokens: %s\n", bad ? "MISMATCH" : "bitwise equal (2, 4, 24 heads; 1-8 tokens)");
+    return bad;
+}
+
+// ---- the int8 KV append: kv_append_q8_step per token  vs  kv_append_q8_steps
+int test_kv_append(std::mt19937& rng, cudaStream_t s) {
+    const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+    const int cells = 4096, pages = cells / (int) sh.page_size, per_tok = (int) (sh.n_head_kv * sh.head_dim);
+    const size_t codes = (size_t) cells * per_tok, scales = codes / strata::kernels::KV_Q8_GROUP;
+    std::vector<int32_t> table((size_t) pages);
+    for (int i = 0; i < pages; ++i) table[(size_t) i] = pages - 1 - i;   // a permuted page table
+    int32_t* d_table = dev<int32_t>(table.size());
+    up(d_table, table);
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        const int p0 = 500 + (int) (rng() % 2000);
+        std::vector<float> k((size_t) n_tok * per_tok), v((size_t) n_tok * per_tok);
+        for (auto& x : k) x = edgy(rng);
+        for (auto& x : v) x = edgy(rng);
+        std::vector<int32_t> steps((size_t) n_tok * strata::kernels::kStepCount, 0);
+        for (int t = 0; t < n_tok; ++t) steps[(size_t) t * strata::kernels::kStepCount + strata::kernels::kStepPos] = p0 + t;
+        float *d_k = dev<float>(k.size()), *d_v = dev<float>(v.size());
+        int32_t* d_steps = dev<int32_t>(steps.size());
+        up(d_k, k);
+        up(d_v, v);
+        up(d_steps, steps);
+        int8_t* q[2][2];
+        uint16_t* sc[2][2];
+        for (int p = 0; p < 2; ++p)
+            for (int kv = 0; kv < 2; ++kv) {
+                q[p][kv] = dev<int8_t>(codes);
+                sc[p][kv] = dev<uint16_t>(scales);
+                check(cudaMemset(q[p][kv], 0, codes), "memset");
+                check(cudaMemset(sc[p][kv], 0, scales * 2), "memset");
+            }
+        for (int t = 0; t < n_tok; ++t)
+            strata::kernels::kv_append_q8_step(q[0][0], q[0][1], sc[0][0], sc[0][1], d_table,
+                                               d_steps + t * strata::kernels::kStepCount, d_k + (size_t) t * per_tok,
+                                               d_v + (size_t) t * per_tok, sh, s);
+        strata::kernels::kv_append_q8_steps(q[1][0], q[1][1], sc[1][0], sc[1][1], d_table, d_steps,
+                                            strata::kernels::kStepCount, d_k, d_v, n_tok, sh, s);
+        check(cudaStreamSynchronize(s), "kv append");
+        for (int kv = 0; kv < 2; ++kv) {
+            if (down(q[0][kv], codes) != down(q[1][kv], codes) || down(sc[0][kv], scales) != down(sc[1][kv], scales)) {
+                std::fprintf(stderr, "kv_append: n_tok %d: the %s cells differ\n", n_tok, kv ? "V" : "K");
+                ++bad;
+            }
+        }
+        for (int p = 0; p < 2; ++p)
+            for (int kv = 0; kv < 2; ++kv) {
+                cudaFree(q[p][kv]);
+                cudaFree(sc[p][kv]);
+            }
+        cudaFree(d_k);
+        cudaFree(d_v);
+        cudaFree(d_steps);
+    }
+    cudaFree(d_table);
+    std::printf("kv_append_steps: %s\n", bad ? "MISMATCH" : "bitwise equal (1-8 tokens)");
+    return bad;
+}
+
+// ---- the indexer append: one call per token  vs  native_qsa_indexer_append_multi (blocks completed inside the
+// window, the first cell, and rejected tokens' -1 positions)
+int test_indexer_append(std::mt19937& rng, cudaStream_t s) {
+    const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+    const int D = 128, max_cells = 4096;
+    const size_t pooled_n = (size_t) (max_cells / 4 + 1) * D;
+    std::vector<float> gamma((size_t) D);
+    for (auto& g : gamma) g = 0.5f + std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+    float* d_gamma = dev<float>(gamma.size());
+    up(d_gamma, gamma);
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        for (int start : {0, 1, 2, 3, 5, 6, 7, 1022}) {
+            for (int rejected = 0; rejected < 2; ++rejected) {
+                std::vector<float> raw((size_t) n_tok * D);
+                for (auto& x : raw) x = std::normal_distribution<float>(0.0f, 1.0f)(rng);
+                std::vector<int32_t> pos((size_t) n_tok);
+                for (int t = 0; t < n_tok; ++t) pos[(size_t) t] = rejected && t >= (n_tok + 1) / 2 ? -1 : start + t;
+                // the state both paths start from: a random earlier tail, spare and pooled blocks
+                std::vector<float> tail((size_t) 3 * D), dead((size_t) D), pooled(pooled_n);
+                for (auto& x : tail) x = edgy(rng);
+                for (auto& x : dead) x = edgy(rng);
+                for (auto& x : pooled) x = edgy(rng);
+                float *d_raw = dev<float>(raw.size());
+                int32_t* d_pos = dev<int32_t>(pos.size());
+                up(d_raw, raw);
+                up(d_pos, pos);
+                float* bufs[2][3];
+                int32_t* bp[2];
+                for (int p = 0; p < 2; ++p) {
+                    bufs[p][0] = dev<float>(tail.size());
+                    bufs[p][1] = dev<float>(dead.size());
+                    bufs[p][2] = dev<float>(pooled.size());
+                    bp[p] = dev<int32_t>(1);
+                    up(bufs[p][0], tail);
+                    up(bufs[p][1], dead);
+                    up(bufs[p][2], pooled);
+                    up(bp[p], std::vector<int32_t>{-7});
+                }
+                const strata::kernels::QsaIndexerBuffers ib0{bufs[0][0], bufs[0][1], bufs[0][2], bp[0]};
+                const strata::kernels::QsaIndexerBuffers ib1{bufs[1][0], bufs[1][1], bufs[1][2], bp[1]};
+                for (int t = 0; t < n_tok; ++t)
+                    strata::kernels::native_qsa_indexer_append(d_raw + (size_t) t * D, d_pos + t, 0, d_gamma, 1e-6f, ib0, sh,
+                                                               max_cells, 5000000.0f, s);
+                strata::kernels::native_qsa_indexer_append_multi(d_raw, d_pos, 1, n_tok, 0, d_gamma, 1e-6f, ib1, sh,
+                                                                 max_cells, 5000000.0f, s);
+                check(cudaStreamSynchronize(s), "indexer");
+                const size_t sizes[3] = {tail.size(), dead.size(), pooled.size()};
+                const char* names[3] = {"tail", "dead", "pooled"};
+                for (int o = 0; o < 3; ++o) {
+                    const int b = bitwise_diff(down(bufs[0][o], sizes[o]), down(bufs[1][o], sizes[o]), names[o]);
+                    if (b) std::fprintf(stderr, "indexer: n_tok %d start %d rejected %d: %s differ\n", n_tok, start, rejected, names[o]);
+                    bad += b;
+                }
+                if (down(bp[0], 1) != down(bp[1], 1)) {
+                    std::fprintf(stderr, "indexer: n_tok %d start %d: block_pos differs\n", n_tok, start);
+                    ++bad;
+                }
+                for (int p = 0; p < 2; ++p) {
+                    for (float* q : bufs[p]) cudaFree(q);
+                    cudaFree(bp[p]);
+                }
+                cudaFree(d_raw);
+                cudaFree(d_pos);
+            }
+        }
+    }
+    cudaFree(d_gamma);
+    std::printf("indexer_append_multi: %s\n", bad ? "MISMATCH" : "bitwise equal (1-8 tokens, 8 starts, rejected cells)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -296,6 +464,9 @@ int main(int argc, char** argv) {
     bad += test_mmvf_multi(rng, s);
     bad += test_router_multi(rng, s);
     bad += test_gr_read(rng, s);
+    bad += test_rope_tokens(rng, s);
+    bad += test_kv_append(rng, s);
+    bad += test_indexer_append(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;

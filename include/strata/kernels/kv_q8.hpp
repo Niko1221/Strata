@@ -28,6 +28,11 @@ inline uint64_t kv_q8_bytes_per_cell(const QsaShapes& s) {
 /// Append the cell at step[kStepPos] (graph-capturable: position and page come from device memory).
 void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream);
+/// `kv_append_q8_step` for n_tok cells in one launch: token t's step record at step + t * step_stride, its K and V at
+/// kcur/vcur + t * n_head_kv * head_dim.  Bitwise the per-token appends.
+void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
+                        const int32_t* step, int step_stride, const float* kcur, const float* vcur, int n_tok,
+                        const QsaShapes& s, void* stream);
 
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch `[id][kv_head][head_dim]`; the grid is sized by
 /// `max_ids` (capacity), the kernel reads the real count from `step`.
