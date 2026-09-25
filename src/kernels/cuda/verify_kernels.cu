@@ -244,12 +244,13 @@ __global__ void ident_hits_kernel(const int32_t* __restrict__ ids, int n, int32_
     if (i == 0) *count = n;
 }
 
-__global__ void gather_rows_kernel(const uint4* __restrict__ src, long long row16, const int32_t* __restrict__ ids,
-                                   long long n, uint4* __restrict__ dst) {
-    const long long total = n * row16;
+template <typename U>
+__global__ void gather_rows_kernel(const U* __restrict__ src, long long row_units, const int32_t* __restrict__ ids,
+                                   long long n, U* __restrict__ dst) {
+    const long long total = n * row_units;
     for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (long long) gridDim.x * blockDim.x) {
-        const long long r = i / row16, o = i - r * row16;
-        dst[i] = src[(long long) ids[r] * row16 + o];
+        const long long r = i / row_units, o = i - r * row_units;
+        dst[i] = src[(long long) ids[r] * row_units + o];
     }
 }
 
@@ -334,8 +335,13 @@ void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const 
 }
 
 void gather_rows(const uint8_t* src, int64_t row_bytes, const int32_t* ids, int64_t n, uint8_t* dst, void* stream) {
-    if (row_bytes % 16 != 0) { std::fprintf(stderr, "gather_rows: row size must be a multiple of 16\n"); std::exit(1); }
-    gather_rows_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>((const uint4*) src, row_bytes / 16, ids, n, (uint4*) dst);
+    if (n <= 0) return;
+    if (row_bytes % 16 == 0)
+        gather_rows_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>((const uint4*) src, row_bytes / 16, ids, n, (uint4*) dst);
+    else if (row_bytes % 4 == 0)   // e.g. Q6_K rows of 2,560 values: 2,100 bytes
+        gather_rows_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>((const uint32_t*) src, row_bytes / 4, ids, n,
+                                                                      (uint32_t*) dst);
+    else { std::fprintf(stderr, "gather_rows: row size must be a multiple of 4\n"); std::exit(1); }
     check("gather_rows");
 }
 
