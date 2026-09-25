@@ -5,6 +5,7 @@
 // the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -199,6 +200,85 @@ int test_router_multi(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- the hyper-connection read: fused_gr_read per token  vs  fused_gr_read_multi
+int test_gr_read(std::mt19937& rng, cudaStream_t s) {
+    const int64_t N = 2560, HC = 4, D = N * HC, LR = 320;
+    auto bf16 = [&](size_t n) {
+        std::vector<uint16_t> v(n);
+        for (auto& x : v) {
+            const float f = edgy(rng) * 0.05f;
+            uint32_t b;
+            std::memcpy(&b, &f, 4);
+            x = (uint16_t) (b >> 16);
+        }
+        return v;
+    };
+    std::vector<float> wn((size_t) D);
+    for (auto& v : wn) v = edgy(rng);
+    uint16_t *d_wd = dev<uint16_t>((size_t) (LR * D)), *d_wu = dev<uint16_t>((size_t) (D * LR)),
+             *d_wi = dev<uint16_t>((size_t) (HC * D));
+    float* d_wn = dev<float>(wn.size());
+    up(d_wd, bf16((size_t) (LR * D)));
+    up(d_wu, bf16((size_t) (D * LR)));
+    up(d_wi, bf16((size_t) (HC * D)));
+    up(d_wn, wn);
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        for (int variant = 0; variant < 3; ++variant) {   // apply + inject, no apply, no inject
+            const bool apply = variant != 1, inject = variant != 2;
+            std::vector<float> R((size_t) (n_tok * D)), bo((size_t) (n_tok * N)), inj((size_t) (n_tok * HC));
+            for (auto& v : R) v = edgy(rng);
+            for (auto& v : bo) v = edgy(rng);
+            for (auto& v : inj) v = edgy(rng);
+            // one set of outputs per path; R is updated in place when apply, so each path has its own copy
+            float* d[2][6];   // R, lo, rs, inject, mixed, xn
+            for (int p = 0; p < 2; ++p) {
+                d[p][0] = dev<float>(R.size());
+                up(d[p][0], R);
+                d[p][1] = dev<float>((size_t) (n_tok * LR));
+                d[p][2] = dev<float>((size_t) (n_tok * HC));
+                d[p][3] = dev<float>((size_t) (n_tok * HC));
+                d[p][4] = dev<float>((size_t) (n_tok * N));
+                d[p][5] = dev<float>((size_t) (n_tok * D));
+                check(cudaMemset(d[p][3], 0, (size_t) (n_tok * HC) * 4), "memset");
+            }
+            float *d_bo = dev<float>(bo.size()), *d_inj = dev<float>(inj.size());
+            up(d_bo, bo);
+            up(d_inj, inj);
+            std::vector<strata::kernels::FusedGrArgs> args[2];
+            for (int p = 0; p < 2; ++p)
+                for (int t = 0; t < n_tok; ++t) {
+                    strata::kernels::FusedGrArgs a;
+                    a.R = d[p][0] + t * D; a.R_out = d[p][0] + t * D; a.apply = apply;
+                    a.bo_prev = d_bo + t * N; a.inj_prev = d_inj + t * HC;
+                    a.w_norm = d_wn; a.w_down = d_wd; a.w_up = d_wu; a.w_inject = inject ? d_wi : nullptr;
+                    a.eps = 1e-6f;
+                    a.lo = d[p][1] + t * LR; a.rs = d[p][2] + t * HC; a.inject_out = d[p][3] + t * HC;
+                    a.mixed = d[p][4] + t * N;
+                    args[p].push_back(a);
+                }
+            for (int t = 0; t < n_tok; ++t) strata::kernels::fused_gr_read(args[0][(size_t) t], s);
+            strata::kernels::fused_gr_read_multi(args[1].data(), n_tok, d[1][5], s);
+            check(cudaStreamSynchronize(s), "gr read");
+            const char* names[5] = {"R", "lo", "rs", "inject", "mixed"};
+            const size_t sizes[5] = {R.size(), (size_t) (n_tok * LR), (size_t) (n_tok * HC), (size_t) (n_tok * HC),
+                                     (size_t) (n_tok * N)};
+            for (int o = 0; o < 5; ++o) {
+                const int b = bitwise_diff(down(d[0][o], sizes[o]), down(d[1][o], sizes[o]), names[o]);
+                if (b) std::fprintf(stderr, "gr_read: n_tok %d variant %d: %s: %d differ\n", n_tok, variant, names[o], b);
+                bad += b;
+            }
+            for (int p = 0; p < 2; ++p)
+                for (float* q : d[p]) cudaFree(q);
+            cudaFree(d_bo);
+            cudaFree(d_inj);
+        }
+    }
+    for (void* p : {(void*) d_wd, (void*) d_wu, (void*) d_wi, (void*) d_wn}) cudaFree(p);
+    std::printf("gr_read: %s\n", bad ? "MISMATCH" : "bitwise equal to the single-token read (1-8 tokens, 3 variants)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -215,6 +295,7 @@ int main(int argc, char** argv) {
     bad += test_gather_combine(rng, s);
     bad += test_mmvf_multi(rng, s);
     bad += test_router_multi(rng, s);
+    bad += test_gr_read(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
