@@ -261,6 +261,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
+        if (should_stop && should_stop()) { err = "cancelled"; return false; }
+        if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         ++stats_.chunks;
         // ---- embeddings, broadcast to the four streams

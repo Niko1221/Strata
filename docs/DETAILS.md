@@ -161,6 +161,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | Model list / health | `GET /v1/models`, `GET /health` |
+| What the model is doing right now | `GET /status` |
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
@@ -186,6 +187,11 @@ print(r.choices[0].message.content)
   Without a setting the model uses its own default, **high**. `none` answers at once (fastest); `low` keeps the thinking
   short. The levels are instructions the model was trained with, not a hard token limit: on easy questions all three
   think briefly, on hard ones `high` thinks longest and is most accurate.
+- **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
+  (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
+  long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
+  15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
+  connection or pressing stop in your app really stops the model, so the next request starts at once.
 - **Chat apps.** Any app with an "OpenAI-compatible" provider works: base URL `http://127.0.0.1:8080/v1`, any API key.
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut.
 - **From other devices / the internet.** The server listens on your PC only (`127.0.0.1`). To reach it from elsewhere,
@@ -289,6 +295,7 @@ test images.
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
 | Pictures are slow (10-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
+| A request never finishes (older engines, mostly with pictures) | Run `START-HERE.bat` once to get engine 0.1.2 or newer. It keeps a real margin of VRAM free: the log says `... MiB of VRAM free with everything loaded` and warns when it is close to 0. |
 | Anything else | The engine log is `strata-<model>.log` in this folder. |
 
 ---

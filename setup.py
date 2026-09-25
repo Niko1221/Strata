@@ -54,7 +54,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 1)                 # the ready-made engine that reads split models (Swift 1.5)
+MIN_ENGINE = (0, 1, 2)                 # split models (Swift 1.5), STOP, cache sized after the slots are written
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow"]
 
 MODELS = {
@@ -82,9 +82,9 @@ FAMILIES = {
               "license": "Swift Open License 1.0: https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
-# the image encoder on the GPU: ~0.9 GB of weights + ~0.3 GB of work buffers at 1024 image tokens, kept free of
-# expert slots (the engine's default reserve is 700 MiB)
-VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 2100},
+# the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
+# sizes its expert slots around it and the default reserve (700 MiB) is enough; engines before 0.1.2 need more
+VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
           "cpu": {"max_tokens": 300, "reserve_mib": 700}}
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
@@ -572,7 +572,7 @@ def installed_configs():
 
 
 def start(cfg_path: Path, port: int | None, open_browser=True) -> int:
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
@@ -631,7 +631,7 @@ def main() -> int:
             return start(have[0], None)
         say()
         for i, c in enumerate(have, 1):
-            say(f"  {i}) {json.loads(c.read_text(encoding='utf-8')).get('model_name', c.stem)}")
+            say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
         say(f"  {len(have) + 1}) install another model / change settings")
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
