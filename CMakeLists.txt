@@ -9,6 +9,9 @@
 # binary that runs and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.0 LANGUAGES CXX)
+# The parity/selftest add_test() calls are unconditional, so enable ctest even when the (unpublished)
+# tests/ suite is absent: `ctest -R parity` must work from a source checkout.
+enable_testing()
 
 # The prebuilt release (setup.py downloads it, so users need no compiler): ggml's CPU backend for any AVX2 CPU
 # instead of this machine's (Strata's own AVX-512 kernels are per-file and chosen at run time either way), and
