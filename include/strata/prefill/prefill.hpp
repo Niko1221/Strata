@@ -23,6 +23,13 @@
 
 namespace strata::prefill {
 
+/// The sections `Prefill::profile` times, in the order a layer runs them.
+enum PrefillSection {
+    kPsPle, kPsHcRead, kPsGdn, kPsQsaProj, kPsQsaIndexer, kPsQsaScores, kPsQsaAttn, kPsQsaOut, kPsHcFfn, kPsRouter,
+    kPsExperts, kPsCombine, kPsCount
+};
+const char* prefill_section_name(int section);
+
 struct PrefillStats {
     int64_t tokens = 0;
     int64_t chunks = 0;
@@ -32,6 +39,7 @@ struct PrefillStats {
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
     double ms_ple = 0;
+    double ms_section[kPsCount] = {};   ///< GPU ms per section, with `Prefill::profile`
 };
 
 class Prefill {
@@ -65,6 +73,10 @@ public:
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;
+
+    /// GPU time per section into `stats().ms_section` (events between the sections; the host waits for the last
+    /// one after every chunk).
+    bool profile = false;
 
 private:
     struct Impl;

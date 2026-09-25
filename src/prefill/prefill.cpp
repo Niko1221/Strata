@@ -4,8 +4,8 @@
 #include "strata/core/layout.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/ngram.hpp"
-#include "strata/kernels/ple.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -109,7 +109,6 @@ struct Prefill::Impl {
     float* ple_emb = nullptr;
     std::vector<float> ple_emb_host;
     std::vector<uint32_t> ple_rows;
-    float* ple_norm = nullptr;
     PrefillStats* stats = nullptr;
 };
 
@@ -188,7 +187,6 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (cudaEventCreateWithFlags(&m.used[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
     }
     m.ple_emb = o.take<float>(T * N, ok);
-    m.ple_norm = o.take<float>((size_t) strata::kernels::NG_HC_DIM, ok);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(NE); m.off.resize(NE + 1);
     m.ple_emb_host.resize(T * N); m.ple_rows.resize(T * strata::kernels::PLE_N_HEADS);
     if (!ok) { err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit"; return false; }
@@ -222,7 +220,6 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     for (int i = 0; i < STAGE; ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
     f(T * N);
-    f((size_t) strata::kernels::NG_HC_DIM);
     return o.used + (8u << 20);   // alignment slack
 }
 
@@ -259,6 +256,15 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+    // --prefill-profile: an event at the start of each section; the time to the next event is charged to it
+    std::vector<std::pair<int, cudaEvent_t>> ev;
+    auto mark = [&](int section) {
+        if (!profile) return;
+        cudaEvent_t e;
+        cudaEventCreate(&e);
+        cudaEventRecord(e, m.cs);
+        ev.push_back({section, e});
+    };
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
@@ -300,22 +306,29 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
             const core::LayerView v(*m.wt, l);
-            // ---- the PLE block at layer 1, token by token (its conv reads the previous tokens' rows)
+            mark(kPsPle);
+            // ---- the PLE block at layer 1: the key and value projections of the chunk, then the decode path's
+            // per-token arithmetic (the conv reads the previous tokens' normalized rows)
             if (l == 1 && ple_on) {
-                const auto tp = Clock::now();
-                for (int64_t t = 0; t < T; ++t) {
-                    strata::kernels::PleOut po;
-                    po.normalized = m.ple_norm;
-                    po.result = m.R + t * D;
-                    try {
-                        strata::kernels::ple_block(m.ple_emb + t * N, m.R + t * D, ss.ple.hist, ss.ple.w, po,
-                                                   ss.ple.scratch, m.cs);
-                    } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
-                    strata::kernels::ple_history_advance(ss.ple.hist, m.ple_norm, m.cs);
+                const strata::kernels::PleWeights& pw = ss.ple.w;
+                to_bf16(m.ple_emb, m.mixed_bf, T * N, m.cs);
+                if (pw.key_bf16 != nullptr) {
+                    m.gemm.bf16(m.mixed_bf, pw.key_bf16, m.xn, T, D, N);
+                } else if (pw.key_native_data != nullptr) {
+                    to_f16(m.ple_emb, m.mixed_h, T * N, m.cs);
+                    m.gemm.native(m.mixed_h, pw.key_native_type, pw.key_native_data, m.xn, T, D, N);
+                } else {
+                    err = "prefill: the PLE key has neither a BF16 nor a native GGUF form (run with --native)";
+                    return false;
                 }
-                stats_.ms_ple += ms_since(tp);
+                m.gemm.bf16(m.mixed_bf, pw.value_bf16, m.bo, T, N, N);
+                try {
+                    strata::kernels::native_ple_postops_tokens(m.xn, m.R, m.bo, ss.ple.hist, pw,
+                                                               {m.qkv, m.hbuf, m.inj, m.gated, m.hbuf, m.R}, (int) T, m.cs);
+                } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
             }
             for (int half = 0; half < 2; ++half) {
+                if (half == 0) mark(kPsHcRead);
                 // ---- the hyper-connection read of this half
                 const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
                 const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
@@ -338,6 +351,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
                                           *wsa = need(v, "ssm_a", err);
                     if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
+                    mark(kPsGdn);
                     float* state = ss.gdn_state + (size_t) gdn_index * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                     if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
@@ -360,6 +374,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wiqn = need(v, "indexer.q_norm.weight", err),
                                           *wikn = need(v, "indexer.k_norm.weight", err);
                     if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                    mark(kPsQsaProj);
                     if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
                     if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
                     if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
@@ -374,17 +389,16 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     rope(m.q, T, 24, 256, 6144, p0, (float) strata::kernels::qsa_freq_base(), m.cs);
                     rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
                     rope(m.q_idx, T, 4, 128, 512, p0, (float) strata::kernels::qsa_freq_base(), m.cs);
-                    // the indexer appends, token by token; then scores + selection for many queries at once:
+                    // the indexer appends of the chunk; then scores + selection for many queries at once:
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
                     const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                    for (int64_t t = 0; t < T; ++t) {
-                        const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
-                        try {
-                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
-                                                                       (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                                                       (float) strata::kernels::qsa_freq_base(), m.cs);
-                        } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
-                    }
+                    mark(kPsQsaIndexer);
+                    try {
+                        strata::kernels::native_qsa_indexer_append_multi(
+                            m.idx_raw, m.steps_dev + strata::kernels::kStepPos, (int) strata::kernels::kStepCount, (int) T, 0,
+                            (const float*) wikn->data, EPS, ib, s, st.max_cells, (float) strata::kernels::qsa_freq_base(), m.cs);
+                    } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
+                    mark(kPsQsaScores);
                     for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
                         const int64_t nb = std::min(m.sel_batch, T - t0);
                         const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
@@ -397,12 +411,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     pools.page_table = st.page_table;
                     if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
                     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+                    mark(kPsQsaAttn);
                     for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                         const int64_t nb = std::min(m.attn_batch, T - t0);
                         strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
                                                                m.steps_dev + t0 * strata::kernels::kStepCount, m.cap, s,
                                                                m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
                     }
+                    mark(kPsQsaOut);
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;
                     ++qsa_index;
@@ -414,6 +430,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wsu = need(v, "ffn_up_shexp.weight", err),
                                           *wsd = need(v, "ffn_down_shexp.weight", err);
                     if (!wr || !wgi || !wsg || !wsu || !wsd) return false;
+                    mark(kPsRouter);
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err)) return false;
                     route(m.logits, m.ids, m.w, T, m.cs);
                     // the shared expert and its scalar gate
@@ -444,6 +461,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     cudaMemcpyAsync(m.slot_dev, m.slot_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                     cudaMemcpyAsync(m.src_dev, m.src_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                     gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
+                    mark(kPsExperts);
                     // the experts, in id order: resident ones from VRAM, the others through the staging ring
                     std::vector<int32_t> order;
                     for (int32_t e = 0; e < NE; ++e) if (m.cnt[(size_t) e] > 0) order.push_back(e);
@@ -509,11 +527,24 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
                         m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                     }
+                    mark(kPsCombine);
                     moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
                 }
                 // ---- the hyper-connection write of this half
+                if (half == 0) mark(kPsHcFfn);
                 gr_write(m.R, m.bo, m.inj, HC, T, m.cs);
             }
+        }
+        if (profile) {
+            mark(kPsPle);
+            cudaEventSynchronize(ev.back().second);
+            for (size_t i = 0; i + 1 < ev.size(); ++i) {
+                float ms = 0;
+                cudaEventElapsedTime(&ms, ev[i].second, ev[i + 1].second);
+                stats_.ms_section[ev[i].first] += ms;
+            }
+            for (auto& e : ev) cudaEventDestroy(e.second);
+            ev.clear();
         }
         stats_.tokens += T;
         if (on_chunk) {
@@ -532,6 +563,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     }
     stats_.ms_total += ms_since(t_start);
     return true;
+}
+
+const char* prefill_section_name(int section) {
+    static const char* const names[kPsCount] = {
+        "PLE block", "HC read (mixer)", "GDN mixer", "QSA projections, norms, KV", "QSA indexer appends",
+        "QSA block scores + top-k", "QSA attention", "QSA gate + output", "HC write + HC read (FFN)",
+        "router, shared, grouping", "experts", "combine + HC write"};
+    return section >= 0 && section < kPsCount ? names[section] : "?";
 }
 
 }  // namespace strata::prefill

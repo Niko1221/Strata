@@ -14,5 +14,9 @@ namespace strata::kernels {
 // default stream, preserving gr_read's existing API; this function never syncs.
 void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* output,
                                  int n_cols, int n_rows, float epsilon, void* stream);
+// The same with gamma holding gamma_rows rows: row r is scaled by gamma row r % gamma_rows (several tokens'
+// rows against one token's gamma).
+void native_gr_rms_norm_weighted_repeat(const float* input, const float* gamma, float* output,
+                                        int n_cols, int n_rows, int gamma_rows, float epsilon, void* stream);
 
 } // namespace strata::kernels

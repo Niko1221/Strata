@@ -1,13 +1,15 @@
-// src/kernels/verify_parity.cpp - the verify window's batched kernels against the kernel sequences they replace.
+// src/kernels/verify_parity.cpp - batched kernels against the per-token kernel sequences they replace.
 //
 // A verify window's token t must come out bit for bit as it would in a window of any other size (the drafts are
 // accepted exactly when greedy decode would have produced them), so every batched kernel is checked BITWISE against
-// the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.
+// the per-token kernels it stands in for, on random inputs that include -0.0, denormals and large values.  The
+// prompt path's batched PLE arithmetic is held to the same standard.
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/native_router.hpp"
@@ -447,6 +449,62 @@ int test_indexer_append(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- the PLE block after its projections: native_ple_postops + ple_history_advance per token  vs
+// native_ple_postops_tokens (chunks shorter and longer than the nine-row history)
+int test_ple_tokens(std::mt19937& rng, cudaStream_t s) {
+    const int N = 2560, D = 10240, H = 4, HIST = 9;
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<float> nk((size_t) D), nq((size_t) D), nc((size_t) D);
+    for (auto* v : {&nk, &nq, &nc})
+        for (auto& x : *v) x = 0.5f + std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+    std::vector<uint16_t> taps((size_t) 4 * D);
+    for (auto& t : taps) {   // F16 in [-1, 1): sign, exponent 0..14, random mantissa
+        const uint16_t sign = (uint16_t) ((rng() & 1u) << 15), e = (uint16_t) (rng() % 15), m = (uint16_t) (rng() & 0x3FFu);
+        t = (uint16_t) (sign | (e << 10) | m);
+    }
+    float *d_nk = dev<float>(D), *d_nq = dev<float>(D), *d_nc = dev<float>(D);
+    uint16_t* d_taps = dev<uint16_t>(taps.size());
+    up(d_nk, nk); up(d_nq, nq); up(d_nc, nc); up(d_taps, taps);
+    strata::kernels::PleWeights w;
+    w.norm_key = d_nk; w.norm_query = d_nq; w.norm_conv = d_nc; w.conv1d_f16 = d_taps;
+    int bad = 0;
+    for (int n_tok : {1, 2, 5, 9, 10, 23}) {
+        std::vector<float> key((size_t) n_tok * D), hidden((size_t) n_tok * D), value((size_t) n_tok * N),
+            hist((size_t) HIST * D);
+        for (auto& x : key) x = edgy(rng);
+        for (auto& x : hidden) x = edgy(rng);
+        for (auto& x : value) x = nd(rng);
+        for (auto& x : hist) x = nd(rng);
+        float *d_key = dev<float>(key.size()), *d_hidden = dev<float>(hidden.size()), *d_value = dev<float>(value.size());
+        up(d_key, key); up(d_hidden, hidden); up(d_value, value);
+        // per token: the decode path's calls
+        float *h0 = dev<float>(hist.size()), *r0 = dev<float>(hidden.size());
+        float *k1 = dev<float>(D), *q1 = dev<float>(D), *g1 = dev<float>(H), *gd1 = dev<float>(D), *c1 = dev<float>(D);
+        up(h0, hist);
+        for (int t = 0; t < n_tok; ++t) {
+            const strata::kernels::NativePlePostopsBuffers b{k1, q1, g1, gd1, q1, c1, r0 + (size_t) t * D};
+            strata::kernels::native_ple_postops(d_key + (size_t) t * D, d_hidden + (size_t) t * D,
+                                                d_value + (size_t) t * N, h0, w, b, s);
+            strata::kernels::ple_history_advance(h0, q1, s);
+        }
+        // the chunk at once
+        float *h2 = dev<float>(hist.size()), *r2 = dev<float>(hidden.size()), *k2 = dev<float>(key.size()),
+              *q2 = dev<float>(key.size()), *g2 = dev<float>((size_t) n_tok * H), *gd2 = dev<float>(key.size());
+        up(h2, hist);
+        strata::kernels::native_ple_postops_tokens(d_key, d_hidden, d_value, h2, w, {k2, q2, g2, gd2, q2, r2}, n_tok, s);
+        check(cudaStreamSynchronize(s), "ple tokens");
+        const int br = bitwise_diff(down(r0, hidden.size()), down(r2, hidden.size()), "result");
+        const int bh = bitwise_diff(down(h0, hist.size()), down(h2, hist.size()), "history");
+        if (br || bh) std::fprintf(stderr, "ple tokens: n_tok %d: result or history differ\n", n_tok);
+        bad += br + bh;
+        for (float* p : {d_key, d_hidden, d_value, h0, r0, k1, q1, g1, gd1, c1, h2, r2, k2, q2, g2, gd2}) cudaFree(p);
+    }
+    for (float* p : {d_nk, d_nq, d_nc}) cudaFree(p);
+    cudaFree(d_taps);
+    std::printf("ple_postops_tokens: %s\n", bad ? "MISMATCH" : "bitwise equal (1-23 tokens, results and history)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -467,6 +525,7 @@ int main(int argc, char** argv) {
     bad += test_rope_tokens(rng, s);
     bad += test_kv_append(rng, s);
     bad += test_indexer_append(rng, s);
+    bad += test_ple_tokens(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;

@@ -245,6 +245,7 @@ struct Options {
     bool spec_split = false;   ///< opt-in split verify window (the overlap study: exact, ~7% slower)
     bool window_profile = false;   ///< GPU timestamps between the verify window's stages, printed by --stats
     std::string window_hashes;     ///< per verify window: a hash of its final residual rows and its argmaxes
+    bool prefill_profile = false;  ///< GPU time per section of the batched prompt path
     /// Plan v0.3 P8: stay resident and take requests on stdin (see the --serve block in main).
     bool serve = false;
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
@@ -359,11 +360,13 @@ void usage() {
                  "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
                  "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
                  "  --stats              print the per-stage breakdown\n"
-                 "  --window-hashes PATH per verify window, a line with its size, a 64-bit hash of its final residual\n"
-                 "                       rows and its argmaxes: two builds that do the same arithmetic write the same\n"
-                 "                       file (fixed text through --spec-follow, --adapt-every 0; not --serve)\n"
+                 "  --window-hashes PATH per verify window, a line with its round, first position and size, a 64-bit hash\n"
+                 "                       of its final residual rows and its argmaxes: two builds that do the same\n"
+                 "                       arithmetic write the same file (fixed text through --spec-follow,\n"
+                 "                       --adapt-every 0; not --serve)\n"
                  "  --window-profile     with --stats: the GPU time of each stage of the verify window (timestamps\n"
                  "                       inside the graph; each costs ~2 us)\n"
+                 "  --prefill-profile    the GPU time of each section of the batched prompt path (not --serve)\n"
                  "  --gpu-stages         R0.9: capture the layer as three graphs (mixer / ffn+router / post)\n"
                  "                       and time them from OUTSIDE the capture.  The per-stage table on the\n"
                  "                       real graph that --stage-timing cannot give.  Prints and exits.\n"
@@ -600,6 +603,7 @@ int main(int argc, char** argv) {
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--window-profile") o.window_profile = true;
+        else if (a == "--prefill-profile") o.prefill_profile = true;
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -2374,6 +2378,7 @@ int main(int argc, char** argv) {
                 return mtp.prefill(R_rows, nxt.data(), T, p0, e);
             };
         }
+        prefill.profile = o.prefill_profile;
         const Clock::time_point tp0 = Clock::now();
         const int64_t n_batched = (o.prefill_until > 0 && o.prefill_until < n_prompt - 1) ? o.prefill_until : n_prompt - 1;
         if (!prefill.run(o.tokens.data(), n_batched, 0, err)) {
@@ -2409,6 +2414,13 @@ int main(int argc, char** argv) {
                      (long long) ps.tokens, (long long) ps.chunks, ps.ms_total,
                      ps.ms_total > 0 ? 1000.0 * (double) ps.tokens / ps.ms_total : 0.0, (long long) ps.experts_streamed,
                      (long long) ps.experts_dma, ps.ms_experts_host, (long long) ps.experts_resident, ps.ms_ple);
+        if (o.prefill_profile) {
+            std::fprintf(stderr, "strata generate: prefill GPU ms by section:");
+            for (int i = 0; i < strata::prefill::kPsCount; ++i)
+                std::fprintf(stderr, "%s %s %.0f", i ? ";" : "", strata::prefill::prefill_section_name(i),
+                             ps.ms_section[i]);
+            std::fprintf(stderr, "\n");
+        }
     }
 
     for (int64_t pos = pos_start;; ++pos) {
@@ -2747,7 +2759,7 @@ int main(int argc, char** argv) {
                 uint64_t h = 1469598103934665603ull;
                 const auto* bytes = (const uint8_t*) hash_rows.data();
                 for (size_t i = 0; i < n_floats * sizeof(float); ++i) h = (h ^ bytes[i]) * 1099511628211ull;
-                std::fprintf(hashes, "%lld %d %016llx", (long long) rounds, T, (unsigned long long) h);
+                std::fprintf(hashes, "%lld %lld %d %016llx", (long long) rounds, (long long) p, T, (unsigned long long) h);
                 for (int i = 0; i < T; ++i) std::fprintf(hashes, " %d", (int) outv[(size_t) i]);
                 std::fprintf(hashes, "\n");
             }

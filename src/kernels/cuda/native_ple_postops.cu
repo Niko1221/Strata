@@ -86,6 +86,43 @@ __global__ void conv_residual_kernel(const float* history, const float* normaliz
     // Exact hidden/result alias is safe: each thread owns one element.
     result[c] = __fadd_rn(hidden[c], __fadd_rn(gated[c], activation));
 }
+// n_tok tokens: token t's taps read the normalized rows of tokens t-9, t-6 and t-3 (history rows t, t+3 and t+6
+// before the chunk while those tokens precede it) and its own.
+__global__ void broadcast_tokens_kernel(const float* value, const float* gate, float* gated, int n_tok) {
+    const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < size_t(n_tok) * D) gated[i] = __fmul_rn(value[i / D * N + i % N], gate[i / N]);
+}
+__global__ void conv_residual_tokens_kernel(const float* history, const float* normalized,
+                                           const uint16_t* weights, const float* hidden,
+                                           const float* gated, float* result, int n_tok) {
+    const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= size_t(n_tok) * D) return;
+    const int t = int(i / D), c = int(i % D);
+    float sum = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const int j = t - HISTORY + 3 * k;
+        const float x = j >= 0 ? normalized[size_t(j) * D + c] : history[c * HISTORY + j + HISTORY];
+        const float w = __half2float(__ushort_as_half(weights[c * 4 + k]));
+        const float term = __fmul_rn(x, w);
+        sum = k == 0 ? term : __fadd_rn(sum, term);
+    }
+    const float activation = sum / (1.0f + expf(-sum));
+    result[i] = __fadd_rn(hidden[i], __fadd_rn(gated[i], activation));
+}
+// The history after the chunk: its last nine normalized rows, older rows moved up when the chunk is shorter.
+__global__ void history_tokens_kernel(float* history, const float* normalized, int n_tok) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= D) return;
+    float old[HISTORY];
+#pragma unroll
+    for (int r = 0; r < HISTORY; ++r) old[r] = history[c * HISTORY + r];
+#pragma unroll
+    for (int r = 0; r < HISTORY; ++r) {
+        const int j = n_tok - HISTORY + r;
+        history[c * HISTORY + r] = j >= 0 ? normalized[size_t(j) * D + c] : old[r + n_tok];
+    }
+}
 struct Span { const void* p; size_t bytes; size_t alignment; };
 bool overlaps(Span a, Span b) {
     const auto x = reinterpret_cast<uintptr_t>(a.p), y = reinterpret_cast<uintptr_t>(b.p);
@@ -129,6 +166,39 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     launch_check();
     native_gr_rms_norm_weighted(b.gated,w.norm_conv,b.normalized,N,H,NG_RMS_EPS,stream);
     conv_residual_kernel<<<D/256,256,0,st>>>(history,b.normalized,w.conv1d_f16,hidden,b.gated,b.conv,b.result);
+    launch_check();
+}
+
+void native_ple_postops_tokens(const float* projected_key, const float* hidden, const float* value, float* history,
+                               const PleWeights& w, const NativePleTokensBuffers& b, int n_tok, void* stream) {
+    if (!stream || n_tok < 1) throw std::invalid_argument("native PLE postops: tokens need a stream and n_tok >= 1");
+    const size_t rows = size_t(n_tok) * D * 4;
+    const Span inputs[] = {{projected_key,rows,4}, {hidden,rows,4}, {value,size_t(n_tok)*N*4,4},
+        {history,HISTORY*D*4,4}, {w.norm_key,D*4,4}, {w.norm_query,D*4,4},
+        {w.norm_conv,D*4,4}, {w.conv1d_f16,4*D*2,2}};
+    const Span outputs[] = {{b.key,rows,4}, {b.query,rows,4}, {b.gate,size_t(n_tok)*H*4,4},
+        {b.gated,rows,4}, {b.normalized,rows,4}, {b.result,rows,4}};
+    for (const auto& span : inputs) validate(span);
+    for (const auto& span : outputs) validate(span);
+    for (size_t i = 0; i < 6; ++i) {
+        for (size_t j = 0; j < 8; ++j)
+            if (!(i == 5 && j == 1 && b.result == hidden) && overlaps(outputs[i], inputs[j]))
+                throw std::invalid_argument("native PLE postops output overlaps an input, the history or a weight");
+        for (size_t j = i + 1; j < 6; ++j)
+            if (!(i == 1 && j == 4 && b.query == b.normalized) && overlaps(outputs[i], outputs[j]))
+                throw std::invalid_argument("native PLE postops writable spans overlap");
+    }
+    const int R = H * n_tok;
+    const unsigned blocks = unsigned((size_t(n_tok) * D + 255) / 256);
+    auto st = static_cast<cudaStream_t>(stream);
+    native_gr_rms_norm_weighted_repeat(projected_key,w.norm_key,b.key,N,R,H,NG_RMS_EPS,stream);
+    native_gr_rms_norm_weighted_repeat(hidden,w.norm_query,b.query,N,R,H,NG_RMS_EPS,stream);
+    gate_kernel<<<R,512,0,st>>>(b.key,b.query,b.gate,1.0f / std::sqrt(float(N)));
+    broadcast_tokens_kernel<<<blocks,256,0,st>>>(value,b.gate,b.gated,n_tok);
+    launch_check();
+    native_gr_rms_norm_weighted_repeat(b.gated,w.norm_conv,b.normalized,N,R,H,NG_RMS_EPS,stream);
+    conv_residual_tokens_kernel<<<blocks,256,0,st>>>(history,b.normalized,w.conv1d_f16,hidden,b.gated,b.result,n_tok);
+    history_tokens_kernel<<<D/256,256,0,st>>>(history,b.normalized,n_tok);
     launch_check();
 }
 } // namespace strata::kernels
