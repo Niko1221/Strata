@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gr.cu - see include/strata/kernels/fused_gr.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/bf16_bits.hpp"
+#include "xor_scatter.cuh"
 
 #include <cuda_runtime.h>
 
@@ -274,68 +275,72 @@ __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
 
 constexpr int UPM_COLS = 16;                      // columns per block (x 4 streams = 64 rows, 8 per warp)
 constexpr int UPM_BLOCKS = N / UPM_COLS;          // 160
-constexpr int UPM_RPW = 2;                        // rows a warp has in flight at once
+constexpr int UPM_ROWS = HC * UPM_COLS / WARPS;   // rows a warp
 
-// `gr_up_kernel` for T tokens: each row of w_up read once, two rows per warp in flight; the lo vectors staged split
-// into chunk halves; the T dots of a row reduced by xor so every lane holds every sum, and lane k runs token k's
-// epilogue - the T epilogues in parallel instead of one after another.
+// `gr_up_kernel` for TT tokens: each row of w_up read once, RW rows a warp at a time; the TT x RW dots of those rows
+// summed by one xor tree (xor_scatter, each sum bitwise warp_sum's) and every (row, token) epilogue on the lane holding
+// its sum, its inputs fetched while the dots run.  The lo vectors are staged split into chunk halves.
+template <int TT>
 __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
-    __shared__ __align__(16) float4 lo4[kFusedGrMaxT][2][LR / 8];
-    __shared__ float g[kFusedGrMaxT][HC][UPM_COLS];
+    constexpr int RW = TT <= 4 ? 4 : 2;
+    constexpr int NV = pow2_at_least(TT * RW);    // sums a lane reduces, zero-padded
+    constexpr int LPV = 32 / NV;                  // lanes that end up holding each sum
+    __shared__ __align__(16) float4 lo4[TT][2][LR / 8];
+    __shared__ float g[TT][HC][UPM_COLS];
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
-    const int T = m.T;
     const int d0 = blockIdx.x * UPM_COLS;
-    for (int i = t; i < T * LR / 4; i += THREADS) {
+    for (int i = t; i < TT * LR / 4; i += THREADS) {
         const int k = i / (LR / 4), f = i - k * (LR / 4);
         lo4[k][f & 1][f >> 1] = reinterpret_cast<const float4*>(m.a[k].lo)[f];
     }
     __syncthreads();
-    for (int r0 = warp * UPM_RPW; r0 < HC * UPM_COLS; r0 += WARPS * UPM_RPW) {
-        uint4 wa[UPM_RPW], wb[UPM_RPW];
-        // the epilogue inputs of this lane's token, fetched while the dots run
-        float rv[UPM_RPW], wn[UPM_RPW], rsc[UPM_RPW], bo[UPM_RPW], ip[UPM_RPW];
-        bool apply = false;
+    const int vi = xor_scatter_index<NV>(lane);   // the sum this lane ends with: row vi / TT, token vi % TT
+    const int vq = vi / TT, vk = vi - vq * TT;
+    const bool epi = (lane & (LPV - 1)) == 0 && vi < TT * RW;
+    for (int r0 = warp * UPM_ROWS; r0 < (warp + 1) * UPM_ROWS; r0 += RW) {
+        uint4 wa[RW], wb[RW];
 #pragma unroll
-        for (int q = 0; q < UPM_RPW; ++q) {
+        for (int q = 0; q < RW; ++q) {
             const int r = r0 + q, c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
             const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
             wa[q] = __ldg(w4 + lane);
             wb[q] = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
-            rv[q] = wn[q] = rsc[q] = bo[q] = ip[q] = 0.0f;
-            if (lane < T) {
-                const FusedGrArgs& a = m.a[lane];
-                rv[q] = a.R[i];
-                wn[q] = a.w_norm[i];
-                rsc[q] = a.rs[c];
-                apply = a.apply;
-                if (apply) { bo[q] = a.bo_prev[d0 + dd]; ip[q] = a.inj_prev[c]; }
-            }
         }
+        const int er = r0 + vq, ec = er / UPM_COLS, edd = er - ec * UPM_COLS, ei = ec * N + d0 + edd;
+        float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f;
+        bool apply = false;
+        if (epi) {
+            const FusedGrArgs& a = m.a[vk];
+            rv = a.R[ei];
+            wn = a.w_norm[ei];
+            rsc = a.rs[ec];
+            apply = a.apply;
+            if (apply) { bo = a.bo_prev[d0 + edd]; ip = a.inj_prev[ec]; }
+        }
+        float v[NV];
 #pragma unroll
-        for (int q = 0; q < UPM_RPW; ++q) {
-            const int r = r0 + q, c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
-            float mine = 0.0f;
+        for (int q = 0; q < RW; ++q)
 #pragma unroll
-            for (int k = 0; k < kFusedGrMaxT; ++k) {
-                if (k >= T) break;
+            for (int k = 0; k < TT; ++k) {
                 float acc = dot8h(wa[q], lo4[k][0][lane], lo4[k][1][lane]);
                 if (lane < LR / 8 - 32) acc += dot8h(wb[q], lo4[k][0][32 + lane], lo4[k][1][32 + lane]);
-                acc = warp_sum(acc);
-                if (lane == k) mine = acc;
+                v[q * TT + k] = acc;
             }
-            if (lane < T) {
-                float x = rv[q];
-                if (apply) {
-                    x = fmaf(bo[q], 2.0f * sigmoidf_(ip[q] / (float) HC), x);
-                    m.a[lane].R_out[i] = x;
-                }
-                const float y = x * wn[q] * rsc[q];
-                g[lane][c][dd] = y * sigmoidf_(mine);
+#pragma unroll
+        for (int e = TT * RW; e < NV; ++e) v[e] = 0.0f;
+        xor_scatter<NV>(v, lane);
+        if (epi) {
+            float x = rv;
+            if (apply) {
+                x = fmaf(bo, 2.0f * sigmoidf_(ip / (float) HC), x);
+                m.a[vk].R_out[ei] = x;
             }
+            const float y = x * wn * rsc;
+            g[vk][ec][edd] = y * sigmoidf_(v[0]);
         }
     }
     __syncthreads();
-    for (int i = t; i < T * UPM_COLS; i += THREADS) {
+    for (int i = t; i < TT * UPM_COLS; i += THREADS) {
         const int k = i / UPM_COLS, col = i - k * UPM_COLS;
         float s = 0.0f;
 #pragma unroll
@@ -377,7 +382,11 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         gr_down_multi_kernel<320><<<DOWN_BLOCKS + 1, THREADS, (size_t) 2 * n_tok * 2 * 320 * sizeof(float4), st>>>(m);
     else
         gr_down_multi_kernel<160><<<DOWN_BLOCKS + 1, THREADS, (size_t) 2 * n_tok * 2 * 160 * sizeof(float4), st>>>(m);
-    gr_up_multi_kernel<<<UPM_BLOCKS, THREADS, 0, st>>>(m);
+    switch (n_tok) {
+#define STRATA_UP(T) case T: gr_up_multi_kernel<T><<<UPM_BLOCKS, THREADS, 0, st>>>(m); break;
+        STRATA_UP(1) STRATA_UP(2) STRATA_UP(3) STRATA_UP(4) STRATA_UP(5) STRATA_UP(6) STRATA_UP(7) STRATA_UP(8)
+#undef STRATA_UP
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
