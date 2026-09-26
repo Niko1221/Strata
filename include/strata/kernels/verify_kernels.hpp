@@ -57,6 +57,13 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
+/// The main GPU's share of a verify window's layer, decided on the device: the entries of `ids` (n = tokens * k,
+/// n <= 128) whose expert its VRAM tier holds (`res[e]` = slot, else < 0; `slot_ptr[slot]` = the slot's address).  One
+/// group per distinct resident expert, in the order of their first entries, its entries in routing order; written in
+/// the plan block's layout (`Verifier`): counts [groups, entries, 0, 0] | start (cap + 1) | dst (cap) | tok (cap) |
+/// ptr (cap u64, at int32 offset `ptr_off`).
+void verify_hit_plan(const int32_t* ids, int n, int k, const int32_t* res, int n_expert,
+                     const unsigned long long* slot_ptr, int32_t* plan, int64_t cap, int64_t ptr_off, void* stream);
 
 // ---- the MTP draft layer (src/core/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).

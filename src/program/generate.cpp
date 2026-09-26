@@ -2265,8 +2265,10 @@ int main(int argc, char** argv) {
         mem_mark("the head and the prompt path");
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
-        vh.d_res = thits.d_res;
+        vh.res = host_res.data();
         vh.cache_base = thits.cache_base;
+        vh.slot_off = xcache.slot_offsets();
+        vh.slots = xcache.slots();
         vh.blob = thits.blob;
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err) ||
             !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
@@ -2281,6 +2283,7 @@ int main(int argc, char** argv) {
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         prefill.draft = &mtp;
         drive.d.plan = ver.plan_sink();
+        drive.d.host_res = ver.residency();   // the snapshot the windows decide their GPU hits by
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
         ver.set_pcie_share(drive.d.pcie_num > 0);
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
@@ -2963,8 +2966,10 @@ int main(int argc, char** argv) {
         mem_mark("the head and the prompt path");
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
-        vh.d_res = thits.d_res;
+        vh.res = host_res.data();
         vh.cache_base = thits.cache_base;
+        vh.slot_off = xcache.slot_offsets();
+        vh.slots = xcache.slots();
         vh.blob = thits.blob;
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -2983,6 +2988,7 @@ int main(int argc, char** argv) {
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         drive.d.plan = ver.plan_sink();
+        drive.d.host_res = ver.residency();   // the snapshot the windows decide their GPU hits by
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
         if (drive.d.pcie_num > 256) drive.d.pcie_num = 256;
@@ -3195,6 +3201,7 @@ int main(int argc, char** argv) {
         if (use_mtp && rounds > 0)
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, (double) mtp.vram_bytes() / 1048576.0);
+        drive.d.host_res = host_res.data();   // the verifier's snapshot goes with it
     }
 
     if (dump != nullptr && std::fclose(dump) != 0) {

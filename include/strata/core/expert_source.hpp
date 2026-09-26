@@ -63,23 +63,22 @@ public:
     virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return nullptr; }
 };
 
-/// Plan v0.3 P6: what the GPU computes in a verify window's layer, written by the pool (mapped host memory) right
-/// after the ring and published before the CPU starts its own share.  Groups of entries that share a blob; the
-/// blob is a VRAM slot or a pinned host blob read over PCIe.
+/// Plan v0.3 P6: the PCIe share of a verify window's layer - missed experts the main GPU reads over PCIe - written by
+/// the pool (mapped host memory) right after the ring and published before the CPU starts its own share.  (The
+/// experts in its VRAM tier the window decides itself, from the residency the pool reads too.)  Groups of entries
+/// that share a blob: `ptr2[q]` is staging slot q (DMA) or the arena's device alias, its entries dst/tok
+/// [start2[q], start2[q + 1]).  counts[1] = entries, counts[2] = groups.
 struct GpuPlanSink {
-    int32_t* counts = nullptr;             ///< [0] groups, [1] entries
-    int32_t* start = nullptr;              ///< cap + 1
+    int32_t* counts = nullptr;
     int32_t* dst = nullptr;                ///< cap: the entry's row of parts (token * k + j)
     int32_t* tok = nullptr;                ///< cap: the entry's token
-    unsigned long long* ptr = nullptr;     ///< cap: the group's blob, device address
-    /// Plan v0.3 P6 (DMA): the PCIe share is a second list of groups - `ptr2[q]` is staging slot q, `start2` indexes
-    /// the same dst/tok entries - computed by the GPU after `fetch` has copied their blobs into staging with the
-    /// copy engine.  counts[0] = VRAM groups, counts[1] = all entries, counts[2] = PCIe groups.
-    unsigned long long* ptr2 = nullptr;
-    int32_t* start2 = nullptr;
+    unsigned long long* ptr2 = nullptr;    ///< cap
+    int32_t* start2 = nullptr;             ///< cap + 1
     unsigned long long staging = 0;
     int64_t staging_cap = 0;
     int64_t cap = 0;
+    /// Whether the window takes a PCIe share (`--pcie-frac` > 0): the pool publishes one every layer, else none.
+    bool pcie = false;
     void (*publish)(void* ctx) = nullptr;
     /// Starts the DMA copies of `n` host blobs (pinned) into staging slots 0..n-1 and signals the GPU when they land.
     void (*fetch)(void* ctx, const uint8_t* const* src, int n, size_t bytes) = nullptr;
@@ -156,9 +155,9 @@ struct ExpertDispatch {
     /// so the decision is made exactly once, on this layer's ids, and neither side can re-decide it.
     std::vector<uint8_t> is_hit;
     bool decided = false;
-    /// Plan v0.3 P4 token graph: the STATIC residency table (`n_layers x n_expert`, slot or -1), the host's copy
-    /// of what the device hit path reads.  When set, the pool leaves a resident expert's row at zero (the GPU
-    /// computes it) without any `Launch` callback.
+    /// Plan v0.3 P4 token graph: the residency table (`n_layers x n_expert`, slot or -1), the host's copy of what the
+    /// device hit path reads (in verify windows `Verifier::residency`).  When set, the pool leaves a resident
+    /// expert's row to the GPU without any `Launch` callback.
     const int32_t* host_res = nullptr;
     /// Plan v0.3 P4: split every expert by rows across the pool's threads (default on; A/B `--no-split-rows`).
     bool split_rows = true;
@@ -205,8 +204,8 @@ struct ExpertDispatch {
     std::vector<uint8_t> nact_multi;
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs_multi;
     std::vector<int16_t> job_of;
-    /// Plan v0.3 P6: the verify window's GPU plan (VRAM hits + the PCIe share of the misses); `pcie_num`/256 of
-    /// each layer's distinct missed experts (the last ones in routing order) are read by the GPU over PCIe.
+    /// Plan v0.3 P6: the verify window's PCIe share; `pcie_num`/256 of each layer's distinct missed experts (the last
+    /// ones in routing order) are read by the GPU over PCIe.
     GpuPlanSink* plan = nullptr;
     int pcie_num = 0;
     int64_t pcie_experts = 0;      ///< distinct experts the GPU read over PCIe in verify windows
@@ -249,7 +248,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
 /// Plan v0.3 P6: the pool for a verify window of `n_tok` tokens.  `x_f` is (n_tok, n_embd), `ids` (n_tok, k) and
 /// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it;
-/// resident experts' rows are zeroed (the GPU adds them).  Requires `host_res` (the token-graph residency).
+/// resident experts' rows are the main GPU's (zeroed, or left unwritten with `GpuPlanSink::host_rows_only`).
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out);
 /// Copies `layer`'s likeliest experts that neither GPU holds to the second GPU's prefetch slots, where that layer's

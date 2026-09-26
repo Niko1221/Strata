@@ -281,9 +281,19 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (!d.routed.empty())
         for (int64_t i = 0; i < n_tok * k; ++i)
             if (ids[i] >= 0 && ids[i] < d.n_expert) ++d.routed[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]];
-    // ---- plan v0.3 P6: the GPU's share, decided and published FIRST so the GPU starts while the CPU works.
-    // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
+    // ---- plan v0.3 P6: who computes each routed entry.  Distinct experts in routing order: the ones the main GPU's
+    // VRAM tier holds are its own (the window decides them itself, from the same residency), the second GPU's when it
+    // takes this layer, the last pcie_num/256 of the rest the PCIe share (published FIRST, so the GPU reads them while
+    // the CPU works), the others the CPU's.
     const int64_t n = n_tok * k;
+    if (n > 128) {
+        d.failed = true;
+        d.fail = "a verify window routes more than 128 entries";
+        d.fail_layer = d.layers;
+        return;
+    }
+    const int32_t* res = d.host_res != nullptr ? d.host_res + (size_t) d.layers * (size_t) d.n_expert : nullptr;
+    auto in_vram = [&](int32_t e) { return res != nullptr && res[e] >= 0; };   // e in range
     int32_t kind[128];                     // per entry: -1 CPU, 0 VRAM, 1 PCIe, 2 the second GPU
     // the second GPU's share: group g = the expert in its slot g2_slot[g], entries g2_ent[g2_start[g] ..)
     int n2g = 0, n2e = 0;
@@ -296,17 +306,22 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         return p >= 0 ? -2 - p : -1;
     };
     auto on_gpu2 = [&](int32_t e) { return slot2(e) != -1; };
+    int64_t distinct[128], first_of[128];
+    int nd = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        first_of[i] = i;
+        for (int64_t j = 0; j < i; ++j)
+            if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
+        if (first_of[i] == i) distinct[nd++] = i;
+    }
     // The second GPU takes this layer's share only when the layer's misses are big enough that the CPU would need
     // longer for all of them than its round trip (~100 us: ~4 MB of experts at the pool's ~45 GB/s); otherwise it
     // would only add its latency.
     if (d.gpu2 != nullptr) {
         uint64_t miss_bytes = 0, gpu2_bytes = 0;
-        for (int64_t i = 0; i < n_tok * k; ++i) {
-            const int32_t e = ids[i];
-            if (e < 0 || e >= d.n_expert || d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) continue;
-            bool first = true;
-            for (int64_t j = 0; j < i && first; ++j) first = ids[j] != e;
-            if (!first) continue;
+        for (int q = 0; q < nd; ++q) {
+            const int32_t e = ids[distinct[q]];
+            if (e < 0 || e >= d.n_expert || in_vram(e)) continue;
             miss_bytes += lay.blob_bytes(d.layers);
             if (on_gpu2(e)) gpu2_bytes += lay.blob_bytes(d.layers);
         }
@@ -314,103 +329,74 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (gpu2_bytes > 0 && !d.gpu2_used) ++d.gpu2_skipped;
     }
     auto on_gpu2_now = [&](int32_t e) { return d.gpu2_used && on_gpu2(e); };
-    if (d.plan != nullptr && n <= 128 && n <= d.plan->cap) {
-        int64_t distinct[128], first_of[128];
-        int nd = 0, nmiss = 0;
-        for (int64_t i = 0; i < n; ++i) {
-            first_of[i] = i;
-            for (int64_t j = 0; j < i; ++j)
-                if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
-            if (first_of[i] == i) {
-                distinct[nd++] = i;
-                const int32_t e = ids[i];
-                if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
-                    !on_gpu2_now(e))
-                    ++nmiss;
-            }
-        }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->device_alias(d.layers, 0) != nullptr;
-        const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
-        int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
-        GpuPlanSink& P = *d.plan;
-        const uint8_t* dma_src[64];
-        int64_t pcie_i0[64];
-        for (int q = 0; q < nd; ++q) {
-            const int64_t i0 = distinct[q];
-            const int32_t e = ids[i0];
-            int kd = -1;
-            unsigned long long ptr = 0;
-            if (e >= 0 && e < d.n_expert) {
-                const int32_t slot = d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e];
-                if (slot >= 0) {
-                    kd = 0;
-                    ptr = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
-                                                                                 : (size_t) slot * (size_t) d.cache_blob));
-                } else if (on_gpu2_now(e)) {
-                    kd = 2;
-                    g2_slot[n2g] = slot2(e);
-                    g2_start[n2g++] = n2e;
-                    for (int64_t i = i0; i < n; ++i)
-                        if (first_of[i] == i0) g2_ent[n2e++] = (int32_t) i;
-                } else {
-                    if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
-                        const uint8_t* src = d.src->blob(d.layers, e);
-                        if (src != nullptr && d.src->pinned(d.layers, e)) {
-                            kd = 1;
-                            dma_src[fetches] = src;
-                            pcie_i0[fetches] = i0;
-                            ++fetches;
-                        }
+    GpuPlanSink* P = d.plan != nullptr && d.plan->pcie && n <= d.plan->cap ? d.plan : nullptr;
+    int nmiss = 0;
+    for (int q = 0; q < nd; ++q) {
+        const int32_t e = ids[distinct[q]];
+        if (e >= 0 && e < d.n_expert && !in_vram(e) && !on_gpu2_now(e)) ++nmiss;
+    }
+    const bool pcie_ok = P != nullptr && d.pcie_num > 0 && d.src->device_alias(d.layers, 0) != nullptr;
+    const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
+    int miss_rank = 0, fetches = 0;
+    const uint8_t* dma_src[64];
+    int64_t pcie_i0[64];
+    for (int q = 0; q < nd; ++q) {
+        const int64_t i0 = distinct[q];
+        const int32_t e = ids[i0];
+        int kd = -1;
+        if (e >= 0 && e < d.n_expert) {
+            if (in_vram(e)) {
+                kd = 0;
+            } else if (on_gpu2_now(e)) {
+                kd = 2;
+                g2_slot[n2g] = slot2(e);
+                g2_start[n2g++] = n2e;
+                for (int64_t i = i0; i < n; ++i)
+                    if (first_of[i] == i0) g2_ent[n2e++] = (int32_t) i;
+            } else {
+                if (pcie_ok && miss_rank >= nmiss - m && fetches < P->staging_cap && fetches < 64) {
+                    const uint8_t* src = d.src->blob(d.layers, e);
+                    if (src != nullptr && d.src->pinned(d.layers, e)) {
+                        kd = 1;
+                        dma_src[fetches] = src;
+                        pcie_i0[fetches] = i0;
+                        ++fetches;
                     }
-                    ++miss_rank;
                 }
+                ++miss_rank;
             }
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) kind[i] = kd;
-            if (kd != 0) continue;                 // the VRAM groups first; the PCIe groups below
-            P.ptr[groups] = ptr;
-            P.start[groups] = entries;
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
-                    ++entries;
-                }
-            ++groups;
         }
-        P.start[groups] = entries;
+        for (int64_t i = i0; i < n; ++i)
+            if (first_of[i] == i0) kind[i] = kd;
+    }
+    g2_start[n2g] = n2e;
+    if (P != nullptr) {                          // the PCIe groups: staging slot q, their entries in routing order
         const uint64_t bb = lay.blob_bytes(d.layers);
-        for (int q = 0; q < fetches; ++q) {       // the PCIe groups: staging slot q, entries after the VRAM ones
+        int entries = 0;
+        for (int q = 0; q < fetches; ++q) {
             const int64_t i0 = pcie_i0[q];
-            P.ptr2[q] = P.pcie_mode != 0 ? (unsigned long long) d.src->device_alias(d.layers, ids[i0])
-                                 : P.staging + (unsigned long long) q * (unsigned long long) bb;
-            P.start2[q] = entries;
+            P->ptr2[q] = P->pcie_mode != 0 ? (unsigned long long) d.src->device_alias(d.layers, ids[i0])
+                                           : P->staging + (unsigned long long) q * (unsigned long long) bb;
+            P->start2[q] = entries;
             for (int64_t i = i0; i < n; ++i)
                 if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
+                    P->dst[entries] = (int32_t) i;
+                    P->tok[entries] = (int32_t) (i / k);
                     ++entries;
                 }
             ++d.pcie_experts;
         }
-        P.start2[fetches] = entries;
-        P.counts[0] = groups;
-        P.counts[1] = entries;
-        P.counts[2] = fetches;
+        P->start2[fetches] = entries;
+        P->counts[0] = 0;
+        P->counts[1] = entries;
+        P->counts[2] = fetches;
         std::atomic_thread_fence(std::memory_order_seq_cst);
         pt("publish", fetches);
-        if (P.publish) P.publish(P.ctx);
+        if (P->publish) P->publish(P->ctx);
         pt("fetch", fetches);
-        if (P.fetch) P.fetch(P.ctx, dma_src, P.pcie_mode != 0 ? 0 : fetches, (size_t) bb);   // the copy engine, beside the CPU's work
-        g2_start[n2g] = n2e;
-    } else {
-        for (int64_t i = 0; i < n; ++i) {
-            const int32_t e = ids[i];
-            kind[i] = (e >= 0 && e < d.n_expert && d.host_res != nullptr &&
-                       d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0 : -1;
-        }
+        if (P->fetch) P->fetch(P->ctx, dma_src, P->pcie_mode != 0 ? 0 : fetches, (size_t) bb);   // the copy engine, beside the CPU's work
     }
-    const bool skip_gpu_rows = d.plan != nullptr && d.plan->host_rows_only && n <= 128 && n <= d.plan->cap;
+    const bool skip_gpu_rows = d.plan != nullptr && d.plan->host_rows_only;
     const auto c1 = std::chrono::steady_clock::now();
     if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);

@@ -48,15 +48,16 @@ constexpr int kMaxK = 15;
 // loads its k values (the host's over PCIe, all in flight at once) and sums them as `combine` does.
 __global__ void gather_combine(const float* __restrict__ gpu_rows, const float* host_rows,
                                const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
+                               const int32_t* __restrict__ dst2, const int32_t* __restrict__ count2,
                                const float* __restrict__ weights, const float* __restrict__ shared,
                                float* __restrict__ output, int64_t n_embd, int k) {
     __shared__ unsigned on_gpu;   // bit j: row t*k + j is the GPU's
     const int t = blockIdx.y;
     if (threadIdx.x == 0) on_gpu = 0u;
     __syncthreads();
-    const int c = *count;
-    for (int i = threadIdx.x; i < c; i += blockDim.x) {
-        const int r = dst[i] - t * k;
+    const int c = *count, c2 = dst2 != nullptr ? *count2 : 0;
+    for (int i = threadIdx.x; i < c + c2; i += blockDim.x) {
+        const int r = (i < c ? dst[i] : dst2[i - c]) - t * k;
         if (r >= 0 && r < k) atomicOr(&on_gpu, 1u << r);
     }
     __syncthreads();
@@ -114,15 +115,15 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 void native_moe_gather_combine(const float* gpu_rows, const float* host_rows, const int32_t* dst,
-                               const int32_t* count, const float* weights, const float* shared, float* output,
-                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
+                               const int32_t* count, const int32_t* dst2, const int32_t* count2, const float* weights,
+                               const float* shared, float* output, int64_t n_embd, int64_t k, int n_tok, void* stream) {
     if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > kMaxK || n_tok < 1 ||
-        !gpu_rows || !host_rows || !dst || !count || !weights || !output)
+        !gpu_rows || !host_rows || !dst || !count || (dst2 != nullptr && count2 == nullptr) || !weights || !output)
         throw std::invalid_argument("native MoE gather-combine requires a stream, positive width, 1..15 experts "
                                     "and its buffers");
     const dim3 grid(unsigned((n_embd + 255) / 256), unsigned(n_tok));
-    gather_combine<<<grid, 256, 0, static_cast<cudaStream_t>(stream)>>>(gpu_rows, host_rows, dst, count, weights,
-                                                                         shared, output, n_embd, int(k));
+    gather_combine<<<grid, 256, 0, static_cast<cudaStream_t>(stream)>>>(gpu_rows, host_rows, dst, count, dst2, count2,
+                                                                         weights, shared, output, n_embd, int(k));
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

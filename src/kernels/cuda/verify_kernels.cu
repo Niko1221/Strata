@@ -229,6 +229,61 @@ __global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, un
     if (k < *n) ptr[k] = base + (unsigned long long) k * (unsigned long long) bytes;
 }
 
+// Thread i = routed entry i.  A group per distinct resident expert, in the order of their first entries; a group's
+// entries in routing order.
+constexpr int kHitPlanMax = 128;
+__global__ void hit_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
+                                int n_expert, const unsigned long long* __restrict__ slot_ptr, int32_t* __restrict__ plan,
+                                int cap, int ptr_off) {
+    __shared__ int32_t s_id[kHitPlanMax], s_size[kHitPlanMax], s_start[kHitPlanMax];
+    const int i = threadIdx.x;
+    int32_t e = -1, slot = -1;
+    if (i < n) {
+        e = ids[i];
+        if (e >= 0 && e < n_expert) slot = res[e];
+    }
+    s_id[i] = e;
+    __syncthreads();
+    const bool hit = slot >= 0;
+    int first = i;
+    if (hit)
+        for (int j = 0; j < i; ++j)
+            if (s_id[j] == e) { first = j; break; }
+    const bool lead = hit && first == i;
+    int size = 0;
+    if (lead)
+        for (int j = i; j < n; ++j) size += s_id[j] == e;
+    s_size[i] = size;   // > 0 at a group's first entry only
+    const int groups = __syncthreads_count(lead);
+    const int entries = __syncthreads_count(hit);
+    int32_t* start = plan + 4;
+    int32_t* dst = start + cap + 1;
+    int32_t* tok = dst + cap;
+    auto* ptr = (unsigned long long*) (plan + ptr_off);
+    if (lead) {
+        int grp = 0, at = 0;
+        for (int j = 0; j < i; ++j)
+            if (s_size[j] > 0) { ++grp; at += s_size[j]; }
+        s_start[i] = at;
+        start[grp] = at;
+        ptr[grp] = slot_ptr[slot];
+    }
+    __syncthreads();
+    if (hit) {
+        int rank = 0;
+        for (int j = first; j < i; ++j) rank += s_id[j] == e;
+        dst[s_start[first] + rank] = i;
+        tok[s_start[first] + rank] = i / k;
+    }
+    if (i == 0) {
+        plan[0] = groups;
+        plan[1] = entries;
+        plan[2] = 0;
+        plan[3] = 0;
+        start[groups] = entries;
+    }
+}
+
 __global__ void add_streams_broadcast_kernel(const float* __restrict__ h, const float* __restrict__ e,
                                              float* __restrict__ R, int64_t n, int hc) {
     const int t = blockIdx.y;
@@ -319,6 +374,17 @@ void add_streams_broadcast(const float* h, const float* e, float* R, int64_t n_e
     add_streams_broadcast_kernel<<<dim3((unsigned) ((n_embd * hc + 255) / 256), (unsigned) n_tok), 256, 0,
                                    (cudaStream_t) stream>>>(h, e, R, n_embd, hc);
     check("add_streams_broadcast");
+}
+
+void verify_hit_plan(const int32_t* ids, int n, int k, const int32_t* res, int n_expert,
+                     const unsigned long long* slot_ptr, int32_t* plan, int64_t cap, int64_t ptr_off, void* stream) {
+    if (n < 1 || n > kHitPlanMax || n > cap || k < 1 || (ptr_off & 1) != 0) {
+        std::fprintf(stderr, "verify_hit_plan: invalid arguments\n");
+        std::exit(1);
+    }
+    hit_plan_kernel<<<1, kHitPlanMax, 0, (cudaStream_t) stream>>>(ids, n, k, res, n_expert, slot_ptr, plan, (int) cap,
+                                                                   (int) ptr_off);
+    check("verify_hit_plan");
 }
 
 void ident_hits(const int32_t* ids, int n, int32_t* slot, int32_t* dst, int32_t* count, void* stream) {

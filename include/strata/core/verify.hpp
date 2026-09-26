@@ -17,8 +17,13 @@
 // and the PLE history is set to its snapshot after token n_keep-1.  K/V cells past the accepted prefix are simply
 // overwritten when those positions are processed again, before any query can read them.
 //
+// EXPERTS.  The main GPU computes the routed experts its VRAM tier holds, decided in the graph from a snapshot of the
+// residency table that the pool reads too (`residency`), so neither waits for the other; its shared expert runs on a
+// branch of its own beside them.  The pool computes the rest on the CPU and the second GPU, and with a PCIe share
+// publishes the missed experts the GPU reads over PCIe.
+//
 // Requires the default native decode configuration (native projections, fused GR, fused GDN, fast attention and
-// selection, native indexer) and a profile-filled VRAM expert tier with its residency table on the device.
+// selection, native indexer) and a profile-filled VRAM expert tier.
 #pragma once
 
 #include "strata/core/expert_source.hpp"
@@ -43,9 +48,12 @@ using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, i
 /// host memory.
 using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
 
+/// The main GPU's VRAM expert tier.
 struct VerifyHits {
-    const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
-    const uint8_t* cache_base = nullptr; ///< slot 0 of the VRAM expert arena
+    const int32_t* res = nullptr;          ///< host [n_layers * n_expert]: slot or -1, the live residency table
+    const uint8_t* cache_base = nullptr;   ///< slot 0 of the VRAM expert arena
+    const uint64_t* slot_off = nullptr;    ///< [slots]: each slot's byte offset from `cache_base`; null: slot * blob
+    int64_t slots = 0;
     int64_t blob = 0;
 };
 
@@ -74,6 +82,10 @@ public:
     bool commit(int n_keep, std::string& err, bool wait = true);
     bool wait_commit(std::string& err);
 
+    /// The residency the window decides the main GPU's hits by: `VerifyHits::res` as `init` and the last `run` found
+    /// it.  The pool reads this one (`ExpertDispatch::host_res`), so it leaves exactly the GPU's rows to the GPU.
+    const int32_t* residency() const { return h_res_; }
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return R_; }
@@ -82,8 +94,8 @@ public:
     void set_host_rows(bool on) { host_rows_ = on; }
     const float* final_R_host() const { return h_rows_; }
 
-    /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
-    /// dispatch (`ExpertDispatch::plan`) before the first `run`.
+    /// Where the pool publishes each layer's PCIe share of the misses; give it to the dispatch
+    /// (`ExpertDispatch::plan`) before the first `run`.
     GpuPlanSink* plan_sink() { return &sink_; }
     /// Plan v0.3 P6: split the window into two token groups and pipeline the CPU experts of one with the GPU work
     /// of the other (default on).  Set before the first `run`.
@@ -95,7 +107,7 @@ public:
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
     /// Whether the pool may give the GPU a PCIe share of the misses (`--pcie-frac` > 0); without one the window
     /// has no PCIe stage.  Set before the first `run`.
-    void set_pcie_share(bool on) { pcie_share_ = on; }
+    void set_pcie_share(bool on) { pcie_share_ = on; sink_.pcie = on; }
     /// Diagnostics: GPU timestamps between the stages of every layer (`--window-profile`; each costs a kernel
     /// launch, ~2 us).  Set before the first `run`; `print_profile` writes the per-stage table to stdout.
     void set_profile(bool on) { profile_ = on; }
@@ -140,7 +152,7 @@ private:
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k
     uint32_t* h_seq_ = nullptr;  uint32_t* m_seq_ = nullptr;
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
-    uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
+    uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the PCIe share's plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
     uint32_t* h_pleflag_ = nullptr; uint32_t* m_pleflag_ = nullptr;  // the PLE rows are in h_ple_
     bool host_rows_ = false;
@@ -151,8 +163,11 @@ private:
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
     static void raise_flag(uint32_t* flag, uint32_t value);
-    int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // counts | start | dst | tok | ptr (as int32 pairs)
-    int64_t plan_i32_ = 0;                                        // int32 words in the plan block
+    int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // the PCIe share's plan block per token group
+    int64_t plan_i32_ = 0, plan_ptr_off_ = 0, plan_stride_ = 0;   // a plan block's int32 words, its ptr field, the
+                                                                  // device blocks' stride (see `init`)
+    int32_t* h_res_ = nullptr;   int32_t* m_res_ = nullptr;      // the residency snapshot (`residency`)
+    int64_t res_words_ = 0;
     GpuPlanSink sink_;
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
@@ -170,6 +185,8 @@ private:
     uint32_t* h_pseq_ = nullptr; uint32_t* m_pseq_ = nullptr;
     cudaStream_t side_ = nullptr;                                 // the prediction's branch of the graph
     cudaEvent_t fork_ = nullptr, join_ = nullptr;
+    cudaStream_t shs_ = nullptr;                                  // the shared expert's branch (and the snapshot's copy)
+    cudaEvent_t shfork_ = nullptr, shjoin_ = nullptr, res_ready_ = nullptr;
 
     // device
     void* arena_ = nullptr;
@@ -187,7 +204,10 @@ private:
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     float *plogits_ = nullptr, *pw_ = nullptr;                    // the next layer's router (prediction)
     int32_t* pids_ = nullptr;
-    int32_t* plan_ = nullptr;                                     // device copy of the plan block
+    int32_t* plan_ = nullptr;                                     // device copies of the PCIe share's plan blocks
+    int32_t* dplan_ = nullptr;                                    // the main GPU's hit plans, decided on the device
+    int32_t* res_ = nullptr;                                      // the residency snapshot, copied as a window starts
+    unsigned long long* slot_ptr_ = nullptr;                      // each VRAM slot's address
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
     static constexpr int64_t kStagingBlobs = 16;
     uint8_t* hit_xq_ = nullptr;
@@ -200,8 +220,9 @@ private:
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
 
-    // --window-profile: stamps [window size][layer, then one row for the window][stage]
-    static constexpr int kStamps = 13;
+    // --window-profile: stamps [window size][layer, then one row for the window][stage]: a layer's main-stream stages,
+    // then the end of its shared expert's branch
+    static constexpr int kLayerStamps = 13, kStamps = 14;
     bool profile_ = false;
     unsigned long long* stamps_ = nullptr;
     std::vector<unsigned long long> h_stamps_;

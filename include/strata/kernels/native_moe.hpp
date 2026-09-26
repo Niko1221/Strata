@@ -18,9 +18,10 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
 
 // The verify window's combine for n_tok tokens, bitwise `native_moe_combine` per token over the rows the window
 // used to assemble: row t*k + j is the GPU's (`gpu_rows`, row-indexed, as the host's zeroed row plus the hit) when
-// an entry of dst[0..*count) names it, and otherwise the host's (`host_rows`, mapped memory: only these rows cross
-// PCIe).  weights (n_tok, k), shared and output (n_tok, n_embd).  Graph-capturable.
+// an entry of dst[0..*count) or dst2[0..*count2) names it (`dst2` may be null), and otherwise the host's
+// (`host_rows`, mapped memory: only these rows cross PCIe).  weights (n_tok, k), shared and output (n_tok, n_embd).
+// Graph-capturable.
 void native_moe_gather_combine(const float* gpu_rows, const float* host_rows, const int32_t* dst,
-                               const int32_t* count, const float* weights, const float* shared, float* output,
-                               int64_t n_embd, int64_t k, int n_tok, void* stream);
+                               const int32_t* count, const int32_t* dst2, const int32_t* count2, const float* weights,
+                               const float* shared, float* output, int64_t n_embd, int64_t k, int n_tok, void* stream);
 }

@@ -107,12 +107,14 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             float *d_hit = dev<float>(hit.size()), *d_parts = dev<float>(hit.size()), *d_w = dev<float>(w.size()),
                   *d_sh = dev<float>(shared.size()), *d_out_old = dev<float>(shared.size()),
                   *d_out_new = dev<float>(shared.size());
-            int32_t *d_dst = dev<int32_t>(std::max<size_t>(1, dst.size()) + 64), *d_count = dev<int32_t>(1);
+            int32_t *d_dst = dev<int32_t>(std::max<size_t>(1, dst.size()) + 64), *d_count = dev<int32_t>(3);
             up(d_hit, hit);
             up(d_w, w);
             up(d_sh, shared);
             if (!dst.empty()) up(d_dst, dst);
-            up(d_count, std::vector<int32_t>{count});
+            // the new path takes them as two lists (the window's VRAM share and the pool's PCIe share), split at random
+            const int32_t split = rep % 2 == 0 ? count : (int32_t) (rng() % (dst.size() + 1));
+            up(d_count, std::vector<int32_t>{count, split, count - split});
             float* h_map = nullptr;
             float* m_map = nullptr;
             check(cudaHostAlloc((void**) &h_map, host.size() * sizeof(float), cudaHostAllocMapped), "cudaHostAlloc");
@@ -128,7 +130,8 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             check(cudaStreamSynchronize(s), "old path");
             // new
             std::memcpy(h_map, host_poison.data(), host.size() * sizeof(float));
-            strata::kernels::native_moe_gather_combine(d_hit, m_map, d_dst, d_count, d_w, d_sh, d_out_new, N, K, n_tok, s);
+            strata::kernels::native_moe_gather_combine(d_hit, m_map, d_dst, d_count + 1, rep % 2 == 0 ? nullptr : d_dst + split,
+                                                       d_count + 2, d_w, d_sh, d_out_new, N, K, n_tok, s);
             check(cudaStreamSynchronize(s), "new path");
             const int b = bitwise_diff(down(d_out_old, shared.size()), down(d_out_new, shared.size()), "gather_combine");
             if (b) std::fprintf(stderr, "gather_combine: n_tok %d rep %d: %d of %zu differ\n", n_tok, rep, b, shared.size());
@@ -139,7 +142,80 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
                 cudaFree(p);
         }
     }
-    std::printf("gather_combine: %s\n", bad ? "MISMATCH" : "bitwise equal (n_tok 1-4, 8; 8 plans each)");
+    std::printf("gather_combine: %s\n", bad ? "MISMATCH" : "bitwise equal (n_tok 1-4, 8; 8 plans each, one or two lists)");
+    return bad;
+}
+
+// ---- the main GPU's hit plan decided on the device  vs  the host's rule: distinct experts in routing order, the
+// resident ones as groups of their entries in routing order
+int test_hit_plan(std::mt19937& rng, cudaStream_t s) {
+    const int NE = 512, K = 10, slots = 300;
+    const int64_t cap = 8 * K, ptr_off = ((4 + (cap + 1) + 2 * cap) + 1) & ~1ll, words = ptr_off + 2 * cap;
+    std::vector<unsigned long long> slot_ptr(slots);
+    for (int i = 0; i < slots; ++i) slot_ptr[(size_t) i] = 0x700000000ull + (unsigned long long) i * 1382400ull;
+    unsigned long long* d_sp = dev<unsigned long long>(slots);
+    up(d_sp, slot_ptr);
+    int32_t *d_ids = dev<int32_t>(cap), *d_res = dev<int32_t>(NE), *d_plan = dev<int32_t>(words);
+    int bad = 0;
+    for (int n_tok : {1, 2, 3, 4, 8}) {
+        for (int rep = 0; rep < 24; ++rep) {
+            const int n = n_tok * K;
+            // each token's k experts distinct (rep 3: repeats within a token too), drawn from a small set so tokens share
+            std::vector<int32_t> set((size_t) (4 + rng() % 40)), ids((size_t) n), res((size_t) NE, -1);
+            for (auto& e : set) e = (int32_t) (rng() % NE);
+            for (int t = 0; t < n_tok; ++t)
+                for (int j = 0; j < K; ++j) {
+                    int32_t e;
+                    bool again;
+                    do {
+                        e = rng() % 4 == 0 ? (int32_t) (rng() % NE) : set[rng() % set.size()];
+                        again = false;
+                        for (int m = 0; m < j && rep != 3; ++m) again = again || ids[(size_t) (t * K + m)] == e;
+                    } while (again);
+                    ids[(size_t) (t * K + j)] = e;
+                }
+            for (int e = 0; e < NE; ++e)   // resident: none, all, or at random
+                if (rep == 1 || (rep != 0 && rng() % 3 != 0)) res[(size_t) e] = (int32_t) (rng() % slots);
+            std::vector<int32_t> first((size_t) n), start, dst, tok;
+            std::vector<unsigned long long> ptr;
+            for (int i = 0; i < n; ++i) {
+                first[(size_t) i] = i;
+                for (int j = 0; j < i; ++j)
+                    if (ids[(size_t) j] == ids[(size_t) i]) { first[(size_t) i] = j; break; }
+            }
+            for (int i = 0; i < n; ++i) {
+                if (first[(size_t) i] != i || res[(size_t) ids[(size_t) i]] < 0) continue;
+                ptr.push_back(slot_ptr[(size_t) res[(size_t) ids[(size_t) i]]]);
+                start.push_back((int32_t) dst.size());
+                for (int j = i; j < n; ++j)
+                    if (first[(size_t) j] == i) { dst.push_back(j); tok.push_back(j / K); }
+            }
+            start.push_back((int32_t) dst.size());
+            up(d_ids, ids);
+            up(d_res, res);
+            check(cudaMemset(d_plan, 0xff, (size_t) words * 4), "memset");
+            strata::kernels::verify_hit_plan(d_ids, n, K, d_res, NE, d_sp, d_plan, cap, ptr_off, s);
+            check(cudaStreamSynchronize(s), "hit plan");
+            const std::vector<int32_t> pl = down(d_plan, (size_t) words);
+            const int groups = (int) ptr.size(), entries = (int) dst.size();
+            bool ok = pl[0] == groups && pl[1] == entries;
+            for (int q = 0; ok && q <= groups; ++q) ok = pl[(size_t) (4 + q)] == start[(size_t) q];
+            for (int q = 0; ok && q < groups; ++q) {
+                unsigned long long p;
+                std::memcpy(&p, &pl[(size_t) (ptr_off + 2 * q)], 8);
+                ok = p == ptr[(size_t) q];
+            }
+            for (int q = 0; ok && q < entries; ++q)
+                ok = pl[(size_t) (4 + cap + 1 + q)] == dst[(size_t) q] && pl[(size_t) (4 + 2 * cap + 1 + q)] == tok[(size_t) q];
+            if (!ok) {
+                std::fprintf(stderr, "hit_plan: n_tok %d rep %d: groups %d/%d entries %d/%d\n", n_tok, rep, pl[0], groups,
+                             pl[1], entries);
+                ++bad;
+            }
+        }
+    }
+    for (void* p : {(void*) d_sp, (void*) d_ids, (void*) d_res, (void*) d_plan}) cudaFree(p);
+    std::printf("hit_plan: %s\n", bad ? "MISMATCH" : "the host's groups (n_tok 1-4, 8; 24 routings each)");
     return bad;
 }
 
@@ -681,6 +757,7 @@ int main(int argc, char** argv) {
     check(cudaStreamCreate(&s), "stream");
     int bad = 0;
     bad += test_gather_combine(rng, s);
+    bad += test_hit_plan(rng, s);
     bad += test_mmvf_multi(rng, s);
     bad += test_router_multi(rng, s);
     bad += test_gr_read(rng, s);
