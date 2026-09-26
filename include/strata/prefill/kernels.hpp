@@ -17,9 +17,9 @@ void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream);
 /// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (any of them may be null).
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h = nullptr);
-/// R[t, c, d] += (bo[t, d] (+ partial[t, d])) * 2 sigmoid(inj[t, c] / hc)   (inj has row stride inj_ld)
+/// R[t, c, d] += (bo[t, d] (+ partial[t, d], FP16)) * 2 sigmoid(inj[t, c] / hc)   (inj has row stride inj_ld)
 void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream,
-              const float* partial = nullptr);
+              const uint16_t* partial = nullptr);
 /// R[t, c, :] = e[t, :] for all four streams (the embedding broadcast).
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
 
@@ -47,6 +47,8 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
+/// y = FP16 bits of x, saturated at +-65504 (the second GPU's expert sums on their way back: below ~20 measured)
+void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream);
 /// In place: x[t, :] *= sigmoid(sg[t])   (the shared expert's scalar gate)
 void moe_shared_gate(float* x, const float* sg, int64_t T, void* stream);
 /// sum[src[r], :] += w[r] * rows[r, :] for n rows (one expert's rows: no token twice).

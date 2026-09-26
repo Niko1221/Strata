@@ -5,6 +5,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -23,21 +24,51 @@ void ck(cublasStatus_t s, const char* what) {
 
 Gemm::~Gemm() {
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
+    for (int i = 0; i < AUX; ++i) {
+        if (aux_handle_[i]) cublasDestroy((cublasHandle_t) aux_handle_[i]);
+        if (join_[i]) cudaEventDestroy((cudaEvent_t) join_[i]);
+        if (aux_stream_[i]) {
+            cudaStreamSynchronize((cudaStream_t) aux_stream_[i]);
+            cudaStreamDestroy((cudaStream_t) aux_stream_[i]);
+        }
+    }
+    if (fork_) cudaEventDestroy((cudaEvent_t) fork_);
 }
 
-bool Gemm::init(void* stream, std::string& err) {
+bool Gemm::init(void* stream, std::string& err, bool side_streams) {
     cublasHandle_t h = nullptr;
     if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
     handle_ = h;
     stream_ = stream;
     cublasSetStream(h, (cudaStream_t) stream);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
+    if (!side_streams) return true;
+    if (cudaEventCreateWithFlags((cudaEvent_t*) &fork_, cudaEventDisableTiming) != cudaSuccess) {
+        err = "prefill gemm: events";
+        return false;
+    }
+    for (int i = 0; i < AUX; ++i) {
+        cublasHandle_t a = nullptr;
+        if (cudaStreamCreateWithFlags((cudaStream_t*) &aux_stream_[i], cudaStreamNonBlocking) != cudaSuccess ||
+            cudaEventCreateWithFlags((cudaEvent_t*) &join_[i], cudaEventDisableTiming) != cudaSuccess ||
+            cublasCreate(&a) != CUBLAS_STATUS_SUCCESS) {
+            err = "prefill gemm: side streams";
+            return false;
+        }
+        aux_handle_[i] = a;
+        cublasSetStream(a, (cudaStream_t) aux_stream_[i]);
+        cublasSetMathMode(a, CUBLAS_DEFAULT_MATH);
+    }
     return true;
 }
 
 void Gemm::set_buffers(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes) {
-    // a fixed workspace, so the handle never allocates on the way
-    cublasSetWorkspace((cublasHandle_t) handle_, workspace, ws_bytes);
+    // a fixed workspace, so the handles never allocate on the way: a slice for each stream
+    const int ns = aux_handle_[0] ? AUX + 1 : 1;
+    const size_t slice = ws_bytes / (size_t) ns / 256 * 256;
+    cublasSetWorkspace((cublasHandle_t) handle_, workspace, slice);
+    for (int i = 0; i + 1 < ns; ++i)
+        cublasSetWorkspace((cublasHandle_t) aux_handle_[i], (uint8_t*) workspace + (size_t) (i + 1) * slice, slice);
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
 }
@@ -83,7 +114,24 @@ void Gemm::f16_grouped(const uint16_t* const* X, const uint16_t* const* W, float
         grouped_ = false;
         std::fprintf(stderr, "prefill gemm: cuBLAS does not group FP16 -> FP32 GEMMs here; one call per expert\n");
     }
-    for (int i = 0; i < n; ++i) f16(X_host[i], W_host[i], Y_host[i], rows[i], N, K);
+    // round robin over the stream and its side streams, which join it again
+    int64_t sum_rows = 0;
+    for (int i = 0; i < n; ++i) sum_rows += rows[i];
+    const int ns = aux_handle_[0] && sum_rows >= 128 * (int64_t) n ? std::min(n, AUX + 1) : 1;
+    if (ns > 1) {
+        cudaEventRecord((cudaEvent_t) fork_, (cudaStream_t) stream_);
+        for (int s = 1; s < ns; ++s) cudaStreamWaitEvent((cudaStream_t) aux_stream_[s - 1], (cudaEvent_t) fork_, 0);
+    }
+    void* const main = handle_;
+    for (int i = 0; i < n; ++i) {
+        handle_ = i % ns == 0 ? main : aux_handle_[i % ns - 1];
+        f16(X_host[i], W_host[i], Y_host[i], rows[i], N, K);
+    }
+    handle_ = main;
+    for (int s = 1; s < ns; ++s) {
+        cudaEventRecord((cudaEvent_t) join_[s - 1], (cudaStream_t) aux_stream_[s - 1]);
+        cudaStreamWaitEvent((cudaStream_t) stream_, (cudaEvent_t) join_[s - 1], 0);
+    }
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,

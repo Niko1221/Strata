@@ -53,8 +53,8 @@ struct Alloc {
 struct Bufs {
     uint16_t* w16 = nullptr;
     void* gemm_ws = nullptr;
-    // the chunk's: residual stream, the MoE's input (FP16) and output, the FFN half's injection, routing, steps
-    float *R = nullptr, *bo_moe = nullptr, *inj_f = nullptr, *w = nullptr;
+    // the chunk's: residual stream, the MoE's input (FP16) and output, the FFN half's injection, routing, steps, PLE rows
+    float *R = nullptr, *bo_moe = nullptr, *inj_f = nullptr, *w = nullptr, *ple_emb = nullptr;
     uint16_t* mixed_h = nullptr;
     int32_t *ids = nullptr, *steps = nullptr;
     // a sub-chunk's: the mixer's BF16 input, its output, the mixer half's injection
@@ -64,7 +64,7 @@ struct Bufs {
     float* emb = nullptr;
     float *xn = nullptr, *lo = nullptr, *gated = nullptr;
     uint16_t *xn16 = nullptr, *lo16 = nullptr;
-    float *ple_emb = nullptr, *ple_kp = nullptr, *ple_key = nullptr, *ple_q = nullptr, *ple_gated = nullptr;
+    float *ple_kp = nullptr, *ple_key = nullptr, *ple_q = nullptr, *ple_gated = nullptr;
     float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
     uint16_t* y_h = nullptr;
     float *Kc = nullptr, *Vc = nullptr, *Qf = nullptr, *q = nullptr, *idx_raw = nullptr, *q_idx = nullptr,
@@ -73,7 +73,7 @@ struct Bufs {
     int32_t* sel_ids = nullptr;
     float *logits = nullptr, *sgate = nullptr, *sup = nullptr, *sg = nullptr;
     uint16_t* sh_h = nullptr;
-    float* sums = nullptr;        // the second GPU's sums
+    uint16_t* sums = nullptr;     // the second GPU's sums (FP16)
     uint8_t* local = nullptr;     // this GPU's expert runner
     uint64_t local_bytes = 0;
 };
@@ -93,6 +93,7 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.ids = a.take<int32_t>(t * K);
     b.w = a.take<float>(t * K);
     b.steps = a.take<int32_t>(t * strata::kernels::kStepCount);
+    b.ple_emb = a.take<float>(t * N);
     b.mixed_bf = a.take<uint16_t>(p * N);
     b.bo = a.take<float>(p * N);
     b.inj_a = a.take<float>(p * HC);
@@ -104,7 +105,7 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.xn = a.take<float>(p * D); b.xn16 = a.take<uint16_t>(p * D); b.lo = a.take<float>(p * LR);
     b.lo16 = a.take<uint16_t>(p * LR); b.gated = a.take<float>(p * D);
     next();   // the PLE block
-    b.ple_emb = a.take<float>(p * N); b.ple_kp = a.take<float>(p * D); b.ple_key = a.take<float>(p * D);
+    b.ple_kp = a.take<float>(p * D); b.ple_key = a.take<float>(p * D);
     b.ple_q = a.take<float>(p * D); b.ple_gated = a.take<float>(p * D);
     next();   // GDN
     b.qkv = a.take<float>(p * C); b.z = a.take<float>(p * ZV); b.ab = a.take<float>(p * 2 * HV);
@@ -119,7 +120,7 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.logits = a.take<float>(p * NE); b.sgate = a.take<float>(p * 640); b.sup = a.take<float>(p * 640);
     b.sh_h = a.take<uint16_t>(p * 640); b.sg = a.take<float>(p);
     next();   // the routed experts
-    b.sums = offload ? a.take<float>(t * N) : nullptr;
+    b.sums = offload ? a.take<uint16_t>(t * N) : nullptr;
     b.local_bytes = ExpertRunner::bytes_needed(T, NE, false, !offload);
     b.local = a.take<uint8_t>(b.local_bytes);
     next();
@@ -220,6 +221,12 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     return a.used;
 }
 
+uint64_t Prefill::bytes_for(int64_t chunk) const {
+    const Impl& m = *impl_;
+    return bytes_needed(*m.g, *m.ss, chunk, m.offload != nullptr) +
+           (m.offload == nullptr && chunk >= ExpertRunner::kPrefetchMin ? m.local.prefetch_need(nullptr) : 0);
+}
+
 bool Prefill::bind(void* region, uint64_t bytes, int64_t chunk, std::string& err) {
     Impl& m = *impl_;
     if (region == nullptr) {
@@ -246,7 +253,11 @@ bool Prefill::bind(void* region, uint64_t bytes, int64_t chunk, std::string& err
         return false;
     }
     m.gemm.set_buffers(nullptr, 0, m.b.gemm_ws, GEMM_WS);
-    if (!m.local.bind(m.b.local, m.b.local_bytes, chunk, err)) return false;
+    // the rest of a lent region takes this GPU's prefetched experts (outside the union: copies run beside the steps)
+    const bool area = region != m.owned && bytes > a.used;
+    if (!m.local.bind(m.b.local, m.b.local_bytes, chunk, err, area ? (uint8_t*) region + a.used : nullptr,
+                      area ? bytes - a.used : 0))
+        return false;
     m.T = chunk;
     return true;
 }
@@ -345,6 +356,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 prev[1] = tok;
             }
             if (!ss.ple.table->gather_batch(m.ple_rows.data(), (size_t) T, m.ple_emb_host.data(), err)) return false;
+            // before any expert copy of the chunk takes the link
+            cudaMemcpyAsync(b.ple_emb, m.ple_emb_host.data(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs);
             stats_.ms_ple += ms_since(tp);
         } else {
             for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }
@@ -358,6 +371,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             const core::LayerView v(*m.wt, l);
             const bool qsa = core::is_qsa_layer(g, l);
             new_layer();
+            // a long chunk uses nearly every expert: the ones this GPU's cache lacks are copied ahead, here while
+            // the dense steps run, or on the second GPU
+            if (T >= ExpertRunner::kPrefetchMin) {
+                m.ex1.clear();
+                for (int32_t e = 0; e < NE; ++e)
+                    if (!(m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0)) m.ex1.push_back(e);
+                if (!(m.offload ? m.offload : &m.local)->prefetch(l, m.ex1, err)) return false;
+            }
             mark(kPsPle);
             // ---- the PLE block at layer 1: the key and value projections, then the decode path's per-token
             // arithmetic (the conv reads the previous tokens' normalized rows)
@@ -365,13 +386,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 const strata::kernels::PleWeights& pw = ss.ple.w;
                 for (int64_t t0 = 0; t0 < T; t0 += SUB) {
                     const int64_t P = std::min(SUB, T - t0);
-                    cudaMemcpyAsync(b.ple_emb, m.ple_emb_host.data() + t0 * N, (size_t) P * N * 4, cudaMemcpyHostToDevice, m.cs);
-                    to_bf16(b.ple_emb, b.mixed_bf, P * N, m.cs);
+                    const float* ple_emb = b.ple_emb + t0 * N;
+                    to_bf16(ple_emb, b.mixed_bf, P * N, m.cs);
                     if (pw.key_bf16 != nullptr) {
                         m.gemm.bf16(b.mixed_bf, pw.key_bf16, b.ple_kp, P, D, N);
                     } else if (const uint16_t* W = pw.key_native_data ? w16(pw.key_native_type, pw.key_native_data, D, N)
                                                                       : nullptr) {
-                        to_f16(b.ple_emb, b.mixed_h, P * N, m.cs);
+                        to_f16(ple_emb, b.mixed_h, P * N, m.cs);
                         m.gemm.f16(b.mixed_h, W, b.ple_kp, P, D, N);
                     } else {
                         err = "prefill: the PLE key has neither a BF16 nor a native GGUF form (run with --native)";
@@ -568,7 +589,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             mark(kPsCombine);
             if (m.offload) {
                 cudaStreamWaitEvent(m.xfer, m.offload->done(), 0);
-                cudaMemcpyAsync(b.sums, m.offload->host_sum(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.xfer);
+                cudaMemcpyAsync(b.sums, m.offload->host_sum(), (size_t) T * N * 2, cudaMemcpyHostToDevice, m.xfer);
                 cudaEventRecord(m.ev_sum, m.xfer);
                 cudaStreamWaitEvent(m.cs, m.ev_sum, 0);
             }
@@ -601,6 +622,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         return false;
     }
     stats_.experts_streamed = m.local.experts_streamed;
+    stats_.experts_prefetched = m.local.experts_prefetched;
     stats_.experts_resident = m.local.experts_resident;
     stats_.ms_experts_host = m.local.ms_host;
     stats_.ms_total += ms_since(t_start);

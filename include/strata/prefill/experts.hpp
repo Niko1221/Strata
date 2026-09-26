@@ -4,14 +4,16 @@
 // batch one staging copy for each run of adjacent arena blobs among the experts the GPU's cache does not hold, one
 // dequantization launch, one gather of the batch's rows, the two GEMMs of each expert with a SwiGLU between them, and
 // one ordered add of every row, times its routing weight, into its token's sum.  A token's experts add up in ascending
-// id order, whatever the batches.
+// id order, whatever the batches.  A chunk of a few hundred tokens or more uses nearly every expert, so the blobs a
+// layer will stream can be copied ahead (`prefetch`), while the prompt path's dense work runs and before the routing
+// is known; experts that do not fit there stream batch by batch.
 //
 // Local: on the prompt path's own GPU and stream, reading the chunk's MoE input and adding into its MoE output there.
 // Remote: on a second GPU.  The first GPU (the 3090) sits on a PCIe 4.0 x4 link, over which an expert its cache lacks
 // streams at 6.4 GB/s (~0.65 GB (IQ3_XXS) to ~1.4 GB (UD-Q4_K_XL) a layer); the second GPU sits on x16.  The first GPU
 // copies the chunk's MoE input (FP16) to pinned host memory; the second copies it in, computes the experts the first
-// one's cache lacks - from its own cache when it holds them - and returns their sums (FP32) the same way, while the
-// first computes the experts its cache holds.  Neither GPU reads the other's memory: Windows gives GeForce cards no
+// one's cache lacks - from its own cache when it holds them - and returns their sums (FP16: they stay below ~20) the
+// same way, while the first computes the experts its cache holds.  Neither GPU reads the other's memory: Windows gives GeForce cards no
 // peer access.
 #pragma once
 
@@ -40,16 +42,30 @@ public:
     /// whether experts its cache does not hold come its way (staging buffers).
     bool init(int device, int main_device, void* stream, core::ExpertSource* src, const core::ExpertCache* cache,
               const int32_t* res, int64_t n_expert, int64_t max_chunk, bool streams, std::string& err);
+    /// Chunks of at least this many tokens prefetch: they use nearly every expert, and their dense steps last long
+    /// enough to hide the copies (a 521-token chunk prefetching was 2.2 s slower on IQ3_XXS: routing is skewed, so
+    /// many of the experts no cache holds go unused in a short chunk).
+    static constexpr int64_t kPrefetchMin = 4096;
+
     /// Device bytes of the buffers for chunks of `chunk` tokens.
     static uint64_t bytes_needed(int64_t chunk, int64_t n_expert, bool remote, bool streams);
+    /// The same with its prefetch area, for the residency `skip` (see prefetch_need) and its own as they are now.
+    uint64_t bytes_for(int64_t chunk, const int32_t* skip) const;
     /// The buffers for chunks of up to `chunk` tokens, carved from `region` (`bytes` long, e.g. lent cache slots), or
     /// with a null region allocated for `max_chunk` tokens (once).  Before the first layer of every prompt that
-    /// uses a region.
-    bool bind(void* region, uint64_t bytes, int64_t chunk, std::string& err);
+    /// uses a region.  `area`: device memory for the prefetched blobs; null: what the region has left.
+    bool bind(void* region, uint64_t bytes, int64_t chunk, std::string& err, void* area = nullptr,
+              uint64_t area_bytes = 0);
+    /// Bytes of prefetch area that hold a layer's streamed experts: the largest layer's experts that neither its
+    /// cache nor `skip` (another GPU's residency, n_layers x n_expert, or null) holds, and a margin.
+    uint64_t prefetch_need(const int32_t* skip) const;
+    /// Before a layer's routing: copies the blobs of `experts` (ascending ids) its cache does not hold into the
+    /// prefetch area, as many as fit, on its copy stream; run_layer of that layer reads them there.
+    bool prefetch(int64_t layer, const std::vector<int32_t>& experts, std::string& err);
 
-    /// Remote: pinned [max_chunk, n_embd]: the MoE input (FP16) goes in here, the sums (FP32) come out here.
+    /// Remote: pinned [max_chunk, n_embd]: the MoE input goes in here, the sums come out here (both FP16).
     uint16_t* host_input() const;
-    float* host_sum() const;
+    uint16_t* host_sum() const;
 
     /// Layer `layer` of a chunk of T tokens: expert experts[j] serves rows [off[j], off[j + 1]), row r being token
     /// src[r] with routing weight w[r]; each row times its weight adds to its token's sum.  Local: reads `input`
@@ -63,6 +79,7 @@ public:
 
     int64_t experts_resident = 0;   ///< expert-layer groups served from its cache
     int64_t experts_streamed = 0;   ///< expert blobs copied from the arena
+    int64_t experts_prefetched = 0; ///< ...of which ahead of the routing
     double ms_host = 0;             ///< host time queuing its work
     double ms_gpu = 0;              ///< remote: its GPU time from the input's arrival (all layers but the last)
 

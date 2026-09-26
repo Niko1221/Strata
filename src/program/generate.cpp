@@ -564,13 +564,16 @@ struct PromptBuffers {
     }
     /// Before a prompt whose chunks hold up to `chunk` tokens.
     bool take(int64_t chunk, std::string& err) {
+        // sized before either loan, from the residency both GPUs' prefetch areas are sized for
+        const uint64_t need = lend ? prefill->bytes_for(chunk) : 0;
+        const uint64_t need2 = lend2 ? offload->bytes_for(chunk, loan.res ? loan.res->data() : nullptr) : 0;
         if (lend) {
-            loan.plan(strata::prefill::Prefill::bytes_needed(*g, *ss, chunk, offload != nullptr));
+            loan.plan(need);
             loan.lend();
             if (!prefill->bind(loan.base(), loan.bytes(), chunk, err)) return false;
         }
         if (lend2) {
-            loan2.plan(strata::prefill::ExpertRunner::bytes_needed(chunk, g->n_expert, true, true));
+            loan2.plan(need2);
             loan2.lend();
             if (!offload->bind(loan2.base(), loan2.bytes(), chunk, err)) return false;
         }
@@ -2496,14 +2499,15 @@ int main(int argc, char** argv) {
         ss.ple_prev[1] = pos_start >= 1 ? (int32_t) o.tokens[(size_t) (pos_start - 1)] : -1;
         const strata::prefill::PrefillStats& ps = prefill.stats();
         std::fprintf(stderr, "strata generate: prefill %lld tokens in %lld chunks, %.1f ms (%.1f tok/s); experts "
-                             "streamed %lld (host %.1f ms), resident %lld; PLE %.1f ms\n",
+                             "streamed %lld (%lld ahead), host %.1f ms, resident %lld; PLE %.1f ms\n",
                      (long long) ps.tokens, (long long) ps.chunks, ps.ms_total,
                      ps.ms_total > 0 ? 1000.0 * (double) ps.tokens / ps.ms_total : 0.0, (long long) ps.experts_streamed,
-                     ps.ms_experts_host, (long long) ps.experts_resident, ps.ms_ple);
+                     (long long) ps.experts_prefetched, ps.ms_experts_host, (long long) ps.experts_resident, ps.ms_ple);
         if (pbuf.offload != nullptr)
-            std::fprintf(stderr, "strata generate: prefill on the second GPU: experts streamed %lld, resident %lld; "
-                                 "%.1f ms queuing, %.1f ms GPU\n", (long long) offload.experts_streamed,
-                         (long long) offload.experts_resident, offload.ms_host, offload.ms_gpu);
+            std::fprintf(stderr, "strata generate: prefill on the second GPU: experts streamed %lld (%lld ahead), "
+                                 "resident %lld; %.1f ms queuing, %.1f ms GPU\n", (long long) offload.experts_streamed,
+                         (long long) offload.experts_prefetched, (long long) offload.experts_resident, offload.ms_host,
+                         offload.ms_gpu);
         if (o.prefill_profile) {
             std::fprintf(stderr, "strata generate: prefill GPU ms by section:");
             for (int i = 0; i < strata::prefill::kPsCount; ++i)

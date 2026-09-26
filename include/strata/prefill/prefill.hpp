@@ -38,6 +38,7 @@ struct PrefillStats {
     double ms_total = 0;
     double ms_experts_host = 0;     ///< host time queuing this GPU's experts
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> this GPU
+    int64_t experts_prefetched = 0; ///< ...of which ahead of the routing
     int64_t experts_resident = 0;   ///< expert-layer groups served from its VRAM tier
     double ms_ple = 0;
     double ms_section[kPsCount] = {};   ///< GPU ms per section, with `Prefill::profile`
@@ -60,9 +61,11 @@ public:
     /// Device bytes of the buffers for chunks of `chunk` tokens.
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                  bool offload);
+    /// The same with the area its experts are prefetched into (without a second GPU), for the residency as it is now.
+    uint64_t bytes_for(int64_t chunk) const;
     /// The buffers for chunks of up to `chunk` tokens, carved from `region` (`bytes` long: lent expert-cache
-    /// slots), or with a null region allocated for the longest chunk (once).  Before the first chunk of every prompt
-    /// that uses a region.
+    /// slots; what is left over takes prefetched experts), or with a null region allocated for the longest chunk
+    /// (once).  Before the first chunk of every prompt that uses a region.
     bool bind(void* region, uint64_t bytes, int64_t chunk, std::string& err);
 
     /// Positions [pos0, pos0 + n) holding `tokens`, in chunks of the bound length; `ss.ple_prev` must be the two
