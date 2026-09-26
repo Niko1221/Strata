@@ -89,16 +89,17 @@ __global__ void gr_mix_kernel(const float* __restrict__ xn, const float* __restr
         s = fmaf(xn[j], sigm(g[j]), s);
     }
     s /= (float) HC;
-    mixed[i] = s;
+    if (mixed) mixed[i] = s;
     if (mixed16) mixed16[i] = bf(s);
     if (mixed_h) mixed_h[i] = hf(s);
 }
 __global__ void gr_write_kernel(float* __restrict__ R, const float* __restrict__ bo, const float* __restrict__ inj,
-                                int64_t inj_ld, int64_t T) {
+                                int64_t inj_ld, int64_t T, const float* __restrict__ partial) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * D) return;
     const int64_t t = i / D, c = (i % D) / N, d = i % N;
-    R[i] = fmaf(bo[t * N + d], 2.0f * sigm(inj[t * inj_ld + c] / (float) HC), R[i]);
+    const float b = partial ? bo[t * N + d] + partial[t * N + d] : bo[t * N + d];
+    R[i] = fmaf(b, 2.0f * sigm(inj[t * inj_ld + c] / (float) HC), R[i]);
 }
 __global__ void gr_broadcast_kernel(const float* __restrict__ e, float* __restrict__ R, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -346,21 +347,10 @@ __global__ void gather_rows16_kernel(const uint16_t* __restrict__ x, const int32
     const int64_t r = i / per, j = i % per;
     reinterpret_cast<uint4*>(dst)[r * per + j] = reinterpret_cast<const uint4*>(x)[(int64_t) src[r] * per + j];
 }
-__global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
-                                   const float* __restrict__ w, const float* __restrict__ shared,
-                                   const float* __restrict__ sg, const float* __restrict__ partial,
-                                   float* __restrict__ bo, int64_t T) {
+__global__ void moe_shared_gate_kernel(float* __restrict__ x, const float* __restrict__ sg, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * N) return;
-    const int64_t t = i / N, d = i % N;
-    float s = 0.0f;
-#pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int32_t r = slot[t * 10 + k];
-        if (r >= 0) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
-    }
-    const float v = s + shared[i] * sigm(sg[t]);
-    bo[i] = partial ? v + partial[i] : v;
+    x[i] = x[i] * sigm(sg[i / N]);
 }
 __global__ void moe_scatter_add_kernel(float* __restrict__ sum, const float* __restrict__ rows,
                                        const float* __restrict__ w, const int32_t* __restrict__ src, int64_t n) {
@@ -479,8 +469,8 @@ void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16
     gr_mix_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(xn, gated, mixed, mixed16, T, mixed_h);
     check("gr_mix");
 }
-void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream) {
-    gr_write_kernel<<<blocks_for(T * D), 256, 0, (cudaStream_t) stream>>>(R, bo, inj, inj_ld, T);
+void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream, const float* partial) {
+    gr_write_kernel<<<blocks_for(T * D), 256, 0, (cudaStream_t) stream>>>(R, bo, inj, inj_ld, T, partial);
     check("gr_write");
 }
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream) {
@@ -538,10 +528,9 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     gather_rows16_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst16, n, width);
     check("gather_rows16");
 }
-void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream, const float* partial) {
-    moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, partial, bo, T);
-    check("moe_combine");
+void moe_shared_gate(float* x, const float* sg, int64_t T, void* stream) {
+    moe_shared_gate_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(x, sg, T);
+    check("moe_shared_gate");
 }
 __global__ void moe_gather_add_kernel(float* __restrict__ sum, const float* __restrict__ rows, int64_t r0,
                                       const float* __restrict__ w, const int32_t* __restrict__ tok,

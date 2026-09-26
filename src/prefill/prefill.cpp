@@ -2,26 +2,21 @@
 #include "strata/prefill/prefill.hpp"
 
 #include "strata/core/layout.hpp"
-#include "strata/kernels/cpu/expert.hpp"
+#include "strata/kernels/dequant_bf16.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/ngram.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kernels.hpp"
-#include "strata/prefill/offload.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <cstring>
-#include <thread>
 #include <vector>
 
 namespace strata::prefill {
@@ -31,36 +26,113 @@ using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
 constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
-// plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
-inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
-constexpr int STAGE = 8;           // host->device expert staging ring
-constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
+constexpr int64_t SUB = 2048;                 // tokens of a sub-chunk: everything but the routed experts
+constexpr int64_t SEL_BATCH = 256;            // queries per block-score launch
+// A layer's quantized projections, dequantized to FP16 once for all its sub-chunks: the PLE key, or the mixer's
+// (GDN: qkv, gate, out; QSA: q, k, v, out) and the shared expert's
+constexpr int64_t W16 = std::max(D * N, std::max(C + ZV + ZV, 12288 + 512 + 512 + ZV) * N + 3 * 640 * N);
+constexpr size_t GEMM_WS = 32u << 20;         // cuBLAS workspace
 
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
-// Either cudaMalloc (owned, freed with the object) or a bump allocation from a borrowed region; with no base and
-// no region it only counts, which is how `bytes_needed` sizes the region.
+// Bump allocation from a region; without one it only counts (bytes_needed).
 struct Alloc {
     uint8_t* base = nullptr;
     uint64_t cap = 0, used = 0;
-    bool count_only = false;
-    std::vector<void*>* owned = nullptr;
-    template <typename T> T* take(size_t n, bool& ok) {
+    bool ok = true;
+    template <typename T> T* take(size_t n) {
         const uint64_t bytes = ((uint64_t) n * sizeof(T) + 256 + 255) & ~255ull;
-        if (count_only) { used += bytes; return nullptr; }
-        if (base != nullptr) {
-            if (used + bytes > cap) { ok = false; return nullptr; }
-            T* p = (T*) (base + used);
-            used += bytes;
-            return p;
-        }
-        void* p = nullptr;
-        if (cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; return nullptr; }
-        owned->push_back(p);
+        T* p = base != nullptr ? (T*) (base + used) : nullptr;
         used += bytes;
-        return (T*) p;
+        if (base != nullptr && used > cap) ok = false;
+        return p;
     }
 };
+
+// The device buffers of one binding.
+struct Bufs {
+    uint16_t* w16 = nullptr;
+    void* gemm_ws = nullptr;
+    // the chunk's: residual stream, the MoE's input (FP16) and output, the FFN half's injection, routing, steps
+    float *R = nullptr, *bo_moe = nullptr, *inj_f = nullptr, *w = nullptr;
+    uint16_t* mixed_h = nullptr;
+    int32_t *ids = nullptr, *steps = nullptr;
+    // a sub-chunk's: the mixer's BF16 input, its output, the mixer half's injection
+    uint16_t* mixed_bf = nullptr;
+    float *bo = nullptr, *inj_a = nullptr;
+    // the union: what one step needs at a time
+    float* emb = nullptr;
+    float *xn = nullptr, *lo = nullptr, *gated = nullptr;
+    uint16_t *xn16 = nullptr, *lo16 = nullptr;
+    float *ple_emb = nullptr, *ple_kp = nullptr, *ple_key = nullptr, *ple_q = nullptr, *ple_gated = nullptr;
+    float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
+    uint16_t* y_h = nullptr;
+    float *Kc = nullptr, *Vc = nullptr, *Qf = nullptr, *q = nullptr, *idx_raw = nullptr, *q_idx = nullptr,
+          *attn = nullptr, *sel_scores = nullptr;
+    uint16_t* attn_h = nullptr;
+    int32_t* sel_ids = nullptr;
+    float *logits = nullptr, *sgate = nullptr, *sup = nullptr, *sg = nullptr;
+    uint16_t* sh_h = nullptr;
+    float* sums = nullptr;        // the second GPU's sums
+    uint8_t* local = nullptr;     // this GPU's expert runner
+    uint64_t local_bytes = 0;
+};
+
+// Chunks of T tokens: the chunk-long buffers, the sub-chunk ones, then the union of the steps a layer takes one after
+// the other on the stream.  (Staging copies run ahead on a copy stream only while the routed experts run, after the
+// host has waited for the stream, and the stream waits for them before the next step.)
+Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) {
+    const size_t t = (size_t) T, p = (size_t) std::min(T, SUB);
+    Bufs b;
+    b.w16 = a.take<uint16_t>((size_t) W16);
+    b.gemm_ws = a.take<uint8_t>(GEMM_WS);
+    b.R = a.take<float>(t * D);
+    b.mixed_h = a.take<uint16_t>(t * N);
+    b.bo_moe = a.take<float>(t * N);
+    b.inj_f = a.take<float>(t * HC);
+    b.ids = a.take<int32_t>(t * K);
+    b.w = a.take<float>(t * K);
+    b.steps = a.take<int32_t>(t * strata::kernels::kStepCount);
+    b.mixed_bf = a.take<uint16_t>(p * N);
+    b.bo = a.take<float>(p * N);
+    b.inj_a = a.take<float>(p * HC);
+    const uint64_t u0 = a.used;
+    uint64_t u1 = u0;
+    auto next = [&] { u1 = std::max(u1, a.used); a.used = u0; };
+    b.emb = a.take<float>(p * N);
+    next();   // the hyper-connection read
+    b.xn = a.take<float>(p * D); b.xn16 = a.take<uint16_t>(p * D); b.lo = a.take<float>(p * LR);
+    b.lo16 = a.take<uint16_t>(p * LR); b.gated = a.take<float>(p * D);
+    next();   // the PLE block
+    b.ple_emb = a.take<float>(p * N); b.ple_kp = a.take<float>(p * D); b.ple_key = a.take<float>(p * D);
+    b.ple_q = a.take<float>(p * D); b.ple_gated = a.take<float>(p * D);
+    next();   // GDN
+    b.qkv = a.take<float>(p * C); b.z = a.take<float>(p * ZV); b.ab = a.take<float>(p * 2 * HV);
+    b.gate = a.take<float>(p * HV); b.beta = a.take<float>(p * HV); b.hbuf = a.take<float>(p * C);
+    b.y = a.take<float>(p * ZV); b.y_h = a.take<uint16_t>(p * ZV);
+    next();   // QSA
+    b.Kc = a.take<float>(p * 512); b.Vc = a.take<float>(p * 512); b.Qf = a.take<float>(p * 12288);
+    b.q = a.take<float>(p * ZV); b.idx_raw = a.take<float>(p * 128); b.q_idx = a.take<float>(p * 512);
+    b.attn = a.take<float>(p * ZV); b.attn_h = a.take<uint16_t>(p * ZV); b.sel_ids = a.take<int32_t>(p * (size_t) cap);
+    b.sel_scores = a.take<float>((size_t) SEL_BATCH * (size_t) max_blocks);
+    next();   // the router and the shared expert
+    b.logits = a.take<float>(p * NE); b.sgate = a.take<float>(p * 640); b.sup = a.take<float>(p * 640);
+    b.sh_h = a.take<uint16_t>(p * 640); b.sg = a.take<float>(p);
+    next();   // the routed experts
+    b.sums = offload ? a.take<float>(t * N) : nullptr;
+    b.local_bytes = ExpertRunner::bytes_needed(T, NE, false, !offload);
+    b.local = a.take<uint8_t>(b.local_bytes);
+    next();
+    a.used = u1;
+    return b;
+}
+
+strata::kernels::QsaShapes shapes_of(const core::ModelGeometry& g) {
+    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
+    s.idx_dim = g.idx_key_dim;
+    return s;
+}
 
 }  // namespace
 
@@ -68,173 +140,115 @@ struct Prefill::Impl {
     const core::WeightTable* wt = nullptr;
     const core::ModelGeometry* g = nullptr;
     core::SessionState* ss = nullptr;
-    core::ExpertSource* src = nullptr;
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
-    int64_t T = 0;
-    cudaStream_t cs = nullptr, copy = nullptr;
-    Gemm gemm;
-    std::vector<void*> owned;
-    // chunk buffers
-    float *emb = nullptr, *R = nullptr, *xn = nullptr, *lo = nullptr, *gated = nullptr, *inj = nullptr;
-    uint16_t *xn16 = nullptr, *lo16 = nullptr;
-    float* mixed = nullptr;
-    uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
-    float* bo = nullptr;
-    // GDN
-    float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
-    uint16_t* y_h = nullptr;
-    // QSA
-    float *Kc = nullptr, *Vc = nullptr, *Qf = nullptr, *q = nullptr, *idx_raw = nullptr, *q_idx = nullptr, *attn = nullptr;
-    uint16_t* attn_h = nullptr;
-    int32_t* steps_dev = nullptr;
-    std::vector<int32_t> steps_host;
-    int32_t* sel_ids = nullptr;
-    float* sel_scores = nullptr;          // [sel_batch, max_blocks]
-    int64_t sel_batch = 256, max_blocks = 0;
-    int64_t cap = 0;
-    // MoE
-    float *logits = nullptr, *w = nullptr, *GU = nullptr, *Dm = nullptr, *sgate = nullptr, *sup = nullptr,
-          *shared = nullptr, *sg = nullptr;
-    int32_t *ids = nullptr, *slot_dev = nullptr, *src_dev = nullptr;
-    uint16_t *Xs = nullptr, *Hh = nullptr, *sh_h = nullptr;
-    std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
-    // the second GPU's share (Prefill::offload): the input goes out and the sums come back on `xfer`
+    ExpertRunner* offload = nullptr;
+    ExpertRunner local;
+    int64_t max_chunk = 0, T = 0;   // T: the chunk the buffers are bound for
+    strata::kernels::QsaShapes s;
+    int64_t cap = 0, max_blocks = 0;
+    cudaStream_t cs = nullptr;
+    // the second GPU's share: the input goes out and the sums come back on `xfer`
     cudaStream_t xfer = nullptr;
     cudaEvent_t ev_mixed = nullptr, ev_input = nullptr, ev_sum = nullptr;
-    std::vector<int32_t> entry_of, experts2, off2, src2;
-    std::vector<float> w_host, w2;
-    uint16_t* dq_gu[DQ] = {};
-    uint16_t* dq_d[DQ] = {};
-    uint8_t* stage_dev[STAGE] = {};
-    uint8_t* stage_host[STAGE] = {};
-    cudaEvent_t copied[STAGE] = {}, used[STAGE] = {};
-    bool stage_live[STAGE] = {};
-    // PLE
-    float* ple_emb = nullptr;
+    Gemm gemm;
+    void* owned = nullptr;   // the buffers' own allocation (no region)
+    Bufs b;
+    std::vector<std::pair<const void*, const uint16_t*>> w16_have;   // this layer's dequantized weights
+    int64_t w16_used = 0;
+    int32_t* ids_host = nullptr;   // pinned [max_chunk, K]
+    float* w_host = nullptr;
+    std::vector<int32_t> steps_host, cnt, off, entry_of;
+    std::vector<int32_t> ex1, off1, src1, ex2, off2, src2;   // this GPU's experts, the second GPU's
+    std::vector<float> w1, w2;
     std::vector<float> ple_emb_host;
     std::vector<uint32_t> ple_rows;
-    PrefillStats* stats = nullptr;
 };
 
 Prefill::Prefill() : impl_(new Impl) {}
 Prefill::~Prefill() {
     if (!impl_) return;
-    if (impl_->cs) cudaStreamSynchronize(impl_->cs);
-    for (int i = 0; i < STAGE; ++i) {
-        if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
-        if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
-        if (impl_->stage_host[i]) cudaFreeHost(impl_->stage_host[i]);
-    }
-    if (impl_->copy) cudaStreamDestroy(impl_->copy);
-    if (impl_->xfer) cudaStreamSynchronize(impl_->xfer);
-    for (cudaEvent_t e : {impl_->ev_mixed, impl_->ev_input, impl_->ev_sum}) if (e) cudaEventDestroy(e);
-    if (impl_->xfer) cudaStreamDestroy(impl_->xfer);
-    for (void* p : impl_->owned) cudaFree(p);
-}
-
-namespace {
-constexpr int64_t GEMM_SCRATCH = 32ll << 20;        // FP16 elements for the largest dequantized dense weight
-constexpr size_t GEMM_WS = 32u << 20;               // cuBLAS workspace
+    Impl& m = *impl_;
+    if (m.cs) cudaStreamSynchronize(m.cs);
+    if (m.xfer) cudaStreamSynchronize(m.xfer);
+    for (cudaEvent_t e : {m.ev_mixed, m.ev_input, m.ev_sum}) if (e) cudaEventDestroy(e);
+    if (m.xfer) cudaStreamDestroy(m.xfer);
+    if (m.ids_host) cudaFreeHost(m.ids_host);
+    if (m.w_host) cudaFreeHost(m.w_host);
+    if (m.owned) cudaFree(m.owned);
 }
 
 bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
-                   core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
-                   void* stream, std::string& err, void* borrow, uint64_t borrow_bytes) {
+                   core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t max_chunk,
+                   void* stream, ExpertRunner* offload, std::string& err) {
     Impl& m = *impl_;
-    m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
-    m.T = chunk; m.cs = (cudaStream_t) stream; m.stats = &stats_;
+    m.wt = &wt; m.g = &g; m.ss = &ss; m.cache = cache; m.host_res = host_res; m.offload = offload;
+    m.max_chunk = max_chunk; m.cs = (cudaStream_t) stream;
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert != NE || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
     }
-    if (cudaStreamCreateWithFlags(&m.copy, cudaStreamNonBlocking) != cudaSuccess ||
-        cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
+    m.s = shapes_of(g);
+    m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, m.s);
+    m.max_blocks = ss.qsa_states[0].max_cells / m.s.idx_block + 2;
+    if (cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&m.ev_mixed, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&m.ev_input, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&m.ev_sum, cudaEventDisableTiming) != cudaSuccess) {
-        err = "prefill: streams and events";
+        cudaEventCreateWithFlags(&m.ev_sum, cudaEventDisableTiming) != cudaSuccess ||
+        cudaHostAlloc((void**) &m.ids_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess ||
+        cudaHostAlloc((void**) &m.w_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess) {
+        err = "prefill: streams, events and pinned routing buffers";
         return false;
     }
-    const size_t T = (size_t) chunk;
-    bool ok = true;
-    Alloc o;
-    o.base = (uint8_t*) borrow;
-    o.cap = borrow_bytes;
-    o.owned = &m.owned;
-    {
-        uint16_t* gs = o.take<uint16_t>((size_t) GEMM_SCRATCH, ok);
-        void* ws = o.take<uint8_t>(GEMM_WS, ok);
-        if (!ok) { err = "prefill: GEMM scratch does not fit"; return false; }
-        if (!m.gemm.init_external(stream, gs, GEMM_SCRATCH, ws, GEMM_WS, err)) return false;
-    }
-    m.emb = o.take<float>(T * N, ok); m.R = o.take<float>(T * D, ok); m.xn = o.take<float>(T * D, ok);
-    m.xn16 = o.take<uint16_t>(T * D, ok); m.lo = o.take<float>(T * LR, ok); m.lo16 = o.take<uint16_t>(T * LR, ok);
-    m.gated = o.take<float>(T * D, ok); m.inj = o.take<float>(T * HC, ok);
-    m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
-    m.mixed_h = o.take<uint16_t>(T * N, ok); m.bo = o.take<float>(T * N, ok);
-    m.qkv = o.take<float>(T * C, ok); m.z = o.take<float>(T * ZV, ok); m.ab = o.take<float>(T * 2 * HV, ok);
-    m.gate = o.take<float>(T * HV, ok); m.beta = o.take<float>(T * HV, ok); m.hbuf = o.take<float>(T * C, ok);
-    m.y = o.take<float>(T * ZV, ok); m.y_h = o.take<uint16_t>(T * ZV, ok);
-    m.Kc = o.take<float>(T * 512, ok); m.Vc = o.take<float>(T * 512, ok); m.Qf = o.take<float>(T * 12288, ok);
-    m.q = o.take<float>(T * ZV, ok); m.idx_raw = o.take<float>(T * 128, ok); m.q_idx = o.take<float>(T * 512, ok);
-    m.attn = o.take<float>(T * ZV, ok); m.attn_h = o.take<uint16_t>(T * ZV, ok);
-    m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
+    const size_t T = (size_t) max_chunk;
     m.steps_host.resize(T * strata::kernels::kStepCount);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    m.sel_ids = o.take<int32_t>(T * (size_t) m.cap, ok);
-    m.max_blocks = ss.qsa_states[0].max_cells / s.idx_block + 2;
-    m.sel_scores = o.take<float>((size_t) m.sel_batch * (size_t) m.max_blocks, ok);
-    m.logits = o.take<float>(T * NE, ok); m.w = o.take<float>(T * K, ok); m.ids = o.take<int32_t>(T * K, ok);
-    m.slot_dev = o.take<int32_t>(T * K, ok); m.src_dev = o.take<int32_t>(T * K, ok);
-    m.Xs = o.take<uint16_t>(T * K * N, ok); m.GU = o.take<float>(T * K * 1280, ok);
-    m.Hh = o.take<uint16_t>(T * K * 640, ok); m.Dm = o.take<float>(T * K * N, ok);
-    m.sgate = o.take<float>(T * 640, ok); m.sup = o.take<float>(T * 640, ok); m.sh_h = o.take<uint16_t>(T * 640, ok);
-    m.shared = o.take<float>(T * N, ok); m.sg = o.take<float>(T, ok);
-    for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
-    for (int i = 0; i < STAGE; ++i) {
-        m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
-        if (cudaHostAlloc((void**) &m.stage_host[i], (size_t) MAXBLOB(), cudaHostAllocDefault) != cudaSuccess) ok = false;
-        if (cudaEventCreateWithFlags(&m.copied[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
-        if (cudaEventCreateWithFlags(&m.used[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
-    }
-    m.ple_emb = o.take<float>(T * N, ok);
-    m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(NE); m.off.resize(NE + 1);
-    m.entry_of.resize(T * K); m.w_host.resize(T * K);
-    m.ple_emb_host.resize(T * N); m.ple_rows.resize(T * strata::kernels::PLE_N_HEADS);
-    if (!ok) { err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit"; return false; }
-    return true;
+    m.cnt.resize(NE);
+    m.off.resize(NE + 1);
+    m.entry_of.resize(T * K);
+    m.ple_emb_host.resize(T * N);
+    m.ple_rows.resize(T * strata::kernels::PLE_N_HEADS);
+    int dev = 0;
+    cudaGetDevice(&dev);
+    return m.gemm.init(stream, err) &&
+           m.local.init(dev, dev, stream, src, cache, host_res, NE, max_chunk, offload == nullptr, err);
 }
 
-uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    // the same allocation sequence as `init`, counted
-    (void) g;
-    const size_t T = (size_t) chunk;
-    bool ok = true;
-    Alloc o;
-    o.count_only = true;
-    o.take<uint16_t>((size_t) GEMM_SCRATCH, ok);
-    o.take<uint8_t>(GEMM_WS, ok);
-    auto f = [&](size_t n) { o.take<float>(n, ok); };
-    f(T * N); f(T * D); f(T * D); o.take<uint16_t>(T * D, ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
-    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok); f(T * N);
-    f(T * C); f(T * ZV); f(T * 2 * HV); f(T * HV); f(T * HV); f(T * C); f(T * ZV); o.take<uint16_t>(T * ZV, ok);
-    f(T * 512); f(T * 512); f(T * 12288); f(T * ZV); f(T * 128); f(T * 512); f(T * ZV); o.take<uint16_t>(T * ZV, ok);
-    o.take<int32_t>(T * strata::kernels::kStepCount, ok);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    o.take<int32_t>(T * (size_t) cap, ok);
-    const int64_t max_blocks = ss.qsa_states[0].max_cells / s.idx_block + 2;
-    f(256 * (size_t) max_blocks);
-    f(T * NE); f(T * K); o.take<int32_t>(T * K, ok); o.take<int32_t>(T * K, ok); o.take<int32_t>(T * K, ok);
-    o.take<uint16_t>(T * K * N, ok); f(T * K * 1280); o.take<uint16_t>(T * K * 640, ok); f(T * K * N);
-    f(T * 640); f(T * 640); o.take<uint16_t>(T * 640, ok); f(T * N); f(T);
-    for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
-    for (int i = 0; i < STAGE; ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
-    f(T * N);
-    return o.used + (8u << 20);   // alignment slack
+uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk, bool offload) {
+    const strata::kernels::QsaShapes s = shapes_of(g);
+    Alloc a;
+    layout(a, chunk, strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s),
+           ss.qsa_states[0].max_cells / s.idx_block + 2, offload);
+    return a.used;
+}
+
+bool Prefill::bind(void* region, uint64_t bytes, int64_t chunk, std::string& err) {
+    Impl& m = *impl_;
+    if (region == nullptr) {
+        if (m.owned != nullptr) return true;   // allocated once, for the longest chunk
+        chunk = m.max_chunk;
+        bytes = bytes_needed(*m.g, *m.ss, chunk, m.offload != nullptr);
+        if (cudaMalloc(&m.owned, bytes) != cudaSuccess) {
+            m.owned = nullptr;
+            err = "prefill: " + std::to_string(bytes >> 20) + " MiB of device buffers";
+            return false;
+        }
+        region = m.owned;
+    }
+    if (chunk <= 0 || chunk > m.max_chunk) {
+        err = "prefill: a chunk of " + std::to_string(chunk) + " tokens (set up for " + std::to_string(m.max_chunk) + ")";
+        return false;
+    }
+    Alloc a;
+    a.base = (uint8_t*) region;
+    a.cap = bytes;
+    m.b = layout(a, chunk, m.cap, m.max_blocks, m.offload != nullptr);
+    if (!a.ok) {
+        err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";
+        return false;
+    }
+    m.gemm.set_buffers(nullptr, 0, m.b.gemm_ws, GEMM_WS);
+    if (!m.local.bind(m.b.local, m.b.local_bytes, chunk, err)) return false;
+    m.T = chunk;
+    return true;
 }
 
 namespace {
@@ -243,12 +257,6 @@ const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::s
     const core::WeightRef* r = v.get(suffix);
     if (!r) err = v.name(suffix) + " is missing";
     return r;
-}
-bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-                 std::string& err, int64_t ldy = 0) {
-    if (!w->native_data) { err = "prefill: " + name + " has no native GGUF blocks (run with --native)"; return false; }
-    gm.native(X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
-    return true;
 }
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                std::string& err, int64_t ldy = 0) {
@@ -261,15 +269,42 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     Impl& m = *impl_;
+    const Bufs& b = m.b;
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
+    const strata::kernels::QsaShapes& s = m.s;
+    constexpr int64_t SC = strata::kernels::kStepCount;
+    if (m.T <= 0) { err = "prefill: no buffers bound"; return false; }
     const auto t_start = Clock::now();
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+    // Y[T, rows] = X . W^T for a quantized W [rows, cols]: dequantized at its first use in the layer
+    auto w16 = [&](int type, const void* blocks, int64_t rows, int64_t cols) -> const uint16_t* {
+        for (const auto& [k, p] : m.w16_have)
+            if (k == blocks) return p;
+        if (m.w16_used + rows * cols > W16) return nullptr;
+        uint16_t* p = b.w16 + m.w16_used;
+        strata::kernels::dequant_f16(type, blocks, 0, rows, cols, p, m.cs);
+        m.w16_used += (rows * cols + 127) / 128 * 128;
+        m.w16_have.emplace_back(blocks, p);
+        return p;
+    };
+    auto native_proj = [&](const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
+                           std::string& e) {
+        const uint16_t* W = w->native_data ? w16(w->native_type, w->native_data, w->ne1, w->ne0) : nullptr;
+        if (W == nullptr) {
+            e = "prefill: " + name + (w->native_data ? " does not fit the dequantization buffer"
+                                                     : " has no native GGUF blocks (run with --native)");
+            return false;
+        }
+        m.gemm.f16(X, W, Y, T, w->ne1, w->ne0);
+        return true;
+    };
+    auto new_layer = [&] {
+        m.w16_have.clear();
+        m.w16_used = 0;
+    };
     // --prefill-profile: an event at the start of each section; the time to the next event is charged to it
     std::vector<std::pair<int, cudaEvent_t>> ev;
     auto mark = [&](int section) {
@@ -283,19 +318,22 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         ++stats_.chunks;
-        // ---- embeddings, broadcast to the four streams
-        for (int64_t t = 0; t < T; ++t) {
-            const float* row = embd_rows ? embd_rows[p0 + t] : nullptr;
-            if (row) {
-                if (cudaMemcpyAsync(m.emb + t * N, row, (size_t) N * 4, cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
-                    err = "prefill: the image embedding upload failed";
+        // ---- the embeddings, broadcast to the four streams
+        for (int64_t t0 = 0; t0 < T; t0 += SUB) {
+            const int64_t P = std::min(SUB, T - t0);
+            for (int64_t t = t0; t < t0 + P; ++t) {
+                const float* row = embd_rows ? embd_rows[p0 + t] : nullptr;
+                if (row) {
+                    if (cudaMemcpyAsync(b.emb + (t - t0) * N, row, (size_t) N * 4, cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
+                        err = "prefill: the image embedding upload failed";
+                        return false;
+                    }
+                } else if (!core::embed_row(*m.wt, g, tokens[c0 + t], b.emb + (t - t0) * N, m.cs, err)) {
                     return false;
                 }
-            } else if (!core::embed_row(*m.wt, g, tokens[c0 + t], m.emb + t * N, m.cs, err)) {
-                return false;
             }
+            gr_broadcast(b.emb, b.R + t0 * D, P, m.cs);
         }
-        gr_broadcast(m.emb, m.R, T, m.cs);
         // ---- the PLE rows of the whole chunk, one batched SSD request
         const bool ple_on = ss.ple.ready();
         if (ple_on) {
@@ -307,288 +345,234 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 prev[1] = tok;
             }
             if (!ss.ple.table->gather_batch(m.ple_rows.data(), (size_t) T, m.ple_emb_host.data(), err)) return false;
-            cudaMemcpyAsync(m.ple_emb, m.ple_emb_host.data(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs);
             stats_.ms_ple += ms_since(tp);
         } else {
             for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }
         }
         // ---- the QSA step records of every position in the chunk
-        for (int64_t t = 0; t < T; ++t) strata::kernels::qsa_step_fill(m.steps_host.data() + t * strata::kernels::kStepCount, p0 + t, s);
-        cudaMemcpyAsync(m.steps_dev, m.steps_host.data(), (size_t) T * strata::kernels::kStepCount * 4,
-                        cudaMemcpyHostToDevice, m.cs);
+        for (int64_t t = 0; t < T; ++t) strata::kernels::qsa_step_fill(m.steps_host.data() + t * SC, p0 + t, s);
+        cudaMemcpyAsync(b.steps, m.steps_host.data(), (size_t) T * SC * 4, cudaMemcpyHostToDevice, m.cs);
 
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
             const core::LayerView v(*m.wt, l);
+            const bool qsa = core::is_qsa_layer(g, l);
+            new_layer();
             mark(kPsPle);
-            // ---- the PLE block at layer 1: the key and value projections of the chunk, then the decode path's
-            // per-token arithmetic (the conv reads the previous tokens' normalized rows)
+            // ---- the PLE block at layer 1: the key and value projections, then the decode path's per-token
+            // arithmetic (the conv reads the previous tokens' normalized rows)
             if (l == 1 && ple_on) {
                 const strata::kernels::PleWeights& pw = ss.ple.w;
-                to_bf16(m.ple_emb, m.mixed_bf, T * N, m.cs);
-                if (pw.key_bf16 != nullptr) {
-                    m.gemm.bf16(m.mixed_bf, pw.key_bf16, m.xn, T, D, N);
-                } else if (pw.key_native_data != nullptr) {
-                    to_f16(m.ple_emb, m.mixed_h, T * N, m.cs);
-                    m.gemm.native(m.mixed_h, pw.key_native_type, pw.key_native_data, m.xn, T, D, N);
-                } else {
-                    err = "prefill: the PLE key has neither a BF16 nor a native GGUF form (run with --native)";
-                    return false;
-                }
-                m.gemm.bf16(m.mixed_bf, pw.value_bf16, m.bo, T, N, N);
-                try {
-                    strata::kernels::native_ple_postops_tokens(m.xn, m.R, m.bo, ss.ple.hist, pw,
-                                                               {m.qkv, m.hbuf, m.inj, m.gated, m.hbuf, m.R}, (int) T, m.cs);
-                } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
-            }
-            for (int half = 0; half < 2; ++half) {
-                if (half == 0) mark(kPsHcRead);
-                // ---- the hyper-connection read of this half
-                const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
-                const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
-                                  su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
-                const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
-                                      *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
-                if (!wn || !wd || !wu || !wi) return false;
-                gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs);
-                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err)) return false;
-                gr_silu(m.lo, m.lo16, T, m.cs);
-                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err)) return false;
-                if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err)) return false;
-                gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h);
-
-                if (half == 0 && !core::is_qsa_layer(g, l)) {
-                    // ======================= GDN =======================
-                    const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
-                                          *wo = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
-                                          *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
-                                          *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
-                                          *wsa = need(v, "ssm_a", err);
-                    if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
-                    mark(kPsGdn);
-                    float* state = ss.gdn_state + (size_t) gdn_index * gdn_floats;
-                    float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
-                    if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
-                    if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV)) return false;
-                    if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV)) return false;
-                    gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
-                    mark(kPsGdnConv);
-                    gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
-                    mark(kPsGdnScan);
-                    gdn_scan(state, m.hbuf, m.gate, m.beta, m.y, T, m.cs);
-                    mark(kPsGdnNorm);
-                    gdn_out_norm(m.y, m.z, (const float*) wnm->data, EPS, m.y_h, T, m.cs);
-                    mark(kPsGdnOut);
-                    if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err)) return false;
-                    ++gdn_index;
-                } else if (half == 0) {
-                    // ======================= QSA =======================
-                    const core::QsaState& st = ss.qsa_states[qsa_index];
-                    const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
-                                          *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
-                                          *wik = need(v, "indexer.k_proj.weight", err),
-                                          *wiq = need(v, "indexer.q_proj.weight", err),
-                                          *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                          *wiqn = need(v, "indexer.q_norm.weight", err),
-                                          *wikn = need(v, "indexer.k_norm.weight", err);
-                    if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
-                    mark(kPsQsaProj);
-                    if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
-                    if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
-                    if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
-                    if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err)) return false;
-                    if (!bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err)) return false;
-                    rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
-                    rope(m.Kc, T, 2, 256, 512, p0, (float) strata::kernels::qsa_freq_base(), m.cs);
-                    kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
-                              st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs);
-                    split_q(m.Qf, m.q, T, m.cs);
-                    rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
-                    rope(m.q, T, 24, 256, 6144, p0, (float) strata::kernels::qsa_freq_base(), m.cs);
-                    rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
-                    rope(m.q_idx, T, 4, 128, 512, p0, (float) strata::kernels::qsa_freq_base(), m.cs);
-                    // the indexer appends of the chunk; then scores + selection for many queries at once:
-                    // a query reads completed blocks (final once completed) and `dead` for its own tail block
-                    const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                    mark(kPsQsaIndexer);
+                for (int64_t t0 = 0; t0 < T; t0 += SUB) {
+                    const int64_t P = std::min(SUB, T - t0);
+                    cudaMemcpyAsync(b.ple_emb, m.ple_emb_host.data() + t0 * N, (size_t) P * N * 4, cudaMemcpyHostToDevice, m.cs);
+                    to_bf16(b.ple_emb, b.mixed_bf, P * N, m.cs);
+                    if (pw.key_bf16 != nullptr) {
+                        m.gemm.bf16(b.mixed_bf, pw.key_bf16, b.ple_kp, P, D, N);
+                    } else if (const uint16_t* W = pw.key_native_data ? w16(pw.key_native_type, pw.key_native_data, D, N)
+                                                                      : nullptr) {
+                        to_f16(b.ple_emb, b.mixed_h, P * N, m.cs);
+                        m.gemm.f16(b.mixed_h, W, b.ple_kp, P, D, N);
+                    } else {
+                        err = "prefill: the PLE key has neither a BF16 nor a native GGUF form (run with --native)";
+                        return false;
+                    }
+                    m.gemm.bf16(b.mixed_bf, pw.value_bf16, b.bo, P, N, N);
                     try {
-                        strata::kernels::native_qsa_indexer_append_multi(
-                            m.idx_raw, m.steps_dev + strata::kernels::kStepPos, (int) strata::kernels::kStepCount, (int) T, 0,
-                            (const float*) wikn->data, EPS, ib, s, st.max_cells, (float) strata::kernels::qsa_freq_base(), m.cs);
-                    } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
-                    mark(kPsQsaScores);
-                    for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
-                        const int64_t nb = std::min(m.sel_batch, T - t0);
-                        const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
-                        // the batch's last query has completed the most blocks
-                        const int64_t grid_blocks =
-                            m.steps_host[(size_t) (t0 + nb - 1) * strata::kernels::kStepCount + strata::kernels::kStepNBid] + 1;
-                        strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
-                                                          m.max_blocks, s, m.sel_scores, m.cs, grid_blocks);
-                        strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
-                                                        m.sel_ids + t0 * m.cap, m.cs);
-                    }
-                    strata::kernels::QsaAttnPools pools;
-                    pools.page_table = st.page_table;
-                    if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
-                    else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
-                    mark(kPsQsaAttn);
-                    strata::kernels::qsa_prefill_attn(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.attn, T, m.cs);
-                    mark(kPsQsaOut);
-                    gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
-                    if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;
-                    ++qsa_index;
-                } else {
-                    // ======================= MoE =======================
-                    const core::WeightRef *wr = need(v, "ffn_gate_inp.weight", err),
-                                          *wgi = need(v, "ffn_gate_inp_shexp.weight", err),
-                                          *wsg = need(v, "ffn_gate_shexp.weight", err),
-                                          *wsu = need(v, "ffn_up_shexp.weight", err),
-                                          *wsd = need(v, "ffn_down_shexp.weight", err);
-                    if (!wr || !wgi || !wsg || !wsu || !wsd) return false;
-                    if (offload) {   // the input's trip to the second GPU starts while the router and shared expert run
-                        cudaEventRecord(m.ev_mixed, m.cs);
-                        cudaStreamWaitEvent(m.xfer, m.ev_mixed, 0);
-                        cudaMemcpyAsync(offload->host_input(), m.mixed_h, (size_t) T * N * 2, cudaMemcpyDeviceToHost, m.xfer);
-                        cudaEventRecord(m.ev_input, m.xfer);
-                    }
-                    mark(kPsRouter);
-                    if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err)) return false;
-                    route(m.logits, m.ids, m.w, T, m.cs);
-                    // the shared expert and its scalar gate
-                    if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err)) return false;
-                    if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err)) return false;
-                    swiglu_pair(m.sgate, m.sup, m.sh_h, T, m.cs);
-                    if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err)) return false;
-                    if (wgi->kind != core::WeightKind::Bf16InF32) { err = "prefill: shared gate is not BF16"; return false; }
-                    m.gemm.bf16(m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
-                    // group the (token, k) pairs by expert on the host
-                    cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
-                    if (offload) cudaMemcpyAsync(m.w_host.data(), m.w, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
-                    cudaStreamSynchronize(m.cs);
-                    std::fill(m.cnt.begin(), m.cnt.end(), 0);
-                    for (int64_t i = 0; i < T * K; ++i) {
-                        const int32_t e = m.ids_host[(size_t) i];
-                        if (e < 0 || e >= NE) { err = "prefill: routed id out of range"; return false; }
-                        ++m.cnt[(size_t) e];
-                    }
-                    m.off[0] = 0;
-                    for (int64_t e = 0; e < NE; ++e) m.off[(size_t) e + 1] = m.off[(size_t) e] + m.cnt[(size_t) e];
-                    std::vector<int32_t> fill(m.off.begin(), m.off.end() - 1);
-                    for (int64_t i = 0; i < T * K; ++i) {
-                        const int32_t e = m.ids_host[(size_t) i];
-                        const int32_t p = fill[(size_t) e]++;
-                        m.slot_host[(size_t) i] = p;
-                        m.src_host[(size_t) p] = (int32_t) (i / K);
-                        m.entry_of[(size_t) p] = (int32_t) i;
-                    }
-                    auto resident = [&](int32_t e) {
-                        return m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0;
-                    };
-                    if (offload) {   // the experts this GPU's cache does not hold go to the second GPU
-                        m.experts2.clear();
-                        m.off2.assign(1, 0);
-                        m.src2.clear();
-                        m.w2.clear();
-                        for (int32_t e = 0; e < NE; ++e) {
-                            if (m.cnt[(size_t) e] == 0 || resident(e)) continue;
-                            m.experts2.push_back(e);
-                            for (int32_t p = m.off[(size_t) e]; p < m.off[(size_t) e + 1]; ++p) {
-                                const int32_t i = m.entry_of[(size_t) p];
-                                m.src2.push_back(i / (int32_t) K);
-                                m.w2.push_back(m.w_host[(size_t) i]);
-                                m.slot_host[(size_t) i] = -1;   // the combine takes its row from the returned sum
-                            }
-                            m.off2.push_back((int32_t) m.src2.size());
-                        }
-                        if (!offload->run_layer(l, T, m.experts2, m.off2, m.src2, m.w2, m.ev_input, err)) return false;
-                    }
-                    cudaMemcpyAsync(m.slot_dev, m.slot_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
-                    cudaMemcpyAsync(m.src_dev, m.src_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
-                    gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
-                    mark(kPsExperts);
-                    // the experts, in id order: resident ones from VRAM, the others through the staging ring (or on
-                    // the second GPU)
-                    std::vector<int32_t> order;
-                    for (int32_t e = 0; e < NE; ++e)
-                        if (m.cnt[(size_t) e] > 0 && (!offload || resident(e))) order.push_back(e);
-                    const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
-                    // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
-                    int stage_next = 0;
-                    std::vector<int> stage_of(order.size(), -1);
-                    auto stage_one = [&](size_t j) -> bool {
-                        const int32_t e = order[j];
-                        const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0;
-                        if (resident) return true;
-                        const int sl = stage_next;
-                        stage_next = (stage_next + 1) % STAGE;
-                        const auto th = Clock::now();
-                        const uint8_t* b = m.src->blob(l, e);
-                        if (!b) { err = "prefill: expert source has no blob"; return false; }
-                        if (m.src->pinned(l, e)) {
-                            // DMA straight from the page-locked arena: the copy stream only waits for the slot
-                            if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[sl], 0);
-                            cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
-                            ++stats_.experts_dma;
-                        } else {
-                            if (m.stage_live[sl]) cudaEventSynchronize(m.used[sl]);   // its previous blob was dequantized
-                            std::memcpy(m.stage_host[sl], b, (size_t) lay.blob_bytes(l));
-                            cudaMemcpyAsync(m.stage_dev[sl], m.stage_host[sl], (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
-                        }
-                        cudaEventRecord(m.copied[sl], m.copy);
-                        m.stage_live[sl] = true;
-                        stage_of[j] = sl;
-                        stats_.ms_experts_host += ms_since(th);
-                        ++stats_.experts_streamed;
-                        return true;
-                    };
-                    size_t staged = 0;
-                    const size_t lookahead = STAGE - 1;
-                    for (size_t j = 0; j < order.size(); ++j) {
-                        while (staged < order.size() && staged <= j + lookahead) {
-                            if (!stage_one(staged)) return false;
-                            ++staged;
-                        }
-                        const int32_t e = order[j];
-                        const uint8_t* blob_dev = nullptr;
-                        if (stage_of[j] < 0) {
-                            blob_dev = m.cache->device_slot(m.host_res[(size_t) l * NE + e]);
-                            ++stats_.experts_resident;
-                        } else {
-                            cudaStreamWaitEvent(m.cs, m.copied[stage_of[j]], 0);
-                            blob_dev = m.stage_dev[stage_of[j]];
-                        }
-                        const int q = (int) (j % DQ);
-                        if (lay.native) {
-                            // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
-                            const auto& f = lay.fmt[(size_t) l];
-                            strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
-                                                               m.dq_gu[q], m.cs);
-                            strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs);
-                        } else {
-                            blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
-                        }
-                        if (stage_of[j] >= 0) cudaEventRecord(m.used[stage_of[j]], m.cs);
-                        const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
-                        m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
-                        swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
-                        m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
-                    }
-                    float* sums = m.emb;   // the chunk's embeddings are in R by now
-                    if (offload) {
-                        cudaStreamWaitEvent(m.xfer, offload->done(), 0);
-                        cudaMemcpyAsync(sums, offload->host_sum(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.xfer);
-                        cudaEventRecord(m.ev_sum, m.xfer);
-                        cudaStreamWaitEvent(m.cs, m.ev_sum, 0);
-                    }
-                    mark(kPsCombine);
-                    moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs, offload ? sums : nullptr);
+                        strata::kernels::native_ple_postops_tokens(
+                            b.ple_kp, b.R + t0 * D, b.bo, ss.ple.hist, pw,
+                            {b.ple_key, b.ple_q, b.inj_a, b.ple_gated, b.ple_q, b.R + t0 * D}, (int) P, m.cs);
+                    } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
                 }
-                // ---- the hyper-connection write of this half
-                if (half == 0) mark(kPsHcFfn);
-                gr_write(m.R, m.bo, m.inj, HC, T, m.cs);
+                new_layer();
             }
+            const core::WeightRef *wr = nullptr, *wgi = nullptr, *wsg = nullptr, *wsu = nullptr, *wsd = nullptr;
+            if (!(wr = need(v, "ffn_gate_inp.weight", err)) || !(wgi = need(v, "ffn_gate_inp_shexp.weight", err)) ||
+                !(wsg = need(v, "ffn_gate_shexp.weight", err)) || !(wsu = need(v, "ffn_up_shexp.weight", err)) ||
+                !(wsd = need(v, "ffn_down_shexp.weight", err)))
+                return false;
+            if (wgi->kind != core::WeightKind::Bf16InF32) { err = "prefill: shared gate is not BF16"; return false; }
+            // ================ per sub-chunk: the mixer half, then the FFN half up to the routing ================
+            for (int64_t t0 = 0; t0 < T; t0 += SUB) {
+                const int64_t P = std::min(SUB, T - t0), pp = p0 + t0;
+                uint16_t* mixed_h = b.mixed_h + t0 * N;
+                for (int half = 0; half < 2; ++half) {
+                    mark(half == 0 ? kPsHcRead : kPsHcFfn);
+                    // ---- the hyper-connection read of this half
+                    const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
+                    const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
+                                      su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
+                    const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
+                                          *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
+                    if (!wn || !wd || !wu || !wi) return false;
+                    float* inj = half == 0 ? b.inj_a : b.inj_f + t0 * HC;
+                    gr_norm(b.R + t0 * D, (const float*) wn->data, EPS, b.xn, b.xn16, P, m.cs);
+                    if (!bf16_proj(m.gemm, wd, b.xn16, b.lo, P, sd, err)) return false;
+                    gr_silu(b.lo, b.lo16, P, m.cs);
+                    if (!bf16_proj(m.gemm, wu, b.lo16, b.gated, P, su, err)) return false;
+                    if (!bf16_proj(m.gemm, wi, b.xn16, inj, P, si, err)) return false;
+                    gr_mix(b.xn, b.gated, nullptr, b.mixed_bf, P, m.cs, mixed_h);
+                    if (half == 1) break;
+
+                    if (!qsa) {
+                        // ======================= GDN =======================
+                        const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
+                                              *wo = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
+                                              *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
+                                              *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
+                                              *wsa = need(v, "ssm_a", err);
+                        if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
+                        mark(kPsGdn);
+                        float* state = ss.gdn_state + (size_t) gdn_index * gdn_floats;
+                        float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        if (!native_proj(wqkv, mixed_h, b.qkv, P, v.name("attn_qkv.weight"), err)) return false;
+                        if (!native_proj(wg, mixed_h, b.z, P, v.name("attn_gate.weight"), err)) return false;
+                        if (!bf16_proj(m.gemm, wa, b.mixed_bf, b.ab, P, v.name("ssm_alpha.weight"), err, 2 * HV)) return false;
+                        if (!bf16_proj(m.gemm, wb, b.mixed_bf, b.ab + HV, P, v.name("ssm_beta.weight"), err, 2 * HV)) return false;
+                        gdn_gates(b.ab, (const float*) wdt->data, (const float*) wsa->data, b.gate, b.beta, P, m.cs);
+                        mark(kPsGdnConv);
+                        gdn_conv(conv, b.qkv, (const float*) wc->data, b.hbuf, P, EPS, m.cs);
+                        mark(kPsGdnScan);
+                        gdn_scan(state, b.hbuf, b.gate, b.beta, b.y, P, m.cs);
+                        mark(kPsGdnNorm);
+                        gdn_out_norm(b.y, b.z, (const float*) wnm->data, EPS, b.y_h, P, m.cs);
+                        mark(kPsGdnOut);
+                        if (!native_proj(wo, b.y_h, b.bo, P, v.name("ssm_out.weight"), err)) return false;
+                    } else {
+                        // ======================= QSA =======================
+                        const core::QsaState& st = ss.qsa_states[qsa_index];
+                        const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
+                                              *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
+                                              *wik = need(v, "indexer.k_proj.weight", err),
+                                              *wiq = need(v, "indexer.q_proj.weight", err),
+                                              *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
+                                              *wiqn = need(v, "indexer.q_norm.weight", err),
+                                              *wikn = need(v, "indexer.k_norm.weight", err);
+                        if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                        const int32_t* steps = b.steps + t0 * SC;
+                        mark(kPsQsaProj);
+                        if (!native_proj(wk, mixed_h, b.Kc, P, v.name("attn_k.weight"), err)) return false;
+                        if (!native_proj(wv, mixed_h, b.Vc, P, v.name("attn_v.weight"), err)) return false;
+                        if (!native_proj(wq, mixed_h, b.Qf, P, v.name("attn_q.weight"), err)) return false;
+                        if (!bf16_proj(m.gemm, wik, b.mixed_bf, b.idx_raw, P, v.name("indexer.k_proj.weight"), err)) return false;
+                        if (!bf16_proj(m.gemm, wiq, b.mixed_bf, b.q_idx, P, v.name("indexer.q_proj.weight"), err)) return false;
+                        rms_rows(b.Kc, (const float*) wkn->data, P * 2, 256, 256, EPS, m.cs);
+                        rope(b.Kc, P, 2, 256, 512, pp, (float) strata::kernels::qsa_freq_base(), m.cs);
+                        kv_append(b.Kc, b.Vc, P, pp, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
+                                  st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs);
+                        split_q(b.Qf, b.q, P, m.cs);
+                        rms_rows(b.q, (const float*) wqn->data, P * 24, 256, 256, EPS, m.cs);
+                        rope(b.q, P, 24, 256, 6144, pp, (float) strata::kernels::qsa_freq_base(), m.cs);
+                        rms_rows(b.q_idx, (const float*) wiqn->data, P * 4, 128, 128, EPS, m.cs);
+                        rope(b.q_idx, P, 4, 128, 512, pp, (float) strata::kernels::qsa_freq_base(), m.cs);
+                        // the indexer appends of the sub-chunk; then scores + selection for many queries at once:
+                        // a query reads completed blocks (final once completed) and `dead` for its own tail block
+                        const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                        mark(kPsQsaIndexer);
+                        try {
+                            strata::kernels::native_qsa_indexer_append_multi(
+                                b.idx_raw, steps + strata::kernels::kStepPos, (int) SC, (int) P, 0,
+                                (const float*) wikn->data, EPS, ib, s, st.max_cells, (float) strata::kernels::qsa_freq_base(), m.cs);
+                        } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
+                        mark(kPsQsaScores);
+                        for (int64_t q0 = 0; q0 < P; q0 += SEL_BATCH) {
+                            const int64_t nb = std::min(SEL_BATCH, P - q0);
+                            // the batch's last query has completed the most blocks
+                            const int64_t grid_blocks =
+                                m.steps_host[(size_t) (t0 + q0 + nb - 1) * SC + strata::kernels::kStepNBid] + 1;
+                            strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, b.q_idx + q0 * 512, steps + q0 * SC,
+                                                              nb, m.max_blocks, s, b.sel_scores, m.cs, grid_blocks);
+                            strata::kernels::qsa_block_topk(b.sel_scores, steps + q0 * SC, nb, m.max_blocks, m.cap, s,
+                                                            b.sel_ids + q0 * m.cap, m.cs);
+                        }
+                        strata::kernels::QsaAttnPools pools;
+                        pools.page_table = st.page_table;
+                        if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
+                        else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+                        mark(kPsQsaAttn);
+                        strata::kernels::qsa_prefill_attn(b.q, pools, b.sel_ids, steps, m.cap, s, b.attn, P, m.cs);
+                        mark(kPsQsaOut);
+                        gate_attn(b.attn, b.Qf, b.attn_h, P, m.cs);
+                        if (!native_proj(wo, b.attn_h, b.bo, P, v.name("attn_output.weight"), err)) return false;
+                    }
+                    // ---- the hyper-connection write of the mixer half
+                    mark(kPsHcFfn);
+                    gr_write(b.R + t0 * D, b.bo, b.inj_a, HC, P, m.cs);
+                }
+                // ---- the FFN half's input is ready: its trip to the second GPU starts here
+                if (m.offload) {
+                    cudaEventRecord(m.ev_mixed, m.cs);
+                    cudaStreamWaitEvent(m.xfer, m.ev_mixed, 0);
+                    cudaMemcpyAsync(m.offload->host_input() + t0 * N, mixed_h, (size_t) P * N * 2, cudaMemcpyDeviceToHost, m.xfer);
+                }
+                // ---- the router, and the shared expert (its gated output starts the MoE sum)
+                mark(kPsRouter);
+                if (!bf16_proj(m.gemm, wr, b.mixed_bf, b.logits, P, v.name("ffn_gate_inp.weight"), err)) return false;
+                route(b.logits, b.ids + t0 * K, b.w + t0 * K, P, m.cs);
+                if (!native_proj(wsg, mixed_h, b.sgate, P, v.name("ffn_gate_shexp.weight"), err)) return false;
+                if (!native_proj(wsu, mixed_h, b.sup, P, v.name("ffn_up_shexp.weight"), err)) return false;
+                swiglu_pair(b.sgate, b.sup, b.sh_h, P, m.cs);
+                if (!native_proj(wsd, b.sh_h, b.bo_moe + t0 * N, P, v.name("ffn_down_shexp.weight"), err)) return false;
+                m.gemm.bf16(b.mixed_bf, (const uint16_t*) wgi->data, b.sg, P, 1, N);
+                moe_shared_gate(b.bo_moe + t0 * N, b.sg, P, m.cs);
+                cudaMemcpyAsync(m.ids_host + t0 * K, b.ids + t0 * K, (size_t) P * K * 4, cudaMemcpyDeviceToHost, m.cs);
+                cudaMemcpyAsync(m.w_host + t0 * K, b.w + t0 * K, (size_t) P * K * 4, cudaMemcpyDeviceToHost, m.cs);
+            }
+            if (!qsa) ++gdn_index;
+            else ++qsa_index;
+            // ================ the routed experts of the whole chunk ================
+            if (m.offload) cudaEventRecord(m.ev_input, m.xfer);
+            if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+            mark(kPsExperts);
+            // group the (token, k) entries by expert: this GPU takes the experts its cache holds (all of them without
+            // a second GPU), the second GPU the others
+            std::fill(m.cnt.begin(), m.cnt.end(), 0);
+            for (int64_t i = 0; i < T * K; ++i) {
+                const int32_t e = m.ids_host[i];
+                if (e < 0 || e >= NE) { err = "prefill: routed id out of range"; return false; }
+                ++m.cnt[(size_t) e];
+            }
+            m.off[0] = 0;
+            for (int64_t e = 0; e < NE; ++e) m.off[(size_t) e + 1] = m.off[(size_t) e] + m.cnt[(size_t) e];
+            {
+                std::vector<int32_t> fill(m.off.begin(), m.off.end() - 1);
+                for (int64_t i = 0; i < T * K; ++i) m.entry_of[(size_t) fill[(size_t) m.ids_host[i]]++] = (int32_t) i;
+            }
+            for (auto* v2 : {&m.ex1, &m.src1, &m.ex2, &m.src2}) v2->clear();
+            m.w1.clear();
+            m.w2.clear();
+            m.off1.assign(1, 0);
+            m.off2.assign(1, 0);
+            for (int32_t e = 0; e < NE; ++e) {
+                if (m.cnt[(size_t) e] == 0) continue;
+                const bool here = !m.offload || (m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0);
+                std::vector<int32_t>& ex = here ? m.ex1 : m.ex2;
+                std::vector<int32_t>& of = here ? m.off1 : m.off2;
+                std::vector<int32_t>& sr = here ? m.src1 : m.src2;
+                std::vector<float>& wv = here ? m.w1 : m.w2;
+                ex.push_back(e);
+                for (int32_t p = m.off[(size_t) e]; p < m.off[(size_t) e + 1]; ++p) {
+                    const int32_t i = m.entry_of[(size_t) p];
+                    sr.push_back(i / (int32_t) K);
+                    wv.push_back(m.w_host[i]);
+                }
+                of.push_back((int32_t) sr.size());
+            }
+            if (m.offload && !m.offload->run_layer(l, T, m.ex2, m.off2, m.src2, m.w2, m.ev_input, nullptr, nullptr, err))
+                return false;
+            if (!m.local.run_layer(l, T, m.ex1, m.off1, m.src1, m.w1, nullptr, b.mixed_h, b.bo_moe, err)) return false;
+            // ---- the MoE output (+ the second GPU's sums) into the residual stream
+            mark(kPsCombine);
+            if (m.offload) {
+                cudaStreamWaitEvent(m.xfer, m.offload->done(), 0);
+                cudaMemcpyAsync(b.sums, m.offload->host_sum(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.xfer);
+                cudaEventRecord(m.ev_sum, m.xfer);
+                cudaStreamWaitEvent(m.cs, m.ev_sum, 0);
+            }
+            gr_write(b.R, b.bo_moe, b.inj_f, HC, T, m.cs, m.offload ? b.sums : nullptr);
         }
         if (profile) {
             mark(kPsPle);
@@ -607,7 +591,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
-            if (!on_chunk(m.R, T, p0, err)) return false;
+            if (!on_chunk(b.R, T, p0, err)) return false;
         }
     }
     ss.ple_prev[0] = prev[0];
@@ -616,6 +600,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }
+    stats_.experts_streamed = m.local.experts_streamed;
+    stats_.experts_resident = m.local.experts_resident;
+    stats_.ms_experts_host = m.local.ms_host;
     stats_.ms_total += ms_since(t_start);
     return true;
 }
@@ -626,7 +613,7 @@ const char* prefill_section_name(int section) {
         "GDN output projection",
         "QSA projections, norms, KV", "QSA indexer appends",
         "QSA block scores + top-k", "QSA attention", "QSA gate + output", "HC write + HC read (FFN)",
-        "router, shared, grouping", "experts", "combine + HC write"};
+        "router, shared expert", "grouping, experts", "combine + HC write"};
     return section >= 0 && section < kPsCount ? names[section] : "?";
 }
 

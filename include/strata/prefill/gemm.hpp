@@ -18,11 +18,11 @@ public:
     Gemm(const Gemm&) = delete;
     Gemm& operator=(const Gemm&) = delete;
 
-    /// `scratch_elems`: BF16 elements of the dequantization scratch (the largest weight dequantized at once).
-    bool init(void* stream, int64_t scratch_elems, std::string& err);
-    /// The same with caller-owned device buffers (the prompt path borrowing expert-cache slots).
-    bool init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
-                       std::string& err);
+    /// The cuBLAS handle on `stream`; set_buffers() before the first product.
+    bool init(void* stream, std::string& err);
+    /// Caller-owned device buffers (e.g. lent expert-cache slots): the dequantization scratch (`scratch_elems` FP16
+    /// elements: the largest weight dequantized at once; may be null for no native() calls) and the cuBLAS workspace.
+    void set_buffers(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
 
     /// Y[T, N] (fp32, row stride ldy) = X[T, K] (bf16, row-major) . W[N, K]^T (bf16, row-major).  `beta` = 1 adds.
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
@@ -51,11 +51,7 @@ private:
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;
     int64_t scratch_elems_ = 0;
-    void* workspace_ = nullptr;
-    bool external_ = false;
     bool grouped_ = true;   // cuBLAS groups FP16 -> FP32 GEMMs (cleared at the first refusal)
 };
-
-
 
 }  // namespace strata::prefill

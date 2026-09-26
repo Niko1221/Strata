@@ -23,45 +23,23 @@ void ck(cublasStatus_t s, const char* what) {
 
 Gemm::~Gemm() {
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
-    if (!external_) {
-        if (scratch_) cudaFree(scratch_);
-        if (workspace_) cudaFree(workspace_);
-    }
 }
 
-bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
-                         std::string& err) {
+bool Gemm::init(void* stream, std::string& err) {
     cublasHandle_t h = nullptr;
     if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
     handle_ = h;
     stream_ = stream;
-    external_ = true;
     cublasSetStream(h, (cudaStream_t) stream);
-    workspace_ = workspace;
-    cublasSetWorkspace(h, workspace_, ws_bytes);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
+    return true;
+}
+
+void Gemm::set_buffers(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes) {
+    // a fixed workspace, so the handle never allocates on the way
+    cublasSetWorkspace((cublasHandle_t) handle_, workspace, ws_bytes);
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
-    return true;
-}
-
-bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
-    cublasHandle_t h = nullptr;
-    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
-    handle_ = h;
-    stream_ = stream;
-    cublasSetStream(h, (cudaStream_t) stream);
-    // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
-    const size_t ws = 32u << 20;
-    if (cudaMalloc(&workspace_, ws) != cudaSuccess) { err = "prefill gemm: workspace"; return false; }
-    cublasSetWorkspace(h, workspace_, ws);
-    cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
-    if (scratch_elems > 0 && cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2) != cudaSuccess) {
-        err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB";
-        return false;
-    }
-    scratch_elems_ = scratch_elems;
-    return true;
 }
 
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,

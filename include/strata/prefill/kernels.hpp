@@ -14,11 +14,12 @@ namespace strata::prefill {
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream);
 /// lo16[t, k] = bf16(silu(lo[t, k] / hc))
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream);
-/// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (either image may be null).
+/// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (any of them may be null).
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h = nullptr);
-/// R[t, c, d] += bo[t, d] * 2 sigmoid(inj[t, c] / hc)   (inj has row stride inj_ld)
-void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream);
+/// R[t, c, d] += (bo[t, d] (+ partial[t, d])) * 2 sigmoid(inj[t, c] / hc)   (inj has row stride inj_ld)
+void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream,
+              const float* partial = nullptr);
 /// R[t, c, :] = e[t, :] for all four streams (the embedding broadcast).
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
 
@@ -46,10 +47,8 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
-/// bo[t, :] = sum_k w[t, k] * D[slot[t, k], :] + shared[t, :] * sigmoid(sg[t]) (+ partial[t, :]); a slot of -1 is
-/// an entry the second GPU computed, whose sum `partial` holds.
-void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream, const float* partial = nullptr);
+/// In place: x[t, :] *= sigmoid(sg[t])   (the shared expert's scalar gate)
+void moe_shared_gate(float* x, const float* sg, int64_t T, void* stream);
 /// sum[src[r], :] += w[r] * rows[r, :] for n rows (one expert's rows: no token twice).
 void moe_scatter_add(float* sum, const float* rows, const float* w, const int32_t* src, int64_t n, void* stream);
 /// The same for several experts' rows (row r at rows[r - r0]), where a token may recur: token tok[b] adds its rows
