@@ -51,6 +51,10 @@ void scale_inplace(float* x, int64_t n, float s, void* stream);
 /// then ordered behind that copy.  Measured: the drain fell 18.2 -> 10.2 ms and the token did not move.
 void add_inplace(float* dst, const float* src, int64_t n, void* stream);
 
+/// `x[r] -= scale * dot(x[r], unit_vec) * unit_vec`, one independent projection per row.
+void project_unit_broadcast(float* x, const float* unit_vec, float scale, int64_t rows, int64_t cols,
+                            void* stream);
+
 /// `y[i] = f16(x[i])`, round-to-nearest-even, using the shared conversion in `f16_bits.hpp`.
 void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 

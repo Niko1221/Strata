@@ -19,6 +19,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/steer.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -235,6 +236,12 @@ struct Options {
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
     int adapt_swaps = 96;
+
+    /// Residual control vectors: `PATH[:SCALE]`, repeatable; directions are projected out per layer.
+    std::vector<std::string> cvec_specs;
+    /// `--control-vector-layer-range FIRST LAST` (llama.cpp's name, inclusive both ends): only
+    /// directions on layers inside [FIRST, LAST] are applied.  Negative first = no limit.
+    int64_t cvec_layer_first = -1, cvec_layer_last = -1;
 };
 
 void usage() {
@@ -277,6 +284,13 @@ void usage() {
                  "  --native-head-gguf PATH  native Q5_K head from model shard 1; requires --stream-token\n"
                  "  --native-dense-gguf PATH native GDN/QSA/shared projections; repeat for each source model shard\n"
                  "  --expert-cache-cpu-order  experimental GPU expert reduction matching CPU order\n"
+                 "  --control-vector-scaled FILE:SCALE\n"
+                 "                       GGUF control vector (direction.L vectors, projected from the residual);\n"
+                 "                       SCALE is a repeatable projection strength (default 1)\n"
+                 "  --control-vector-layer-range FIRST LAST\n"
+                 "                       apply only directions for layers FIRST..LAST (inclusive)\n"
+                 "  --cvec-mode project      remove the direction component from each layer residual\n"
+                 "  --cvec-dir per-layer     match direction.L to layer L\n"
                  "  --max-new N          tokens to generate (default 16)\n"
                  "  --max-context N      KV/state capacity (default 4096)\n"
                  "  --greedy             argmax (the default)\n"
@@ -372,6 +386,12 @@ bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) 
     }
     if (out.empty()) { err = "token list was empty"; return false; }
     return true;
+}
+
+bool parse_i64_value(const char* text, int64_t& out) {
+    const std::string value(text ? text : "");
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), out);
+    return !value.empty() && parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
 }
 
 /// The pool's adapter plus the wall-clock it spent, so the report can say how much of the token was the CPU.
@@ -579,6 +599,25 @@ int main(int argc, char** argv) {
         else if (a == "--no-publish-kernel") o.no_publish_kernel = true;
         else if (a == "--no-fused-gdn") o.no_fused_gdn = true;
         else if (a == "--no-fast-select") o.no_fast_select = true;
+
+        else if (a == "--control-vector-scaled") o.cvec_specs.push_back(next("--control-vector-scaled"));
+        else if (a == "--cvec-mode") {
+            const std::string mode = next("--cvec-mode");
+            if (mode != "project") { std::fprintf(stderr, "strata generate: invalid --cvec-mode: %s (only project is supported)\n", mode.c_str()); return 2; }
+        }
+        else if (a == "--cvec-dir") {
+            const std::string dir = next("--cvec-dir");
+            if (dir != "per-layer") { std::fprintf(stderr, "strata generate: this build supports --cvec-dir per-layer only\n"); return 2; }
+        }
+        else if (a == "--control-vector-layer-range") {
+            const char* first = next("--control-vector-layer-range");
+            const char* last = next("--control-vector-layer-range");
+            if (!parse_i64_value(first, o.cvec_layer_first) || !parse_i64_value(last, o.cvec_layer_last)) {
+                std::fprintf(stderr, "strata generate: --control-vector-layer-range expects two integers\n");
+                return 2;
+            }
+        }
+
         else {
             // An unknown flag is an ERROR and not a warning: a typo'd `--max-neww` that silently generated 16
             // tokens would look like a working run.
@@ -664,6 +703,11 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (o.cvec_layer_first >= 0 && o.cvec_layer_last < o.cvec_layer_first) {
+        std::fprintf(stderr, "strata generate: --control-vector-layer-range %lld %lld is empty\n",
+                     (long long) o.cvec_layer_first, (long long) o.cvec_layer_last);
+        return 2;
+    }
     if (o.native_flash_attn_short && o.max_context > 256) {
         std::fprintf(stderr, "strata generate: --native-flash-attn-short requires --max-context <=256\n");
         return 2;
@@ -809,8 +853,31 @@ int main(int argc, char** argv) {
         strata::kernels::mrope_table_set(d_mrope);
     }
     strata::kernels::ple_set_native_postops(o.native_ple_postops);
-    const strata::core::ModelGeometry g;
+
+    // ---- residual control vectors (strata/core/steer.hpp).  Static for the run: the directions are
+    // uploaded once and per-layer projections become ordinary nodes of captured layer graphs, so
+    // this must happen BEFORE session_capture.  No control vector means the plan is never active and
+    // every projection call returns before touching the stream - runs without vectors are untouched.
+    const strata::core::ModelGeometry g;   // the compiled-in qwen4exp geometry
+    strata::core::SteeringPlan steering;
+    if (!o.cvec_specs.empty()) {
+        if (!steering.load(o.cvec_specs, g, err, o.cvec_layer_first, o.cvec_layer_last)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        for (const auto& v : steering.entries())
+            std::fprintf(stderr, "strata generate: control vector layer %lld (scale %.3g) from %s\n",
+                         (long long) v.layer, (double) v.alpha, v.spec.c_str());
+        if (o.cvec_layer_first >= 0)
+            std::fprintf(stderr, "strata generate: steering layer range %lld..%lld\n",
+                         (long long) o.cvec_layer_first, (long long) o.cvec_layer_last);
+        std::fprintf(stderr, "strata generate: control vector mode = project, dir = per-layer, layers %lld..%lld\n",
+                     (long long) (o.cvec_layer_first >= 0 ? o.cvec_layer_first : 0),
+                     (long long) (o.cvec_layer_first >= 0 ? o.cvec_layer_last : g.n_layers - 1));
+        strata::core::steer_set_active(&steering);
+    }
     const int64_t K = 10;
+
     if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);

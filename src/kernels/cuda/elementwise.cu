@@ -161,6 +161,32 @@ void add_inplace(float* dst, const float* src, int64_t n, void* stream) {
     sync_if_needed(stream, "add_inplace");
 }
 
+__global__ void project_unit_broadcast_kernel(float* __restrict__ x, const float* __restrict__ vec,
+                                               float scale, int64_t rows, int64_t cols) {
+    __shared__ float sums[THREADS];
+    const int64_t row = blockIdx.x;
+    if (row >= rows) return;
+    float* xr = x + row * cols;
+    float dot = 0.0f;
+    for (int64_t i = threadIdx.x; i < cols; i += blockDim.x) dot += xr[i] * vec[i];
+    sums[threadIdx.x] = dot;
+    __syncthreads();
+    for (int stride = THREADS / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) sums[threadIdx.x] += sums[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float factor = scale * sums[0];
+    for (int64_t i = threadIdx.x; i < cols; i += blockDim.x) xr[i] -= factor * vec[i];
+}
+
+void project_unit_broadcast(float* x, const float* unit_vec, float scale, int64_t rows, int64_t cols,
+                            void* stream) {
+    if (rows <= 0 || cols <= 0 || scale == 0.0f) return;
+    project_unit_broadcast_kernel<<<(unsigned) rows, THREADS, 0, (cudaStream_t) stream>>>(
+        x, unit_vec, scale, rows, cols);
+    check_launch("project_unit_broadcast");
+}
+
 void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;
     to_f16_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);

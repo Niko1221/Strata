@@ -2,6 +2,8 @@
 #include "strata/prefill/prefill.hpp"
 
 #include "strata/core/layout.hpp"
+#include "strata/core/steer.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/ngram.hpp"
@@ -331,7 +333,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err)) return false;
                 if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err)) return false;
                 gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h);
-
                 if (half == 0 && !core::is_qsa_layer(g, l)) {
                     // ======================= GDN =======================
                     const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
@@ -515,6 +516,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 }
                 // ---- the hyper-connection write of this half
                 gr_write(m.R, m.bo, m.inj, HC, T, m.cs);
+                if (half == 1 && !core::cvec_residual(m.R, T, g.hc, l, N, m.cs, err)) return false;
             }
         }
         stats_.tokens += T;

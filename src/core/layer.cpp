@@ -24,6 +24,7 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/native_flash_attn.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/core/steer.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/qsa_select.hpp"
@@ -913,7 +914,9 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
     //
     // So the driver calls `ple_stage_token` once per token, BEFORE the graphs, and what is captured here is only
     // the device half: `ple_block` reading `emb_dev`, and the history shift.
-    const bool fused = g_fused_gr && stage_prefix == 0 && half == 0 &&
+    const SteeringPlan* cvec_plan = steer_active();
+    const bool cvec_enabled = cvec_plan != nullptr;
+    const bool fused = g_fused_gr && !cvec_enabled && stage_prefix == 0 && half == 0 &&
                        strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
     bool pending_ffn = fused && layer > 0;   // layer-1's FFN write has not been applied to R yet
     if (ple != nullptr && ple->ready() && layer == 1 && (half == 0 || half == 1)) {
@@ -1050,10 +1053,13 @@ st_begin(layer, 5, stream);
     if (g_shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
                        : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err)) return false;
     st_end(layer, 5, stream);    dump_half(bb, g, layer, bb.block_out, (uint64_t) g.n_embd, g.n_embd, stream);    dump_half(bb, g, layer, bb.inject, (uint64_t) 2 * g.n_embd + g.hc, g.hc, stream);    st_begin(layer, 6, stream);
-    if (!(g_fused_gr && strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)))
+    const SteeringPlan* cvec_plan = steer_active();
+    const bool cvec_enabled = cvec_plan != nullptr;
+    if (cvec_enabled || !(g_fused_gr && strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)))
         gr_write(bb.R, bb.block_out, bb.inject, gs, bb.R, stream);
     else if (layer == g.n_layers - 1)
         gr_write(bb.R, bb.block_out, bb.inject2, gs, bb.R, stream);   // materialise R for the head
+    if (cvec_enabled && !cvec_residual(bb.R, 1, g.hc, layer, g.n_embd, stream, err)) return false;
     st_end(layer, 6, stream);    return true;}
 bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,                 const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,                 int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,                 const Doorbell* db, const PleRun* ple) {
 // The two halves back to back.  `parts` must be THIS layer's experts and must be ready before the call -
