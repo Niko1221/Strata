@@ -38,6 +38,7 @@ bool AdaptiveTier::init(ExpertCache& cache, ExpertSource& src, std::vector<int32
     OnDevice on(dev_, main_);
     if (cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev_, cudaEventDisableTiming) != cudaSuccess) {
+        res_ = nullptr;   // off
         err = "adaptive tier: cannot create the refill stream";
         return false;
     }

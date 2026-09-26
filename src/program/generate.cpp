@@ -1981,7 +1981,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     // ---- a second GPU as another expert tier: the profile's pairs the first GPU's cache does not hold, then empty
-    // slots for every layer, which its own adaptive tier fills with the conversation's experts the first tier has not
+    // slots for every layer, which its own adaptive tier fills with the conversation's experts the first tier has not.
+    // Without free VRAM there (another process holds it) the engine runs on the main GPU alone.
     strata::core::SecondGpu gpu2;
     std::vector<int32_t> host_res2;
     strata::core::AdaptiveTier tier2;
@@ -1999,51 +2000,51 @@ int main(int argc, char** argv) {
         for (int64_t l = 0; l < g.n_layers; ++l) min_blob = std::min<uint64_t>(min_blob, lay0.blob_bytes(l));
         const uint64_t pf_bytes = (uint64_t) (std::max(0.0, o.second_gpu_prefetch_mb) * 1048576.0);
         drive.d.gpu2_prefetch_bytes = pf_bytes;
-        if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err) ||
-            !gpu2.init_prefetch((int) std::min<uint64_t>(pf_bytes / min_blob, 64), lay0.max_blob, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
-        }
-        cudaSetDevice(o.second_gpu);
-        size_t free_b = 0, total_b = 0;
-        cudaMemGetInfo(&free_b, &total_b);
-        // the prompt path's buffers there borrow cache slots, else they are reserved here
-        const bool offload_own = o.prefill_chunk > 0 && !o.no_prompt_offload && o.no_prefill_borrow;
-        const uint64_t reserve = ((uint64_t) o.second_gpu_reserve_mib << 20) +
-            (offload_own ? strata::prefill::ExpertRunner::bytes_needed(o.prefill_chunk, g.n_expert, true, true) : 0);
-        const uint64_t budget = o.second_gpu_gib > 0 ? (uint64_t) (o.second_gpu_gib * 1073741824.0)
-                                                     : (free_b > reserve ? (uint64_t) free_b - reserve : 0);
+        bool ok = gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err) &&
+                  gpu2.init_prefetch((int) std::min<uint64_t>(pf_bytes / min_blob, 64), lay0.max_blob, err);
         const auto& lay = strata::kernels::cpu::expert_layout();
         std::vector<int64_t> sizes;
         std::vector<std::pair<int32_t, int32_t>> pre;
         std::vector<int32_t> empty2;
-        uint64_t used = 0;
-        for (size_t i = (size_t) prefilled; i < profile.size(); ++i) {
-            const auto& pr = profile[i];
-            if (host_res[(size_t) (pr.first * g.n_expert + pr.second)] >= 0) continue;   // the first GPU holds it
-            const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
-            if (used + b > budget) break;
-            used += b;
-            sizes.push_back((int64_t) lay.blob_bytes(pr.first));
-            pre.push_back(pr);
+        if (ok) {
+            cudaSetDevice(o.second_gpu);
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            // the prompt path's buffers there borrow cache slots, else they are reserved here
+            const bool offload_own = o.prefill_chunk > 0 && !o.no_prompt_offload && o.no_prefill_borrow;
+            const uint64_t reserve = ((uint64_t) o.second_gpu_reserve_mib << 20) +
+                (offload_own ? strata::prefill::ExpertRunner::bytes_needed(o.prefill_chunk, g.n_expert, true, true) : 0);
+            const uint64_t budget = o.second_gpu_gib > 0 ? (uint64_t) (o.second_gpu_gib * 1073741824.0)
+                                                         : (free_b > reserve ? (uint64_t) free_b - reserve : 0);
+            uint64_t used = 0;
+            for (size_t i = (size_t) prefilled; i < profile.size(); ++i) {
+                const auto& pr = profile[i];
+                if (host_res[(size_t) (pr.first * g.n_expert + pr.second)] >= 0) continue;   // the first GPU holds it
+                const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
+                if (used + b > budget) break;
+                used += b;
+                sizes.push_back((int64_t) lay.blob_bytes(pr.first));
+                pre.push_back(pr);
+            }
+            {   // the rest in empty slots (without the adaptive tier only the prompt path's loans use them)
+                uint64_t round = 0;
+                for (int64_t l = 0; l < g.n_layers; ++l) round += (lay.blob_bytes(l) + 255) / 256 * 256;
+                for (uint64_t q = (budget - used) / round; q > 0; --q)
+                    for (int64_t l = 0; l < g.n_layers; ++l) {
+                        sizes.push_back((int64_t) lay.blob_bytes(l));
+                        empty2.push_back((int32_t) l);
+                    }
+            }
+            if (sizes.empty()) err = "no VRAM for experts (" + std::to_string(free_b >> 20) + " MiB free)";
+            ok = !sizes.empty() && gpu2.cache().open_sized(sizes, g.n_layers, g.n_expert, err);
+            for (size_t i = 0; ok && i < pre.size(); ++i) {
+                const int32_t slot = gpu2.cache().admit(pre[i].first, pre[i].second);
+                const uint8_t* b = srcp->blob(pre[i].first, pre[i].second);
+                ok = slot != strata::core::kNotResident && b != nullptr &&
+                     gpu2.cache().fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pre[i].first));
+            }
+            cudaSetDevice(main_dev);
         }
-        if (adaptive) {
-            uint64_t round = 0;
-            for (int64_t l = 0; l < g.n_layers; ++l) round += (lay.blob_bytes(l) + 255) / 256 * 256;
-            for (uint64_t q = (budget - used) / round; q > 0; --q)
-                for (int64_t l = 0; l < g.n_layers; ++l) {
-                    sizes.push_back((int64_t) lay.blob_bytes(l));
-                    empty2.push_back((int32_t) l);
-                }
-        }
-        bool ok = !sizes.empty() && gpu2.cache().open_sized(sizes, g.n_layers, g.n_expert, err);
-        for (size_t i = 0; ok && i < pre.size(); ++i) {
-            const int32_t slot = gpu2.cache().admit(pre[i].first, pre[i].second);
-            const uint8_t* b = srcp->blob(pre[i].first, pre[i].second);
-            ok = slot != strata::core::kNotResident && b != nullptr &&
-                 gpu2.cache().fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pre[i].first));
-        }
-        cudaSetDevice(main_dev);
         if (ok) {
             host_res2.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
             for (int64_t l = 0; l < g.n_layers; ++l)
@@ -2052,25 +2053,30 @@ int main(int argc, char** argv) {
         if (ok && adaptive) {
             ok = tier2.init(gpu2.cache(), *srcp, host_res2, nullptr, g.n_layers, g.n_expert, o.adapt_swaps, err,
                             o.second_gpu, main_dev);
-            // lowest slots first: the last ones, which the prompt path borrows, stay empty longest
-            for (size_t i = empty2.size(); ok && i-- > 0;) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
-            tier2.set_upper(&tier);
-            // with the prefetch, the tier's copies go four per layer behind it, an update within ~24 layers: queued in
-            // front of the prefetch copies, an update's ~300 MB would hold them up for ~7 ms
-            if (gpu2.prefetch_slots() > 0) {
-                tier2.set_pace(4);
-                drive.tier2 = &tier2;
+            if (ok) {
+                // lowest slots first: the last ones, which the prompt path borrows, stay empty longest
+                for (size_t i = empty2.size(); i-- > 0;) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
+                tier2.set_upper(&tier);
+                // with the prefetch, the tier's copies go four per layer behind it, an update within ~24 layers:
+                // queued in front of the prefetch copies, an update's ~300 MB would hold them up for ~7 ms
+                if (gpu2.prefetch_slots() > 0) {
+                    tier2.set_pace(4);
+                    drive.tier2 = &tier2;
+                }
             }
         }
-        if (!ok) {
-            std::fprintf(stderr, "strata generate: second GPU: %s\n", sizes.empty() ? "no VRAM for experts" : err.c_str());
-            return 1;
+        if (ok) {
+            drive.d.gpu2 = &gpu2;
+            drive.d.host_res2 = host_res2.data();
+            drive.d.gpu2_min_bytes = (uint64_t) (o.second_gpu_min_mb * 1048576.0);
+            std::fprintf(stderr, "strata generate: second GPU %d (%s): %zu experts from the profile and %zu empty slots, "
+                                 "%.2f GiB\n", o.second_gpu, prop.name, pre.size(), empty2.size(), gpu2.cache().gib());
+        } else {
+            // another process may hold its VRAM (a model, a desktop app): the engine runs on the main GPU alone
+            std::fprintf(stderr, "strata generate: second GPU %d unused: %s\n", o.second_gpu, err.c_str());
+            o.second_gpu = -1;
+            host_res2.clear();
         }
-        drive.d.gpu2 = &gpu2;
-        drive.d.host_res2 = host_res2.data();
-        drive.d.gpu2_min_bytes = (uint64_t) (o.second_gpu_min_mb * 1048576.0);
-        std::fprintf(stderr, "strata generate: second GPU %d (%s): %zu experts from the profile and %zu empty slots, "
-                             "%.2f GiB\n", o.second_gpu, prop.name, pre.size(), empty2.size(), gpu2.cache().gib());
     }
     // the second tier ranks after the first on the same counts, and decays them
     std::string adapt_err;
@@ -2181,7 +2187,7 @@ int main(int argc, char** argv) {
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
-        if (gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         std::vector<int64_t> cur;
         prefill.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
@@ -2821,7 +2827,7 @@ int main(int argc, char** argv) {
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
-        if (gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
