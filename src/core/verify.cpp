@@ -104,7 +104,7 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_};
+                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_, h_rows_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -171,7 +171,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(2 * T * K * 4, (void**) &h_pids_, (void**) &m_pids_) &&
               mapped(2 * T * K * 4, (void**) &h_pw_, (void**) &m_pw_) &&
               mapped(64, (void**) &h_pseq_, (void**) &m_pseq_) &&
-              mapped(64, (void**) &h_pleflag_, (void**) &m_pleflag_);
+              mapped(64, (void**) &h_pleflag_, (void**) &m_pleflag_) &&
+              mapped(T * HC * N * 4, (void**) &h_rows_, (void**) &m_rows_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
@@ -696,6 +697,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         sp.temperature = 0.0f;
         sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
     }
+    if (host_rows_) copy_from_mapped(m_rows_, R_, (int64_t) T * HC * N, cs);   // the kernel copies either way
     stamp(g.n_layers, 3);
     stamp(g.n_layers, 4);   // right after the last: one stamp's own cost
     return true;

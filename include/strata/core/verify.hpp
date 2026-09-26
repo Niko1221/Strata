@@ -77,6 +77,10 @@ public:
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return R_; }
+    /// With `set_host_rows(true)` (before the first `run`), the same rows in host memory once `run` returns: the
+    /// graph writes them there itself, so reading them waits for no copy engine.
+    void set_host_rows(bool on) { host_rows_ = on; }
+    const float* final_R_host() const { return h_rows_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -139,6 +143,8 @@ private:
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
     uint32_t* h_pleflag_ = nullptr; uint32_t* m_pleflag_ = nullptr;  // the PLE rows are in h_ple_
+    bool host_rows_ = false;
+    float* h_rows_ = nullptr;    float* m_rows_ = nullptr;      // T * hc * n_embd: the final rows (set_host_rows)
     int32_t ahead_tok_[8] = {};                                   // the tokens ple_ahead read for
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };

@@ -2978,6 +2978,7 @@ int main(int argc, char** argv) {
         mem_mark("the verifier and the drafter's binding");
         ver.set_split(o.spec_split);
         ver.set_profile(o.window_profile);
+        ver.set_host_rows(!o.window_hashes.empty());
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
@@ -3008,7 +3009,6 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: cannot write %s\n", o.window_hashes.c_str());
             return 1;
         }
-        std::vector<float> hash_rows;
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const double pool_ms0 = drive.cpu_ms;
@@ -3054,10 +3054,8 @@ int main(int argc, char** argv) {
             }
             if (hashes != nullptr) {   // FNV-1a over the window's final residual rows
                 const size_t n_floats = (size_t) T * (size_t) (g.hc * g.n_embd);
-                hash_rows.resize(n_floats);
-                cudaMemcpy(hash_rows.data(), ver.final_R_all(), n_floats * sizeof(float), cudaMemcpyDeviceToHost);
                 uint64_t h = 1469598103934665603ull;
-                const auto* bytes = (const uint8_t*) hash_rows.data();
+                const auto* bytes = (const uint8_t*) ver.final_R_host();
                 for (size_t i = 0; i < n_floats * sizeof(float); ++i) h = (h ^ bytes[i]) * 1099511628211ull;
                 std::fprintf(hashes, "%lld %lld %d %016llx", (long long) rounds, (long long) p, T, (unsigned long long) h);
                 for (int i = 0; i < T; ++i) std::fprintf(hashes, " %d", (int) outv[(size_t) i]);
