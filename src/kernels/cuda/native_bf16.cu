@@ -1,5 +1,6 @@
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/bf16_bits.hpp"
+#include "mmvf_multi.cuh"
 
 #include <cuda_runtime.h>
 #include <limits>
@@ -33,13 +34,6 @@ namespace {
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-__device__ __forceinline__ float mmvf_warp_sum(float value) {
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1)
-        value += __shfl_xor_sync(0xffffffffu, value, offset, 32);
-    return value;
-}
-
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
                                     float* __restrict__ y, int n_in) {
@@ -70,53 +64,14 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
     if (t == 0) y[blockIdx.x] = acc;
 }
 
-// `bf16_f32_mmvf_kernel` for up to kMultiT activation rows: each thread walks the same pairs in the same order for
-// every row, and each row is reduced exactly as the single-row kernel reduces it.
-constexpr int kMultiT = 8;
+// `bf16_f32_mmvf_kernel` for up to kMultiT activation rows (mmvf_multi_row)
+constexpr int kMultiT = kMmvfMaxRows;
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
                                            float* __restrict__ y, int n_in, int n_out, int n_tok) {
-    const int t = threadIdx.x;
-    const uint16_t* row = w + (size_t) blockIdx.x * n_in;
-    const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
-    __shared__ float partials[kMultiT][32];
-    if constexpr (BLOCK_SIZE > 32) {
-        if (t < 32)
-            for (int k = 0; k < kMultiT; ++k) partials[k][t] = 0.0f;
-        __syncthreads();
-    }
     float acc[kMultiT];
-#pragma unroll
-    for (int k = 0; k < kMultiT; ++k) acc[k] = 0.0f;
-    for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
-        const uint32_t weight = weights2[pair];
-        const float w0 = f32_from_bf16((uint16_t) weight), w1 = f32_from_bf16((uint16_t) (weight >> 16));
-#pragma unroll
-        for (int k = 0; k < kMultiT; ++k) {
-            if (k >= n_tok) break;
-            const float2 input = reinterpret_cast<const float2*>(x + (size_t) k * n_in)[pair];
-            acc[k] = __fmaf_rn(w0, input.x, acc[k]);
-            acc[k] = __fmaf_rn(w1, input.y, acc[k]);
-        }
-    }
-#pragma unroll
-    for (int k = 0; k < kMultiT; ++k) {
-        if (k >= n_tok) break;
-        acc[k] = mmvf_warp_sum(acc[k]);
-    }
-    if constexpr (BLOCK_SIZE > 32) {
-        if ((t & 31) == 0)
-            for (int k = 0; k < n_tok; ++k) partials[k][t / 32] = acc[k];
-        __syncthreads();
-        if (t < 32) {
-#pragma unroll
-            for (int k = 0; k < kMultiT; ++k) {
-                if (k >= n_tok) break;
-                acc[k] = mmvf_warp_sum(partials[k][t]);
-            }
-        }
-    }
-    if (t == 0)
+    mmvf_multi_row<BLOCK_SIZE>(x, w + (size_t) blockIdx.x * n_in, n_in, n_tok, acc);
+    if (threadIdx.x == 0)
         for (int k = 0; k < n_tok; ++k) y[(size_t) k * n_out + blockIdx.x] = acc[k];
 }
 

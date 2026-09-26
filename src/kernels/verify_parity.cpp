@@ -285,6 +285,108 @@ int test_router_multi(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- a layer's router: the gemv, the top 10, doorbell_publish and verify_hit_plan  vs  verify_router
+int test_verify_router(std::mt19937& rng, cudaStream_t s) {
+    const int N = 2560, NE = 512, K = 10, slots = 300;
+    const int64_t cap = 8 * K, ptr_off = ((4 + (cap + 1) + 2 * cap) + 1) & ~1ll, words = ptr_off + 4 * cap + 2;
+    std::vector<uint16_t> w((size_t) NE * N);
+    std::normal_distribution<float> nd(0.0f, 0.05f);
+    for (auto& v : w) {
+        const float f = rng() % 64 == 0 ? edgy(rng) : nd(rng);
+        uint32_t b;
+        std::memcpy(&b, &f, 4);
+        v = (uint16_t) (b >> 16);
+    }
+    std::vector<unsigned long long> slot_ptr(slots);
+    for (int i = 0; i < slots; ++i) slot_ptr[(size_t) i] = 0x700000000ull + (unsigned long long) i * 1382400ull;
+    uint16_t* d_w = dev<uint16_t>(w.size());
+    unsigned long long* d_sp = dev<unsigned long long>(slots);
+    int32_t* d_res = dev<int32_t>(NE);
+    unsigned* d_counter = dev<unsigned>(1);
+    up(d_w, w);
+    up(d_sp, slot_ptr);
+    check(cudaMemset(d_counter, 0, 4), "memset");
+    // per path: logits, ids, weights, plan (device); x, ids, weights, seq (mapped)
+    float *d_logits[2], *d_wts[2], *h_x[2], *m_x[2], *h_w[2], *m_w[2];
+    int32_t *d_ids[2], *d_plan[2], *h_ids[2], *m_ids[2];
+    uint32_t *h_seq[2], *m_seq[2];
+    for (int p = 0; p < 2; ++p) {
+        d_logits[p] = dev<float>((size_t) 8 * NE);
+        d_wts[p] = dev<float>((size_t) 8 * K);
+        d_ids[p] = dev<int32_t>((size_t) 8 * K);
+        d_plan[p] = dev<int32_t>((size_t) words);
+        check(cudaHostAlloc((void**) &h_x[p], (size_t) 8 * N * 4, cudaHostAllocMapped), "cudaHostAlloc");
+        check(cudaHostAlloc((void**) &h_ids[p], (size_t) 8 * K * 4, cudaHostAllocMapped), "cudaHostAlloc");
+        check(cudaHostAlloc((void**) &h_w[p], (size_t) 8 * K * 4, cudaHostAllocMapped), "cudaHostAlloc");
+        check(cudaHostAlloc((void**) &h_seq[p], 64, cudaHostAllocMapped), "cudaHostAlloc");
+        check(cudaHostGetDevicePointer((void**) &m_x[p], h_x[p], 0), "mapped");
+        check(cudaHostGetDevicePointer((void**) &m_ids[p], h_ids[p], 0), "mapped");
+        check(cudaHostGetDevicePointer((void**) &m_w[p], h_w[p], 0), "mapped");
+        check(cudaHostGetDevicePointer((void**) &m_seq[p], h_seq[p], 0), "mapped");
+    }
+    float* d_x = dev<float>((size_t) 8 * N);
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        for (int rep = 0; rep < 4; ++rep) {
+            std::vector<float> x((size_t) n_tok * N);
+            for (auto& v : x) v = rng() % 32 == 0 ? edgy(rng) : std::normal_distribution<float>(0.0f, 1.0f)(rng);
+            std::vector<int32_t> res((size_t) NE, -1);
+            for (int e = 0; e < NE; ++e)   // resident: none, all, or at random
+                if (rep == 1 || (rep != 0 && rng() % 3 != 0)) res[(size_t) e] = (int32_t) (rng() % slots);
+            up(d_x, x);
+            up(d_res, res);
+            for (int p = 0; p < 2; ++p) {
+                check(cudaMemset(d_plan[p], 0xff, (size_t) words * 4), "memset");
+                std::memset(h_x[p], 0xcd, (size_t) 8 * N * 4);
+                *h_seq[p] = 5;
+            }
+            // the kernels verify_router stands in for
+            strata::kernels::bf16_gemv_fp32_mmvf_multi(d_x, d_w, d_logits[0], N, NE, n_tok, s);
+            strata::kernels::native_router_top10_multi(d_logits[0], d_ids[0], d_wts[0], n_tok, s);
+            strata::kernels::doorbell_publish(d_x, d_ids[0], d_wts[0], (int64_t) n_tok * N, (int64_t) n_tok * K, m_x[0],
+                                              m_ids[0], m_w[0], m_seq[0], s);
+            strata::kernels::verify_hit_plan(d_ids[0], n_tok * K, K, d_res, NE, d_sp, d_plan[0], cap, ptr_off, s);
+            strata::kernels::VerifyRouterArgs a;
+            a.x = d_x; a.w = d_w; a.logits = d_logits[1]; a.ids = d_ids[1]; a.weights = d_wts[1];
+            a.x_out = m_x[1]; a.ids_out = m_ids[1]; a.w_out = m_w[1]; a.seq = m_seq[1]; a.ring = 6;
+            a.res = d_res; a.slot_ptr = d_sp; a.plan = d_plan[1]; a.cap = (int) cap; a.ptr_off = (int) ptr_off;
+            a.counter = d_counter; a.n_tok = n_tok; a.n_embd = N; a.n_expert = NE;
+            strata::kernels::verify_router(a, s);
+            check(cudaStreamSynchronize(s), "router");
+            const size_t nk = (size_t) n_tok * K;
+            int b = bitwise_diff(down(d_logits[0], (size_t) n_tok * NE), down(d_logits[1], (size_t) n_tok * NE), "logits");
+            b += bitwise_diff(down(d_wts[0], nk), down(d_wts[1], nk), "weights");
+            b += bitwise_diff(std::vector<float>(h_w[0], h_w[0] + nk), std::vector<float>(h_w[1], h_w[1] + nk), "mapped weights");
+            b += bitwise_diff(std::vector<float>(h_x[0], h_x[0] + (size_t) n_tok * N),
+                              std::vector<float>(h_x[1], h_x[1] + (size_t) n_tok * N), "mapped x");
+            if (down(d_ids[0], nk) != down(d_ids[1], nk) ||
+                std::vector<int32_t>(h_ids[0], h_ids[0] + nk) != std::vector<int32_t>(h_ids[1], h_ids[1] + nk)) {
+                std::fprintf(stderr, "verify_router: n_tok %d rep %d: the ids differ\n", n_tok, rep);
+                ++b;
+            }
+            if (*h_seq[0] != 6 || *h_seq[1] != 6 || down(d_counter, 1)[0] != 0u) {
+                std::fprintf(stderr, "verify_router: n_tok %d rep %d: seq %u / %u, counter %u\n", n_tok, rep, *h_seq[0],
+                             *h_seq[1], down(d_counter, 1)[0]);
+                ++b;
+            }
+            if (down(d_plan[0], (size_t) words) != down(d_plan[1], (size_t) words)) {
+                std::fprintf(stderr, "verify_router: n_tok %d rep %d: the hit plans differ\n", n_tok, rep);
+                ++b;
+            }
+            if (b) std::fprintf(stderr, "verify_router: n_tok %d rep %d: %d mismatches\n", n_tok, rep, b);
+            bad += b;
+        }
+    }
+    for (int p = 0; p < 2; ++p) {
+        for (void* q : {(void*) d_logits[p], (void*) d_wts[p], (void*) d_ids[p], (void*) d_plan[p]}) cudaFree(q);
+        for (void* q : {(void*) h_x[p], (void*) h_ids[p], (void*) h_w[p], (void*) h_seq[p]}) cudaFreeHost(q);
+    }
+    for (void* q : {(void*) d_w, (void*) d_sp, (void*) d_res, (void*) d_counter, (void*) d_x}) cudaFree(q);
+    std::printf("verify_router: %s\n", bad ? "MISMATCH"
+                                           : "bitwise the gemv, top 10, doorbell and hit plan (1-8 tokens, 4 routings each)");
+    return bad;
+}
+
 // ---- the hyper-connection read: fused_gr_read per token  vs  fused_gr_read_multi
 int test_gr_read(std::mt19937& rng, cudaStream_t s) {
     const int64_t N = 2560, HC = 4, D = N * HC, LR = 320;
@@ -760,6 +862,7 @@ int main(int argc, char** argv) {
     bad += test_hit_plan(rng, s);
     bad += test_mmvf_multi(rng, s);
     bad += test_router_multi(rng, s);
+    bad += test_verify_router(rng, s);
     bad += test_gr_read(rng, s);
     bad += test_rope_tokens(rng, s);
     bad += test_kv_append(rng, s);

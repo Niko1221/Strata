@@ -231,6 +231,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         plogits_ = b.take<float>(T * (uint64_t) g.n_expert); pw_ = b.take<float>(T * K); pids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
+        ring_count_ = b.take<unsigned>(2);
         plan_ = b.take<int32_t>(2 * (uint64_t) plan_stride_); dplan_ = b.take<int32_t>(2 * (uint64_t) plan_stride_);
         res_ = b.take<int32_t>((uint64_t) res_words_); slot_ptr_ = b.take<unsigned long long>((uint64_t) hits.slots);
         staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
@@ -599,12 +600,26 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 2, cs);
         gr_read_group(1, true, inj_, inj2_);
         stamp(l, 3, cs);
-        if (native_router_enabled()) {             // one weight read and one launch each for the window's tokens
+        // the router, the doorbell and the main GPU's routed experts - the ones its VRAM tier holds, decided here from
+        // the residency snapshot the pool reads too (it leaves their rows to the GPU)
+        if (l == 0 && grp == 0 && cudaStreamWaitEvent(cs, res_ready_, 0) != cudaSuccess) {
+            err = "verify: the residency copy could not join";
+            return false;
+        }
+        int32_t* hit_plan = dplan_ + (size_t) grp * (size_t) plan_stride_;
+        if (native_router_enabled()) {             // one kernel: logits, top 10, ring, hit plan
             const WeightRef* wr = need(v, "ffn_gate_inp.weight", err);
             if (!wr) return false;
+            VerifyRouterArgs ra;
+            ra.x = xm; ra.w = (const uint16_t*) wr->data; ra.logits = logits_ + tb * NE;
+            ra.ids = ids_ + tb * K; ra.weights = w_ + tb * K;
+            ra.x_out = m_x_ + tb * N; ra.ids_out = m_ids_ + tb * K; ra.w_out = m_w_ + tb * K; ra.seq = m_seq_;
+            ra.ring = (uint32_t) (l * G + grp + 1);   // the rings so far (the host waits for this one)
+            ra.res = res_ + (size_t) l * NE; ra.slot_ptr = slot_ptr_; ra.plan = hit_plan;
+            ra.cap = (int) (MT * K); ra.ptr_off = (int) plan_ptr_off_;
+            ra.counter = ring_count_; ra.n_tok = n; ra.n_embd = (int) N; ra.n_expert = (int) NE;
             try {
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wr->data, logits_ + tb * NE, N, NE, n, cs);
-                native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
+                verify_router(ra, cs);
             } catch (const std::exception& e) {
                 err = "verify layer " + std::to_string(l) + " router: " + e.what();
                 return false;
@@ -615,26 +630,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
                 if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
             }
+            doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
+                             m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
+            verify_hit_plan(ids_ + tb * K, (int) (n * K), (int) K, res_ + (size_t) l * NE, (int) NE, slot_ptr_, hit_plan,
+                            MT * K, plan_ptr_off_, cs);
         }
         stamp(l, 4, cs);
-        doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
-                         m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
-        stamp(l, 5, cs);
-        // after the doorbell: the shared expert's branch first (the longest), the main GPU's routed experts - the ones
-        // its VRAM tier holds, decided here from the residency snapshot the pool reads too (it leaves their rows to
-        // the GPU) - and once they are planned, the next layer's prediction
+        // after the doorbell: the shared expert's branch first (the longest), the routed experts' activations, and the
+        // next layer's prediction
         if (beside && !shared(l, grp)) return false;
-        if (l == 0 && grp == 0 && cudaStreamWaitEvent(cs, res_ready_, 0) != cudaSuccess) {
-            err = "verify: the residency copy could not join";
-            return false;
-        }
-        verify_hit_plan(ids_ + tb * K, (int) (n * K), (int) K, res_ + (size_t) l * NE, (int) NE, slot_ptr_,
-                        dplan_ + (size_t) grp * (size_t) plan_stride_, MT * K, plan_ptr_off_, cs);
         if (strata::kernels::cpu::expert_layout().native)
             quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
         else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
-        stamp(l, 6, cs);
+        stamp(l, 5, cs);
         if (predicts(l)) {
             const WeightRef* wr1 = need(LayerView(wt, l + 1), "ffn_gate_inp.weight", err);
             if (!wr1) return false;
@@ -643,11 +652,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
             const size_t half = (size_t) ((l + 1) & 1) * (size_t) (MT * K);
+            VerifyRouterArgs ra;
+            ra.x = xm; ra.w = (const uint16_t*) wr1->data; ra.logits = plogits_; ra.ids = pids_; ra.weights = pw_;
+            ra.ids_out = m_pids_ + half; ra.w_out = m_pw_ + half; ra.seq = m_pseq_;
+            ra.ring = (uint32_t) (l + 1);              // the predictions published so far
+            ra.counter = ring_count_ + 1; ra.n_tok = n; ra.n_embd = (int) N; ra.n_expert = (int) NE;
             try {
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wr1->data, plogits_, N, NE, n, side_);
-                native_router_top10_multi(plogits_, pids_, pw_, n, side_);
-                doorbell_publish(nullptr, pids_, pw_, 0, (int64_t) n * K, nullptr, m_pids_ + half, m_pw_ + half, m_pseq_,
-                                 side_);
+                verify_router(ra, side_);
             } catch (const std::exception& e) {
                 err = "verify layer " + std::to_string(l) + " prediction: " + e.what();
                 return false;
@@ -698,11 +709,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // has landed them in staging
         const Plan vram = plan_at(dplan_ + (size_t) grp * (size_t) plan_stride_);
         grouped(vram, vram.ptr, vram.start, vram.counts);
-        stamp(l, 7, cs);
+        stamp(l, 6, cs);
         Plan pcie;
         if (pcie_share_) {
             wait_flag_ge(m_flagA_, ring, cs);                  // the pool published this group's PCIe share
-            stamp(l, 8, cs);
+            stamp(l, 7, cs);
             int32_t* pl = plan_ + (size_t) grp * (size_t) plan_stride_;
             copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
             pcie = plan_at(pl);
@@ -715,11 +726,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             grouped(pcie, pcie.ptr2, pcie.start2, pcie.counts + 2);
         } else {
-            stamp(l, 8, cs);
+            stamp(l, 7, cs);
         }
-        stamp(l, 9, cs);
+        stamp(l, 8, cs);
         wait_flag_ge(m_flag_, ring, cs);                       // the CPU's share is in the mapped rows
-        stamp(l, 10, cs);
+        stamp(l, 9, cs);
         if (beside && cudaStreamWaitEvent(cs, shjoin_, 0) != cudaSuccess) {
             err = "verify: the shared expert's branch could not join";
             return false;
@@ -744,14 +755,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
             }
         }
-        stamp(l, 11, cs);
+        stamp(l, 10, cs);
         if (predicts(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {
             err = "verify: the prediction branch could not join";
             return false;
         }
         if (l == g.n_layers - 1)
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
-        stamp(l, 12, cs);
+        stamp(l, 11, cs);
         return true;
     };
 
@@ -1046,9 +1057,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             prof_ns_[(size_t) kind * kStamps] += (double) (st[0] - before);
             for (int i = 1; i < kLayerStamps; ++i) prof_ns_[(size_t) kind * kStamps + i] += (double) (st[i] - st[i - 1]);
             // the shared expert's branch, from the doorbell (it forks there) to its end
-            prof_ns_[(size_t) kind * kStamps + kLayerStamps] += (double) (st[kLayerStamps] - st[5]);
+            prof_ns_[(size_t) kind * kStamps + kLayerStamps] += (double) (st[kLayerStamps] - st[4]);
             {   // the wait for the CPU's rows, by bucket
-                const double us = (double) (st[10] - st[9]) / 1e3;
+                const double us = (double) (st[9] - st[8]) / 1e3;
                 int b = 0;
                 while (b < kWaitBuckets - 1 && us >= kWaitEdges[b]) ++b;
                 ++prof_wait_hist_[kind][b];
@@ -1069,13 +1080,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 void Verifier::print_profile() const {
     if (prof_windows_ == 0) return;
     static const char* const names[kStamps] = {"stamp gap",      "HC read, mixer",   "mixer",          "HC read, FFN",
-                                               "router",         "doorbell",         "hit plan",       "VRAM experts",
+                                               "router, ring, hits", "expert inputs", "VRAM experts",
                                                "wait for PCIe plan", "PCIe experts", "wait for CPU",   "rows + combine",
                                                "last HC write",  "shared expert, beside"};
     const double nw = (double) prof_windows_;
     std::printf("%-24s GPU time over %lld windows, ms per window: inputs %.3f, head %.3f, whole window %.3f; "
-                "one stamp %.2f us (each stage below includes one; the last runs from the doorbell beside the "
-                "four before \"rows + combine\")\n", "window profile", (long long) prof_windows_,
+                "one stamp %.2f us (each stage below includes one; the last runs from the ring beside the "
+                "five before \"rows + combine\")\n", "window profile", (long long) prof_windows_,
                 prof_window_ns_[0] / nw / 1e6, prof_window_ns_[1] / nw / 1e6, prof_window_ns_[2] / nw / 1e6,
                 prof_window_ns_[3] / nw / 1e3);
     std::printf("  %-22s %12s %12s %14s\n", "stage", "GDN us/layer", "QSA us/layer", "ms per window");

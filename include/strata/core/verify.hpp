@@ -203,6 +203,7 @@ private:
     int32_t* sel_ = nullptr;
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
+    unsigned* ring_count_ = nullptr;                          // verify_router's block counters: the layer's, the prediction's
     float *plogits_ = nullptr, *pw_ = nullptr;                    // the next layer's router (prediction)
     int32_t* pids_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copies of the PCIe share's plan blocks
@@ -223,7 +224,7 @@ private:
 
     // --window-profile: stamps [window size][layer, then one row for the window][stage]: a layer's main-stream stages,
     // then the end of its shared expert's branch
-    static constexpr int kLayerStamps = 13, kStamps = 14;
+    static constexpr int kLayerStamps = 12, kStamps = 13;
     bool profile_ = false;
     unsigned long long* stamps_ = nullptr;
     std::vector<unsigned long long> h_stamps_;
