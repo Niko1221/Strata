@@ -64,8 +64,11 @@ public:
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
 
-    /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
-    bool commit(int n_keep, std::string& err);
+    /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.  With `wait` false
+    /// the commit graph is only launched (the MTP draft, on its own stream, reads nothing it writes): `wait_commit`
+    /// before anything outside the next `run` reads the sequence state.
+    bool commit(int n_keep, std::string& err, bool wait = true);
+    bool wait_commit(std::string& err);
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
@@ -115,6 +118,7 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t commit_exec_ = nullptr;
+    bool commit_pending_ = false;
 
     // mapped staging (host pointer, device alias)
     int32_t* h_tok_ = nullptr;   int32_t* m_tok_ = nullptr;     // T

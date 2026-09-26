@@ -1004,7 +1004,7 @@ void Verifier::publish_plan(void* ctx) {
     *(volatile uint32_t*) v->h_flagA_ = v->cur_layer_ + 1;
 }
 
-bool Verifier::commit(int n_keep, std::string& err) {
+bool Verifier::commit(int n_keep, std::string& err, bool wait) {
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     const Clock::time_point t0 = Clock::now();
     h_commit_[0] = n_keep;
@@ -1013,13 +1013,23 @@ bool Verifier::commit(int n_keep, std::string& err) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     const cudaError_t le = cudaGraphLaunch(commit_exec_, cs_);
     if (le != cudaSuccess) { err = std::string("verify: commit launch: ") + cudaGetErrorString(le); return false; }
-    const cudaError_t se = cudaStreamSynchronize(cs_);
-    if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
+    (void) cudaStreamQuery(cs_);   // submit now, not at the next driver call
+    commit_pending_ = true;
     for (int t = 0; t < n_keep; ++t) {
         ss_->ple_prev[0] = ss_->ple_prev[1];
         ss_->ple_prev[1] = last_tokens_[t];
     }
     ms_commit += ms_since(t0);
+    return !wait || wait_commit(err);
+}
+
+bool Verifier::wait_commit(std::string& err) {
+    if (!commit_pending_) return true;
+    const Clock::time_point t0 = Clock::now();
+    commit_pending_ = false;
+    const cudaError_t se = cudaStreamSynchronize(cs_);
+    ms_commit += ms_since(t0);
+    if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
     return true;
 }
 
