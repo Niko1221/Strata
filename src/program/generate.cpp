@@ -244,6 +244,10 @@ struct Options {
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
+    /// --serve: a text part of the prompt of at most N tokens (a chat message, the assistant header, a short tool
+    /// result) goes through the verify windows, S tokens at a time, instead of the batched prompt path (0 = always
+    /// the batched path)
+    int64_t short_read = 64;
 };
 
 void usage() {
@@ -305,6 +309,8 @@ void usage() {
                  "                       of RAM each; 0 = read every prompt from the start)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
+                 "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
+                 "                       of the batched prompt path (default 64, 0 = off)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
@@ -651,6 +657,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
+        else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -2311,17 +2318,74 @@ int main(int argc, char** argv) {
             pp_next_check = reread_to > 0 ? INT64_MAX : resume + o.prompt_cache_every;
             std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused
             std::fflush(stdout);
-            const int64_t prefill_n = (n - 1) - read_from;
+            // A SHORT PART OF THE PROMPT - the new message of a chat that continues from a checkpoint, the assistant
+            // header - goes through the verify windows, S tokens at a time, as decode reads them.  The batched path
+            // costs ~300 ms per run however few tokens it has (it streams every expert the chunk routes to that is
+            // not in VRAM over PCIe), and it borrows slots it must refill after (~180 ms); a window costs ~16 ms a
+            // token, with the misses on the CPU.  Each part below is decided on its own, so a long first message is
+            // read batched and its header still goes through the windows.  Picture rows need the batched path.
+            // STRATA_CKPT_REREAD compares a restored checkpoint with a batched re-read, so it keeps every read batched.
+            static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
+            auto windows_ok = [&](int64_t a, int64_t b) -> bool {
+                if (no_short || b - a > o.short_read) return false;
+                if (sp.embd_rows != nullptr)
+                    for (int64_t i = a; i < b; ++i)
+                        if (sp.embd_rows[i] != nullptr) return false;
+                return true;
+            };
+            // tokens [a, b) through the windows: commit all of them, then give the draft layer their residuals
+            auto read_windows = [&](int64_t a, int64_t b, std::string& e) -> bool {
+                std::vector<int32_t> win((size_t) S), outw((size_t) S), nxt((size_t) S);
+                for (int64_t q = a; q < b;) {
+                    if (stop_req.load()) { e = "cancelled"; return false; }
+                    const int T = (int) std::min<int64_t>(S, b - q);
+                    for (int t = 0; t < T; ++t) {
+                        win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
+                        nxt[(size_t) t] = (int32_t) cur[(size_t) (q + t + 1)];
+                    }
+                    drive.d.layers = 0;
+                    drive.d.experts = 0;
+                    drive.d.failed = false;
+                    if (!ver.run(T, win.data(), q, &drive_pool_multi, &drive, outw.data(), e) || drive.d.failed) {
+                        if (drive.d.failed && drive.d.fail) e = drive.d.fail;
+                        return false;
+                    }
+                    if (!ver.commit(T, e) || !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e)) return false;
+                    q += T;
+                }
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
+                std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
+                            ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
+                std::fflush(stdout);
+                return true;
+            };
+            // the batched path's slots are lent just before its first run and given back (refilled) before a window
+            // reads - so the windows always see the whole expert cache - or once the prompt is read
             std::vector<std::pair<int32_t, int32_t>> lent_now;
-            apply_pending(true);
-            if (prefill_n > 0 && lend_first >= 0) {
+            auto lend = [&] {
+                if (lend_first < 0 || !lent_now.empty()) return;
                 for (size_t i = 0; i < host_res.size(); ++i)
                     if (host_res[i] >= lend_first) {
                         lent_now.emplace_back((int32_t) i, host_res[i]);
                         host_res[i] = strata::core::kNotResident;
                     }
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
-            }
+            };
+            auto refill = [&](std::string& e) -> bool {
+                if (lent_now.empty()) return true;
+                tr("refill start", (long long) lent_now.size());
+                for (const auto& [i, slot] : lent_now) {
+                    const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
+                    if (b == nullptr || !xcache.fill_slot_blocking(slot, b, e,
+                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert)))
+                        return false;
+                    host_res[(size_t) i] = slot;
+                }
+                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                lent_now.clear();
+                return true;
+            };
+            apply_pending(true);
             bool cancelled = false;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
@@ -2335,7 +2399,21 @@ int main(int argc, char** argv) {
             int64_t at = read_from;
             for (const int64_t to : {reread_to, turn_at, n - 1}) {
                 if (to <= at) continue;
-                if (!sp.run(ids.data() + at, to - at, at, err)) {
+                const bool win = windows_ok(at, to);
+                if (win && !refill(err)) {
+                    std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                    return 1;
+                }
+                if (!win) lend();
+                const auto tsp = Clock::now();
+                const bool sp_ok = win ? read_windows(at, to, err) : sp.run(ids.data() + at, to - at, at, err);
+                if (trace) {
+                    std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),
+                                 win ? "windows" : "batched",
+                                 std::chrono::duration<double, std::milli>(Clock::now() - tsp).count());
+                    std::fflush(stderr);
+                }
+                if (!sp_ok) {
                     if (!stop_req.load()) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                         std::printf("ERR %s\n", err.c_str());
@@ -2350,17 +2428,10 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
-            for (const auto& [i, slot] : lent_now) {
-                const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
-                if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err,
-                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert))) {
-                    std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
-                    return 1;
-                }
-                host_res[(size_t) i] = slot;
+            if (!refill(err)) {
+                std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                return 1;
             }
-            if (!lent_now.empty())
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
             tr("prompt done (slots refilled)");
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
