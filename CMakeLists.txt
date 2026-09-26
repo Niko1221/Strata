@@ -516,6 +516,11 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact CUDA::cudart)
+    # The grouped native expert kernels against the ones they replaced, kept in the test: bitwise (synthetic experts).
+    add_executable(expert_grouped_parity src/kernels/expert_grouped_parity.cu)
+    target_include_directories(expert_grouped_parity PRIVATE third_party/ggml src/kernels/cuda)
+    target_link_libraries(expert_grouped_parity PRIVATE strata_kernels strata_kernels_cpu CUDA::cudart)
+    add_test(NAME expert_grouped_parity COMMAND expert_grouped_parity)
   endif()
 endif()
 
