@@ -71,6 +71,8 @@ public:
     /// Positions [pos0, pos0 + n) holding `tokens`, in chunks of the bound length; `ss.ple_prev` must be the two
     /// tokens before pos0 (oldest first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    /// Positions the last `run` completed: n, or fewer after `should_stop` (the session state holds them).
+    int64_t processed() const { return processed_; }
 
     const PrefillStats& stats() const { return stats_; }
 
@@ -78,6 +80,10 @@ public:
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+
+    /// Checked before every chunk: true stops the prompt there (`run` returns false with err "cancelled", and the
+    /// state and `ss.ple_prev` hold the chunks before it, `processed()` positions).
+    std::function<bool()> should_stop;
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
@@ -91,6 +97,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PrefillStats stats_;
+    int64_t processed_ = 0;
 };
 
 }  // namespace strata::prefill

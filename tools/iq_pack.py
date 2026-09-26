@@ -18,7 +18,7 @@ so this pack keeps every quantized tensor in its GGUF form:
                        With --base: the base (Q2_0) pack's dense.bin, hard-linked - the float tensors are
                        byte-identical in all three ISTA model files (checked) - plus extra.bin for tensors that are
                        float here but quantized in the base pack (blk.1.ple_key).
-  tokenizer/           exported from the GGUF (tools/strata_tokenizer.py).
+  tokenizer/           exported from the GGUF (tools/strata_tokenizer.py), with the model's chat template.
 """
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def main() -> int:
     rc = index_from_base(src, base, out, model) if a.base else index_standalone(src, out, model)
     if rc:
         return rc
-    if not (out / "tokenizer" / "vocab.json").exists():
+    if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():
         subprocess.run([sys.executable, str(HERE / "strata_tokenizer.py"), "--gguf", str(src), "--out", str(out)],
                        check=True)   # writes <out>/tokenizer/
 

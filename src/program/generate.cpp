@@ -55,6 +55,10 @@
 #include <algorithm>
 #include <iostream>
 #include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -493,6 +497,15 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
+}
+
+/// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)
+void mem_mark(const char* where) {
+    static const bool on = std::getenv("STRATA_TRACE") != nullptr;
+    if (!on) return;
+    size_t free_b = 0, total_b = 0;
+    cudaMemGetInfo(&free_b, &total_b);
+    std::fprintf(stderr, "strata trace: %lld MiB free after %s\n", (long long) (free_b >> 20), where);
 }
 
 int argmax(const std::vector<float>& v) {
@@ -1240,6 +1253,7 @@ int main(int argc, char** argv) {
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
     // sees the memory this process actually has left rather than the card's idle figure - and refuses with both
     // numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
+    mem_mark("the weights, the session and the drafter");
     strata::core::ExpertCache xcache;
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!o.expert_profile.empty()) {
@@ -1255,6 +1269,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
+    const bool auto_cache = o.expert_cache < 0;
     if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
@@ -1293,15 +1308,51 @@ int main(int argc, char** argv) {
         o.expert_cache = (int) sized_slots.size();
     }
     if (o.expert_cache > 0) {
-        const bool ok = sized_slots.empty()
-            ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
-            : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
-        if (!ok) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
+        // With `--expert-cache auto` the reserve must still be free once the slots are WRITTEN: under WDDM an
+        // allocation is not resident until it is touched, and the free figure read before it can be ~1 GB too
+        // high.  A cache sized from it filled the card to 0 MiB, the driver then paged, and a request that needed a
+        // page back while the verify graph spun on a host flag never finished.  So the slots are zeroed and the
+        // free figure read again; while it is short of the reserve the cache is reopened smaller.
+        for (int attempt = 0;; ++attempt) {
+            const bool ok = sized_slots.empty()
+                ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
+                : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
+            if (!ok) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            if (!auto_cache || attempt >= 6) break;
+            cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
+            cudaDeviceSynchronize();
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            const int64_t want = (int64_t) o.vram_reserve_mib << 20;
+            if ((int64_t) free_b >= want - (64ll << 20)) break;
+            // short by (want - free); a figure of 0 only says "at least", so then give back a quarter as well
+            int64_t give = want - (int64_t) free_b + (64ll << 20);
+            if (free_b < ((size_t) 16 << 20)) give = std::max<int64_t>(give, xcache.bytes() / 4);
+            const int64_t keep_bytes = xcache.bytes() - give;
+            std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
+                                 "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
+            xcache.close();
+            if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); break; }
+            if (!sized_slots.empty()) {
+                int64_t used = 0;
+                size_t keep = 0;
+                while (keep < sized_slots.size() && used + (sized_slots[keep] + 255) / 256 * 256 <= keep_bytes)
+                    used += (sized_slots[keep++] + 255) / 256 * 256;
+                sized_slots.resize(keep);
+                o.expert_cache = (int) keep;
+            } else {
+                o.expert_cache = (int) (keep_bytes / (int64_t) strata::kernels::cpu::expert_layout().max_blob);
+            }
+            if (o.expert_cache <= 0) { o.expert_cache = 0; sized_slots.clear(); break; }
         }
+    }
+    if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
                      (long long) xcache.slots(), xcache.gib());
+        mem_mark("opening the expert cache");
         xcache.set_per_layer_admission(o.expert_cache_per_layer);
         // **ROUND 328: THE HIT PATH IS PROVABLY WRONG, AND THIS SAYS SO OUT LOUD RATHER THAN LETTING IT
         // CORRUPT A RUN QUIETLY.**  With the cache on, the generated tokens DIVERGE from the cache-off run:
@@ -1349,12 +1400,13 @@ int main(int argc, char** argv) {
         // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
         // about bytes produces a plausible token, which is this project's most expensive failure mode; the
         // cache's own `verify_slot` is the check and it costs one 1.38 MB D2H at startup.
-        if (!xcache.verify_slot(xcache.slot_of(profile[0].first, profile[0].second),
+        if (prefilled > 0 && !xcache.verify_slot(xcache.slot_of(profile[0].first, profile[0].second),
                                 srcp->blob(profile[0].first, profile[0].second), err,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[0].first))) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile; slot 0 verified\n",
                      (long long) prefilled, (long long) want);
     }
@@ -1412,6 +1464,7 @@ int main(int argc, char** argv) {
         drive.d.hit_done = (void*) hit_done;
         drive.d.hit_poke = !o.no_hit_poke;
         drive.d.h_dst.resize((size_t) K);
+        mem_mark("the R4 hit path");
         std::fprintf(stderr, "strata generate: R4 hit path ON - resident experts are computed on the GPU\n");
     }
     // ---- P0.S8: the routing trace.  Only meaningful with the pool running, because the ids arrive through
@@ -1529,6 +1582,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    mem_mark("the expert cache and the graphs");
     std::fprintf(stderr, "strata generate: session is up; locating the head\n");
     const strata::core::WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
@@ -2037,6 +2091,26 @@ int main(int argc, char** argv) {
             }
             if (sizes.empty()) err = "no VRAM for experts (" + std::to_string(free_b >> 20) + " MiB free)";
             ok = !sizes.empty() && gpu2.cache().open_sized(sizes, g.n_layers, g.n_expert, err);
+            // as on the main GPU, the reserve must still be free once the slots are written (WDDM makes memory
+            // resident when it is first touched): short of it, the cache reopens without its last (empty) slots
+            for (int attempt = 0; ok && o.second_gpu_gib <= 0 && attempt < 6; ++attempt) {
+                cudaMemset(gpu2.cache().device_slot(0), 0, (size_t) gpu2.cache().bytes());
+                cudaDeviceSynchronize();
+                cudaMemGetInfo(&free_b, &total_b);
+                if ((uint64_t) free_b + (64ull << 20) >= reserve) break;
+                std::fprintf(stderr, "strata generate: second GPU: only %lld MiB free once its slots are written "
+                                     "(reserve %d MiB); shrinking its cache\n", (long long) (free_b >> 20),
+                             o.second_gpu_reserve_mib);
+                gpu2.cache().close();
+                for (uint64_t cut = 0; !sizes.empty() && cut < reserve - free_b + (64ull << 20);) {
+                    cut += ((uint64_t) sizes.back() + 255) / 256 * 256;
+                    sizes.pop_back();
+                    if (!empty2.empty()) empty2.pop_back();
+                    else pre.pop_back();
+                }
+                if (sizes.empty()) err = "no VRAM for experts once the slots are written";
+                ok = !sizes.empty() && gpu2.cache().open_sized(sizes, g.n_layers, g.n_expert, err);
+            }
             for (size_t i = 0; ok && i < pre.size(); ++i) {
                 const int32_t slot = gpu2.cache().admit(pre[i].first, pre[i].second);
                 const uint8_t* b = srcp->blob(pre[i].first, pre[i].second);
@@ -2102,6 +2176,19 @@ int main(int argc, char** argv) {
     auto setup_prompt_path = [&](strata::prefill::Prefill& prefill, strata::prefill::ExpertRunner& offload,
                                  PromptBuffers& pbuf, std::string& e) -> bool {
         const bool off = o.second_gpu >= 0 && !o.no_prompt_offload;
+        // a cache too small to lend the buffers would make them allocate on top of a card the cache filled to its
+        // reserve, which then pages: the chunk halves until they fit in the lendable slots (it only reads slower)
+        if (!o.no_prefill_borrow && d_res != nullptr && o.expert_cache > 0) {
+            SlotLoan probe;
+            probe.cache = &xcache;
+            int64_t chunk = o.prefill_chunk;
+            while (chunk > 256 && !probe.plan(strata::prefill::Prefill::bytes_needed(g, ss, chunk, off))) chunk /= 2;
+            if (chunk != o.prefill_chunk && probe.plan(strata::prefill::Prefill::bytes_needed(g, ss, chunk, off))) {
+                std::fprintf(stderr, "strata generate: prompt chunk %lld -> %lld tokens so its buffers fit in the expert "
+                                     "cache\n", (long long) o.prefill_chunk, (long long) chunk);
+                o.prefill_chunk = chunk;
+            }
+        }
         if (off && !offload.init(o.second_gpu, o.main_gpu, nullptr, srcp, &gpu2.cache(),
                                  host_res2.empty() ? nullptr : host_res2.data(), g.n_expert, o.prefill_chunk, true, e))
             return false;
@@ -2173,6 +2260,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: the prompt path borrows up to %lld cache slots (%.2f GiB), %lld (%.2f GiB) "
                                  "on the second GPU\n", (long long) pbuf.loan.slots(), (double) pbuf.loan.bytes() / 1073741824.0,
                          (long long) pbuf.loan2.slots(), (double) pbuf.loan2.bytes() / 1073741824.0);
+        else
+            std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
+        mem_mark("the head and the prompt path");
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
@@ -2183,6 +2273,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
+        mem_mark("the verifier and the drafter's binding");
         ver.set_split(o.spec_split);
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
@@ -2207,7 +2298,59 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: prompt cache on: up to %d checkpoints of %.1f MiB, %lld MiB for stashed "
                                  "sequences\n", o.prompt_cache, (double) pcache.ckpt_bytes() / 1048576.0,
                          (long long) o.cache_ram_mib);
-        std::printf("READY %lld\n", (long long) o.max_context);
+        // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
+        // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
+        std::atomic<bool> stop_req{false};
+        std::mutex in_mu;
+        std::condition_variable in_cv;
+        std::deque<std::string> in_lines;
+        bool in_eof = false;
+        std::thread([&] {
+            std::string l;
+            while (std::getline(std::cin, l)) {
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                if (l == "STOP") { stop_req.store(true); continue; }
+                std::lock_guard<std::mutex> lk(in_mu);
+                in_lines.push_back(l);
+                in_cv.notify_one();
+            }
+            std::lock_guard<std::mutex> lk(in_mu);
+            in_eof = true;
+            in_cv.notify_one();
+        }).detach();
+        auto next_line = [&](std::string& out) -> bool {
+            std::unique_lock<std::mutex> lk(in_mu);
+            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
+            if (in_lines.empty()) return false;
+            out = std::move(in_lines.front());
+            in_lines.pop_front();
+            return true;
+        };
+        prefill.should_stop = [&] { return stop_req.load(); };
+        // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
+        const bool trace = std::getenv("STRATA_TRACE") != nullptr;
+        auto tr = [&](const char* what, long long a = -1, long long b = -1) {
+            if (!trace) return;
+            std::fprintf(stderr, "strata trace: %s %lld %lld\n", what, a, b);
+            std::fflush(stderr);
+        };
+        {
+            // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
+            // and a page-in while the verify graph spins on a host flag stalls the request for good
+            size_t free_b = 0, total_b = 0, free2 = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            if (o.second_gpu >= 0) {
+                cudaSetDevice(o.second_gpu);
+                cudaMemGetInfo(&free2, &total_b);
+                cudaSetDevice(o.main_gpu);
+            }
+            std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded%s%s\n",
+                         (long long) (free_b >> 20),
+                         o.second_gpu >= 0 ? (", " + std::to_string(free2 >> 20) + " MiB on the second GPU").c_str() : "",
+                         free_b < ((size_t) 128 << 20)
+                             ? " - LOW: requests may stall; lower --max-context or raise --vram-reserve-mib" : "");
+        }
+        std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -2221,9 +2364,9 @@ int main(int argc, char** argv) {
         bool mrope_identity = true;
         std::vector<float> img_rows;
         std::vector<const float*> row_ptr;
-        while (std::getline(std::cin, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
+        while (next_line(line)) {
             if (line == "QUIT") break;
+            stop_req.store(false);   // a STOP that arrived between requests is stale
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");
@@ -2301,7 +2444,9 @@ int main(int argc, char** argv) {
                     if (ve.empty() && n > 0 && ids[(size_t) (n - 1)] == kImagePad) ve = "the prompt cannot end in an image";
                     for (int64_t c = n; ve.empty() && c < cells; ++c) put(c, p + (c - n), p + (c - n), p + (c - n));
                 }
+                tr("positions built", (long long) img_rows.size());
                 cudaDeviceSynchronize();
+                tr("device idle");
                 if (ve.empty() && cudaMemcpy(d_mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t),
                                              cudaMemcpyHostToDevice) != cudaSuccess)
                     ve = "the image position upload failed";
@@ -2335,6 +2480,7 @@ int main(int argc, char** argv) {
             // Image requests are not cached: their cells are not identified by the token ids alone.
             const bool track = pcache.enabled() && !geni;
             const int64_t reuse = pcache.begin(ids, !geni);
+            tr("request", n, reuse);
             mtp.set_prompt_len(n);
             std::vector<int32_t> drafts((size_t) S, 0), window((size_t) S), outv((size_t) S);
             std::vector<float> dprob((size_t) S, 0.0f);
@@ -2359,9 +2505,15 @@ int main(int argc, char** argv) {
             if (batched_end > reuse) {
                 apply_pending(true);   // no copy may still land in a lent slot
                 if (!pbuf.take(std::min(o.prefill_chunk, batched_end - reuse), err)) { report(err); return 1; }
+                tr("prompt start", reuse, batched_end);
                 for (int64_t a0 = reuse; a0 < batched_end;) {
                     const int64_t b0 = track ? std::min(batched_end, a0 + step) : batched_end;
-                    if (!prefill.run(ids.data() + a0, b0 - a0, a0, err)) { report(err); return 1; }
+                    if (!prefill.run(ids.data() + a0, b0 - a0, a0, err)) {
+                        if (!stop_req.load()) { report(err); return 1; }
+                        // STOP: the session holds the chunks read before it
+                        if (track && prefill.processed() > 0) pcache.set(a0, ids.data() + a0, prefill.processed());
+                        break;
+                    }
                     if (track) {
                         pcache.set(a0, ids.data() + a0, b0 - a0);
                         pcache.checkpoint(b0);
@@ -2372,6 +2524,7 @@ int main(int argc, char** argv) {
                     report("refilling a lent slot failed: " + err);
                     return 1;
                 }
+                tr("prompt done (slots refilled)");
             }
             // prompt tokens through verify windows: each window is committed whole, and the draft layer catches up
             // on the same cells (its drafts are not used)
@@ -2397,11 +2550,13 @@ int main(int argc, char** argv) {
                 }
                 return true;
             };
-            const int64_t split = q > batched_end ? q : batched_end;
-            if (!feed(batched_end, split)) { report(err); return 1; }
-            if (track && split == q) pcache.checkpoint(q);
-            if (!feed(split, n - 1)) { report(err); return 1; }
-            if (track) pcache.checkpoint(n - 1);
+            if (!stop_req.load()) {
+                const int64_t split = q > batched_end ? q : batched_end;
+                if (!feed(batched_end, split)) { report(err); return 1; }
+                if (track && split == q) pcache.checkpoint(q);
+                if (!feed(split, n - 1)) { report(err); return 1; }
+                if (track) pcache.checkpoint(n - 1);
+            }
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
@@ -2411,6 +2566,7 @@ int main(int argc, char** argv) {
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
             while (produced_n < max_new) {
+                if (stop_req.load()) { finish = "cancel"; break; }   // the client went away
                 int T = S;
                 if (o.spec_min_p > 0.0) {
                     T = 1;
@@ -2433,6 +2589,7 @@ int main(int argc, char** argv) {
                 drive.d.experts = 0;
                 drive.d.failed = false;
                 apply_pending(false);
+                tr("window", p, T);
                 if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -2809,6 +2966,7 @@ int main(int argc, char** argv) {
                                  "--expert-cache and the token graph)\n");
             return 2;
         }
+        mem_mark("the head and the prompt path");
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
@@ -2823,6 +2981,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        mem_mark("the verifier and the drafter's binding");
         ver.set_split(o.spec_split);
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2

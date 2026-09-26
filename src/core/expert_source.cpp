@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <thread>
@@ -266,8 +267,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
     if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
+    static const bool ptrace = std::getenv("STRATA_POOL_TRACE") != nullptr;
+    auto pt = [&](const char* what, long long a = -1) {
+        if (ptrace) { std::fprintf(stderr, "pool trace: layer %lld %s %lld\n", (long long) d.layers, what, a); std::fflush(stderr); }
+    };
     const auto c0 = std::chrono::steady_clock::now();
+    pt("begin");
     d.src->begin_layer(d.layers, ids, n_tok * k);
+    pt("begun");
     if (!d.usage.empty())
         for (int64_t i = 0; i < n_tok * k; ++i)
             if (ids[i] >= 0 && ids[i] < d.n_expert) d.usage[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] += 1.0f;
@@ -391,7 +398,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         P.counts[1] = entries;
         P.counts[2] = fetches;
         std::atomic_thread_fence(std::memory_order_seq_cst);
+        pt("publish", fetches);
         if (P.publish) P.publish(P.ctx);
+        pt("fetch", fetches);
         if (P.fetch) P.fetch(P.ctx, dma_src, P.pcie_mode != 0 ? 0 : fetches, (size_t) bb);   // the copy engine, beside the CPU's work
         g2_start[n2g] = n2e;
     } else {
@@ -470,6 +479,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         s.ok = s.d->gpu2->submit(s.d->layers, s.x, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.d->gpu2_err);
     };
     if (n2g <= 0) submit2 = nullptr;
+    pt("run", njobs);
     if (native) {
         d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, submit2, &s2);
     } else {
@@ -489,6 +499,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         return;
     }
     const auto c4 = std::chrono::steady_clock::now();
+    pt("ran");
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     d.ms_plan += ms(c0, c1);
     d.ms_actq += ms(c1, c2);

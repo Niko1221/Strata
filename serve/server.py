@@ -6,8 +6,9 @@
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
 non-stream), GET /v1/models, GET /health. One sequence at a time behind a FIFO (plan: one resident sequence).
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
-data, http(s) URLs or local file paths; JPEG/PNG/BMP/GIF) go through `strata-vision` (the model's mmproj file) and
-reach the engine as embeddings (`GENI`).
+data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
+embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
+converted to PNG first with Pillow.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 
 The engine boundary is `Engine.generate(prompt_ids, max_new, sampling, cancel) -> iterator of token ids`.
@@ -21,6 +22,7 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -77,13 +79,24 @@ class StrataEngine:
         self.proc = subprocess.Popen([exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         self.max_context = 0
+        self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
         for line in self.proc.stdout:
             if line.startswith("READY"):
-                self.max_context = int(line.split()[1])
+                f = line.split()
+                self.max_context = int(f[1])
+                self.can_stop = "stop" in f[2:]
                 break
         if self.max_context <= 0:
             raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
+        # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
+        self.lines: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        for line in self.proc.stdout:
+            self.lines.put(line)
+        self.lines.put(None)
 
     def _done(self, line):
         f = line.split()
@@ -91,16 +104,30 @@ class StrataEngine:
                      "decode_ms": float(f[4]), "finish": f[5], "cached": int(f[6]) if len(f) > 6 else 0}
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
+        the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
+        has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         head = f"GENI {int(max_new)} {embeddings}" if embeddings else f"GEN {int(max_new)}"
         self.last = {}
         self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
         self.proc.stdin.flush()
         done = False
         try:
-            for line in self.proc.stdout:
+            while True:
+                try:
+                    line = self.lines.get(timeout=10)
+                except queue.Empty:
+                    if cancel.is_set():
+                        return
+                    yield None
+                    continue
+                if line is None:
+                    done = True
+                    raise RuntimeError("the engine process ended")
                 if line.startswith("T "):
-                    if not cancel.is_set():
-                        yield int(line[2:])
+                    if cancel.is_set():
+                        return
+                    yield int(line[2:])
                 elif line.startswith("DONE"):
                     self._done(line)
                     done = True
@@ -108,14 +135,20 @@ class StrataEngine:
                 elif line.startswith("ERR"):
                     done = True
                     raise ValueError(line[4:].strip())
-            raise RuntimeError("the engine process ended")
         finally:
-            if not done:                                  # the consumer stopped early: drain to DONE
-                for line in self.proc.stdout:
+            if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
+                if self.can_stop:
+                    try:
+                        self.proc.stdin.write("STOP\n")
+                        self.proc.stdin.flush()
+                    except OSError:
+                        pass
+                while True:
+                    line = self.lines.get()
+                    if line is None or line.startswith("ERR"):
+                        break
                     if line.startswith("DONE"):
                         self._done(line)
-                        break
-                    if line.startswith("ERR"):
                         break
 
     def close(self):
@@ -162,9 +195,37 @@ class Vision:
             return Path(path).read_bytes()
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
+    @staticmethod
+    def normalize(data: bytes) -> bytes:
+        """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG."""
+        if data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
+                data[:6] in (b"GIF87a", b"GIF89a"):
+            return data
+        try:
+            import io
+            from PIL import Image
+        except ImportError:
+            raise ValueError("this image format needs Pillow (python -m pip install pillow); JPEG, PNG, BMP and "
+                             "GIF work without it") from None
+        try:
+            im = Image.open(io.BytesIO(data))
+            im.load()
+        except Exception as e:
+            raise ValueError(f"the image could not be read ({e})") from None
+        if im.mode in ("RGBA", "LA", "P") and "transparency" in im.info or im.mode in ("RGBA", "LA"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))   # transparent areas become white, not black
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+
     def encode(self, source: str) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens)."""
-        data = self.load(source)
+        data = self.normalize(self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
             if key in self.cache:
@@ -252,6 +313,8 @@ class Service:
         self.fifo = threading.Lock()
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
+        self.status_lock = threading.Lock()
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
 
@@ -265,7 +328,12 @@ class Service:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            encoded = [self.vision.encode(src) for src in images]
+            # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+            # run on the GPU at the same time - an encode during a running request left that request stuck at
+            # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+            # same FIFO as the requests.
+            with self.fifo:
+                encoded = [self.vision.encode(src) for src in images]
             out, k = [], 0
             for t in ids:                               # one <|image_pad|> per image -> one per image token
                 if t == pad and k < len(encoded):
@@ -286,27 +354,83 @@ class Service:
                              f"({self.engine.max_context}); requests are never truncated")
         return ids, kwargs.get("enable_thinking", True) is not False
 
+    def _note(self, n, evs):
+        with self.status_lock:
+            s = self.status
+            s["generated"] = n
+            if s.get("first_token") is None:
+                s["first_token"] = time.time()
+            for ev in evs:
+                if ev.kind == "reasoning":
+                    s["phase"] = "thinking"
+                elif ev.kind == "content":
+                    s["phase"] = "answering"
+                elif ev.kind == "tool_start":
+                    s["phase"], s["tool"] = f"writing a tool call: {ev.call.name}", ev.call.name
+                elif ev.kind == "tool_call":
+                    s["phase"] = "tool call complete"
+                s["tail"] = (s["tail"] + (ev.text or ""))[-600:]
+
+    def _progress(self, last_print, every=15.0):
+        """A progress line in the server window every `every` seconds while a request runs."""
+        now = time.time()
+        if now - last_print < every:
+            return last_print
+        with self.status_lock:
+            s = dict(self.status)
+        el = now - s.get("started", now)
+        if s.get("first_token") is None:
+            print(f"[strata] reading the prompt: {s.get('prompt_tokens', 0)} tokens, {el:.0f} s so far", flush=True)
+        else:
+            rate = s["generated"] / max(1e-6, now - s["first_token"])
+            print(f"[strata] {s['phase']}: {s['generated']} of max {s.get('max_tokens')} tokens, {rate:.1f} tok/s, "
+                  f"{el:.0f} s", flush=True)
+        return now
+
     def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
-        parser, detok, n, finish = OutputParser(thinking=thinking, tools=tools), Detokenizer(self.tok), 0, "length"
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        detok, n, finish = Detokenizer(self.tok), 0, "length"
         emb = getattr(self.embeddings, "path", None)
+        with self.status_lock:
+            self.status["queued"] += 1
         try:
             with self.fifo:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+                    self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids), generated=0,
+                                       started=time.time(), first_token=None, tool=None, tail="", max_tokens=max_new)
+                last_print = time.time()
                 gen = self.engine.generate(ids, max_new, sampling, cancel, embeddings=emb) if emb else \
                     self.engine.generate(ids, max_new, sampling, cancel)
                 try:
                     for t in gen:
+                        if t is None:                   # heartbeat while the engine is quiet
+                            last_print = self._progress(last_print)
+                            yield "ping", None
+                            continue
                         n += 1
                         if t in self.stop_ids:
                             finish = "stop"
                             break
-                        for ev in parser.feed(detok.push(t)):
+                        evs = parser.feed(detok.push(t))
+                        self._note(n, evs)
+                        last_print = self._progress(last_print)
+                        for ev in evs:
                             yield "event", ev
+                    if cancel.is_set():
+                        finish = "cancel"
                 finally:
-                    gen.close()                           # drains the engine to DONE before the next request
+                    gen.close()                           # stops and drains the engine to DONE before the next request
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
+            with self.status_lock:
+                if self.status.get("busy"):
+                    el = time.time() - self.status.get("started", time.time())
+                    print(f"[strata] done: {n} tokens in {el:.0f} s ({'cancel' if cancel.is_set() else finish})",
+                          flush=True)
+                self.status["busy"] = False
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n,
@@ -323,20 +447,32 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
 
     yield chunk({"role": "assistant", "content": ""})
     calls = 0
+    streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
-        if kind == "event":
+        if kind == "ping":
+            yield None
+        elif kind == "event":
             ev: Event = x
             if ev.kind == "reasoning" and ev.text:
                 yield chunk({"reasoning_content": ev.text})
             elif ev.kind == "content" and ev.text:
                 yield chunk({"content": ev.text})
+            elif ev.kind == "tool_start":
+                streamed[ev.call.id] = calls
+                calls += 1
+                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
+                                             "function": {"name": ev.call.name, "arguments": ""}}]})
+            elif ev.kind == "tool_args":
+                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
+            elif ev.kind == "tool_call" and ev.call.id in streamed:
+                continue
             elif ev.kind == "tool_call":
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
-            finish = "tool_calls" if calls and x["finish"] == "stop" else x["finish"]
+            finish = "tool_calls" if calls and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
             last["usage"] = {"prompt_tokens": len(ids), "completion_tokens": x["completion_tokens"],
                              "total_tokens": len(ids) + x["completion_tokens"],
@@ -345,13 +481,22 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
 
 
 def openai_collect(chunks) -> dict:
-    content, reasoning, calls, last = [], [], [], None
+    content, reasoning, by_index, last = [], [], {}, None
     for c in chunks:
+        if c is None:                              # a heartbeat
+            continue
         d = c["choices"][0]["delta"]
         content.append(d.get("content") or "")
         reasoning.append(d.get("reasoning_content") or "")
-        calls += [{k: v for k, v in tc.items() if k != "index"} for tc in d.get("tool_calls") or []]
+        for tc in d.get("tool_calls") or []:       # streamed calls arrive in pieces: merge them by index
+            cur = by_index.setdefault(tc.get("index", len(by_index)), {"id": None, "type": "function",
+                                                                        "function": {"name": "", "arguments": ""}})
+            cur["id"] = tc.get("id") or cur["id"]
+            fn = tc.get("function") or {}
+            cur["function"]["name"] += fn.get("name") or ""
+            cur["function"]["arguments"] += fn.get("arguments") or ""
         last = c
+    calls = [by_index[i] for i in sorted(by_index)]
     msg = {"role": "assistant", "content": "".join(content) or None}
     if "".join(reasoning):
         msg["reasoning_content"] = "".join(reasoning)
@@ -373,12 +518,25 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     def close():
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
+    streamed = set()
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
+        if kind == "ping":
+            yield None
+            continue
         if kind == "event":
             ev: Event = x
-            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use"}[ev.kind]
-            if ev.kind != "tool_call" and not ev.text:
+            if ev.kind == "tool_args":
+                yield "content_block_delta", {"type": "content_block_delta", "index": index,
+                                              "delta": {"type": "input_json_delta", "partial_json": ev.text}}
                 continue
+            if ev.kind == "tool_call" and ev.call.id in streamed:
+                continue
+            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
+            if ev.kind not in ("tool_call", "tool_start") and not ev.text:
+                continue
+            if ev.kind == "tool_start":
+                streamed.add(ev.call.id)
+                used_tool = True
             if open_kind != want or want == "tool_use":
                 if open_kind is not None:
                     yield close()
@@ -395,6 +553,8 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             elif want == "text":
                 yield "content_block_delta", {"type": "content_block_delta", "index": index,
                                               "delta": {"type": "text_delta", "text": ev.text}}
+            elif ev.kind == "tool_start":
+                pass                                # its input follows as tool_args pieces
             else:
                 used_tool = True
                 yield "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {
@@ -403,7 +563,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             if open_kind is not None:
                 yield close()
             stop = "tool_use" if used_tool and x["finish"] == "stop" else \
-                {"stop": "end_turn", "length": "max_tokens"}[x["finish"]]
+                {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
                                     "usage": {"input_tokens": len(ids) - x["cached_tokens"],
                                               "cache_read_input_tokens": x["cached_tokens"],
@@ -413,7 +573,10 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
 
 def anthropic_collect(events) -> dict:
     msg, blocks = None, []
-    for name, e in events:
+    for item in events:
+        if item is None:                           # a heartbeat
+            continue
+        name, e = item
         if name == "message_start":
             msg = e["message"]
         elif name == "content_block_start":
@@ -424,8 +587,11 @@ def anthropic_collect(events) -> dict:
                 b["text"] += d["text"]
             elif d["type"] == "thinking_delta":
                 b["thinking"] += d["thinking"]
-            else:
-                b["input"] = json.loads(d["partial_json"])
+            else:                                  # input_json_delta pieces: parsed when complete
+                b["_json"] = b.get("_json", "") + d["partial_json"]
+        elif name == "content_block_stop" and blocks and "_json" in blocks[-1]:
+            b = blocks[-1]
+            b["input"] = json.loads(b.pop("_json") or "{}")
         elif name == "message_delta":
             msg["stop_reason"] = e["delta"]["stop_reason"]
             msg["usage"].update(e["usage"])
@@ -471,6 +637,17 @@ def make_handler(svc: Service):
             elif path == "/health":
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key)})
+            elif path == "/status":
+                with svc.status_lock:
+                    s = dict(svc.status)
+                now = time.time()
+                if s.get("busy"):
+                    s["elapsed_s"] = round(now - s["started"], 1)
+                    if s.get("first_token"):
+                        s["tokens_per_s"] = round(s["generated"] / max(1e-6, now - s["first_token"]), 1)
+                for k in ("started", "first_token"):
+                    s.pop(k, None)
+                self._json(200, s)
             elif path == "/v1/models":
                 if self._authorized():
                     self._json(200, {"object": "list", "data": [{"id": svc.model, "object": "model"}]})
@@ -508,11 +685,15 @@ def make_handler(svc: Service):
             self._sse()
             try:
                 for c in chunks:
-                    self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
+                    if c is None:
+                        self.wfile.write(b": keep-alive\n\n")      # an SSE comment: clients ignore it
+                    else:
+                        self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
             except OSError:
-                cancel.set()                                 # client went away: stop at the next step
+                cancel.set()                                 # client went away: stop the engine
+                chunks.close()
 
         def _anthropic(self, req):
             messages, tools, kw = anthropic_to_messages(req)
@@ -524,12 +705,17 @@ def make_handler(svc: Service):
                 return self._json(200, anthropic_collect(events))
             self._sse()
             try:
-                for name, e in events:
-                    self.wfile.write(f"event: {name}\n".encode() + b"data: " +
-                                     json.dumps(e, ensure_ascii=False).encode() + b"\n\n")
+                for item in events:
+                    if item is None:
+                        self.wfile.write(b": keep-alive\n\n")
+                    else:
+                        name, e = item
+                        self.wfile.write(f"event: {name}\n".encode() + b"data: " +
+                                         json.dumps(e, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
             except OSError:
                 cancel.set()
+                events.close()
 
     return Handler
 
@@ -560,7 +746,7 @@ def main() -> int:
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
     a = ap.parse_args()
-    cfg = json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else {}
+    cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError:
@@ -594,7 +780,9 @@ def main() -> int:
         engine = StrataEngine(cfg["exe"], cfg["args"], cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
     else:
         engine, vision = MockEngine(tok, a.script), None
-    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+    # the model's own chat template (exported with its tokenizer), else the original model's
+    tpl = tpath / "chat_template.jinja"
+    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision)
     svc.api_key = a.api_key or cfg.get("api_key", "")
     httpd = serve(svc, host=a.host, port=a.port)

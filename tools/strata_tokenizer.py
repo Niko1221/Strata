@@ -230,6 +230,12 @@ def extract(gguf_path, out_dir) -> dict:
                                               sorted(tk.ranks.items(), key=lambda kv: kv[1])), encoding="utf-8")
     (out / "token_type.json").write_text(json.dumps(tk.token_types), encoding="utf-8")
     (out / "tokenizer.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+    # the model's own chat template: fine-tunes change it (Swift 1.5 differs from Qwen3.8-Flash-Next's)
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from gguf_reader import GGUFFile
+    tpl = GGUFFile(pathlib.Path(gguf_path)).metadata.get("tokenizer.chat_template")
+    if tpl:
+        (out / "chat_template.jinja").write_text(tpl, encoding="utf-8", newline="\n")
     return cfg
 
 

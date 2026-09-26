@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace strata::prefill {
@@ -326,7 +327,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         ev.push_back({section, e});
     };
 
-    for (int64_t c0 = 0; c0 < n; c0 += m.T) {
+    static const bool trace = std::getenv("STRATA_TRACE") != nullptr;
+    processed_ = 0;
+    int64_t c0 = 0;
+    for (; c0 < n; c0 += m.T) {
+        if (should_stop && should_stop()) break;   // the chunks before stay: `prev` and the state hold them
+        if (trace) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         ++stats_.chunks;
         // ---- the embeddings, broadcast to the four streams
@@ -626,6 +632,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     stats_.experts_resident = m.local.experts_resident;
     stats_.ms_experts_host = m.local.ms_host;
     stats_.ms_total += ms_since(t_start);
+    processed_ = std::min(c0, n);
+    if (c0 < n) {
+        err = "cancelled";
+        return false;
+    }
     return true;
 }
 

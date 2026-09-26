@@ -99,6 +99,30 @@ int main(int argc, char** argv) {
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
+    // Warm up at the LARGEST picture before READY: the encoder's GPU work buffers are allocated now, not at the first
+    // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
+    // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
+    // the engine crawl to a standstill.  (A square image well above any cap; mtmd scales it to the token limit.)
+    {
+        const uint32_t side = 2048;
+        std::vector<unsigned char> rgb((size_t) side * side * 3, 128);
+        mtmd_bitmap* bm = mtmd_bitmap_init(side, side, rgb.data());
+        mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+        const std::string marker = mtmd_default_marker();
+        mtmd_input_text txt{marker.c_str(), marker.size(), false, true};
+        const mtmd_bitmap* bms[1] = {bm};
+        int warm_tokens = 0;
+        if (bm && mtmd_tokenize(ctx, chunks, &txt, bms, 1) == 0) {
+            for (size_t c = 0; c < mtmd_input_chunks_size(chunks); ++c) {
+                const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
+                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE && mtmd_encode_chunk(ctx, ch) == 0)
+                    warm_tokens = (int) mtmd_input_chunk_get_n_tokens(ch);
+            }
+        }
+        std::fprintf(stderr, "strata-vision: warmed up at %d image tokens\n", warm_tokens);
+        mtmd_input_chunks_free(chunks);
+        if (bm) mtmd_bitmap_free(bm);
+    }
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
 
