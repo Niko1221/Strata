@@ -109,7 +109,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # guard above has already refused anything but sm_120 by the time this runs.
 if(STRATA_ENABLE_CUDA)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/core/steer.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # CUDA::cudart is PUBLIC because graph.cpp is a HOST translation unit that calls cudaGraphLaunch and
   # cudaEventQuery: the .cu sources get cudart through the CUDA language rules, a .cpp does not, and the

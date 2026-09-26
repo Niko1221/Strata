@@ -5,6 +5,7 @@
 #endif
 
 #include "strata/core/native_head.hpp"
+#include "strata/core/steer.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -315,6 +316,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
     }
 
+    const SteeringPlan* cvec_plan = steer_active();
+    const bool cvec_enabled = cvec_plan != nullptr;
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -333,6 +336,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             float* normalized = (float*) ((uint8_t*) ss.ple.scratch + ple_block_scratch_bytes());
             for (int t = tb; t < te; ++t) {
                 gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+                if (cvec_enabled && !cvec_residual(Rt(t), 1, g.hc, l - 1, N, cs, err)) return false;
                 PleOut po;
                 po.normalized = normalized;
                 po.result = Rt(t);
@@ -344,6 +348,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     return false;
                 }
                 copy_from_mapped(hist_snap_ + (size_t) t * HS, ss.ple.hist, HS, cs);
+            }
+            pending = false;
+        }
+        if (cvec_enabled && pending) {
+            for (int t = tb; t < te; ++t) {
+                gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+                if (!cvec_residual(Rt(t), 1, g.hc, l - 1, N, cs, err)) return false;
             }
             pending = false;
         }
@@ -559,7 +570,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
         }
         if (l == g.n_layers - 1)
-            for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+            for (int t = tb; t < te; ++t) {
+                gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+                if (cvec_enabled && !cvec_residual(Rt(t), 1, g.hc, l, N, cs, err)) return false;
+            }
         return true;
     };
 
