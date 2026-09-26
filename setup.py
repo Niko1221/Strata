@@ -456,6 +456,42 @@ def get_prebuilt(url_base, gpu, vision) -> Path | None:
     return eng
 
 
+def update_installed_engine(url_base) -> None:
+    """An installed ready-made engine older than MIN_ENGINE is replaced before the model starts, so a plain
+    START-HERE.bat on an existing install picks up a new release.  If that cannot happen (no internet, the model
+    still running, no ready-made engine for this GPU) the installed engine is kept and starts as before."""
+    eng = ROOT / "engine"
+    info = eng / "BUILD.json"
+    if not info.exists() or not (eng / EXE).exists():
+        return
+    meta_text = info.read_text()
+    meta = json.loads(meta_text)
+    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    if meta.get("source") == "local" or ver >= MIN_ENGINE:
+        return
+    try:                                               # a running engine cannot be replaced (Windows keeps it locked)
+        for x in (EXE, VEXE):
+            if (eng / x).exists():
+                with open(eng / x, "r+b"):
+                    pass
+    except OSError:
+        warn(f"engine {meta.get('version')} is in use: close the model window and run this again to update it")
+        return
+    gpu = gpu_info()
+    new = None
+    if gpu is not None:
+        try:
+            new = get_prebuilt(url_base, gpu, "gpu")
+        except Exception as e:                         # a failed download must not stop the model from starting
+            warn(f"updating the engine failed ({e})")
+    if new is None:
+        if not info.exists():
+            info.write_text(meta_text)                 # get_prebuilt drops it before downloading: put it back
+        warn(f"could not update the engine: starting the installed {meta.get('version')}")
+        return
+    pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     nvcc, cuda_v = find_nvcc()
@@ -627,6 +663,8 @@ def main() -> int:
     # ---- 0. already installed: just start it
     have = installed_configs()
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
+        if not a.build:
+            update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], None)
         say()
