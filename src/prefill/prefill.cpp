@@ -13,6 +13,7 @@
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/offload.hpp"
 
 #include <cuda_runtime.h>
 
@@ -98,6 +99,11 @@ struct Prefill::Impl {
     int32_t *ids = nullptr, *slot_dev = nullptr, *src_dev = nullptr;
     uint16_t *Xs = nullptr, *Hh = nullptr, *sh_h = nullptr;
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
+    // the second GPU's share (Prefill::offload): the input goes out and the sums come back on `xfer`
+    cudaStream_t xfer = nullptr;
+    cudaEvent_t ev_mixed = nullptr, ev_input = nullptr, ev_sum = nullptr;
+    std::vector<int32_t> entry_of, experts2, off2, src2;
+    std::vector<float> w_host, w2;
     uint16_t* dq_gu[DQ] = {};
     uint16_t* dq_d[DQ] = {};
     uint8_t* stage_dev[STAGE] = {};
@@ -121,6 +127,9 @@ Prefill::~Prefill() {
         if (impl_->stage_host[i]) cudaFreeHost(impl_->stage_host[i]);
     }
     if (impl_->copy) cudaStreamDestroy(impl_->copy);
+    if (impl_->xfer) cudaStreamSynchronize(impl_->xfer);
+    for (cudaEvent_t e : {impl_->ev_mixed, impl_->ev_input, impl_->ev_sum}) if (e) cudaEventDestroy(e);
+    if (impl_->xfer) cudaStreamDestroy(impl_->xfer);
     for (void* p : impl_->owned) cudaFree(p);
 }
 
@@ -138,7 +147,14 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert != NE || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
     }
-    if (cudaStreamCreateWithFlags(&m.copy, cudaStreamNonBlocking) != cudaSuccess) { err = "prefill: copy stream"; return false; }
+    if (cudaStreamCreateWithFlags(&m.copy, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&m.ev_mixed, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&m.ev_input, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&m.ev_sum, cudaEventDisableTiming) != cudaSuccess) {
+        err = "prefill: streams and events";
+        return false;
+    }
     const size_t T = (size_t) chunk;
     bool ok = true;
     Alloc o;
@@ -186,6 +202,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     m.ple_emb = o.take<float>(T * N, ok);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(NE); m.off.resize(NE + 1);
+    m.entry_of.resize(T * K); m.w_host.resize(T * K);
     m.ple_emb_host.resize(T * N); m.ple_rows.resize(T * strata::kernels::PLE_N_HEADS);
     if (!ok) { err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit"; return false; }
     return true;
@@ -430,6 +447,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wsu = need(v, "ffn_up_shexp.weight", err),
                                           *wsd = need(v, "ffn_down_shexp.weight", err);
                     if (!wr || !wgi || !wsg || !wsu || !wsd) return false;
+                    if (offload) {   // the input's trip to the second GPU starts while the router and shared expert run
+                        cudaEventRecord(m.ev_mixed, m.cs);
+                        cudaStreamWaitEvent(m.xfer, m.ev_mixed, 0);
+                        cudaMemcpyAsync(offload->host_input(), m.mixed_h, (size_t) T * N * 2, cudaMemcpyDeviceToHost, m.xfer);
+                        cudaEventRecord(m.ev_input, m.xfer);
+                    }
                     mark(kPsRouter);
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err)) return false;
                     route(m.logits, m.ids, m.w, T, m.cs);
@@ -442,6 +465,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     m.gemm.bf16(m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
                     // group the (token, k) pairs by expert on the host
                     cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
+                    if (offload) cudaMemcpyAsync(m.w_host.data(), m.w, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
                     cudaStreamSynchronize(m.cs);
                     std::fill(m.cnt.begin(), m.cnt.end(), 0);
                     for (int64_t i = 0; i < T * K; ++i) {
@@ -457,14 +481,38 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         const int32_t p = fill[(size_t) e]++;
                         m.slot_host[(size_t) i] = p;
                         m.src_host[(size_t) p] = (int32_t) (i / K);
+                        m.entry_of[(size_t) p] = (int32_t) i;
+                    }
+                    auto resident = [&](int32_t e) {
+                        return m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0;
+                    };
+                    if (offload) {   // the experts this GPU's cache does not hold go to the second GPU
+                        m.experts2.clear();
+                        m.off2.assign(1, 0);
+                        m.src2.clear();
+                        m.w2.clear();
+                        for (int32_t e = 0; e < NE; ++e) {
+                            if (m.cnt[(size_t) e] == 0 || resident(e)) continue;
+                            m.experts2.push_back(e);
+                            for (int32_t p = m.off[(size_t) e]; p < m.off[(size_t) e + 1]; ++p) {
+                                const int32_t i = m.entry_of[(size_t) p];
+                                m.src2.push_back(i / (int32_t) K);
+                                m.w2.push_back(m.w_host[(size_t) i]);
+                                m.slot_host[(size_t) i] = -1;   // the combine takes its row from the returned sum
+                            }
+                            m.off2.push_back((int32_t) m.src2.size());
+                        }
+                        if (!offload->run_layer(l, T, m.experts2, m.off2, m.src2, m.w2, m.ev_input, err)) return false;
                     }
                     cudaMemcpyAsync(m.slot_dev, m.slot_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                     cudaMemcpyAsync(m.src_dev, m.src_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                     gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
                     mark(kPsExperts);
-                    // the experts, in id order: resident ones from VRAM, the others through the staging ring
+                    // the experts, in id order: resident ones from VRAM, the others through the staging ring (or on
+                    // the second GPU)
                     std::vector<int32_t> order;
-                    for (int32_t e = 0; e < NE; ++e) if (m.cnt[(size_t) e] > 0) order.push_back(e);
+                    for (int32_t e = 0; e < NE; ++e)
+                        if (m.cnt[(size_t) e] > 0 && (!offload || resident(e))) order.push_back(e);
                     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
                     // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
                     int stage_next = 0;
@@ -527,8 +575,15 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
                         m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                     }
+                    float* sums = m.emb;   // the chunk's embeddings are in R by now
+                    if (offload) {
+                        cudaStreamWaitEvent(m.xfer, offload->done(), 0);
+                        cudaMemcpyAsync(sums, offload->host_sum(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.xfer);
+                        cudaEventRecord(m.ev_sum, m.xfer);
+                        cudaStreamWaitEvent(m.cs, m.ev_sum, 0);
+                    }
                     mark(kPsCombine);
-                    moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                    moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs, offload ? sums : nullptr);
                 }
                 // ---- the hyper-connection write of this half
                 if (half == 0) mark(kPsHcFfn);

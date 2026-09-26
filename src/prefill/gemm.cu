@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 namespace strata::prefill {
 namespace {
@@ -84,6 +85,27 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
+}
+
+void Gemm::f16_grouped(const uint16_t* const* X, const uint16_t* const* W, float* const* Y, const uint16_t* const* X_host,
+                       const uint16_t* const* W_host, float* const* Y_host, const int* rows, int n, int64_t N, int64_t K) {
+    if (n <= 0) return;
+    if (grouped_) {
+        // column-major, as f16(): Y_i^T[N, rows] = W_i (K x N col-major, transposed) . X_i^T[K, rows]; a group per problem
+        const std::vector<cublasOperation_t> ta((size_t) n, CUBLAS_OP_T), tb((size_t) n, CUBLAS_OP_N);
+        const std::vector<int> m((size_t) n, (int) N), k((size_t) n, (int) K), ld_wx((size_t) n, (int) K),
+            ld_y((size_t) n, (int) N), size((size_t) n, 1);
+        const std::vector<float> alpha((size_t) n, 1.0f), beta((size_t) n, 0.0f);
+        const cublasStatus_t st = cublasGemmGroupedBatchedEx(
+            (cublasHandle_t) handle_, ta.data(), tb.data(), m.data(), rows, k.data(), alpha.data(), (const void* const*) W,
+            CUDA_R_16F, ld_wx.data(), (const void* const*) X, CUDA_R_16F, ld_wx.data(), beta.data(), (void* const*) Y,
+            CUDA_R_32F, ld_y.data(), n, size.data(), CUBLAS_COMPUTE_32F);
+        if (st == CUBLAS_STATUS_SUCCESS) return;
+        if (st != CUBLAS_STATUS_NOT_SUPPORTED && st != CUBLAS_STATUS_INVALID_VALUE) ck(st, "cublasGemmGroupedBatchedEx");
+        grouped_ = false;
+        std::fprintf(stderr, "prefill gemm: cuBLAS does not group FP16 -> FP32 GEMMs here; one call per expert\n");
+    }
+    for (int i = 0; i < n; ++i) f16(X_host[i], W_host[i], Y_host[i], rows[i], N, K);
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,

@@ -937,6 +937,24 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
     dq_dispatch<__half>(ty, parity ? up : gate, i, y + ((2 * r + parity) * per_row + c) * QK_K, threadIdx.x);
 }
 
+// several experts at once, expert z's blob at blobs[z]: first its gate/up superblocks (as dequant_gu_kernel), then
+// its down superblocks (as dequant_flat_kernel)
+__global__ void dequant_experts_kernel(int gu_ty, int d_ty, const uint8_t* const* __restrict__ blobs, size_t up_off,
+                                       size_t down_off, int64_t per_row, int64_t gu_blocks, __half* __restrict__ gu,
+                                       __half* __restrict__ dn, int64_t gu_elems, int64_t dn_elems) {
+    const uint8_t* b = blobs[blockIdx.z];
+    const int64_t i = blockIdx.x;
+    if (i < 2 * gu_blocks) {
+        const int parity = (int) (i / gu_blocks);
+        const int64_t j = i % gu_blocks, r = j / per_row, c = j % per_row;
+        dq_dispatch<__half>(gu_ty, parity ? b + up_off : b, j,
+                            gu + blockIdx.z * gu_elems + ((2 * r + parity) * per_row + c) * QK_K, threadIdx.x);
+    } else {
+        const int64_t j = i - 2 * gu_blocks;
+        dq_dispatch<__half>(d_ty, b + down_off, j, dn + blockIdx.z * dn_elems + j * QK_K, threadIdx.x);
+    }
+}
+
 // the formats dq_dispatch dequantizes
 bool is_iq(int t) {
     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
@@ -1027,6 +1045,20 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     dequant_gu_kernel<<<dim3((unsigned) (n_ff * per_row), 2), 32, 0, (cudaStream_t) stream>>>(t, gate, up, per_row,
                                                                                            (__half*) dst);
     check("iq_dequant_gu_f16");
+}
+
+void iq_dequant_experts_f16(int gu_type, int d_type, const uint8_t* const* blobs, int n, size_t up_off, size_t down_off,
+                            int64_t n_ff, int64_t n_embd, uint16_t* gu, uint16_t* dn, void* stream) {
+    if (n <= 0) return;
+    if (n_embd % 256 != 0 || (n_embd * n_ff) % 256 != 0 || !is_iq(gu_type) || !is_iq(d_type) || n > 65535) {
+        std::fprintf(stderr, "iq_dequant_experts_f16: bad arguments\n");
+        std::exit(1);
+    }
+    const int64_t per_row = n_embd / 256, gu_blocks = n_ff * per_row, d_blocks = n_embd * n_ff / 256;
+    dequant_experts_kernel<<<dim3((unsigned) (2 * gu_blocks + d_blocks), 1, (unsigned) n), 32, 0, (cudaStream_t) stream>>>(
+        gu_type, d_type, blobs, up_off, down_off, per_row, gu_blocks, (__half*) gu, (__half*) dn, 2 * n_ff * n_embd,
+        n_embd * n_ff);
+    check("iq_dequant_experts_f16");
 }
 
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {

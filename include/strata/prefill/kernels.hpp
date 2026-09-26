@@ -46,9 +46,16 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
-/// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
+/// bo[t, :] = sum_k w[t, k] * D[slot[t, k], :] + shared[t, :] * sigmoid(sg[t]) (+ partial[t, :]); a slot of -1 is
+/// an entry the second GPU computed, whose sum `partial` holds.
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream);
+                 int64_t T, void* stream, const float* partial = nullptr);
+/// sum[src[r], :] += w[r] * rows[r, :] for n rows (one expert's rows: no token twice).
+void moe_scatter_add(float* sum, const float* rows, const float* w, const int32_t* src, int64_t n, void* stream);
+/// The same for several experts' rows (row r at rows[r - r0]), where a token may recur: token tok[b] adds its rows
+/// list[start[b] .. start[b + 1]) in that order, so it matches moe_scatter_add per expert in the list's order.
+void moe_gather_add(float* sum, const float* rows, int64_t r0, const float* w, const int32_t* tok, const int32_t* start,
+                    const int32_t* list, int64_t n_tok, void* stream);
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).

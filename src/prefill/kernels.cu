@@ -348,14 +348,27 @@ __global__ void gather_rows16_kernel(const uint16_t* __restrict__ x, const int32
 }
 __global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
                                    const float* __restrict__ w, const float* __restrict__ shared,
-                                   const float* __restrict__ sg, float* __restrict__ bo, int64_t T) {
+                                   const float* __restrict__ sg, const float* __restrict__ partial,
+                                   float* __restrict__ bo, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * N) return;
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) s = fmaf(w[t * 10 + k], Dm[(int64_t) slot[t * 10 + k] * N + d], s);
-    bo[i] = s + shared[i] * sigm(sg[t]);
+    for (int k = 0; k < 10; ++k) {
+        const int32_t r = slot[t * 10 + k];
+        if (r >= 0) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
+    }
+    const float v = s + shared[i] * sigm(sg[t]);
+    bo[i] = partial ? v + partial[i] : v;
+}
+__global__ void moe_scatter_add_kernel(float* __restrict__ sum, const float* __restrict__ rows,
+                                       const float* __restrict__ w, const int32_t* __restrict__ src, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n * N) return;
+    const int64_t r = i / N, d = i % N;
+    float* o = sum + (int64_t) src[r] * N + d;
+    *o = fmaf(w[r], rows[i], *o);
 }
 
 // ---------------------------------------------------------------- QSA helpers
@@ -526,9 +539,35 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     check("gather_rows16");
 }
 void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream) {
-    moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T);
+                 int64_t T, void* stream, const float* partial) {
+    moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, partial, bo, T);
     check("moe_combine");
+}
+__global__ void moe_gather_add_kernel(float* __restrict__ sum, const float* __restrict__ rows, int64_t r0,
+                                      const float* __restrict__ w, const int32_t* __restrict__ tok,
+                                      const int32_t* __restrict__ start, const int32_t* __restrict__ list) {
+    const int64_t d = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= N) return;
+    const int b = blockIdx.y;
+    float* o = sum + (int64_t) tok[b] * N + d;
+    float s = *o;
+    for (int i = start[b]; i < start[b + 1]; ++i) {
+        const int r = list[i];
+        s = fmaf(w[r], rows[(r - r0) * N + d], s);
+    }
+    *o = s;
+}
+void moe_gather_add(float* sum, const float* rows, int64_t r0, const float* w, const int32_t* tok, const int32_t* start,
+                    const int32_t* list, int64_t n_tok, void* stream) {
+    if (n_tok <= 0) return;
+    moe_gather_add_kernel<<<dim3((unsigned) ((N + 255) / 256), (unsigned) n_tok), 256, 0, (cudaStream_t) stream>>>(
+        sum, rows, r0, w, tok, start, list);
+    check("moe_gather_add");
+}
+void moe_scatter_add(float* sum, const float* rows, const float* w, const int32_t* src, int64_t n, void* stream) {
+    if (n <= 0) return;
+    moe_scatter_add_kernel<<<blocks_for(n * N), 256, 0, (cudaStream_t) stream>>>(sum, rows, w, src, n);
+    check("moe_scatter_add");
 }
 void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, float eps, void* stream) {
     if (rows <= 0) return;

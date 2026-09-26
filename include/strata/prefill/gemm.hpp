@@ -32,6 +32,12 @@ public:
     void f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
              float beta = 0.0f);
 
+    /// Y_i[rows[i], N] = X_i[rows[i], K] . W_i[N, K]^T (FP16 in, FP32 out) for n problems of one shape but their
+    /// own row counts, in one cuBLAS grouped call; the pointer arrays are DEVICE memory, `rows` host memory.  Where
+    /// cuBLAS does not group these types it runs f16() per problem, from the host copies of the pointers.
+    void f16_grouped(const uint16_t* const* X, const uint16_t* const* W, float* const* Y, const uint16_t* const* X_host,
+                     const uint16_t* const* W_host, float* const* Y_host, const int* rows, int n, int64_t N, int64_t K);
+
     /// W given as native GGUF blocks of `ggml_type`, dequantized to FP16 in the scratch, X in FP16.
     void native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                 int64_t ldy = 0, float beta = 0.0f);
@@ -47,6 +53,7 @@ private:
     int64_t scratch_elems_ = 0;
     void* workspace_ = nullptr;
     bool external_ = false;
+    bool grouped_ = true;   // cuBLAS groups FP16 -> FP32 GEMMs (cleared at the first refusal)
 };
 
 

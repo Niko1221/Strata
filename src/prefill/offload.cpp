@@ -1,0 +1,360 @@
+// src/prefill/offload.cpp - see include/strata/prefill/offload.hpp.
+#include "strata/prefill/offload.hpp"
+
+#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/iq_kernels.hpp"
+#include "strata/prefill/gemm.hpp"
+#include "strata/prefill/kernels.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+
+namespace strata::prefill {
+namespace {
+
+constexpr int64_t N = 2560, FF2 = 1280, FF = 640;
+// Experts go through in batches of consecutive ids, at most G experts and ROWS rows (an expert with more rows is a
+// batch of its own, in pieces of ROWS): one staging copy per run of adjacent arena blobs, one dequant launch, one
+// gather, two grouped GEMMs, one SwiGLU and one scatter-add per batch.  Per-expert launches made the host, not the
+// GPU, the limit (~10 calls for each of ~500 experts a layer).
+constexpr int G = 16;
+constexpr int64_t ROWS = 4096;
+constexpr int SLOTS = 2;                 // batches in staging: the copies of one overlap the work on the other
+constexpr size_t GEMM_WS = 32u << 20;    // cuBLAS workspace
+constexpr int NPTR = 7;                  // per-expert device pointers: blob, xs, gate/up, gu, h, down, d
+
+struct DeviceScope {   // the second GPU current for one call, the main one again afterwards
+    int main;
+    DeviceScope(int dev, int main_dev) : main(main_dev) { cudaSetDevice(dev); }
+    ~DeviceScope() { cudaSetDevice(main); }
+};
+
+// Bump allocation from a borrowed region, else cudaMalloc; with neither it only counts (bytes_needed).
+struct Alloc {
+    uint8_t* base = nullptr;
+    uint64_t cap = 0, used = 0;
+    bool count_only = false;
+    std::vector<void*>* owned = nullptr;
+    template <typename T> T* take(size_t n, bool& ok) {
+        const uint64_t bytes = ((uint64_t) n * sizeof(T) + 255) & ~255ull;
+        if (count_only) { used += bytes; return nullptr; }
+        if (base != nullptr) {
+            if (used + bytes > cap) { ok = false; return nullptr; }
+            T* p = (T*) (base + used);
+            used += bytes;
+            return p;
+        }
+        void* p = nullptr;
+        if (cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; return nullptr; }
+        owned->push_back(p);
+        used += bytes;
+        return (T*) p;
+    }
+};
+
+}  // namespace
+
+struct Offload::Impl {
+    int dev = -1, main = 0;
+    core::ExpertSource* src = nullptr;
+    const core::ExpertCache* cache = nullptr;
+    const int32_t* res = nullptr;
+    int64_t n_expert = 0, chunk = 0;
+    size_t blob_cap = 0;   // staging bytes per expert
+    cudaStream_t s = nullptr, copy = nullptr;
+    cudaEvent_t done = nullptr, copied[SLOTS] = {}, used[SLOTS] = {};
+    cudaEvent_t t0 = nullptr, t1 = nullptr;   // the previous layer's GPU time, read at the next one
+    bool timed = false, live[SLOTS] = {};
+    Gemm gemm;
+    std::vector<void*> owned;
+    uint16_t *input = nullptr, *xs = nullptr, *hh = nullptr, *dq_gu = nullptr, *dq_d = nullptr;
+    float *sum = nullptr, *w = nullptr, *gu = nullptr, *d = nullptr;
+    int32_t* rows_src = nullptr;
+    int32_t* adds = nullptr;   // per batch: its tokens, their row lists' starts, the row lists (moe_gather_add)
+    std::vector<int32_t> adds_host, mark, first, count;
+    uint8_t* stage[SLOTS] = {};
+    void** ptrs = nullptr;                    // NPTR arrays of n_expert device pointers
+    std::vector<void*> ptrs_host;
+    uint16_t* h_input = nullptr;
+    float* h_sum = nullptr;
+
+    // the same sequence counted (bytes_needed) or carved
+    bool carve(Alloc& a, int64_t T) {
+        bool ok = true;
+        const size_t t = (size_t) T;
+        input = a.take<uint16_t>(t * N, ok);
+        sum = a.take<float>(t * N, ok);
+        rows_src = a.take<int32_t>(t * 10, ok);
+        w = a.take<float>(t * 10, ok);
+        adds = a.take<int32_t>(t * 10 * 3 + (size_t) n_expert * 2, ok);
+        xs = a.take<uint16_t>((size_t) ROWS * N, ok);
+        gu = a.take<float>((size_t) ROWS * FF2, ok);
+        hh = a.take<uint16_t>((size_t) ROWS * FF, ok);
+        d = a.take<float>((size_t) ROWS * N, ok);
+        dq_gu = a.take<uint16_t>((size_t) G * FF2 * N, ok);
+        dq_d = a.take<uint16_t>((size_t) G * N * FF, ok);
+        for (auto& p : stage) p = a.take<uint8_t>((size_t) G * blob_cap, ok);
+        ptrs = a.take<void*>((size_t) NPTR * (size_t) n_expert, ok);
+        void* ws = a.take<uint8_t>(GEMM_WS, ok);
+        if (ok && !a.count_only) {
+            std::string err;
+            ok = gemm.init_external(s, nullptr, 0, ws, GEMM_WS, err);
+        }
+        return ok;
+    }
+};
+
+Offload::Offload() : impl_(new Impl) {}
+
+Offload::~Offload() {
+    Impl& m = *impl_;
+    if (m.dev < 0) return;
+    DeviceScope scope(m.dev, m.main);
+    if (m.s) cudaStreamSynchronize(m.s);
+    if (m.copy) cudaStreamSynchronize(m.copy);
+    for (int i = 0; i < SLOTS; ++i) {
+        if (m.copied[i]) cudaEventDestroy(m.copied[i]);
+        if (m.used[i]) cudaEventDestroy(m.used[i]);
+    }
+    for (cudaEvent_t e : {m.done, m.t0, m.t1}) if (e) cudaEventDestroy(e);
+    if (m.h_input) cudaFreeHost(m.h_input);
+    if (m.h_sum) cudaFreeHost(m.h_sum);
+    for (void* p : m.owned) cudaFree(p);
+    if (m.copy) cudaStreamDestroy(m.copy);
+    if (m.s) cudaStreamDestroy(m.s);
+}
+
+uint64_t Offload::bytes_needed(int64_t chunk, int64_t n_expert) {
+    Impl m;
+    m.n_expert = n_expert;
+    m.blob_cap = ((size_t) strata::kernels::cpu::expert_layout().max_blob + 255) & ~(size_t) 255;
+    Alloc a;
+    a.count_only = true;
+    m.carve(a, chunk);
+    return a.used + (1u << 20);
+}
+
+bool Offload::init(int device, int main_device, core::ExpertSource* src, const core::ExpertCache* cache,
+                   const int32_t* res, int64_t n_expert, int64_t chunk, std::string& err, void* borrow,
+                   uint64_t borrow_bytes) {
+    Impl& m = *impl_;
+    if (!strata::kernels::cpu::expert_layout().native) {
+        err = "prompt offload: needs a native pack";
+        return false;
+    }
+    m.dev = device;
+    m.main = main_device;
+    m.src = src;
+    m.cache = cache;
+    m.res = res;
+    m.n_expert = n_expert;
+    m.chunk = chunk;
+    m.blob_cap = ((size_t) strata::kernels::cpu::expert_layout().max_blob + 255) & ~(size_t) 255;
+    m.ptrs_host.resize((size_t) NPTR * (size_t) n_expert);
+    m.adds_host.reserve((size_t) chunk * 30);
+    m.mark.assign((size_t) chunk, -1);
+    m.first.resize((size_t) chunk);
+    m.count.resize((size_t) chunk);
+    DeviceScope scope(device, main_device);
+    bool ok = cudaStreamCreateWithFlags(&m.s, cudaStreamNonBlocking) == cudaSuccess &&
+              cudaStreamCreateWithFlags(&m.copy, cudaStreamNonBlocking) == cudaSuccess &&
+              cudaEventCreateWithFlags(&m.done, cudaEventDisableTiming) == cudaSuccess &&
+              cudaEventCreate(&m.t0) == cudaSuccess && cudaEventCreate(&m.t1) == cudaSuccess;
+    for (int i = 0; ok && i < SLOTS; ++i)
+        ok = cudaEventCreateWithFlags(&m.copied[i], cudaEventDisableTiming) == cudaSuccess &&
+             cudaEventCreateWithFlags(&m.used[i], cudaEventDisableTiming) == cudaSuccess;
+    if (!ok) { err = "prompt offload: streams or events"; return false; }
+    // the input and the sums: pinned and portable, both GPUs copy them
+    if (cudaHostAlloc((void**) &m.h_input, (size_t) chunk * N * 2, cudaHostAllocPortable) != cudaSuccess ||
+        cudaHostAlloc((void**) &m.h_sum, (size_t) chunk * N * 4, cudaHostAllocPortable) != cudaSuccess) {
+        err = "prompt offload: pinned input and sum buffers";
+        return false;
+    }
+    Alloc a;
+    a.base = (uint8_t*) borrow;
+    a.cap = borrow_bytes;
+    a.owned = &m.owned;
+    if (!m.carve(a, chunk)) {
+        err = "prompt offload: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";
+        return false;
+    }
+    return true;
+}
+
+uint16_t* Offload::host_input() const { return impl_->h_input; }
+float* Offload::host_sum() const { return impl_->h_sum; }
+cudaEvent_t Offload::done() const { return impl_->done; }
+
+bool Offload::run_layer(int64_t layer, int64_t T, const std::vector<int32_t>& experts, const std::vector<int32_t>& off,
+                        const std::vector<int32_t>& src, const std::vector<float>& w, cudaEvent_t input_ready,
+                        std::string& err) {
+    Impl& m = *impl_;
+    const size_t n_exp = experts.size(), n_rows = src.size();
+    if (T > m.chunk || off.size() != n_exp + 1 || w.size() != n_rows || (size_t) off.back() != n_rows ||
+        n_rows > (size_t) T * 10 || n_exp > (size_t) m.n_expert) {
+        err = "prompt offload: a layer's share is out of range";
+        return false;
+    }
+    DeviceScope scope(m.dev, m.main);
+    const auto h0 = std::chrono::steady_clock::now();
+    if (m.timed) {   // the previous layer is done by now (the main GPU waited for it)
+        float ms = 0;
+        cudaEventElapsedTime(&ms, m.t0, m.t1);
+        ms_gpu += ms;
+    }
+    const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) layer];
+    const size_t bb = (size_t) strata::kernels::cpu::expert_layout().blob_bytes(layer);
+    const size_t stride = (bb + 255) & ~(size_t) 255;   // staging: a run of arena blobs lands as one copy when equal
+    auto held = [&](int32_t e) -> int32_t {
+        return m.res && m.cache ? m.res[(size_t) layer * (size_t) m.n_expert + (size_t) e] : -1;
+    };
+    // ---- the batches, and every expert's device pointers (one upload)
+    std::vector<std::pair<size_t, size_t>> batches;
+    for (size_t j0 = 0; j0 < n_exp;) {
+        size_t j1 = j0 + 1;
+        int64_t rows = off[j0 + 1] - off[j0];
+        if (rows <= ROWS)
+            while (j1 < n_exp && j1 - j0 < (size_t) G && rows + (off[j1 + 1] - off[j1]) <= ROWS) rows += off[j1 + 1] - off[j1++];
+        batches.emplace_back(j0, j1);
+        j0 = j1;
+    }
+    void** P = m.ptrs_host.data();
+    const size_t E = (size_t) m.n_expert;   // array stride
+    std::vector<int> rows_of(n_exp);
+    for (size_t b = 0; b < batches.size(); ++b) {
+        const auto [j0, j1] = batches[b];
+        size_t streamed = 0;
+        for (size_t j = j0; j < j1; ++j) {
+            const int64_t r = off[j] - off[j0];
+            const int32_t slot = held(experts[j]);
+            P[0 * E + j] = slot >= 0 ? (void*) m.cache->device_slot(slot) : (void*) (m.stage[b % SLOTS] + streamed++ * stride);
+            P[1 * E + j] = m.xs + r * N;
+            P[2 * E + j] = m.dq_gu + (j - j0) * (size_t) (FF2 * N);
+            P[3 * E + j] = m.gu + r * FF2;
+            P[4 * E + j] = m.hh + r * FF;
+            P[5 * E + j] = m.dq_d + (j - j0) * (size_t) (N * FF);
+            P[6 * E + j] = m.d + r * N;
+            rows_of[j] = off[j + 1] - off[j];
+        }
+    }
+    // per batch, its tokens and each one's rows in order (a token may be routed to several of the batch's experts):
+    // [tokens | starts (n + 1) | rows] at adds_at[b]
+    std::vector<size_t> adds_at(batches.size());
+    std::vector<int32_t> ntok(batches.size());
+    m.adds_host.clear();
+    for (size_t b = 0; b < batches.size(); ++b) {
+        const int32_t r0 = off[batches[b].first], r1 = off[batches[b].second];
+        std::vector<int32_t> toks;
+        for (int32_t r = r0; r < r1; ++r) {
+            const int32_t t = src[(size_t) r];
+            if (m.mark[(size_t) t] != (int32_t) b) {
+                m.mark[(size_t) t] = (int32_t) b;
+                m.first[(size_t) t] = (int32_t) toks.size();
+                m.count[(size_t) toks.size()] = 0;
+                toks.push_back(t);
+            }
+            ++m.count[(size_t) m.first[(size_t) t]];
+        }
+        const size_t nt = toks.size(), at = m.adds_host.size();
+        adds_at[b] = at;
+        ntok[b] = (int32_t) nt;
+        m.adds_host.resize(at + nt + (nt + 1) + (size_t) (r1 - r0));
+        int32_t* h_tok = m.adds_host.data() + at;
+        int32_t* h_start = h_tok + nt;
+        int32_t* h_list = h_start + nt + 1;
+        h_start[0] = 0;
+        for (size_t i = 0; i < nt; ++i) {
+            h_tok[i] = toks[i];
+            h_start[i + 1] = h_start[i] + m.count[i];
+            m.count[i] = h_start[i];   // the fill cursor
+        }
+        for (int32_t r = r0; r < r1; ++r) h_list[m.count[(size_t) m.first[(size_t) src[(size_t) r]]]++] = r;
+        for (int32_t t : toks) m.mark[(size_t) t] = -1;
+    }
+    cudaStreamWaitEvent(m.s, input_ready, 0);
+    cudaEventRecord(m.t0, m.s);
+    if (!m.adds_host.empty())
+        cudaMemcpyAsync(m.adds, m.adds_host.data(), m.adds_host.size() * 4, cudaMemcpyHostToDevice, m.s);
+    // pageable sources: the copies are staged before they return, so the caller may reuse the vectors
+    cudaMemcpyAsync(m.ptrs, P, NPTR * E * sizeof(void*), cudaMemcpyHostToDevice, m.s);
+    cudaMemcpyAsync(m.input, m.h_input, (size_t) T * N * 2, cudaMemcpyHostToDevice, m.s);
+    if (n_rows > 0) {
+        cudaMemcpyAsync(m.rows_src, src.data(), n_rows * 4, cudaMemcpyHostToDevice, m.s);
+        cudaMemcpyAsync(m.w, w.data(), n_rows * 4, cudaMemcpyHostToDevice, m.s);
+    }
+    cudaMemsetAsync(m.sum, 0, (size_t) T * N * 4, m.s);
+    // ---- staging: the streamed experts of batch b into slot b % SLOTS, a copy per run of adjacent arena blobs
+    auto stage_batch = [&](size_t b) {
+        const auto [j0, j1] = batches[b];
+        const int sl = (int) (b % SLOTS);
+        bool any = false;
+        for (size_t j = j0; j < j1;) {
+            const int32_t e = experts[j];
+            if (held(e) >= 0) { ++j; continue; }
+            if (!any && m.live[sl]) cudaStreamWaitEvent(m.copy, m.used[sl], 0);   // its previous batch is dequantized
+            any = true;
+            const uint8_t* b0 = m.src->blob(layer, e);
+            uint8_t* dst = (uint8_t*) P[0 * E + j];
+            size_t k = j + 1;   // the run: the next experts' blobs follow this one in the arena and in staging
+            if (m.src->pinned(layer, e) && stride == bb)
+                while (k < j1 && held(experts[k]) < 0 && m.src->pinned(layer, experts[k]) &&
+                       m.src->blob(layer, experts[k]) == b0 + (k - j) * bb &&
+                       (uint8_t*) P[0 * E + k] == dst + (k - j) * bb) ++k;
+            cudaMemcpyAsync(dst, b0, (k - j) * bb, cudaMemcpyHostToDevice, m.copy);   // pageable blobs: staged
+            experts_streamed += (int64_t) (k - j);
+            j = k;
+        }
+        if (any) {
+            cudaEventRecord(m.copied[sl], m.copy);
+            m.live[sl] = true;
+        }
+        return any;
+    };
+    std::vector<char> has_stream(batches.size(), 0);
+    if (!batches.empty()) has_stream[0] = stage_batch(0);
+    auto** dp = (const uint16_t**) m.ptrs;   // device arrays by index
+    for (size_t b = 0; b < batches.size(); ++b) {
+        if (b + 1 < batches.size()) has_stream[b + 1] = stage_batch(b + 1);   // the next batch copies meanwhile
+        const auto [j0, j1] = batches[b];
+        const int n = (int) (j1 - j0);
+        const int sl = (int) (b % SLOTS);
+        if (has_stream[b]) cudaStreamWaitEvent(m.s, m.copied[sl], 0);
+        strata::kernels::iq_dequant_experts_f16(f.gu_type, f.d_type, (const uint8_t* const*) (m.ptrs + 0 * E + j0), n,
+                                                f.up_off, f.down_off, f.n_ff, f.n_embd, m.dq_gu, m.dq_d, m.s);
+        if (has_stream[b]) cudaEventRecord(m.used[sl], m.s);
+        for (size_t j = j0; j < j1; ++j) if (held(experts[j]) >= 0) ++experts_resident;
+        const int64_t r0 = off[j0], rows = off[j1] - r0;
+        if (rows > ROWS) {   // one expert: its rows in pieces
+            for (int64_t p = 0; p < rows; p += ROWS) {
+                const int64_t nr = std::min<int64_t>(ROWS, rows - p);
+                gather_rows16(m.input, m.rows_src + r0 + p, m.xs, nr, N, m.s);
+                m.gemm.f16(m.xs, m.dq_gu, m.gu, nr, FF2, N);
+                swiglu_interleaved(m.gu, m.hh, nr, m.s);
+                m.gemm.f16(m.hh, m.dq_d, m.d, nr, N, FF);
+                moe_scatter_add(m.sum, m.d, m.w + r0 + p, m.rows_src + r0 + p, nr, m.s);
+            }
+            continue;
+        }
+        gather_rows16(m.input, m.rows_src + r0, m.xs, rows, N, m.s);
+        m.gemm.f16_grouped(dp + 1 * E + j0, dp + 2 * E + j0, (float* const*) (m.ptrs + 3 * E + j0),
+                           (const uint16_t* const*) (P + 1 * E + j0), (const uint16_t* const*) (P + 2 * E + j0),
+                           (float* const*) (P + 3 * E + j0), rows_of.data() + j0, n, FF2, N);
+        swiglu_interleaved(m.gu, m.hh, rows, m.s);
+        m.gemm.f16_grouped(dp + 4 * E + j0, dp + 5 * E + j0, (float* const*) (m.ptrs + 6 * E + j0),
+                           (const uint16_t* const*) (P + 4 * E + j0), (const uint16_t* const*) (P + 5 * E + j0),
+                           (float* const*) (P + 6 * E + j0), rows_of.data() + j0, n, N, FF);
+        const int32_t* a = m.adds + adds_at[b];
+        moe_gather_add(m.sum, m.d, r0, m.w, a, a + ntok[b], a + 2 * ntok[b] + 1, ntok[b], m.s);
+    }
+    cudaMemcpyAsync(m.h_sum, m.sum, (size_t) T * N * 4, cudaMemcpyDeviceToHost, m.s);
+    cudaEventRecord(m.done, m.s);
+    cudaEventRecord(m.t1, m.s);
+    m.timed = true;
+    ms_host += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - h0).count();
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { err = std::string("prompt offload: ") + cudaGetErrorString(e); return false; }
+    return true;
+}
+
+}  // namespace strata::prefill

@@ -23,6 +23,8 @@
 
 namespace strata::prefill {
 
+class Offload;
+
 /// The sections `Prefill::profile` times, in the order a layer runs them.
 enum PrefillSection {
     kPsPle, kPsHcRead, kPsGdn, kPsGdnConv, kPsGdnScan, kPsGdnNorm, kPsGdnOut, kPsQsaProj, kPsQsaIndexer, kPsQsaScores, kPsQsaAttn, kPsQsaOut, kPsHcFfn, kPsRouter,
@@ -77,6 +79,9 @@ public:
     /// GPU time per section into `stats().ms_section` (events between the sections; the host waits for the last
     /// one after every chunk).
     bool profile = false;
+
+    /// The experts this GPU's cache does not hold, computed on a second GPU instead of streamed here; null: here.
+    Offload* offload = nullptr;
 
 private:
     struct Impl;

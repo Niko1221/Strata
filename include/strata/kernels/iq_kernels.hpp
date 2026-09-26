@@ -34,6 +34,10 @@ void iq_embed_rows(int ggml_type, const void* table, size_t row_bytes, const int
 /// uses: row 2r = gate row r, row 2r+1 = up row r.
 void iq_dequant_gu_f16(int ggml_type, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst,
                        void* stream);
+/// iq_dequant_gu_f16 and iq_dequant_f16 (the down matrix) of n experts in one launch: expert i's blob at blobs[i]
+/// (a DEVICE array), its gate/up into gu + i * 2 * n_ff * n_embd and its down into dn + i * n_embd * n_ff.
+void iq_dequant_experts_f16(int gu_type, int d_type, const uint8_t* const* blobs, int n, size_t up_off, size_t down_off,
+                            int64_t n_ff, int64_t n_embd, uint16_t* gu, uint16_t* dn, void* stream);
 
 /// The layout of one native expert blob: [gate rows | up rows | down rows], raw GGUF blocks.
 struct NativeExpertLayout {

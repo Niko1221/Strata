@@ -44,6 +44,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/prompt_cache.hpp"
+#include "strata/prefill/offload.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -203,6 +204,9 @@ struct Options {
     /// Plan v0.3 P5: the prompt path borrows the top expert-cache slots for its buffers and refills them after
     /// the prompt (default); `--no-prefill-borrow` reserves the buffers' VRAM for the whole session instead.
     bool no_prefill_borrow = false;
+    /// With --second-gpu, the prompt path's experts the main GPU's cache does not hold run on the second GPU
+    /// (default); `--no-prompt-offload` streams them to the main GPU instead.
+    bool no_prompt_offload = false;
     /// Plan v0.3 P5 validation: batch only positions [0, P) and run the rest of the prompt through the token path
     /// (teacher-forced), so the logits of positions >= P - which depend on the batched state - can be scored
     /// against the oracle at many positions.  0 = the whole prompt but the last position.
@@ -344,6 +348,8 @@ void usage() {
                  "  --second-gpu-gib G   its VRAM for experts (default: all but --second-gpu-reserve-mib, 2048)\n"
                  "  --second-gpu-min-mb M  a layer's missed experts from which it takes its share (default 4; below\n"
                  "                       it the CPU is quicker than its ~100 us round trip)\n"
+                 "  --no-prompt-offload  with --second-gpu: the prompt path streams the experts the main GPU's cache\n"
+                 "                       lacks to the main GPU instead of computing them on the second\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
                  "                       accept the drafts that match it, so speculation settings compare on the\n"
                  "                       same text (not --serve)\n"
@@ -584,6 +590,7 @@ int main(int argc, char** argv) {
         else if (a == "--prefill") o.prefill_chunk = std::atoll(next("--prefill"));
         else if (a == "--no-split-rows") o.no_split_rows = true;
         else if (a == "--no-prefill-borrow") o.no_prefill_borrow = true;
+        else if (a == "--no-prompt-offload") o.no_prompt_offload = true;
         else if (a == "--prefill-until") o.prefill_until = std::atoll(next("--prefill-until"));
         else if (a == "--dump-final-r") o.dump_final_r = next("--dump-final-r");
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
@@ -1995,6 +2002,15 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
+        strata::prefill::Offload offload;
+        if (o.second_gpu >= 0 && !o.no_prompt_offload) {
+            if (!offload.init(o.second_gpu, o.main_gpu, srcp, &gpu2.cache(), host_res2.empty() ? nullptr : host_res2.data(),
+                              g.n_expert, o.prefill_chunk, err)) {
+                std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                return 1;
+            }
+            prefill.offload = &offload;
+        }
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
@@ -2327,6 +2343,7 @@ int main(int argc, char** argv) {
     int64_t pos_start = 0;
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
     strata::prefill::Prefill prefill;
+    strata::prefill::Offload offload;
     double prefill_batched_ms = 0;
     std::FILE* final_r = o.dump_final_r.empty() ? nullptr : std::fopen(o.dump_final_r.c_str(), "wb");
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);
@@ -2365,6 +2382,14 @@ int main(int argc, char** argv) {
                           borrow_bytes)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
+        }
+        if (o.second_gpu >= 0 && !o.no_prompt_offload) {
+            if (!offload.init(o.second_gpu, o.main_gpu, srcp, &gpu2.cache(), host_res2.empty() ? nullptr : host_res2.data(),
+                              g.n_expert, o.prefill_chunk, err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            prefill.offload = &offload;
         }
         if (!o.mtp.empty()) {
             if (!mtp.bind(wt, &native_head, nullptr, err)) {
@@ -2414,6 +2439,10 @@ int main(int argc, char** argv) {
                      (long long) ps.tokens, (long long) ps.chunks, ps.ms_total,
                      ps.ms_total > 0 ? 1000.0 * (double) ps.tokens / ps.ms_total : 0.0, (long long) ps.experts_streamed,
                      (long long) ps.experts_dma, ps.ms_experts_host, (long long) ps.experts_resident, ps.ms_ple);
+        if (prefill.offload != nullptr)
+            std::fprintf(stderr, "strata generate: prefill on the second GPU: experts streamed %lld, resident %lld; "
+                                 "%.1f ms queuing, %.1f ms GPU\n", (long long) offload.experts_streamed,
+                         (long long) offload.experts_resident, offload.ms_host, offload.ms_gpu);
         if (o.prefill_profile) {
             std::fprintf(stderr, "strata generate: prefill GPU ms by section:");
             for (int i = 0; i < strata::prefill::kPsCount; ++i)
