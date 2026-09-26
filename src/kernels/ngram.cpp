@@ -5,6 +5,12 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
+#include "strata/platform/direct_file.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include <cstdio>
 #include <cstring>
@@ -147,7 +153,72 @@ struct PleTable::Impl {
     bool pending = false;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_Q8_0] = {};
+    // Ram mode: the table read into `ram_base` by `loader`; `ram` (the table's first row) valid once `ram_ready`
+    std::string path;
+    uint64_t table_offset = 0;
+    uint8_t* ram_base = nullptr;
+    uint64_t ram_bytes = 0;
+    const uint8_t* ram = nullptr;
+    std::atomic<bool> ram_ready{false}, cancel{false};
+    std::thread loader;
+    std::string ram_note;
+    bool pending_ram = false;   // the pending token's rows come from RAM
+
+    bool from_ram() const { return mode == PleIo::Ram && ram_ready.load(std::memory_order_acquire); }
+    bool direct() const { return (mode == PleIo::Direct || mode == PleIo::Ram) && !from_ram(); }
+    void load();
 };
+
+// The whole table in 8 MiB unbuffered reads, four in flight.  Pageable: locking it resident first (VirtualLock of
+// 28.8 GB) faults in its pages under the process's working-set lock and stalled the startup's other threads ~8 s.
+void PleTable::Impl::load() {
+    using strata::platform::DirectFile;
+    const auto t0 = std::chrono::steady_clock::now();
+    const uint64_t a0 = table_offset & ~(uint64_t) (DirectFile::alignment() - 1);
+    const uint64_t need = table_offset + n_rows * (uint64_t) row_bytes - a0;
+    DirectFile f;
+    std::string err;
+    if (!f.open(path, err)) { ram_note = "PLE table in RAM: " + err; std::fprintf(stderr, "strata: %s\n", ram_note.c_str()); return; }
+    constexpr uint32_t kChunk = 8u << 20;
+    constexpr int kDepth = 4;
+    uint64_t next = 0, got = 0;
+    int inflight = 0;
+    bool ok = true;
+    while (ok && !cancel.load() && (next < need || inflight > 0)) {
+        while (ok && inflight < kDepth && next < need) {
+            const uint32_t len = (uint32_t) std::min<uint64_t>(kChunk, ram_bytes - next);
+            ok = f.submit(a0 + next, ram_base + next, len, next, err);
+            next += len;
+            ++inflight;
+        }
+        strata::platform::Completion c[kDepth];
+        const int k = ok ? f.wait(c, kDepth, -1) : 0;
+        for (int i = 0; i < k; ++i) {
+            if (c[i].tag == DirectFile::WAKE_TAG) continue;
+            --inflight;
+            ok = ok && c[i].ok;
+            got += c[i].bytes;
+        }
+    }
+    while (inflight > 0) {   // a failed or cancelled load still collects what it queued
+        strata::platform::Completion c[kDepth];
+        const int k = f.wait(c, kDepth, -1);
+        for (int i = 0; i < k; ++i) if (c[i].tag != DirectFile::WAKE_TAG) --inflight;
+    }
+    if (cancel.load()) return;
+    if (!ok || got < need) {
+        ram_note = "PLE table in RAM: the load failed" + (err.empty() ? std::string() : ": " + err) + "; rows stay on the SSD";
+        std::fprintf(stderr, "strata: %s\n", ram_note.c_str());
+        return;
+    }
+    ram = ram_base + (table_offset - a0);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    char buf[120];
+    std::snprintf(buf, sizeof buf, "PLE table in RAM: %.1f GB in %.1f s", (double) need / 1e9, s);
+    ram_note = buf;
+    ram_ready.store(true, std::memory_order_release);
+    std::fprintf(stderr, "strata: %s\n", ram_note.c_str());
+}
 
 PleTable::PleTable() : impl_(new Impl) {}
 PleTable::~PleTable() { close(); delete impl_; }
@@ -210,10 +281,12 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    if (io.mode == PleIo::Direct) {
+    if (io.mode == PleIo::Direct || io.mode == PleIo::Ram) {
         // The parse above is the validated source of the offset; the mapping itself is not kept, so no page of
         // the table can enter this process's working set or the file cache through it.
         const uint64_t table_offset = impl_->file->data_start() + t->offset;
+        impl_->path = gguf_path;
+        impl_->table_offset = table_offset;
         const uint64_t n_rows = impl_->n_rows;
         delete impl_->file;
         impl_->file = nullptr;
@@ -230,6 +303,17 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 }
 
 void PleTable::close() {
+    if (impl_->loader.joinable()) {
+        impl_->cancel = true;
+        impl_->loader.join();
+    }
+    impl_->ram_ready = false;
+    impl_->cancel = false;
+    impl_->ram = nullptr;
+    if (impl_->ram_base != nullptr) {
+        strata::platform::DirectFile::free_aligned(impl_->ram_base);
+        impl_->ram_base = nullptr;
+    }
     impl_->reader.close();
     impl_->pending = false;
     impl_->mode = PleIo::Mmap;
@@ -240,12 +324,35 @@ void PleTable::close() {
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
+
+bool PleTable::start_ram_load(std::string& err) {
+    using strata::platform::DirectFile;
+    if (impl_->mode != PleIo::Ram || impl_->ram_base != nullptr) return true;
+    const uint64_t a0 = impl_->table_offset & ~(uint64_t) (DirectFile::alignment() - 1);
+    const uint64_t end = impl_->table_offset + impl_->n_rows * (uint64_t) impl_->row_bytes;
+    impl_->ram_bytes = (end - a0 + DirectFile::alignment() - 1) / DirectFile::alignment() * DirectFile::alignment();
+    impl_->ram_base = (uint8_t*) DirectFile::alloc_aligned((size_t) impl_->ram_bytes);
+    if (impl_->ram_base == nullptr) {
+        err = "PLE table in RAM: " + std::to_string(impl_->ram_bytes >> 20) + " MiB could not be allocated";
+        return false;
+    }
+    impl_->loader = std::thread([m = impl_] { m->load(); });
+    return true;
+}
+
+bool PleTable::ram_ready() const { return impl_->from_ram(); }
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
 
 void PleTable::read_row(uint32_t row, float* out160) const {
-    if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
+    if (impl_->from_ram()) {
+        if (row >= impl_->n_rows) std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+        else ple_dequant_row(impl_->type, impl_->ram + (size_t) row * impl_->row_bytes, out160);
+        impl_->bytes_read += impl_->row_bytes;
+        return;
+    }
+    if (impl_->direct() && impl_->reader.is_open()) {
         uint8_t raw[PLE_ROW_BYTES_Q8_0];
         std::string err;
         const auto t = impl_->reader.issue(&row, 1, raw);
@@ -267,9 +374,10 @@ void PleTable::read_row(uint32_t row, float* out160) const {
 
 bool PleTable::issue(const uint32_t* rows16) {
     std::memcpy(impl_->rows, rows16, sizeof impl_->rows);
-    if (impl_->mode == PleIo::Direct) {
+    if (impl_->mode != PleIo::Mmap) {
         if (impl_->pending) return false;              // one token in flight per table
-        impl_->ticket = impl_->reader.issue(impl_->rows, PLE_N_HEADS, impl_->raw);
+        impl_->pending_ram = impl_->from_ram();
+        if (!impl_->pending_ram) impl_->ticket = impl_->reader.issue(impl_->rows, PLE_N_HEADS, impl_->raw);
         impl_->pending = true;
         return true;
     }
@@ -293,7 +401,11 @@ bool PleTable::issue(const uint32_t* rows16) {
 bool PleTable::collect(float* out2560, std::string& err) {
     if (!impl_->pending) { err = "PleTable::collect without issue"; return false; }
     impl_->pending = false;
-    if (impl_->mode == PleIo::Direct) {
+    if (impl_->pending_ram) {
+        for (int h = 0; h < PLE_N_HEADS; ++h) read_row(impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
+        return true;
+    }
+    if (impl_->mode != PleIo::Mmap) {
         if (!impl_->reader.collect(impl_->ticket, err)) return false;
         for (int h = 0; h < PLE_N_HEADS; ++h)
             ple_dequant_row(impl_->type, impl_->raw + (size_t) h * impl_->row_bytes, out2560 + (size_t) h * PLE_HEAD_DIM);
@@ -307,7 +419,7 @@ bool PleTable::collect(float* out2560, std::string& err) {
 bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err) {
     if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
-    if (impl_->mode == PleIo::Direct) {
+    if (impl_->direct()) {
         std::vector<uint8_t> raw(n * impl_->row_bytes);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
         if (!impl_->reader.collect(ticket, err)) return false;
@@ -323,7 +435,8 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
 void PleTable::set_injected_delay_us(double us) { impl_->reader.set_injected_delay_us(us); }
 
 std::string PleTable::io_report() const {
-    if (impl_->mode != PleIo::Direct || !impl_->reader.is_open()) return {};
+    if (impl_->from_ram()) return "ple io: " + impl_->ram_note;
+    if (impl_->mode == PleIo::Mmap || !impl_->reader.is_open()) return {};
     const strata::ngram::ReaderStats& s = impl_->reader.stats();
     char buf[320];
     std::snprintf(buf, sizeof buf,
@@ -337,7 +450,11 @@ std::string PleTable::io_report() const {
 }
 
 void PleTable::gather(const uint32_t* rows16, float* out2560) const {
-    if (impl_->mode == PleIo::Direct) {
+    if (impl_->from_ram()) {
+        for (int h = 0; h < PLE_N_HEADS; ++h) read_row(rows16[h], out2560 + (size_t) h * PLE_HEAD_DIM);
+        return;
+    }
+    if (impl_->direct()) {
         // `gather` stays const for its existing callers; the reader's state is the table's I/O state.
         PleTable* self = const_cast<PleTable*>(this);
         std::string err;

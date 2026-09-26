@@ -102,12 +102,14 @@ void ple_dequant_row(int type, const uint8_t* row, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
-/// A/B arm; it returns the same bytes.
+/// A/B arm; it returns the same bytes. `Ram`: Direct until `start_ram_load` has read the whole table into RAM
+/// (unbuffered, so the file cache holds no second copy), then from RAM: a 16K-token prompt chunk's 262K random
+/// row reads take ~0.6 s from the SSD.
 ///
 /// NEVER KEEP THE SHARD MAPPED WHILE READING IT DIRECT: a live section on the same file serializes the unbuffered
 /// reads (311 -> 1,575 us per token, bench/results/2026-09-23-p2-ssd-direct). Direct mode drops its own mapping
 /// after the header parse; nothing else in the process may hold one.
-enum class PleIo { Direct, Mmap };
+enum class PleIo { Direct, Mmap, Ram };
 
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
@@ -142,6 +144,11 @@ public:
 
     /// Fault injection (Direct mode): every row read completes no earlier than `us` after issue.
     void set_injected_delay_us(double us);
+
+    /// Ram mode: reads the table into (pageable) RAM on a thread of its own; the rows come from the SSD until it is
+    /// done.  Reports on stderr when done.
+    bool start_ram_load(std::string& err);
+    bool ram_ready() const;
 
     /// Maps the ORIGINAL second GGUF shard read-only.  The tensor's data does NOT start at file offset 0:
     /// the manifest's `shard2_tensor.offset` is relative to the GGUF's DATA SECTION, and the header before it
