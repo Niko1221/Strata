@@ -229,6 +229,9 @@ private:
     std::vector<double> prof_ns_;                             // [mixer kind (GDN, QSA)][stage], summed
     double prof_window_ns_[4] = {};                           // inputs + embeddings, head, whole window, stamp gap
     int64_t prof_windows_ = 0, prof_layers_[2] = {};
+    static constexpr int kWaitBuckets = 7;                    // the wait for the CPU's rows, by bucket (us)
+    static constexpr double kWaitEdges[kWaitBuckets - 1] = {6, 8, 12, 20, 50, 100};
+    int64_t prof_wait_hist_[2][kWaitBuckets] = {};
 };
 
 }  // namespace strata::core

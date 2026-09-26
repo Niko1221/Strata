@@ -1032,6 +1032,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             for (int i = 1; i < kLayerStamps; ++i) prof_ns_[(size_t) kind * kStamps + i] += (double) (st[i] - st[i - 1]);
             // the shared expert's branch, from the doorbell (it forks there) to its end
             prof_ns_[(size_t) kind * kStamps + kLayerStamps] += (double) (st[kLayerStamps] - st[5]);
+            {   // the wait for the CPU's rows, by bucket
+                const double us = (double) (st[10] - st[9]) / 1e3;
+                int b = 0;
+                while (b < kWaitBuckets - 1 && us >= kWaitEdges[b]) ++b;
+                ++prof_wait_hist_[kind][b];
+            }
             ++prof_layers_[kind];
         }
         prof_window_ns_[0] += (double) (w[1] - w[0]);
@@ -1063,6 +1069,13 @@ void Verifier::print_profile() const {
         std::printf("  %-22s %12.1f %12.1f %14.3f\n", names[i],
                     prof_layers_[0] ? a / (double) prof_layers_[0] / 1e3 : 0.0,
                     prof_layers_[1] ? b / (double) prof_layers_[1] / 1e3 : 0.0, (a + b) / nw / 1e6);
+    }
+    std::printf("  %-22s", "wait for CPU, layers");
+    for (int b = 0; b < kWaitBuckets; ++b) {
+        const double f = 100.0 * (double) (prof_wait_hist_[0][b] + prof_wait_hist_[1][b]) /
+                         (double) std::max<int64_t>(1, prof_layers_[0] + prof_layers_[1]);
+        if (b < kWaitBuckets - 1) std::printf(" <%.0f us %.0f%%,", kWaitEdges[b], f);
+        else std::printf(" more %.0f%%\n", f);
     }
 }
 
