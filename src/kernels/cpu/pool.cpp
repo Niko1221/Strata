@@ -239,13 +239,14 @@ void ExpertPool::drain(int id, ExpertScratch& scratch) {
     }
 }
 
-void ExpertPool::run_phase(int mode, int n_tasks) {
+void ExpertPool::run_phase(int mode, int n_tasks, void (*first)(void*), void* ctx) {
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
     mode_ = mode;
     njobs_ = n_tasks;
     head_.store(0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
     epoch_.fetch_add(1, std::memory_order_release);
+    if (first != nullptr) first(ctx);
     if (host_works_) drain(-1, host_scratch_);
     while (done_.load(std::memory_order_acquire) != (uint32_t) n_tasks) _mm_pause();
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
@@ -306,8 +307,12 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
-    if (n <= 0) return;
+void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, void (*first)(void*),
+                                        void* ctx) {
+    if (n <= 0) {
+        if (first != nullptr) first(ctx);
+        return;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
@@ -318,7 +323,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         mtasks_ = 3 * threads;
         mrows_ = (int64_t) nb * FF;
         const auto a = std::chrono::steady_clock::now();
-        run_phase(5, mtasks_);
+        run_phase(5, mtasks_, b0 == 0 ? first : nullptr, ctx);
         const auto b = std::chrono::steady_clock::now();
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)

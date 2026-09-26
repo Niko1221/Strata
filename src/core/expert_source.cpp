@@ -394,12 +394,6 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (P.publish) P.publish(P.ctx);
         if (P.fetch) P.fetch(P.ctx, dma_src, P.pcie_mode != 0 ? 0 : fetches, (size_t) bb);   // the copy engine, beside the CPU's work
         g2_start[n2g] = n2e;
-        if (n2g > 0 && !d.gpu2->submit(d.layers, x_f, (int) n_tok, k, g2_slot, g2_start, g2_ent, n2g, d.gpu2_err)) {
-            d.failed = true;
-            d.fail = d.gpu2_err.c_str();
-            d.fail_layer = d.layers;
-            return;
-        }
     } else {
         for (int64_t i = 0; i < n; ++i) {
             const int32_t e = ids[i];
@@ -461,8 +455,33 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++d.multi_entries;
         }
     const auto c3 = std::chrono::steady_clock::now();
-    if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
-    else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+    // the second GPU's share goes out once the CPU's workers have started on theirs: its launch takes the host
+    // tens of microseconds
+    struct Submit2 {
+        ExpertDispatch* d;
+        const float* x;
+        int n_tok, n_groups;
+        int64_t k;
+        const int32_t *slots, *starts, *entries;
+        bool ok;
+    } s2{&d, x_f, (int) n_tok, n2g, k, g2_slot, g2_start, g2_ent, true};
+    void (*submit2)(void*) = [](void* p) {
+        Submit2& s = *(Submit2*) p;
+        s.ok = s.d->gpu2->submit(s.d->layers, s.x, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.d->gpu2_err);
+    };
+    if (n2g <= 0) submit2 = nullptr;
+    if (native) {
+        d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, submit2, &s2);
+    } else {
+        if (submit2 != nullptr) submit2(&s2);
+        d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+    }
+    if (!s2.ok) {
+        d.failed = true;
+        d.fail = d.gpu2_err.c_str();
+        d.fail_layer = d.layers;
+        return;
+    }
     if (n2g > 0 && !d.gpu2->finish(out, d.gpu2_err)) {   // the second GPU's rows, over the zeroed ones
         d.failed = true;
         d.fail = d.gpu2_err.c_str();

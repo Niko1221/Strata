@@ -115,8 +115,11 @@ public:
     /// Plan v0.3 P6: `run_split` for multi-token jobs (at most `kMaxSplitMulti`); the rows of each expert are
     /// read once for all of its tokens.
     void run_split_multi(ExpertJobMulti* jobs, int n);
-    /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).
-    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
+    /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).  `first`, when
+    /// given, runs once on the host: after the workers have started on the first phase, before it joins them (or
+    /// alone when there are no jobs).
+    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, void (*first)(void*) = nullptr,
+                                void* ctx = nullptr);
     static constexpr int kMaxSplitMulti = 96;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
@@ -143,7 +146,7 @@ public:
 private:
     void worker(int id);
     void drain(int id, ExpertScratch& scratch);
-    void run_phase(int mode, int n_tasks);
+    void run_phase(int mode, int n_tasks, void (*first)(void*) = nullptr, void* ctx = nullptr);
 
     int n_ = 0;
     bool host_works_ = true;
