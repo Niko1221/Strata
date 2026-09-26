@@ -264,9 +264,9 @@ struct Options {
     int64_t cache_every = 16384;
     /// Prompt parts of up to this many tokens go through verify windows instead of the batched prompt path: a new
     /// part that short, and a last prompt chunk that short.  A batched call has a fixed cost (it lends and refills
-    /// expert-cache slots and streams every expert its tokens use): ~1.5 s with IQ3_XXS on the 3090 alone, ~0.7 s
-    /// with UD-Q4_K_XL and the second GPU; verify windows cost 12-17 ms per token.  They break even at ~185 and
-    /// ~45 tokens (bench/feed_test.py).
+    /// expert-cache slots and reads every expert its tokens use): ~0.6 s with a second GPU, ~1.5 s with IQ3_XXS on
+    /// the 3090 alone; verify windows cost 10-15 ms per token.  They break even at ~50-65 tokens with a second GPU,
+    /// ~185 without (bench/feed_test.py).
     int64_t feed_max = 128;
     int adapt_swaps = 96;
 };
