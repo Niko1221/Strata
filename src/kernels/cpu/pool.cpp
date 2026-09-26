@@ -128,8 +128,21 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works) : host_works_(h
 ExpertPool::~ExpertPool() {
     stop_.store(true, std::memory_order_release);
     // Bump the epoch so a PARKED worker notices the stop flag rather than sleeping through it.
-    epoch_.fetch_add(1, std::memory_order_release);
+    publish();
     for (auto& t : threads_) t.join();
+}
+
+void ExpertPool::publish() {
+    // Both sides are seq_cst, and that is the whole lost-wakeup argument: a worker going to sleep does
+    // `sleepers_++` and then reads `epoch_`, the host does `epoch_++` and then reads `sleepers_`.  In one total
+    // order at least one of them sees the other's write - the worker sees the new epoch and does not sleep, or
+    // the host sees the sleeper and notifies under the mutex the worker holds until it is inside `wait`.
+    // On x86 the fetch_add is a locked xadd either way, so this costs the token path nothing.
+    epoch_.fetch_add(1, std::memory_order_seq_cst);
+    if (sleepers_.load(std::memory_order_seq_cst) != 0) {
+        std::lock_guard<std::mutex> lk(sleep_mu_);
+        sleep_cv_.notify_all();
+    }
 }
 
 void ExpertPool::worker(int id) {
@@ -148,9 +161,22 @@ void ExpertPool::worker(int id) {
         // - a locked read-modify-write, five workers against one cache line - so the workers spent their wait
         // invalidating each other's caches and the very line the host writes to publish work.  The counter was
         // diagnostic and nothing branched on it.  See the note on the atomics in pool.hpp.
+        //
+        // After `kSpinBeforeSleep` with no work the worker sleeps instead (issue #4).  The clock is read once
+        // every 1024 pauses, so the spin itself is unchanged.
+        const auto parked_at = std::chrono::steady_clock::now();
+        uint32_t spins = 0;
         while (epoch_.load(std::memory_order_acquire) == seen) {
             if (stop_.load(std::memory_order_relaxed)) return;
             _mm_pause();
+            if ((++spins & 1023u) != 0) continue;
+            if (std::chrono::steady_clock::now() - parked_at < kSpinBeforeSleep) continue;
+            std::unique_lock<std::mutex> lk(sleep_mu_);
+            sleepers_.fetch_add(1, std::memory_order_seq_cst);
+            sleep_cv_.wait(lk, [&] {
+                return epoch_.load(std::memory_order_seq_cst) != seen || stop_.load(std::memory_order_relaxed);
+            });
+            sleepers_.fetch_sub(1, std::memory_order_relaxed);
         }
         if (stop_.load(std::memory_order_acquire)) return;
         seen = epoch_.load(std::memory_order_relaxed);
@@ -246,7 +272,7 @@ void ExpertPool::run_phase(int mode, int n_tasks) {
     njobs_ = n_tasks;
     head_.store(0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_release);
+    publish();
     if (host_works_) drain(-1, host_scratch_);
     while (done_.load(std::memory_order_acquire) != (uint32_t) n_tasks) _mm_pause();
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
@@ -357,7 +383,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     mode_ = 0;
     head_.store(0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_release);   // release: jobs_/njobs_ are visible before the bump
+    publish();   // a release (seq_cst): jobs_/njobs_ are visible before the bump
 
     // ---- **THE HOST DRAINS TOO (R2.2), INSTEAD OF SPINNING ON `done_`.**
     //
