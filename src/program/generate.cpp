@@ -16,6 +16,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/remote_experts.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -44,6 +45,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <chrono>
 #include <algorithm>
 #include <iostream>
@@ -160,6 +162,8 @@ struct Options {
     /// true is that the ADMISSION POLICY gave every slot to the first position, which is why the earlier
     /// measurement found nothing - see `expert_cache_per_layer`.
     int expert_cache = 0;
+    std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
+    std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
     /// The default policy hands out slots in arrival order from one counter shared by all 48 layers, so the
@@ -340,6 +344,11 @@ void usage() {
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
                  "                       ms/token, -2.7 ms/token end to end.\n"
+                 "  --expert-cache-device1 N  pre-fill N experts on CUDA1 (experimental)\n"
+                 "  --expert-cache-device2 N  pre-fill N more experts on CUDA2\n"
+                 "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
+                 "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
+                 "                       layers across CUDA1..3 (default: stripe)\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -635,6 +644,11 @@ int main(int argc, char** argv) {
             const std::string v = next("--expert-cache");
             o.expert_cache = (v == "auto") ? -1 : std::atoi(v.c_str());
         }
+        else if (a == "--expert-cache-device1") o.expert_cache_remote[0] = std::atoi(next("--expert-cache-device1"));
+        else if (a == "--expert-cache-device2") o.expert_cache_remote[1] = std::atoi(next("--expert-cache-device2"));
+        else if (a == "--expert-cache-device3") o.expert_cache_remote[2] = std::atoi(next("--expert-cache-device3"));
+        else if (a == "--expert-cache-remote-placement")
+            o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib"));
         else if (a == "--prefill") o.prefill_chunk = std::atoll(next("--prefill"));
         else if (a == "--no-split-rows") o.no_split_rows = true;
@@ -760,8 +774,16 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (!std::isfinite(o.temperature) || o.temperature < 0 || !std::isfinite(o.top_p) ||
-        o.top_p <= 0 || o.top_p > 1 || o.top_k < 0 || o.expert_cache < -1 || o.pool_workers < 0) {
+        o.top_p <= 0 || o.top_p > 1 || o.top_k < 0 || o.expert_cache < -1 ||
+        o.pool_workers < 0 || std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
+                                           [](int slots) { return slots < 0; }) ||
+        (o.expert_cache_remote[1] > 0 && o.expert_cache_remote[0] == 0) ||
+        (o.expert_cache_remote[2] > 0 && o.expert_cache_remote[1] == 0)) {
         std::fprintf(stderr, "strata generate: invalid sampling or resource parameter\n");
+        return 2;
+    }
+    if (o.expert_cache_remote_placement != "stripe" && o.expert_cache_remote_placement != "layer") {
+        std::fprintf(stderr, "strata generate: --expert-cache-remote-placement must be stripe or layer\n");
         return 2;
     }
 
@@ -803,6 +825,17 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    if (o.expert_cache_remote[0] > 0) {
+        // Keep CUDA1's proven startup order: initialise its context before
+        // allocating GPU0 weights or mapping the large host expert arena.
+        double free_gib = 0;
+        if (!strata::core::RemoteExperts::preflight(1, free_gib, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: CUDA1 context ready, %.2f GiB free before expert arena registration\n",
+                     free_gib);
+    }
     // plan v0.3 P6: the PCIe share of the missed experts, measured per kind of pack (the paper, finding on PCIe)
     if (o.pcie_frac < 0.0) o.pcie_frac = native_pack ? 0.55 : 0.2;
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
@@ -1060,6 +1093,29 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
+    // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
+    strata::core::MtpDrafter mtp;
+    if (!o.mtp.empty()) {
+        if (o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --mtp is ignored without --spec T (T >= 2)\n");
+            o.mtp.clear();
+        }
+        if (!o.mtp.empty()) mtp.set_prompt_len((int64_t) o.tokens.size());
+        if (!o.mtp.empty() && !mtp.load(o.mtp, g, ss, o.spec, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+    }
+    // Create the additional contexts after MTP has secured CUDA0 memory, but
+    // before the host arena maps its expert pages into their address spaces.
+    for (int r = 1; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+        double free_gib = 0;
+        if (!strata::core::RemoteExperts::preflight(r + 1, free_gib, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: CUDA%d context ready, %.2f GiB free before expert arena registration\n",
+                     r + 1, free_gib);
+    }
+
     // ---- the CPU expert pool
     //
     // R2.1: the experts are loaded into a RESIDENT ARENA by default.  The mmap path is kept behind
@@ -1092,7 +1148,10 @@ int main(int argc, char** argv) {
         srcp = &src;
     } else {
         arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err)) {
+        // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
+        // Unregistered layers remain in the resident arena and use the CPU expert path.
+        const uint64_t pin_limit = o.expert_cache_remote[0] > 0 ? (8ull << 30) : 0;
+        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -1101,16 +1160,6 @@ int main(int argc, char** argv) {
                      (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024),
                      arena_src.load_gib_per_second());
         srcp = &arena_src;
-    }
-    // Plan v0.3 P6: the MTP draft layer, loaded before the VRAM expert tier is sized from what is left.
-    strata::core::MtpDrafter mtp;
-    if (!o.mtp.empty()) {
-        if (o.spec < 2) {
-            std::fprintf(stderr, "strata generate: --mtp is ignored without --spec T (T >= 2)\n");
-            o.mtp.clear();
-        }
-        if (!o.mtp.empty()) mtp.set_prompt_len((int64_t) o.tokens.size());
-        if (!o.mtp.empty() && !mtp.load(o.mtp, g, ss, o.spec, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     }
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker);
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
@@ -1272,7 +1321,83 @@ int main(int argc, char** argv) {
                      (long long) prefilled, (long long) want);
     }
 
+    std::array<strata::core::RemoteExperts, 3> remote_experts;
+    const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+    if (o.expert_cache_remote[0] > 0) {
+        if (o.expert_cache <= 0 || profile.empty() || o.no_pool) {
+            std::fprintf(stderr, "strata generate: remote experts need --expert-profile, "
+                                 "a CUDA0 expert cache and the expert pool\n");
+            return 2;
+        }
+        std::vector<std::pair<int32_t, int32_t>> ranked = profile;
+        if (multi_remote) {
+            // The shipped frequency profile names only 8000 of 24576 experts. Once exhausted,
+            // fill remaining VRAM from unranked pairs in expert-then-layer order: this spreads
+            // the tail across all layers instead of concentrating it on layer zero.
+            std::vector<uint8_t> seen((size_t) g.n_layers * (size_t) g.n_expert, 0);
+            for (const auto& pair : ranked)
+                if (pair.first >= 0 && pair.first < g.n_layers && pair.second >= 0 && pair.second < g.n_expert)
+                    seen[(size_t) pair.first * (size_t) g.n_expert + (size_t) pair.second] = 1;
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    if (!seen[(size_t) l * (size_t) g.n_expert + (size_t) e])
+                        ranked.emplace_back((int32_t) l, (int32_t) e);
+            std::fprintf(stderr, "strata generate: remote ranking: %zu profiled pairs, "
+                                 "%zu other pairs to fill CUDA1..3\n", profile.size(), ranked.size() - profile.size());
+        }
+        std::array<std::vector<std::pair<int32_t, int32_t>>, 3> by_device;
+        if (multi_remote) {
+            // Either stripe experts for parallel GPU work, or give each layer one
+            // secondary GPU to reduce switches and transfers over shared USB4.
+            std::vector<uint8_t> assigned((size_t) g.n_layers * (size_t) g.n_expert, 0);
+            const int devices = 1 + (o.expert_cache_remote[1] > 0) + (o.expert_cache_remote[2] > 0);
+            int next = 0;
+            for (const auto& pair : ranked) {
+                if (pair.first < 0 || pair.first >= g.n_layers || pair.second < 0 || pair.second >= g.n_expert ||
+                    xcache.slot_of(pair.first, pair.second) >= 0) continue;
+                const size_t index = (size_t) pair.first * (size_t) g.n_expert + (size_t) pair.second;
+                if (assigned[index]) continue;
+                int target = -1;
+                if (o.expert_cache_remote_placement == "layer") {
+                    target = pair.first % devices;
+                    // Other layers' owners may still have room: keep scanning ranks.
+                    if (by_device[(size_t) target].size() >=
+                        (size_t) o.expert_cache_remote[(size_t) target]) continue;
+                } else {
+                    for (int i = 0; i < devices; ++i) {
+                        const int r = (next + i) % devices;
+                        if (by_device[(size_t) r].size() < (size_t) o.expert_cache_remote[(size_t) r]) {
+                            target = r;
+                            break;
+                        }
+                    }
+                    if (target < 0) break;
+                }
+                assigned[index] = 1;
+                by_device[(size_t) target].push_back(pair);
+                next = (target + 1) % devices;
+            }
+            std::fprintf(stderr, "strata generate: remote ranks %s across %d CUDA devices\n",
+                         o.expert_cache_remote_placement == "layer" ? "grouped by layer" : "striped", devices);
+        } else {
+            by_device[0] = std::move(ranked);
+        }
+        std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
+        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+            if (!remote_experts[(size_t) r].open(r + 1, o.expert_cache_remote[(size_t) r],
+                     g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: CUDA%d: %lld additional experts, %.2f GiB; "
+                                 "results return through pinned host rows\n", r + 1,
+                         (long long) remote_experts[(size_t) r].resident(), remote_experts[(size_t) r].gib());
+        }
+    }
+
     Drive drive;
+    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+        drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
     drive.d.pool = &pool;
@@ -2257,6 +2382,16 @@ int main(int argc, char** argv) {
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
+            std::array<int64_t, 3> remote_before{};
+            std::array<int64_t, 3> launches_before{};
+            std::array<uint64_t, 3> compact_before{}, full_before{};
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            {
+                remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
+                launches_before[(size_t) r] = remote_experts[(size_t) r].launched_layers();
+                compact_before[(size_t) r] = remote_experts[(size_t) r].returned_bytes();
+                full_before[(size_t) r] = remote_experts[(size_t) r].full_row_bytes();
+            }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
@@ -2585,6 +2720,13 @@ int main(int argc, char** argv) {
                          prompt_ms > 0 ? 1000.0 * fresh / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+                std::fprintf(stderr, "strata serve: CUDA%d: %lld expert entries, %lld active layer launches, %.1f MiB returned "
+                                     "(%.1f MiB with full rows) in this request\n", r + 1,
+                             (long long) (remote_experts[(size_t) r].computed() - remote_before[(size_t) r]),
+                             (long long) (remote_experts[(size_t) r].launched_layers() - launches_before[(size_t) r]),
+                             (double) (remote_experts[(size_t) r].returned_bytes() - compact_before[(size_t) r]) / 1048576.0,
+                             (double) (remote_experts[(size_t) r].full_row_bytes() - full_before[(size_t) r]) / 1048576.0);
         }
         return 0;
     }
@@ -3273,6 +3415,9 @@ int main(int argc, char** argv) {
                         "  pool phases", wp / per, dr / per, rp / per);
         }
         std::printf("%-24s %lld blobs read\n", "  expert blobs", (long long) srcp->reads());
+        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            std::printf("  CUDA%d experts           %lld routed entries computed\n",
+                        r + 1, (long long) remote_experts[(size_t) r].computed());
         // ---- **R4's DISPATCH MEASUREMENT: h, ON THE ENGINE'S OWN ROUTING.**  No offline trace, no corpus
         // question, no k-fold - these are the ids the router actually produced on this run.  Reported as
         // hits/lookups so it can be read directly as the h the cache would deliver, and alongside `refused`

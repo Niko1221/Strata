@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/remote_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -199,6 +200,22 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
     const bool use_hits = graph_hits || (d.hits_ready() && d.decided);
     int64_t njobs = 0;
 
+    if (d.remote_count > 0) {
+        int32_t kind[32];
+        if (k > 32) {
+            d.failed = true; d.fail = "remote experts: routing width exceeds 32"; return;
+        }
+        for (int64_t i = 0; i < k; ++i)
+            kind[i] = use_hits && ids[i] >= 0 && ids[i] < d.n_expert && (graph_hits
+                ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] >= 0
+                : d.is_hit[(size_t) i] != 0) ? 0 : -1;
+        static thread_local std::string remote_error;
+        for (int r = 0; r < d.remote_count; ++r)
+            if (!d.remote[r]->begin(d.layers, x_f, ids, 1, k, kind, d.host_res, remote_error)) {
+                d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
+            }
+    }
+
     for (int64_t i = 0; i < k; ++i) {
         const int64_t e = ids[i];
         if (e < 0 || e >= d.n_expert) {
@@ -231,6 +248,13 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
         }
         if (graph_hits) ++d.cache_refused;   // token graph: a miss (nothing is admitted during a token)
 
+        bool remote_owns = false;
+        for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
+        if (remote_owns) {
+            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
+            continue;
+        }
+
         // `njobs` indexes the JOB ARRAY and `i` indexes the OUTPUT - they are the same only when nothing is a
         // hit, and using one for the other is how a hit's row would get two experts summed into it.
         ExpertJob& j = d.jobs[(size_t) njobs++];
@@ -244,6 +268,13 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
     // Plan v0.3 P4: rows of every expert across all threads (bitwise the same as `run`).
     if (d.split_rows) d.pool->run_split(d.jobs.data(), (int) njobs);
     else d.pool->run(d.jobs.data(), (int) njobs);
+    if (d.remote_count > 0) {
+        static thread_local std::string remote_error;
+        for (int r = 0; r < d.remote_count; ++r)
+            if (!d.remote[r]->finish(out, remote_error)) {
+                d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
+            }
+    }
     ++d.layers;
     d.experts += k;
 }
@@ -366,6 +397,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                        d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0 : -1;
         }
     }
+    if (d.remote_count > 0) {
+        static thread_local std::string remote_error;
+        for (int r = 0; r < d.remote_count; ++r) {
+            if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error)) {
+                d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
+            }
+            for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
+        }
+    }
     const auto c1 = std::chrono::steady_clock::now();
     if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
@@ -388,7 +428,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 d.fail_expert = e;
                 return;
             }
-            if (kind[i] >= 0) {             // the GPU computes this entry (a VRAM hit or a PCIe read)
+            if (kind[i] >= 0) {             // CUDA0, PCIe, or a remote result staged into this row below
                 if (kind[i] == 0) ++d.cache_hits;
                 std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
@@ -421,6 +461,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     pt("run", njobs);
     if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
     else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+    if (d.remote_count > 0) {
+        static thread_local std::string remote_error;
+        for (int r = 0; r < d.remote_count; ++r)
+            if (!d.remote[r]->finish(out, remote_error)) {
+                d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
+            }
+    }
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
@@ -616,7 +663,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
 ArenaExpertSource::~ArenaExpertSource() { close(); }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
-                             std::string& err) {
+                             std::string& err, uint64_t max_pinned_bytes) {
     close();
     const std::string path = pack_dir + "/experts.bin";
     // plan v0.3 P6: the layout (canonical, or a native pack's per-layer blobs) was loaded by the driver
@@ -657,7 +704,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         lbytes.push_back(lay.blob_bytes(l) * (uint64_t) n_expert);
     }
     bounds.push_back(want);
-    PinnedArena* a = new PinnedArena(want + (uint64_t) blob, bounds);
+    PinnedArena* a = new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes);
     if (!a->valid()) {
         delete a;
         err = "ArenaExpertSource: the arena could not be reserved (" + std::to_string(want) + " B)";

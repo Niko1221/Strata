@@ -130,7 +130,15 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         }
         std::vector<uint8_t> blob;
         if (!read_file(rt_dir + "/dense.bin", blob)) { err = "mtp: cannot read dense.bin"; return false; }
-        if (cudaMalloc((void**) &dense_, blob.size()) != cudaSuccess) { err = "mtp: dense weights do not fit"; return false; }
+        const cudaError_t alloc = cudaMalloc((void**) &dense_, blob.size());
+        if (alloc != cudaSuccess) {
+            size_t free_bytes = 0, total_bytes = 0;
+            const cudaError_t info = cudaMemGetInfo(&free_bytes, &total_bytes);
+            err = "mtp: dense weights allocation failed (" + std::string(cudaGetErrorString(alloc)) +
+                  "), requested " + std::to_string(blob.size() >> 20) + " MiB, CUDA0 free " +
+                  (info == cudaSuccess ? std::to_string(free_bytes >> 20) + " MiB" : "unknown");
+            return false;
+        }
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
