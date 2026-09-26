@@ -520,7 +520,8 @@ void expert_prefetch_multi(ExpertDispatch& d, int64_t layer, const int32_t* ids,
         if (c == nc) { cand[nc] = e; score[nc++] = 0.0f; }
         score[c] += w[i];
     }
-    const int m = (std::min)(nc, d.gpu2->prefetch_slots());
+    const int m = (int) (std::min)((uint64_t) (std::min)(nc, d.gpu2->prefetch_slots()),
+                                   d.gpu2_prefetch_bytes / strata::kernels::cpu::expert_layout().blob_bytes(layer));
     const uint8_t* src[128];
     for (int q = 0; q < m; ++q) {
         int best = q;

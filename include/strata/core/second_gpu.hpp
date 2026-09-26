@@ -9,9 +9,10 @@
 // took ~0.2 ms a layer and slowed the CPU pool's RAM reads.  One graph per format pair and group-count bucket: the
 // grouped kernels' grids are sized for the bucket.  Native packs only: the kernels are the first GPU's hit path.
 //
-// Prefetch: between a layer's CPU pool and the next layer's ring the RAM is idle (the first GPU's serial part, ~0.3 ms
-// a layer), and this GPU's x16 link copies ~4 experts in that time.  The next layer's likeliest experts that neither
-// GPU holds go into a few slots of their own, and that layer's share takes them from there.
+// Prefetch: between a layer's CPU pool and the next layer's ring the RAM is idle (the first GPU's serial part, ~0.28 ms
+// a layer), and this GPU's x16 link copies ~12 MiB in that time: 4 UD-Q4_K_XL or ~7 IQ3_XXS experts.  The next layer's
+// likeliest experts that neither GPU holds go into a few slots of their own, and that layer's share takes them from
+// there.
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
@@ -37,7 +38,7 @@ public:
     ExpertCache& cache() { return cache_; }
     int device() const { return dev_; }
 
-    /// Room for `slots` prefetched experts of up to `blob_bytes`.  After init().
+    /// Room for `slots` prefetched experts (at most 16) of up to `blob_bytes`.  After init().
     bool init_prefetch(int slots, uint64_t blob_bytes, std::string& err);
     int prefetch_slots() const { return pre_max_; }
     /// Starts copying `layer`'s experts ids[0..n) (n <= prefetch_slots(), `bytes` each from the pinned blobs `src`) into

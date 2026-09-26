@@ -233,7 +233,7 @@ struct Options {
     double second_gpu_gib = 0.0;
     int second_gpu_reserve_mib = 2048;
     double second_gpu_min_mb = 4.0;   ///< a layer's misses from which it takes its share (smaller: the CPU is quicker)
-    int second_gpu_prefetch = 4;      ///< per layer, the likeliest experts no GPU holds copied to it ahead (0 = off)
+    double second_gpu_prefetch_mb = 12.0;   ///< per layer, the likeliest experts no GPU holds copied to it ahead (0 = off)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -351,9 +351,9 @@ void usage() {
                  "  --second-gpu-gib G   its VRAM for experts (default: all but --second-gpu-reserve-mib, 2048)\n"
                  "  --second-gpu-min-mb M  a layer's missed experts from which it takes its share (default 4; below\n"
                  "                       it the CPU is quicker than its ~100 us round trip)\n"
-                 "  --second-gpu-prefetch N  per layer, copy its N likeliest experts that no GPU holds (the next\n"
-                 "                       layer's router on this layer's input) to it while the RAM is idle (default 4;\n"
-                 "                       0 = off)\n"
+                 "  --second-gpu-prefetch-mb M  per layer, copy its likeliest experts that no GPU holds (the next\n"
+                 "                       layer's router on this layer's input), up to M MiB, to it while the RAM is idle\n"
+                 "                       (default 12: ~0.28 ms at its ~48 GB/s; 0 = off)\n"
                  "  --no-prompt-offload  with --second-gpu: the prompt path streams the experts the main GPU's cache\n"
                  "                       lacks to the main GPU instead of computing them on the second\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
@@ -727,7 +727,7 @@ int main(int argc, char** argv) {
         else if (a == "--second-gpu-gib") o.second_gpu_gib = std::atof(next("--second-gpu-gib"));
         else if (a == "--second-gpu-reserve-mib") o.second_gpu_reserve_mib = std::atoi(next("--second-gpu-reserve-mib"));
         else if (a == "--second-gpu-min-mb") o.second_gpu_min_mb = std::atof(next("--second-gpu-min-mb"));
-        else if (a == "--second-gpu-prefetch") o.second_gpu_prefetch = std::atoi(next("--second-gpu-prefetch"));
+        else if (a == "--second-gpu-prefetch-mb") o.second_gpu_prefetch_mb = std::atof(next("--second-gpu-prefetch-mb"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
@@ -1993,8 +1993,14 @@ int main(int argc, char** argv) {
         const int main_dev = o.main_gpu;
         cudaDeviceProp prop{};
         cudaGetDeviceProperties(&prop, o.second_gpu);
+        // prefetch slots for the most of the smallest experts the budget holds
+        const auto& lay0 = strata::kernels::cpu::expert_layout();
+        uint64_t min_blob = lay0.max_blob;
+        for (int64_t l = 0; l < g.n_layers; ++l) min_blob = std::min<uint64_t>(min_blob, lay0.blob_bytes(l));
+        const uint64_t pf_bytes = (uint64_t) (std::max(0.0, o.second_gpu_prefetch_mb) * 1048576.0);
+        drive.d.gpu2_prefetch_bytes = pf_bytes;
         if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err) ||
-            !gpu2.init_prefetch(o.second_gpu_prefetch, strata::kernels::cpu::expert_layout().max_blob, err)) {
+            !gpu2.init_prefetch((int) std::min<uint64_t>(pf_bytes / min_blob, 64), lay0.max_blob, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

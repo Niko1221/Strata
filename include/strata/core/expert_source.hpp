@@ -227,6 +227,7 @@ struct ExpertDispatch {
     int64_t gpu2_skipped = 0;      ///< layers the CPU took the second GPU's share of (it was quicker)
     bool gpu2_used = false;        ///< this layer's decision
     uint64_t gpu2_min_bytes = 0;   ///< a layer's miss bytes from which the second GPU takes its share
+    uint64_t gpu2_prefetch_bytes = 0;   ///< per layer, its likeliest experts no GPU holds, copied there ahead
     std::string gpu2_err;          ///< `fail` points here when the second GPU failed
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the

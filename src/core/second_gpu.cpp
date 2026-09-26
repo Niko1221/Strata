@@ -86,8 +86,8 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
 }
 
 bool SecondGpu::init_prefetch(int slots, uint64_t blob_bytes, std::string& err) {
+    slots = (std::min)(slots, kPrefetchMax);
     if (slots <= 0) return true;
-    if (slots > kPrefetchMax) { err = "second GPU: at most " + std::to_string(kPrefetchMax) + " prefetch slots"; return false; }
     DeviceScope scope(dev_, main_);
     pre_cap_ = (blob_bytes + 255) / 256 * 256;
     if (cudaStreamCreateWithFlags(&pre_s_, cudaStreamNonBlocking) != cudaSuccess ||
