@@ -235,6 +235,15 @@ struct Options {
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
     int adapt_swaps = 96;
+    /// --serve: how many conversation checkpoints to keep between requests (0 = every request reads its whole
+    /// prompt again, the v0.1.2 behaviour).  One is the GDN recurrence of the 36 layers, the QSA indexer tails and
+    /// the PLE history (~118 MB of host RAM); the KV cache itself is positional and stays where it is.
+    int prompt_cache = 6;
+    /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
+    int64_t prompt_cache_every = 16384;
+    /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
+    /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
+    int64_t turn_token = 248045;
 };
 
 void usage() {
@@ -292,6 +301,10 @@ void usage() {
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
+                 "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
+                 "                       of RAM each; 0 = read every prompt from the start)\n"
+                 "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
+                 "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
@@ -442,6 +455,84 @@ int argmax(const std::vector<float>& v) {
     return best;
 }
 
+// ---- --serve's conversation cache.  A chat or an agent sends the whole conversation again with every request, and
+// reading it again is what made a long session wait minutes for every turn.  What a sequence leaves behind splits in
+// two, and only one half needs copying:
+//   * POSITIONAL state - the KV cache of the 12 QSA layers and their pooled indexer keys, the draft layer's KV.  A
+//     cell is written once for its position and read only by later positions (the block scores take `dead` for the
+//     block being filled, never its pooled row), so rewinding to a position just means writing from there again.
+//   * RUNNING state - the 36 GDN recurrences and conv histories, each QSA layer's indexer tail (the unfinished
+//     block's raw keys) and the PLE's normalized history.  Each describes "everything so far" and cannot be
+//     rewound, so a checkpoint is a copy of exactly these: ~118 MB, the same set the verifier snapshots to roll
+//     back rejected drafts.
+// A checkpoint is only valid while the positional cells below it still hold ITS tokens, so the serve loop keeps
+// just the checkpoints that are prefixes of the tokens the session holds now.
+struct ImgKey {
+    int64_t start = 0;      ///< the image's first <|image_pad|> position
+    uint64_t hash = 0;      ///< its embeddings and grid: the pad tokens alone are the same for every picture
+    bool operator==(const ImgKey& o) const { return start == o.start && hash == o.hash; }
+};
+
+struct ConvCheckpoint {
+    std::vector<int32_t> ids;     ///< the tokens this state has consumed
+    std::vector<ImgKey> imgs;     ///< the images among them
+    std::vector<uint8_t> gdn, ple, tails;
+};
+
+uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) {
+    const uint8_t* p = (const uint8_t*) data;
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+struct ConvStateSizes {
+    size_t gdn = 0, ple = 0, tail = 0;
+};
+
+ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g) {
+    ConvStateSizes z;
+    z.gdn = (size_t) g.n_gdn_layers() *
+            ((size_t) g.ssm_state_size * (size_t) g.ssm_v_heads * (size_t) g.ssm_state_size +
+             (size_t) g.ssm_conv_channels * (size_t) (g.ssm_d_conv - 1)) * sizeof(float);
+    z.ple = (size_t) strata::kernels::NG_HIST * (size_t) strata::kernels::NG_HC_DIM * sizeof(float);
+    z.tail = (size_t) (strata::kernels::qsa_real_shapes().idx_block - 1) * (size_t) g.idx_key_dim * sizeof(float);
+    return z;
+}
+
+/// Copies the running state out.  The caller has synchronized the device.
+bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
+    const ConvStateSizes z = conv_state_sizes(g);
+    c.gdn.resize(z.gdn);
+    c.ple.resize(ss.ple_hist != nullptr ? z.ple : 0);
+    c.tails.resize(z.tail * (size_t) g.n_qsa_layers());
+    if (cudaMemcpy(c.gdn.data(), ss.gdn_state, z.gdn, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (!c.ple.empty() && cudaMemcpy(c.ple.data(), ss.ple_hist, z.ple, cudaMemcpyDeviceToHost) != cudaSuccess)
+        return false;
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
+        if (cudaMemcpy(c.tails.data() + (size_t) i * z.tail, ss.qsa_states[i].idx_tail, z.tail, cudaMemcpyDeviceToHost) !=
+            cudaSuccess)
+            return false;
+    return true;
+}
+
+/// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
+bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
+    const ConvStateSizes z = conv_state_sizes(g);
+    if (c.gdn.size() != z.gdn || c.tails.size() != z.tail * (size_t) g.n_qsa_layers()) return false;
+    if (cudaMemcpy(ss.gdn_state, c.gdn.data(), z.gdn, cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (!c.ple.empty() && cudaMemcpy(ss.ple_hist, c.ple.data(), z.ple, cudaMemcpyHostToDevice) != cudaSuccess)
+        return false;
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
+        if (cudaMemcpy(ss.qsa_states[i].idx_tail, c.tails.data() + (size_t) i * z.tail, z.tail, cudaMemcpyHostToDevice) !=
+            cudaSuccess)
+            return false;
+    // the PLE's token window is the last two tokens, OLDEST FIRST, -1 where there is none (as session_zero leaves it)
+    const size_t L = c.ids.size();
+    ss.ple_prev[0] = L >= 2 ? c.ids[L - 2] : -1;
+    ss.ple_prev[1] = L >= 1 ? c.ids[L - 1] : -1;
+    return cudaDeviceSynchronize() == cudaSuccess;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -557,6 +648,9 @@ int main(int argc, char** argv) {
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
+        else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
+        else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -1812,11 +1906,15 @@ int main(int argc, char** argv) {
     //
     // and each generated token is written to stdout as `T <id>` as soon as its verify window is done, followed by
     //
-    //     DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <stop|length>
+    //     DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <stop|length|cancel> <drafts accepted>
+    //          <drafts offered> <prompt tokens reused>
     //
-    // (`ERR <message>` instead when a request cannot run; `QUIT` ends the process).  Every request starts from an
-    // empty sequence (`session_zero`): the prompt goes through the batched prompt path and its last token through
-    // the first verify window - the path all three model files share.  Decoding is greedy.
+    // Before that, `RESUME <n>` (n prompt tokens are not read again), `PP <position> <prompt_tokens> <ms> <tok/s>`
+    // after every prompt chunk, and `REUSED <n>` once the prompt is read.  (`ERR <message>` instead when a request
+    // cannot run; `STOP` ends the running request at its next step; `QUIT` ends the process.)  A request continues
+    // from the live session or the longest conversation checkpoint its prompt starts with (see ConvCheckpoint),
+    // otherwise from an empty sequence (`session_zero`); the rest of the prompt goes through the batched prompt path
+    // and its last token through the first verify window - the path all three model files share.  Decoding is greedy.
     if (o.serve) {
         if (o.spec < 2 || o.mtp.empty() || o.prefill_chunk <= 0 || thits.d_res == nullptr || host_res.empty()) {
             std::fprintf(stderr, "strata serve: needs --spec T, --mtp DIR, --prefill CHUNK, --expert-profile P and "
@@ -1876,10 +1974,47 @@ int main(int argc, char** argv) {
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         std::vector<int64_t> cur;
+        // ---- the conversation cache (see ConvCheckpoint).  `live` is what the session holds right now: the tokens
+        // it has consumed, so a request that starts with exactly them continues without any copy.  `checks` are the
+        // saved points; every one of them is a prefix of `live` (the loop drops the rest).
+        std::vector<int32_t> live;
+        std::vector<ImgKey> live_imgs, req_imgs;
+        bool live_ok = false;
+        std::vector<ConvCheckpoint> checks;
+        int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
+        Clock::time_point pp_t0 = Clock::now();
+        auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
+            std::vector<ImgKey> v;
+            for (const ImgKey& k : all) if (k.start < L) v.push_back(k);
+            return v;
+        };
+        // a checkpoint of the state after `cur[0, L)`; false only when the copy itself failed
+        auto checkpoint_at = [&](int64_t L) -> bool {
+            if (o.prompt_cache <= 0 || L < 1) return true;
+            for (const ConvCheckpoint& c : checks) if ((int64_t) c.ids.size() == L) return true;
+            ConvCheckpoint c;
+            c.ids.assign(cur.begin(), cur.begin() + L);
+            c.imgs = imgs_below(req_imgs, L);
+            if (cudaDeviceSynchronize() != cudaSuccess || !checkpoint_save(c, ss, g)) return false;
+            checks.push_back(std::move(c));
+            while ((int) checks.size() > o.prompt_cache) checks.erase(checks.begin());   // the oldest goes first
+            return true;
+        };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
             for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
-            return mtp.prefill(R_rows, nxt.data(), T, p0, e);
+            if (!mtp.prefill(R_rows, nxt.data(), T, p0, e)) return false;
+            // progress for the server window: PP <position reached> <prompt tokens> <ms> <fresh tokens/s>
+            const int64_t done = p0 + T;
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
+            std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) pp_total, ms,
+                        ms > 0.0 ? 1000.0 * (double) (done - pp_from) / ms : 0.0);
+            std::fflush(stdout);
+            if (o.prompt_cache_every > 0 && done >= pp_next_check) {
+                if (!checkpoint_at(done)) { e = "saving a conversation checkpoint failed"; return false; }
+                pp_next_check = done + o.prompt_cache_every;
+            }
+            return true;
         };
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
@@ -2025,6 +2160,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
@@ -2066,6 +2202,12 @@ int main(int argc, char** argv) {
                         if (ids[(size_t) i] != kImagePad) { put(i, p, p, p); ++p; ++i; continue; }
                         if (k >= imgs.size()) { ve = "the prompt has more images than the embeddings file"; break; }
                         const Img& im = imgs[k++];
+                        {   // what the conversation cache compares: a picture is its grid and its embeddings
+                            const int64_t grid[3] = {im.n, im.nx, im.ny};
+                            uint64_t h = fnv1a(grid, sizeof grid);
+                            h = fnv1a(img_rows.data() + im.off, (size_t) im.n * (size_t) g.n_embd * sizeof(float), h);
+                            req_imgs.push_back({i, h});
+                        }
                         for (int64_t j = 0; j < im.n && ve.empty(); ++j)
                             if (i + j >= n || ids[(size_t) (i + j)] != kImagePad)
                                 ve = "image " + std::to_string(k) + " has " + std::to_string((long long) im.n) +
@@ -2110,13 +2252,69 @@ int main(int argc, char** argv) {
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
-            strata::core::session_zero(ss, g, nullptr, main_cs);
-            cudaStreamSynchronize(main_stream);
+            // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
+            // exactly the start of this prompt - at most n - 1 of them, the last token is always the first window
+            auto starts_with = [&](const std::vector<int32_t>& pre, const std::vector<ImgKey>& pre_imgs) -> bool {
+                const int64_t L = (int64_t) pre.size();
+                if (L < 1 || L > n - 1) return false;
+                for (int64_t i = 0; i < L; ++i)
+                    if ((int32_t) ids[(size_t) i] != pre[(size_t) i]) return false;
+                return imgs_below(req_imgs, L) == pre_imgs;
+            };
+            int64_t resume = 0;
+            bool from_live = false;
+            if (o.prompt_cache > 0) {
+                if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
+                for (const ConvCheckpoint& c : checks)
+                    if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
+                        resume = (int64_t) c.ids.size();
+                        from_live = false;
+                    }
+            }
+            // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
+            // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
+            checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
+                             return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
+                         }), checks.end());
+            live_ok = false;   // until this request has finished, the session is in between
+            int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
+            if (resume == 0) {
+                strata::core::session_zero(ss, g, nullptr, main_cs);
+                cudaStreamSynchronize(main_stream);
+                checks.clear();
+            } else if (!from_live) {
+                const ConvCheckpoint* c = nullptr;
+                for (const ConvCheckpoint& k : checks) if ((int64_t) k.ids.size() == resume) c = &k;
+                static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
+                if (reread && c != nullptr) {
+                    // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
+                    // one run (below, with the prompt path's slots lent like any read) - the same chunks the request
+                    // that saved it read them in, when that request started at 0.  With the VRAM expert set fixed
+                    // (--adapt-swaps 0) the answer must match the restored one token for token; anything the
+                    // checkpoint missed shows up as a difference.
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    reread_to = resume;
+                    std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
+                                         "restoring\n", (long long) resume);
+                } else if (c == nullptr || !checkpoint_restore(*c, ss, g)) {
+                    std::printf("ERR restoring a conversation checkpoint failed\n");
+                    return 1;
+                }
+            }
             tr("request", n, geni ? 1 : 0);
             mtp.set_prompt_len(n);
+            const int64_t read_from = reread_to > 0 ? 0 : resume;
+            pp_total = n;
+            pp_from = read_from;
+            pp_t0 = r0;
+            pp_next_check = reread_to > 0 ? INT64_MAX : resume + o.prompt_cache_every;
+            std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused
+            std::fflush(stdout);
+            const int64_t prefill_n = (n - 1) - read_from;
             std::vector<std::pair<int32_t, int32_t>> lent_now;
             apply_pending(true);
-            if (lend_first >= 0) {
+            if (prefill_n > 0 && lend_first >= 0) {
                 for (size_t i = 0; i < host_res.size(); ++i)
                     if (host_res[i] >= lend_first) {
                         lent_now.emplace_back((int32_t) i, host_res[i]);
@@ -2126,13 +2324,31 @@ int main(int argc, char** argv) {
             }
             bool cancelled = false;
             tr("prompt start", n - 1);
-            if (n > 1 && !sp.run(ids.data(), n - 1, 0, err)) {
-                if (!stop_req.load()) {
-                    std::fprintf(stderr, "strata serve: %s\n", err.c_str());
-                    std::printf("ERR %s\n", err.c_str());
+            // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
+            // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
+            // chat renders the same history - but not always the same header or the thinking of this reply - so that
+            // checkpoint is the one it reuses.
+            int64_t turn_at = -1;
+            if (o.prompt_cache > 0 && o.turn_token >= 0)
+                for (int64_t i = n - 1; i > resume; --i)
+                    if (ids[(size_t) i] == o.turn_token) { turn_at = i; break; }
+            int64_t at = read_from;
+            for (const int64_t to : {reread_to, turn_at, n - 1}) {
+                if (to <= at) continue;
+                if (!sp.run(ids.data() + at, to - at, at, err)) {
+                    if (!stop_req.load()) {
+                        std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
+                    cancelled = true;   // stopped while reading the prompt: refill the lent slots below, then DONE cancel
+                    break;
+                }
+                at = to;
+                if (to == turn_at && !checkpoint_at(to)) {
+                    std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
-                cancelled = true;   // stopped while reading the prompt: refill the lent slots below, then DONE cancel
             }
             for (const auto& [i, slot] : lent_now) {
                 const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
@@ -2147,6 +2363,8 @@ int main(int argc, char** argv) {
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
             tr("prompt done (slots refilled)");
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+            std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
+            std::fflush(stdout);
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
             int32_t x = (int32_t) ids[(size_t) (n - 1)];
@@ -2154,6 +2372,11 @@ int main(int argc, char** argv) {
             std::vector<float> dprob((size_t) S, 0.0f);
             bool first_window = true;
             int64_t produced_n = 0;
+            int64_t draft_offered = 0, draft_accepted = 0;
+            // what the session holds once this request is done: the prompt read so far, then every committed token
+            std::vector<int32_t> consumed;
+            consumed.reserve((size_t) (n + max_new + S));
+            for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
             if (cancelled) finish = "cancel";
@@ -2187,6 +2410,10 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
+                for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
+                draft_offered += T - 1;
+                draft_accepted += a;
                 first_window = false;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
@@ -2213,12 +2440,80 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
-            std::printf("DONE %lld %lld %.1f %.1f %s\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
-                        finish);
+            if (!cancelled) {
+                // a prompt stopped halfway leaves the session somewhere between two chunks: nothing to continue from
+                // (the checkpoints taken while reading it are still good)
+                live.swap(consumed);
+                live_imgs = imgs_below(req_imgs, (int64_t) live.size());
+                live_ok = o.prompt_cache > 0;
+            }
+            static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
+            if (state_hash && live_ok) {
+                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
+                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
+                cudaDeviceSynchronize();
+                const int64_t L = (int64_t) live.size();
+                const strata::kernels::QsaShapes qs = [&] {
+                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
+                    return s;
+                }();
+                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+                    std::vector<uint8_t> b(bytes);
+                    if (bytes) cudaMemcpy(b.data(), p, bytes, cudaMemcpyDeviceToHost);
+                    return fnv1a(b.data(), b.size(), h);
+                };
+                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
+                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+                    const int64_t ps = qs.page_size;
+                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
+                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
+                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
+                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
+                        }
+                    return h;
+                };
+                const ConvStateSizes z = conv_state_sizes(g);
+                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
+                uint64_t h_ple = hash_dev(ss.ple_hist, z.ple, 1469598103934665603ull);
+                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
+                                                           ss.qsa_states[0].max_cells);
+                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+                    const strata::core::QsaState& st = ss.qsa_states[i];
+                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
+                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
+                    for (const auto& [pool, w] : {std::pair<const void*, int64_t>{st.k_q, kvb}, {st.v_q, kvb},
+                                                  {st.k_scale, scb}, {st.v_scale, scb}}) {
+                        h_kv = hash_cells(pool, w, 0, L, h_kv);
+                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+                    }
+                }
+                const strata::core::QsaState& ms = mtp.kv_state();
+                uint64_t h_mtp = 1469598103934665603ull;
+                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
+                for (const auto& [pool, w] : {std::pair<const void*, int64_t>{ms.k_q, kvb}, {ms.v_q, kvb},
+                                              {ms.k_scale, scb}, {ms.v_scale, scb}})
+                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
+                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
+                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
+                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
+                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+            }
+            // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused>
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld\n", (long long) produced_n, (long long) n, prompt_ms,
+                        decode_ms, finish, (long long) draft_accepted, (long long) draft_offered, (long long) resume);
             std::fflush(stdout);
-            std::fprintf(stderr, "strata serve: %lld prompt tokens in %.0f ms (%.1f tok/s), %lld generated in %.0f ms "
-                                 "(%.1f tok/s)\n", (long long) n, prompt_ms, prompt_ms > 0 ? 1000.0 * n / prompt_ms : 0.0,
-                         (long long) produced_n, decode_ms, decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0);
+            const int64_t fresh = n - resume;
+            std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %lld read in %.0f ms (%.1f tok/s), "
+                                 "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s\n",
+                         (long long) n, (long long) resume, (long long) fresh, prompt_ms,
+                         prompt_ms > 0 ? 1000.0 * fresh / prompt_ms : 0.0, (long long) produced_n, decode_ms,
+                         decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
+                         (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
         }
         return 0;
     }

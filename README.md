@@ -98,8 +98,8 @@ Not sure? Take **IQ2_XS**. You can add another one later with `START-HERE.bat --
 - **Pictures:** in the chat page click **Picture**; in `chat.py` type `/image <path>`; in apps just attach them.
 - **From your phone or another PC:** see the [details](docs/DETAILS.md#using-it) (set an API key first).
 
-**Good to know:** it answers one request at a time, and it re-reads the whole conversation for every answer. So in
-very long chats you wait longer before it starts writing: about 1 minute per 30,000 tokens of conversation.
+**Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute per
+30,000 tokens); after that it keeps the conversation and reads only what is new, so follow-ups start in seconds.
 
 ## Something went wrong?
 
