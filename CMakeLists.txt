@@ -368,6 +368,11 @@ if(STRATA_ENABLE_CUDA)
   target_link_libraries(verify_parity PRIVATE strata_kernels strata_prefill CUDA::cudart)
   add_test(NAME verify_parity COMMAND verify_parity --selftest)
 
+  # The QSA block scores and top-k against the kernels they replaced, kept in the test: bitwise (synthetic data).
+  add_executable(qsa_select_parity src/kernels/qsa_select_parity.cu)
+  target_link_libraries(qsa_select_parity PRIVATE strata_kernels CUDA::cudart)
+  add_test(NAME qsa_select_parity COMMAND qsa_select_parity)
+
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS)
   add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
