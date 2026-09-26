@@ -697,7 +697,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         sp.temperature = 0.0f;
         sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
     }
-    if (host_rows_) copy_from_mapped(m_rows_, R_, (int64_t) T * HC * N, cs);   // the kernel copies either way
+    if (host_rows_) copy_from_mapped(m_rows_, R_, (int64_t) T * HC * N, cs);   // a plain copy kernel, here to host
     stamp(g.n_layers, 3);
     stamp(g.n_layers, 4);   // right after the last: one stamp's own cost
     return true;
@@ -848,14 +848,15 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
-    if (ple_on) {   // before layer 1: the graph waits for the flag
+    if (ple_on) {   // before layer 1: the graph waits for the flag, raised even when a read failed
         const Clock::time_point tp = Clock::now();
-        for (int t = 0; t < T; ++t)
-            if (!ss.ple.table->ahead_collect(t, h_ple_ + (size_t) t * g.n_embd, err)) return false;
+        bool ok = true;
+        for (int t = 0; t < T && ok; ++t) ok = ss.ple.table->ahead_collect(t, h_ple_ + (size_t) t * g.n_embd, err);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
         *(volatile uint32_t*) h_pleflag_ = 1;
         ms_host += ms_since(tp);
+        if (!ok) return false;
     }
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
