@@ -93,12 +93,12 @@ public:
     void set_profile(bool on) { profile_ = on; }
     void print_profile() const;
     /// Each layer's router also runs on the previous layer's FFN input, on a side branch of the graph; once the CPU's
-    /// rows of a layer are in, `fn` gets the next layer's prediction (the RAM is idle until the next ring).  Windows
-    /// of one token group.  Set before the first `run`.
+    /// rows of a layer are in, `fn` gets the next layer's prediction (the RAM is idle until the next ring), waited
+    /// for when it comes later (`predict_late`).  Windows of one token group.  Set before the first `run`.
     void set_predict(PredictFn fn, void* user) { predict_ = fn; predict_user_ = user; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0, ms_predict = 0;
-    int64_t windows = 0;
+    int64_t windows = 0, predict_late = 0;
 
 private:
     bool capture(int T, std::string& err);

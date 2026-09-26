@@ -890,12 +890,20 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
-        // the next layer's prediction, published during this layer's pool
-        if (predict_ != nullptr && G == 1 && l + 1 < g.n_layers && *(volatile uint32_t*) h_pseq_ >= (uint32_t) (l + 1)) {
-            std::atomic_thread_fence(std::memory_order_acquire);
+        // the next layer's prediction, published during this layer's pool, else microseconds later (its branch is
+        // joined before the next layer): waited for, so the experts the second GPU takes never depend on timing
+        if (predict_ != nullptr && G == 1 && l + 1 < g.n_layers && native_router_enabled()) {
             const Clock::time_point c = Clock::now();
-            const size_t half = (size_t) ((l + 1) & 1) * (size_t) max_t_ * (size_t) ss.k;
-            predict_(predict_user_, l + 1, h_pids_ + half, h_pw_ + half, T, ss.k);
+            if (*(volatile uint32_t*) h_pseq_ < (uint32_t) (l + 1)) {
+                ++predict_late;
+                while (*(volatile uint32_t*) h_pseq_ < (uint32_t) (l + 1) && Clock::now() - c < std::chrono::milliseconds(50))
+                    _mm_pause();
+            }
+            if (*(volatile uint32_t*) h_pseq_ >= (uint32_t) (l + 1)) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                const size_t half = (size_t) ((l + 1) & 1) * (size_t) max_t_ * (size_t) ss.k;
+                predict_(predict_user_, l + 1, h_pids_ + half, h_pw_ + half, T, ss.k);
+            }
             ms_predict += ms_since(c);
         }
     }

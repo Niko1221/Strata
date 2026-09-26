@@ -3168,12 +3168,13 @@ int main(int argc, char** argv) {
             std::printf("%-24s %.2f routed entries and %.2f experts per round in %.2f layers (%.2f left to the CPU), "
                         "%.3f ms/round waiting for it after the CPU pool; %lld experts swapped in and %lld into empty "
                         "slots (%lld still empty); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round "
-                        "of host time)\n", "second GPU",
+                        "of host time, %lld predictions waited for)\n", "second GPU",
                         (double) gpu2.entries_done / (double) rounds, (double) gpu2.experts / (double) rounds,
                         (double) gpu2.layers / (double) rounds, (double) drive.d.gpu2_skipped / (double) rounds,
                         gpu2.ms_wait / (double) rounds, (long long) tier2.swaps, (long long) tier2.fills,
                         (long long) tier2.free_slots(), (double) gpu2.prefetch_copied / (double) rounds,
-                        (double) gpu2.prefetch_used / (double) rounds, ver.ms_predict / (double) rounds);
+                        (double) gpu2.prefetch_used / (double) rounds, ver.ms_predict / (double) rounds,
+                        (long long) ver.predict_late);
         if (rounds > 0 && !drive.d.routed.empty()) {
             // the share of the routed entries the N most-routed experts of this run take
             std::vector<uint32_t> c = drive.d.routed;
