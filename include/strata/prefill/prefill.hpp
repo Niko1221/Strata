@@ -14,6 +14,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/mtp.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/prefill/experts.hpp"
@@ -28,7 +29,7 @@ namespace strata::prefill {
 /// The sections `Prefill::profile` times, in the order a layer runs them.
 enum PrefillSection {
     kPsPle, kPsHcRead, kPsGdn, kPsGdnConv, kPsGdnScan, kPsGdnNorm, kPsGdnOut, kPsQsaProj, kPsQsaIndexer, kPsQsaScores, kPsQsaAttn, kPsQsaOut, kPsHcFfn, kPsRouter,
-    kPsExperts, kPsCombine, kPsCount
+    kPsExperts, kPsCombine, kPsDraft, kPsCount
 };
 const char* prefill_section_name(int section);
 
@@ -69,17 +70,17 @@ public:
     bool bind(void* region, uint64_t bytes, int64_t chunk, std::string& err);
 
     /// Positions [pos0, pos0 + n) holding `tokens`, in chunks of the bound length; `ss.ple_prev` must be the two
-    /// tokens before pos0 (oldest first, -1 for none) and is advanced to the last two of these.
+    /// tokens before pos0 (oldest first, -1 for none) and is advanced to the last two of these.  With a `draft`
+    /// layer tokens[n], the token after the last position, is read too.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
     /// Positions the last `run` completed: n, or fewer after `should_stop` (the session state holds them).
     int64_t processed() const { return processed_; }
 
     const PrefillStats& stats() const { return stats_; }
 
-    /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
-    /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
-    /// K/V from them.  The prefill stream is synchronized before the call.
-    std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+    /// The MTP draft layer (or null): after every chunk, its K/V over the chunk's cells in the chunk's batched
+    /// arithmetic (cell t pairs the chunk's final residual at t with the token at t + 1).
+    core::MtpDrafter* draft = nullptr;
 
     /// Checked before every chunk: true stops the prompt there (`run` returns false with err "cancelled", and the
     /// state and `ss.ple_prev` hold the chunks before it, `processed()` positions).

@@ -9,6 +9,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kernels.hpp"
 
@@ -33,6 +34,7 @@ constexpr int64_t SEL_BATCH = 256;            // queries per block-score launch
 // (GDN: qkv, gate, out; QSA: q, k, v, out) and the shared expert's
 constexpr int64_t W16 = std::max(D * N, std::max(C + ZV + ZV, 12288 + 512 + 512 + ZV) * N + 3 * 640 * N);
 constexpr size_t GEMM_WS = 32u << 20;         // cuBLAS workspace
+constexpr int GGML_Q8_0 = 8;
 
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
@@ -327,6 +329,56 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         ev.push_back({section, e});
     };
 
+    // The MTP draft layer's K/V over a chunk's cells: its input norms and projections (e = fc_embedding(rms(the
+    // embedding of the token at t + 1)), h = fc_hidden(rms(R_t)) per stream, h + e on every stream), the attention
+    // hyper-connection read, then K (normed and rotated) and V into its cells, from the window's first cell on.  The
+    // chunk's buffers are free once its last layer is done; its residual rows are normed in place.
+    const core::MtpPromptKv dk = draft != nullptr ? draft->prompt_kv() : core::MtpPromptKv{};
+    if (draft != nullptr && (!dk.norm_emb || !dk.norm_hidden || !dk.fc_emb || !dk.fc_hidden || !dk.hc_norm ||
+                             !dk.hc_down || !dk.hc_up || !dk.k_proj || !dk.v_proj || !dk.k_norm)) {
+        err = "prefill: a draft layer weight is missing";
+        return false;
+    }
+    auto draft_pass = [&](const int64_t* toks, int64_t T, int64_t p0) -> bool {
+        const int64_t from = std::clamp<int64_t>(dk.first_cell - p0, 0, T);
+        if (from == T) return true;
+        mark(kPsDraft);
+        new_layer();
+        const uint16_t *We = w16(GGML_Q8_0, dk.fc_emb, N, N), *Wh = w16(GGML_Q8_0, dk.fc_hidden, N, N),
+                       *Wk = w16(GGML_Q8_0, dk.k_proj, 512, N), *Wv = w16(GGML_Q8_0, dk.v_proj, 512, N);
+        if (!We || !Wh || !Wk || !Wv) {
+            err = "prefill: the draft layer's projections do not fit the dequantization buffer";
+            return false;
+        }
+        for (int64_t t = from; t < T; ++t) m.ids_host[t - from] = (int32_t) toks[t + 1];
+        cudaMemcpyAsync(b.ids, m.ids_host, (size_t) (T - from) * 4, cudaMemcpyHostToDevice, m.cs);
+        const core::QsaState& st = *dk.kv;
+        for (int64_t t0 = from; t0 < T; t0 += SUB) {
+            const int64_t P = std::min(SUB, T - t0), pp = p0 + t0;
+            float* R = b.R + t0 * D;
+            if (!core::embed_rows(*m.wt, g, b.ids + (t0 - from), P, b.emb, m.cs, err)) return false;
+            rms_rows(b.emb, dk.norm_emb, P, N, N, EPS, m.cs);
+            to_f16(b.emb, b.mixed_h, P * N, m.cs);
+            m.gemm.f16(b.mixed_h, We, b.bo, P, N, N);
+            rms_rows(R, dk.norm_hidden, P, D, D, EPS, m.cs);
+            to_f16(R, b.xn16, P * D, m.cs);
+            m.gemm.f16(b.xn16, Wh, b.gated, P * HC, N, N);
+            strata::kernels::add_streams_broadcast(b.gated, b.bo, b.gated, N, (int) HC, (int) P, m.cs);
+            gr_norm(b.gated, dk.hc_norm, EPS, b.xn, b.xn16, P, m.cs);
+            m.gemm.bf16(b.xn16, dk.hc_down, b.lo, P, LR, D);
+            gr_silu(b.lo, b.lo16, P, m.cs);
+            m.gemm.bf16(b.lo16, dk.hc_up, b.gated, P, D, LR);
+            gr_mix(b.xn, b.gated, nullptr, nullptr, P, m.cs, b.mixed_h);
+            m.gemm.f16(b.mixed_h, Wk, b.Kc, P, 512, N);
+            m.gemm.f16(b.mixed_h, Wv, b.Vc, P, 512, N);
+            rms_rows(b.Kc, dk.k_norm, P * 2, 256, 256, EPS, m.cs);
+            rope(b.Kc, P, 2, 256, 512, pp, (float) strata::kernels::qsa_freq_base(), m.cs);
+            kv_append(b.Kc, b.Vc, P, pp, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
+                      st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs);
+        }
+        return true;
+    };
+
     static const bool trace = std::getenv("STRATA_TRACE") != nullptr;
     processed_ = 0;
     int64_t c0 = 0;
@@ -601,6 +653,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             }
             gr_write(b.R, b.bo_moe, b.inj_f, HC, T, m.cs, m.offload ? b.sums : nullptr);
         }
+        if (draft != nullptr && !draft_pass(tokens + c0, T, p0)) return false;
         if (profile) {
             mark(kPsPle);
             cudaEventSynchronize(ev.back().second);
@@ -613,13 +666,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             ev.clear();
         }
         stats_.tokens += T;
-        if (on_chunk) {
-            if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
-                err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
-                return false;
-            }
-            if (!on_chunk(b.R, T, p0, err)) return false;
-        }
     }
     ss.ple_prev[0] = prev[0];
     ss.ple_prev[1] = prev[1];
@@ -646,7 +692,7 @@ const char* prefill_section_name(int section) {
         "GDN output projection",
         "QSA projections, norms, KV", "QSA indexer appends",
         "QSA block scores + top-k", "QSA attention", "QSA gate + output", "HC write + HC read (FFN)",
-        "router, shared expert", "grouping, experts", "combine + HC write"};
+        "router, shared expert", "grouping, experts", "combine + HC write", "draft layer K/V"};
     return section >= 0 && section < kPsCount ? names[section] : "?";
 }
 

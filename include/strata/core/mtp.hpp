@@ -16,7 +16,9 @@
 //   * the attention is DENSE over every cell the layer has seen - identical to the model's sparse selection
 //     below 2,051 cells - so speculative cells (draft steps, rejected window rows) never touch indexer state and
 //     are simply overwritten when their positions are processed again;
-//   * all 512 routed experts live in VRAM (708 MB) and run through the grouped hit kernels.
+//   * all 512 routed experts live in VRAM (708 MB) and run through the grouped hit kernels;
+//   * the K/V of a prompt's cells come from the batched prompt path (`prompt_kv`), in its GEMM arithmetic, as the
+//     model's own layers there.
 #pragma once
 
 #include "strata/core/layer.hpp"
@@ -32,6 +34,19 @@ namespace strata::core {
 
 class NativeHead;
 
+/// What the batched prompt path needs for the draft layer's K/V over a prompt (strata/prefill/prefill.hpp): the two
+/// input norms and projections, the attention hyper-connection read, the K and V projections and the K norm.
+struct MtpPromptKv {
+    const float *norm_emb = nullptr, *norm_hidden = nullptr;   ///< [n_embd], [hc * n_embd]
+    const void *fc_emb = nullptr, *fc_hidden = nullptr;        ///< Q8_0 [n_embd, n_embd]
+    const float* hc_norm = nullptr;                             ///< [hc * n_embd]
+    const uint16_t *hc_down = nullptr, *hc_up = nullptr;        ///< BF16 [hc_lr, hc * n_embd], [hc * n_embd, hc_lr]
+    const void *k_proj = nullptr, *v_proj = nullptr;            ///< Q8_0 [n_head_kv * head_dim, n_embd]
+    const float* k_norm = nullptr;                              ///< [head_dim]
+    QsaState* kv = nullptr;                                     ///< the layer's K/V cells
+    int64_t first_cell = 0;                                     ///< cells before it the window never reaches again
+};
+
 class MtpDrafter {
 public:
     MtpDrafter() = default;
@@ -43,17 +58,15 @@ public:
     /// Call before the VRAM expert tier is sized: this takes ~0.9 GB.
     bool load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
               int64_t window = 32768);
-    /// The prompt's length: prefill() skips the cells the attention window can never reach again.
+    /// The prompt's length: the prompt's K/V skip the cells the attention window can never reach again.
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     uint64_t vram_bytes() const { return vram_; }
     /// The layer's own K/V cells (the prompt cache stashes them with the model's).
     QsaState& kv_state() { return st_; }
+    /// The weights and cells the batched prompt path computes the prompt's K/V with (after load and set_prompt_len).
+    MtpPromptKv prompt_kv();
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
-
-    /// Prompt cells [cell0, cell0 + n): residual rows `R_rows` (device, hc*n_embd each) and `next_tokens` (host,
-    /// the token at position cell+1).  Runs in batches of up to max_t rows.
-    bool prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
 
     /// One round: catch-up over T cells from `p` (rows = the window's final residuals, `tokens` = the window's
     /// argmaxes: row t pairs R_{p+t} with the token at p+t+1), then the draft chain from row `a` (the last
@@ -65,12 +78,11 @@ public:
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                      float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
 
-    double ms_draft = 0, ms_prefill = 0;
+    double ms_draft = 0;
     int64_t rounds = 0;
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
-    bool capture_prefill(int T, std::string& err);
     bool capture_round(int T, std::string& err);
     bool capture_step(int j, std::string& err);
     cudaGraphExec_t step_exec_[9] = {};
@@ -87,7 +99,6 @@ private:
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;
-    cudaGraphExec_t prefill_exec_[9] = {};
     cudaGraphExec_t round_exec_[9] = {};
 
     struct Tensor { std::string name, kind; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; };

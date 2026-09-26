@@ -27,6 +27,7 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/qsa_select.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include <exception>
 #include <cuda_runtime.h>
 #include <cmath>
@@ -771,34 +772,25 @@ void doorbell_reset(const Doorbell& db) {
     if (db.h_flag) *(volatile uint32_t*) db.h_flag = 0;
 }
 // ================================ THE TWO ENDS OF A TOKEN ================================
-bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token, float* out_dev,
-               void* stream, std::string& err) {
-    if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table (IQ model files)
-        if (token < 0 || out_dev == nullptr) { err = "embed_row: invalid token or output"; return false; }
-        ne->gather_one(token, out_dev, stream);
-        return true;
-    }
+namespace {
+// The pack's S2/S4/S8 embedding table, checked against its planes; null with `err` when it cannot be read.
+const WeightRef* s_embedding(const WeightTable& tables, const ModelGeometry& g, std::string& err) {
     const WeightRef* w = tables.find(EMBEDDING_NAME);
-    if (w == nullptr) { err = "token_embd.weight is missing"; return false; }
+    if (w == nullptr) { err = "token_embd.weight is missing"; return nullptr; }
     if (w->code_bits != 2 && w->code_bits != 4 && w->code_bits != 8) {
         err = "embed_row: token_embd.weight is not an S2/S4/S8 tensor";
-        return false;
+        return nullptr;
     }
     if (w->codebook_iq4nl) {
         err = "embed_row: an IQ4NL embedding is not supported";
-        return false;
+        return nullptr;
     }
-    if (w->data == nullptr || out_dev == nullptr || w->ne0 <= 0 || w->ne1 <= 0 ||
+    if (w->data == nullptr || w->ne0 <= 0 || w->ne1 <= 0 ||
         w->ne0 != g.n_embd || w->group_elems <= 0 ||
         w->ne0 % w->group_elems != 0 || w->ne0 % (8 / w->code_bits) != 0) {
         err = "embed_row: invalid embedding pointers, dimensions or group size";
-        return false;
+        return nullptr;
     }
-    if (token < 0 || token >= w->ne1) {
-        err = "embed_row: token " + std::to_string(token) + " is outside 0.." + std::to_string(w->ne1 - 1);
-        return false;
-    }
-
     const uint64_t row_codes = (uint64_t) (w->ne0 / (8 / w->code_bits));
     const uint64_t row_groups = (uint64_t) (w->ne0 / w->group_elems);
     const uint64_t rows = (uint64_t) w->ne1;
@@ -813,9 +805,48 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
         w->has_offset != (w->offset_bytes != 0) ||
         (w->has_offset && w->offset_bytes != w->scales_bytes)) {
         err = "embed_row: embedding planes do not match the loaded tensor shape";
+        return nullptr;
+    }
+    return w;
+}
+}  // namespace
+
+bool embed_rows(const WeightTable& tables, const ModelGeometry& g, const int32_t* tokens_dev, int64_t n, float* out_dev,
+                void* stream, std::string& err) {
+    if (n <= 0) return true;
+    if (tokens_dev == nullptr || out_dev == nullptr) { err = "embed_rows: invalid tokens or output"; return false; }
+    if (const NativeEmbed* ne = native_embed()) {
+        ne->gather_dev(tokens_dev, n, out_dev, stream);
+        return true;
+    }
+    const WeightRef* w = s_embedding(tables, g, err);
+    if (w == nullptr) return false;
+    const auto* codes = static_cast<const uint8_t*>(w->data);
+    const auto* scales = reinterpret_cast<const float*>(codes + w->codes_bytes);
+    const auto* offsets = w->has_offset ? reinterpret_cast<const float*>(codes + w->codes_bytes + w->scales_bytes)
+                                       : nullptr;
+    strata::kernels::embedding_gather_dev(codes, scales, offsets, tokens_dev, (int) n, w->ne0, w->code_bits, w->code_bias,
+                                          w->group_elems, (uint64_t) (w->ne0 / (8 / w->code_bits)),
+                                          (uint64_t) (w->ne0 / w->group_elems), out_dev, stream);
+    return true;
+}
+
+bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token, float* out_dev,
+               void* stream, std::string& err) {
+    if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table (IQ model files)
+        if (token < 0 || out_dev == nullptr) { err = "embed_row: invalid token or output"; return false; }
+        ne->gather_one(token, out_dev, stream);
+        return true;
+    }
+    const WeightRef* w = s_embedding(tables, g, err);
+    if (w == nullptr) return false;
+    if (out_dev == nullptr) { err = "embed_row: invalid output"; return false; }
+    if (token < 0 || token >= w->ne1) {
+        err = "embed_row: token " + std::to_string(token) + " is outside 0.." + std::to_string(w->ne1 - 1);
         return false;
     }
-
+    const uint64_t row_codes = (uint64_t) (w->ne0 / (8 / w->code_bits));
+    const uint64_t row_groups = (uint64_t) (w->ne0 / w->group_elems);
     const auto* codes = static_cast<const uint8_t*>(w->data);
     const auto* scales = reinterpret_cast<const float*>(codes + w->codes_bytes);
     const auto* offsets = w->has_offset ? reinterpret_cast<const float*>(codes + w->codes_bytes + w->scales_bytes)

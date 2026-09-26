@@ -2279,12 +2279,7 @@ int main(int argc, char** argv) {
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
-        std::vector<int64_t> cur;
-        prefill.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
-            std::vector<int32_t> nxt((size_t) T);
-            for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
-            return mtp.prefill(R_rows, nxt.data(), T, p0, e);
-        };
+        prefill.draft = &mtp;
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
         ver.set_pcie_share(drive.d.pcie_num > 0);
@@ -2470,7 +2465,6 @@ int main(int argc, char** argv) {
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
-            cur = ids;
             const Clock::time_point r0 = Clock::now();
             auto report = [&](const std::string& e) {
                 std::fprintf(stderr, "strata serve: %s\n", e.c_str());
@@ -2672,12 +2666,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
-            prefill.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
-                // cell i pairs R_i with the token at i + 1 (every such token is in the prompt)
-                std::vector<int32_t> nxt((size_t) T);
-                for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) o.tokens[(size_t) (p0 + t + 1)];
-                return mtp.prefill(R_rows, nxt.data(), T, p0, e);
-            };
+            prefill.draft = &mtp;   // cell i pairs R_i with the token at i + 1 (every such token is in the prompt)
         }
         prefill.profile = o.prefill_profile;
         const Clock::time_point tp0 = Clock::now();
@@ -3196,9 +3185,8 @@ int main(int argc, char** argv) {
                         drive.d.pcie_num);
         (void) pool_ms0;
         if (use_mtp && rounds > 0)
-            std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
-                        mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,
-                        (double) mtp.vram_bytes() / 1048576.0);
+            std::printf("%-24s %.3f ms/round drafting (%lld rounds), %.0f MiB of VRAM\n", "mtp",
+                        mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, (double) mtp.vram_bytes() / 1048576.0);
     }
 
     if (dump != nullptr && std::fclose(dump) != 0) {

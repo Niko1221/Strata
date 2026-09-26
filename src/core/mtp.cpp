@@ -80,7 +80,6 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 
 MtpDrafter::~MtpDrafter() {
     if (cs_) cudaStreamSynchronize(cs_);
-    for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
     if (cs_) cudaStreamDestroy(cs_);
@@ -278,17 +277,7 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
     const int32_t* pos = pos_ + row0 * NH;
     try {
         // ---- the two input branches
-        const WeightRef* we = wt_->find("token_embd.weight");
-        if (!we) { err = "mtp: token_embd.weight is missing"; return false; }
-        if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table
-            ne->gather_dev(tok_, T, emb_, cs);
-        } else {
-            const auto* codes = (const uint8_t*) we->data;
-            const auto* scales = (const float*) (codes + we->codes_bytes);
-            const auto* offsets = we->has_offset ? (const float*) (codes + we->codes_bytes + we->scales_bytes) : nullptr;
-            embedding_gather_dev(codes, scales, offsets, tok_, T, we->ne0, we->code_bits, we->code_bias, we->group_elems,
-                                 (uint64_t) (we->ne0 / (8 / we->code_bits)), (uint64_t) (we->ne0 / we->group_elems), emb_, cs);
-        }
+        if (!embed_rows(*wt_, g, tok_, T, emb_, cs, err)) return false;
         native_qsa_rms_norm_weighted(emb_, f32("pre_fc_norm_embedding.weight"), en_, (int) N, T, EPS, cs);
         native_quantize_q8_1(en_, xq_, (int) N, T, cs);
         native_mmvq(GGML_Q8_0, q8("fc_embedding.weight"), xq_, e2_, (int) N, (int) N, T, cs);
@@ -439,17 +428,6 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
 }
 }  // namespace
 
-bool MtpDrafter::capture_prefill(int T, std::string& err) {
-    if (prefill_exec_[T]) return true;
-    using namespace strata::kernels;
-    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
-    copy_i32_from_mapped(tok_, m_tok_, T, cs_);
-    copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
-    copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
-    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
-    return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
-}
-
 bool MtpDrafter::capture_round(int T, std::string& err) {
     if (round_exec_[T]) return true;
     using namespace strata::kernels;
@@ -491,34 +469,21 @@ bool MtpDrafter::capture_step(int j, std::string& err) {
     return finish_capture(cs_, ok, step_exec_[j], "step", err);
 }
 
-bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
-    const Clock::time_point t0 = Clock::now();
-    const int64_t HCN = g_->hc * g_->n_embd;
-    // cells the window can never reach again need no K/V
-    const int64_t first_needed = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
-    for (int64_t c = 0; c < n; c += max_t_) {
-        const int T = (int) std::min<int64_t>(max_t_, n - c);
-        if (cell0 + c + T <= first_needed) continue;
-        if (!capture_prefill(T, err)) return false;
-        for (int t = 0; t < T; ++t) {
-            const int64_t cell = cell0 + c + t;
-            h_tok_[t] = next_tokens[c + t];
-            h_step_[t * 4 + 0] = (int32_t) cell;
-            h_step_[t * 4 + 1] = (int32_t) (cell + 1);
-            h_step_[t * 4 + 2] = (int32_t) ((cell + 1) / 4);
-            h_step_[t * 4 + 3] = (int32_t) (cell + 1);
-            for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
-        }
-        if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                            cs_) != cudaSuccess ||
-            cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess ||
-            cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
-    }
-    ms_prefill += ms_since(t0);
-    return true;
+MtpPromptKv MtpDrafter::prompt_kv() {
+    MtpPromptKv k;
+    k.norm_emb = f32("pre_fc_norm_embedding.weight");
+    k.norm_hidden = f32("pre_fc_norm_hidden.weight");
+    k.fc_emb = q8("fc_embedding.weight");
+    k.fc_hidden = q8("fc_hidden.weight");
+    k.hc_norm = f32("attn_hyper_connection.hc_norm.weight");
+    k.hc_down = bf16("attn_hyper_connection.input_mix_weight_down.weight");
+    k.hc_up = bf16("attn_hyper_connection.input_mix_weight_up.weight");
+    k.k_proj = q8("self_attn.k_proj.weight");
+    k.v_proj = q8("self_attn.v_proj.weight");
+    k.k_norm = f32("self_attn.k_norm.weight");
+    k.kv = &st_;
+    k.first_cell = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
+    return k;
 }
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,

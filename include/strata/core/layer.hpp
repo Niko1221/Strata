@@ -434,6 +434,9 @@ uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b)
 /// from the kernel's would make the prompt embed differently from the tokens generated after it.
 bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token, float* out_dev, void* stream,
                std::string& err);
+/// embed_row for `n` token ids in DEVICE memory (checked by the caller) into out_dev [n, n_embd], one launch.
+bool embed_rows(const WeightTable& tables, const ModelGeometry& g, const int32_t* tokens_dev, int64_t n, float* out_dev,
+                void* stream, std::string& err);
 
 /// `ref/model.py` L520: `fin = GR.gr_read(R, output_hc_*..., inject=None, rms_eps); logits = output @ fin`.
 ///
