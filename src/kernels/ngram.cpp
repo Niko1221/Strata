@@ -163,6 +163,14 @@ struct PleTable::Impl {
     std::thread loader;
     std::string ram_note;
     bool pending_ram = false;   // the pending token's rows come from RAM
+    // the read-ahead slots: a token's rows in flight from the SSD (`via_reader`), else read at collect
+    struct Ahead {
+        bool pending = false, via_reader = false;
+        uint32_t rows[PLE_N_HEADS] = {};
+        uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_Q8_0] = {};
+        strata::ngram::PleReader::Ticket ticket;
+    };
+    Ahead aheads[PleTable::kAheadSlots];
 
     bool from_ram() const { return mode == PleIo::Ram && ram_ready.load(std::memory_order_acquire); }
     bool direct() const { return (mode == PleIo::Direct || mode == PleIo::Ram) && !from_ram(); }
@@ -315,6 +323,7 @@ void PleTable::close() {
         impl_->ram_base = nullptr;
     }
     impl_->reader.close();
+    for (auto& a : impl_->aheads) a.pending = false;
     impl_->pending = false;
     impl_->mode = PleIo::Mmap;
     delete impl_->file;
@@ -429,6 +438,43 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         return true;
     }
     for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    return true;
+}
+
+void PleTable::ahead(int slot, const uint32_t* rows16) {
+    if (slot < 0 || slot >= kAheadSlots) return;
+    Impl::Ahead& a = impl_->aheads[slot];
+    if (a.pending && a.via_reader) {   // the slot's earlier rows (a draft the window left out): long since read
+        std::string err;
+        (void) impl_->reader.collect(a.ticket, err);
+    }
+    std::memcpy(a.rows, rows16, sizeof a.rows);
+    a.via_reader = impl_->direct() && impl_->reader.is_open();
+    if (a.via_reader) a.ticket = impl_->reader.issue(a.rows, PLE_N_HEADS, a.raw);
+    a.pending = true;
+}
+
+bool PleTable::ahead_holds(int slot, const uint32_t* rows16) const {
+    if (slot < 0 || slot >= kAheadSlots) return false;
+    const Impl::Ahead& a = impl_->aheads[slot];
+    return a.pending && std::memcmp(a.rows, rows16, sizeof a.rows) == 0;
+}
+
+bool PleTable::ahead_collect(int slot, float* out2560, std::string& err) {
+    if (slot < 0 || slot >= kAheadSlots || !impl_->aheads[slot].pending) {
+        err = "PleTable::ahead_collect: slot " + std::to_string(slot) + " holds no rows";
+        return false;
+    }
+    Impl::Ahead& a = impl_->aheads[slot];
+    a.pending = false;
+    if (!a.via_reader) {
+        for (int h = 0; h < PLE_N_HEADS; ++h) read_row(a.rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
+        return true;
+    }
+    if (!impl_->reader.collect(a.ticket, err)) return false;
+    for (int h = 0; h < PLE_N_HEADS; ++h)
+        ple_dequant_row(impl_->type, a.raw + (size_t) h * impl_->row_bytes, out2560 + (size_t) h * PLE_HEAD_DIM);
+    impl_->bytes_read += (uint64_t) PLE_N_HEADS * impl_->row_bytes;
     return true;
 }
 

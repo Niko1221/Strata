@@ -104,7 +104,7 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_};
+                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -170,7 +170,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
               mapped(2 * T * K * 4, (void**) &h_pids_, (void**) &m_pids_) &&
               mapped(2 * T * K * 4, (void**) &h_pw_, (void**) &m_pw_) &&
-              mapped(64, (void**) &h_pseq_, (void**) &m_pseq_);
+              mapped(64, (void**) &h_pseq_, (void**) &m_pseq_) &&
+              mapped(64, (void**) &h_pleflag_, (void**) &m_pleflag_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
@@ -303,7 +304,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     copy_i32_from_mapped(tok_, m_tok_, T, cs);
     copy_i32_from_mapped(step_, m_step_, (int64_t) T * kStepCount, cs);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * NH, cs);
-    if (ple_on) copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
 
     // ---- the embeddings, broadcast to the hc streams
     if (const NativeEmbed* ne = native_embed()) {       // plan v0.3 P6: the GGUF-form table
@@ -357,6 +357,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         bool pending = l > 0;   // the previous layer's FFN write, folded into this layer's first read
         if (l == 1 && ple_on) {
+            if (grp == 0) {                                // the host reads the rows while layer 0 runs
+                wait_flag_ge(m_pleflag_, 1, cs);
+                copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
+            }
             float* normalized = (float*) ((uint8_t*) ss.ple.scratch + ple_block_scratch_bytes());
             for (int t = tb; t < te; ++t) {
                 gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
@@ -815,21 +819,23 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
         for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = (int32_t) (pos0 + t);
     }
-    if (ss.ple.ready()) {
-        uint32_t rows[kVerifyMaxT * PLE_N_HEADS];
+    const bool ple_on = ss.ple.ready();
+    if (ple_on) {   // the reads start here unless ple_ahead started them
         int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
         for (int t = 0; t < T; ++t) {
-            ngram_rows(&tokens[t], prev, 1, ss.ple.consts, rows + t * PLE_N_HEADS);
+            uint32_t rows[PLE_N_HEADS];
+            ngram_rows(&tokens[t], prev, 1, ss.ple.consts, rows);
+            if (!ss.ple.table->ahead_holds(t, rows)) ss.ple.table->ahead(t, rows);
             prev[0] = prev[1];
             prev[1] = tokens[t];
         }
-        if (!ss.ple.table->gather_batch(rows, (size_t) T, h_ple_, err)) return false;
     }
     *(volatile uint32_t*) h_seq_ = 0;
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
     *(volatile uint32_t*) h_pseq_ = 0;
+    *(volatile uint32_t*) h_pleflag_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
     last_pos0_ = pos0;
@@ -840,6 +846,15 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
+    if (ple_on) {   // before layer 1: the graph waits for the flag
+        const Clock::time_point tp = Clock::now();
+        for (int t = 0; t < T; ++t)
+            if (!ss.ple.table->ahead_collect(t, h_ple_ + (size_t) t * g.n_embd, err)) return false;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        _mm_sfence();
+        *(volatile uint32_t*) h_pleflag_ = 1;
+        ms_host += ms_since(tp);
+    }
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
     const int G = groups_[T] > 0 ? groups_[T] : 1;
@@ -955,6 +970,17 @@ void Verifier::print_profile() const {
                     prof_layers_[0] ? a / (double) prof_layers_[0] / 1e3 : 0.0,
                     prof_layers_[1] ? b / (double) prof_layers_[1] / 1e3 : 0.0, (a + b) / nw / 1e6);
     }
+}
+
+void Verifier::ple_ahead(int t, int32_t token) {
+    using namespace strata::kernels;
+    SessionState& ss = *ss_;
+    if (!ss.ple.ready() || t < 0 || t >= max_t_) return;
+    ahead_tok_[t] = token;
+    int32_t prev[2] = {t >= 2 ? ahead_tok_[t - 2] : ss.ple_prev[t], t >= 1 ? ahead_tok_[t - 1] : ss.ple_prev[1]};
+    uint32_t rows[PLE_N_HEADS];
+    ngram_rows(&token, prev, 1, ss.ple.consts, rows);
+    ss.ple.table->ahead(t, rows);
 }
 
 void Verifier::set_plan_slot(int grp) {

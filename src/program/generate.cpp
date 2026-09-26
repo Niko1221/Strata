@@ -2559,6 +2559,9 @@ int main(int argc, char** argv) {
             int64_t produced_n = 0;
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
+            mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
+                if (prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
+            };
             while (produced_n < max_new) {
                 if (stop_req.load()) { finish = "cancel"; break; }   // the client went away
                 int T = S;
@@ -2600,6 +2603,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 if (track) pcache.set(p, window.data(), a + 1);   // the committed cells p .. p + a
+                ver.ple_ahead(0, outv[(size_t) a]);
                 first_window = false;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
@@ -2625,6 +2629,7 @@ int main(int argc, char** argv) {
                 x = outv[(size_t) a];
                 p += a + 1;
             }
+            mtp.on_draft = nullptr;
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             std::printf("DONE %lld %lld %.1f %.1f %s %lld\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
                         finish, (long long) reuse);
@@ -3009,6 +3014,10 @@ int main(int argc, char** argv) {
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
         if (o.stats) drive.d.routed.assign((size_t) (g.n_layers * g.n_expert), 0);
+        if (use_mtp)
+            mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
+                if (prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
+            };
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = o.spec;
@@ -3078,6 +3087,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            ver.ple_ahead(0, outv[(size_t) a]);
             ++rounds;
             drafts_total += T - 1;
             drafts_ok += a;

@@ -61,8 +61,12 @@ public:
               const NativeHead* head, int max_t, std::string& err);
 
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
-    /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
+    /// The PLE rows follow `ss.ple_prev` and the tokens: read while layer 0 runs (the graph waits for them before
+    /// layer 1), unless `ple_ahead` already started them.  Captures the T-token graph on first use.
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
+    /// Starts reading the PLE rows of the next window's token t (0, 1, ... in order, after `commit`): `run` takes
+    /// them if its token t, and the ones before it, are these.  For the drafts, while the draft layer runs.
+    void ple_ahead(int t, int32_t token);
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.  With `wait` false
     /// the commit graph is only launched (the MTP draft, on its own stream, reads nothing it writes): `wait_commit`
@@ -134,6 +138,8 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    uint32_t* h_pleflag_ = nullptr; uint32_t* m_pleflag_ = nullptr;  // the PLE rows are in h_ple_
+    int32_t ahead_tok_[8] = {};                                   // the tokens ple_ahead read for
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)

@@ -514,6 +514,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     drafts[0] = ((volatile int32_t*) h_out_)[0];
     float pj = ((volatile float*) h_prob_)[0];
     if (probs) probs[0] = pj;
+    if (on_draft) on_draft(0, drafts[0], pj);
     int n = 1;
     // the chain continues while the last draft is likely enough to be verified
     for (int j = 1; j < max_t_ - 1 && pj >= min_p; ++j) {
@@ -527,6 +528,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         drafts[j] = ((volatile int32_t*) h_out_)[j];
         pj = ((volatile float*) h_prob_)[j];
         if (probs) probs[j] = pj;
+        if (on_draft) on_draft(j, drafts[j], pj);
         ++n;
     }
     for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }

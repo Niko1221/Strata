@@ -27,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,10 @@ public:
     /// The first round: one cell (`cell`) from `R_row` (device) and `token` -> T-1 drafts.
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                      float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
+
+    /// Called with each draft as soon as it is known (j = 0.., its probability under the draft layer), while the
+    /// chain goes on: the next window's PLE rows start there.
+    std::function<void(int j, int32_t token, float prob)> on_draft;
 
     double ms_draft = 0;
     int64_t rounds = 0;
