@@ -23,7 +23,10 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -136,10 +139,19 @@ public:
         repark = ms_repark_;
     }
 
+    /// **A PARKED WORKER SPINS FOR THIS LONG, THEN SLEEPS.**  The park is a `_mm_pause` spin because a layer's
+    /// batches are microseconds apart and a wake-up from the OS costs more than that.  But a spin that never ends
+    /// keeps every worker's core at 100% while the engine waits for a request - issue #4, "CPU 50% even when
+    /// doing nothing" (7 of the 5700X's 16 threads).  Inside a request the gaps between batches are far below
+    /// this, so the token path still never sleeps; between requests the workers block on `sleep_cv_`.
+    static constexpr std::chrono::milliseconds kSpinBeforeSleep{20};
+
 private:
     void worker(int id);
     void drain(int id, ExpertScratch& scratch);
     void run_phase(int mode, int n_tasks);
+    /// Bump `epoch_`, and wake the workers that went to sleep.  Every publish goes through here.
+    void publish();
 
     int n_ = 0;
     bool host_works_ = true;
@@ -169,6 +181,11 @@ private:
     alignas(64) std::atomic<uint32_t> parked_{0};
     alignas(64) std::atomic<uint32_t> epoch_{0};
     alignas(64) std::atomic<bool> stop_{false};
+    // The sleep after `kSpinBeforeSleep`.  `sleepers_` is how `publish` knows whether anyone needs waking, so the
+    // token path pays one uncontended load per publish and never takes the mutex while the workers spin.
+    alignas(64) std::atomic<uint32_t> sleepers_{0};
+    std::mutex sleep_mu_;
+    std::condition_variable sleep_cv_;
     std::vector<std::thread> threads_;
     std::vector<ExpertScratch> scratch_;   // one per worker: no allocation, no false sharing of the hot data
     // run_split state: mode 0 = whole experts, 1 = gate/up row parts, 2 = down row parts
