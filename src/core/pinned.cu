@@ -103,23 +103,27 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
     if (slice_bytes) slice_bytes = slice;   // sliced registration: record the uniform size
 }
 
-PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds) : capacity(bytes) {
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
+                         uint64_t max_pinned_bytes) : capacity(bytes) {
     if (bytes == 0) return;
     base = reserve(bytes, backing, note);
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
     if (base) {
-        const cudaError_t e = cudaHostRegister(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
-        if (e == cudaSuccess) {
+        const bool capped = max_pinned_bytes > 0 && max_pinned_bytes < bytes && bounds.size() >= 2;
+        const cudaError_t e = capped ? cudaSuccess :
+            cudaHostRegister(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
+        if (!capped && e == cudaSuccess) {
             note = "cudaHostRegister PORTABLE ok; " + note;
             registered_bytes = bytes;
-        } else if (bounds.size() >= 2 && clear_error()) {
+        } else if (bounds.size() >= 2 && (capped || clear_error())) {
             // Plan v0.3 P5: the whole range is refused, so pin it slice by slice from the start.  The rest stays
             // resident through the working-set lock below.  (P6: slices may differ in size, one per layer.)
             slice_bytes = 1;   // sliced; the uniform constructor records the size
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
+                if (capped && (off > max_pinned_bytes || n > max_pinned_bytes - off)) break;
                 if (cudaHostRegister((uint8_t*) base + off, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
                     (void) cudaGetLastError();
                     break;
@@ -128,7 +132,9 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds) : 
                 registered_bytes = off + n;
                 ++registered_slices;
             }
-            note = "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); " +
+            note = (capped ? "cudaHostRegister limited to " + std::to_string(max_pinned_bytes >> 30) +
+                             " GiB for CUDA1; " :
+                             "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); ") +
                    std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
                    " GiB); " + note;
             if (registered_bytes < bytes) {

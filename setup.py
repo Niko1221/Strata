@@ -574,18 +574,18 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
         run(build)
 
 
-def build_engine(gpu, vision, yes, llama) -> Path:
+def build_engine(gpu, vision, yes, llama, force=False) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/."""
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text()) if stamp.exists() else {}
     want_vision = vision != "none"
-    if meta.get("source") == "local" and (eng / EXE).exists() and (not want_vision or (eng / VEXE).exists()):
+    if not force and meta.get("source") == "local" and (eng / EXE).exists() and (not want_vision or (eng / VEXE).exists()):
         ok("engine already built for this PC")
         return eng
     nvcc, vcvars = install_build_tools(gpu, yes)
-    if not (eng / EXE).exists() or meta.get("source") != "local":
+    if force or not (eng / EXE).exists() or meta.get("source") != "local":
         say("  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, ROOT / "build", "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={gpu['arch']}",
@@ -656,19 +656,34 @@ def main() -> int:
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
+    ap.add_argument("--gpu1-experts", type=int, default=0,
+                    help="compile locally and keep N additional experts on CUDA1")
+    ap.add_argument("--gpu2-experts", type=int, default=0,
+                    help="keep N additional experts on CUDA2 (requires --gpu1-experts)")
+    ap.add_argument("--gpu3-experts", type=int, default=0,
+                    help="keep N additional experts on CUDA3 (requires --gpu2-experts)")
+    ap.add_argument("--gpu-placement", choices=["stripe", "layer"],
+                    help="assign secondary GPU experts by rank (default) or by complete layer")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
 
+    if min(a.gpu1_experts, a.gpu2_experts, a.gpu3_experts) < 0:
+        ap.error("GPU expert slot counts must be nonnegative")
+    if (a.gpu2_experts and not a.gpu1_experts) or (a.gpu3_experts and not a.gpu2_experts):
+        ap.error("GPU expert tiers must be enabled in order: CUDA1, CUDA2, CUDA3")
+    if a.gpu_placement and not a.gpu1_experts:
+        ap.error("--gpu-placement requires --gpu1-experts")
+
     say("Strata - Qwen3.8-Flash-Next on a normal PC (NVIDIA GPU + system RAM + CPU)")
 
     # ---- 0. already installed: just start it
     have = installed_configs()
-    if have and not (a.setup or a.model or a.family or a.check or a.no_start):
-        if not a.build:
-            update_installed_engine(a.prebuilt)
+    if have and not (a.setup or a.model or a.family or a.check or a.no_start or a.build or
+                     a.gpu1_experts or a.gpu2_experts or a.gpu3_experts or a.gpu_placement):
+        update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], None)
         say()
@@ -776,14 +791,15 @@ def main() -> int:
     step(4, "the Strata engine")
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
-    eng = None if a.build else get_prebuilt(a.prebuilt, gpu, vision)
+    eng = None if a.build or a.gpu1_experts or a.gpu2_experts or a.gpu3_experts else get_prebuilt(a.prebuilt, gpu, vision)
     if eng is not None and json.loads((eng / "BUILD.json").read_text()).get("source") != "local":
         pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
         if vision != "none" and not (eng / VEXE).exists():
             warn("the ready-made engine has no image encoder: compiling it")
             eng = None
     if eng is None:
-        eng = build_engine(gpu, vision, a.yes, llama)
+        eng = build_engine(gpu, vision, a.yes, llama,
+                           force=a.build or any((a.gpu1_experts, a.gpu2_experts, a.gpu3_experts)))
     meta = json.loads((eng / "BUILD.json").read_text())
     lib_dirs = meta.get("cuda_dirs") or cuda_lib_dirs()
     ok(f"engine: {eng / EXE}")
@@ -861,6 +877,14 @@ def main() -> int:
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "auto",
             "--prefill", "2048", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
+    if a.gpu1_experts:
+        args += ["--expert-cache-device1", str(a.gpu1_experts)]
+    if a.gpu2_experts:
+        args += ["--expert-cache-device2", str(a.gpu2_experts)]
+    if a.gpu3_experts:
+        args += ["--expert-cache-device3", str(a.gpu3_experts)]
+    if a.gpu_placement:
+        args += ["--expert-cache-remote-placement", a.gpu_placement]
     if ctx > 8192:
         args += ["--kv", "int8"]
     if vision != "none":
