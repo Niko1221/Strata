@@ -372,6 +372,10 @@ if(STRATA_ENABLE_CUDA)
   add_executable(qsa_select_parity src/kernels/qsa_select_parity.cu)
   target_link_libraries(qsa_select_parity PRIVATE strata_kernels CUDA::cudart)
   add_test(NAME qsa_select_parity COMMAND qsa_select_parity)
+  # The MMVQ of 2..8 tokens from interleaved activations against native_mmvq: bitwise (synthetic matrices).
+  add_executable(mmvq_il_parity src/kernels/mmvq_il_parity.cu)
+  target_link_libraries(mmvq_il_parity PRIVATE strata_kernels CUDA::cudart)
+  add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS)

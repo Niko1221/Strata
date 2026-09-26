@@ -5,6 +5,7 @@
 // in iq_dot.cuh.
 #include "strata/kernels/iq_kernels.hpp"
 #include "iq_dot.cuh"
+#include "q8_1_il.cuh"
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,45 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
         const float s = row_dot<TY>(wr, x + (size_t) c * (n_in / 32), nb, lane);
         if (lane == 0) y[(size_t) c * n_out + row] = s;
     }
+}
+
+// mmvq_kernel for NC columns from their interleaved (position-major) copy: a warp takes R rows, decodes each call's
+// weights once and keeps row_dot's lane-strided sum per (row, column), so every value is bitwise mmvq_kernel's.
+template <int NC, int R>
+__global__ void __launch_bounds__(128) mmvq_il_iq3_s_kernel(const uint8_t* __restrict__ w, size_t row_bytes,
+                                                            const int* __restrict__ xq, const float* __restrict__ xd,
+                                                            float* __restrict__ y, int n_in, int n_out) {
+    using F = Fmt<21>;
+    const int lane = threadIdx.x & 31;
+    const int row0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * R;
+    if (row0 >= n_out) return;
+    const Q81Il<NC, true> x{xq, xd, n_in / 32};
+    const int nb = n_in / F::qk;
+    float acc[R][NC];
+#pragma unroll
+    for (int i = 0; i < R; ++i)
+#pragma unroll
+        for (int c = 0; c < NC; ++c) acc[i][c] = 0.0f;
+    for (int k = lane; k < nb * F::ipb; k += 32) {
+        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+#pragma unroll
+        for (int i = 0; i < R; ++i) {
+            const int row = min(row0 + i, n_out - 1);   // a partial last group recomputes its last row
+            IQ3SCols wv;
+            wv.load(w + (size_t) row * row_bytes, kbx, iqs);
+            float o[NC];
+            wv.apply<NC>(x, kbx * (F::qk / 32) + iqs / 2, o);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) acc[i][c] += o[c];
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < R; ++i)
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float s = warp_sum(acc[i][c]);
+            if (lane == 0 && row0 + i < n_out) y[(size_t) c * n_out + row0 + i] = s;
+        }
 }
 
 // ---------------------------------------------------------------- grouped native experts
@@ -529,6 +569,27 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
         default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
+}
+
+bool iq_mmvq_il_supported(int t) noexcept { return t == 21; }
+
+void iq_mmvq_il(int t, const void* w, const void* x_il, float* y, int n_in, int n_out, int ncols, void* stream) {
+    if (t != 21 || ncols < 2 || ncols > 8 || n_in % 256 != 0) {
+        std::fprintf(stderr, "iq_mmvq_il: type %d, %d columns are not supported\n", t, ncols);
+        std::exit(1);
+    }
+    constexpr int R = 2;
+    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
+    const size_t rb = iq_row_bytes(t, n_in);
+    const auto* W = (const uint8_t*) w;
+    const unsigned blocks = (unsigned) (((n_out + R - 1) / R + 3) / 4);
+    cudaStream_t s = (cudaStream_t) stream;
+    switch (ncols) {
+#define STRATA_IL(N) case N: mmvq_il_iq3_s_kernel<N, R><<<blocks, 128, 0, s>>>(W, rb, parts.pm, parts.d, y, n_in, n_out); break;
+        STRATA_IL(2) STRATA_IL(3) STRATA_IL(4) STRATA_IL(5) STRATA_IL(6) STRATA_IL(7) STRATA_IL(8)
+#undef STRATA_IL
+    }
+    check("iq_mmvq_il");
 }
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {

@@ -22,6 +22,9 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
 
 /// y[c][r] = W[r] . x[c] for `ncols` columns of q8_1 activations (x stride n_in/32 blocks per column).
 void iq_mmvq(int ggml_type, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
+/// iq_mmvq for 2..8 columns from their interleaved copy (native_quantize_q8_1_il), bitwise: IQ3_S.
+bool iq_mmvq_il_supported(int ggml_type) noexcept;
+void iq_mmvq_il(int ggml_type, const void* w, const void* x_il, float* y, int n_in, int n_out, int ncols, void* stream);
 
 /// Dequantize `n` contiguous values (n a multiple of 256) to fp16 / fp32.
 void iq_dequant_f16(int ggml_type, const void* src, int64_t n, uint16_t* dst, void* stream);

@@ -109,4 +109,17 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
 
+// Plan v0.3 P6: 2..8 columns also INTERLEAVED, so one 16-byte load reads a position of every column: CP = 2 (2
+// columns), 4 (3-4) or 8 (5-8), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32
+// pm[8][nb][CP] (position-major), float d[nb][CP] (each block's scale as the dots read it, __low2float of ds).
+constexpr int native_q8_1_il_cp(int ncols) { return ncols <= 2 ? 2 : ncols <= 4 ? 4 : 8; }
+std::size_t native_q8_1_il_bytes(int n_in, int ncols);
+// native_quantize_q8_1 that also writes the interleaved copy to x_il (native_q8_1_il_bytes); 2 <= ncols <= 8.
+void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in, int ncols, void* stream);
+// native_mmvq for 2..8 columns quantized by native_quantize_q8_1_il, bitwise native_mmvq's output: kernels that read
+// the interleaved copy for IQ4_XS, Q4_K, Q5_K, Q6_K, Q8_0 and IQ3_S matrices of at least 2048 rows, native_mmvq
+// otherwise.
+void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
+                    int n_out, int ncols, void* stream);
+
 } // namespace strata::kernels

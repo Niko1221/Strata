@@ -216,6 +216,60 @@ __device__ __forceinline__ float vec_dot_iq3_s_q8_1(const void* __restrict__ vbq
     return d * sumi;
 }
 
+// vec_dot_iq3_s_q8_1 for several activation columns: the grid values, masks and scale decoded once (`load`), each
+// column's integer sums and float expression as above (`apply`; X::u(b, p, u) gives int p of q8_1 block b of every
+// column, X::scales(b, d) their __low2float scales).
+struct IQ3SCols {
+    uint32_t g[8], gm[8];   // grid words, and their negative values' bytes
+    int sc;
+    float dw;
+    __device__ __forceinline__ void load(const void* __restrict__ vbq, const int& kbx, const int& iqs) {
+        const block_iq3_s* bq3 = (const block_iq3_s*) vbq + kbx;
+        const int2 qs_packed = make_int2(get_int_b2(bq3->qs, iqs + 0), get_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* qs = (const uint8_t*) &qs_packed;
+        const int qh = bq3->qh[iqs / 2];
+        const int signs_packed_32 = get_int_b2(bq3->signs, iqs / 2);
+        const uint8_t* signs_packed_8 = (const uint8_t*) &signs_packed_32;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const uint32_t gx = iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)];
+            const uint32_t gy = iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)];
+            const uint2 m = sign_masks(signs_packed_8[l0 / 2]);
+            g[l0] = gx;
+            gm[l0] = gx & m.x;
+            g[l0 + 1] = gy;
+            gm[l0 + 1] = gy & m.y;
+        }
+        sc = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+        dw = __half2float(bq3->d);
+    }
+    template <int NC, class X>
+    __device__ __forceinline__ void apply(const X& x, const int& b, float (&out)[NC]) const {
+        int sp[NC], sn[NC];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) sp[c] = sn[c] = 0;
+#pragma unroll
+        for (int l = 0; l < 8; ++l) {
+            int u[NC];
+            x.u(b, l, u);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                sp[c] = ggml_cuda_dp4a((int) g[l], u[c], sp[c]);
+                sn[c] = ggml_cuda_dp4a((int) gm[l], u[c], sn[c]);
+            }
+        }
+        float d8[NC];
+        x.scales(b, d8);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            int sumi = sp[c] - 2 * sn[c];
+            sumi *= sc;
+            const float d = dw * d8[c];
+            out[c] = d * sumi;
+        }
+    }
+};
+
 __device__ __forceinline__ float vec_dot_iq1_m_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                     const int& kbx, const int& iqs) {
     const block_iq1_m* bq1 = (const block_iq1_m*) vbq + kbx;
