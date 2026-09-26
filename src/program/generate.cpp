@@ -262,10 +262,11 @@ struct Options {
     /// Checkpoint interval inside long prompts, in whole prompt chunks (counted from the request's first new cell).
     int64_t cache_every = 16384;
     /// Prompt parts of up to this many tokens go through verify windows instead of the batched prompt path: a new
-    /// part that short, and a last prompt chunk that short.  A batched call costs a fixed ~5-7 s on the 3090 (it
-    /// lends and refills expert-cache slots and streams every expert its tokens use); verify windows cost 15-22 ms
-    /// per token.  They break even at ~480 (IQ3_XXS) and ~530 tokens (UD-Q4_K_XL; bench/feed_test.py).
-    int64_t feed_max = 512;
+    /// part that short, and a last prompt chunk that short.  A batched call has a fixed cost (it lends and refills
+    /// expert-cache slots and streams every expert its tokens use): ~1.5 s with IQ3_XXS on the 3090 alone, ~0.7 s
+    /// with UD-Q4_K_XL and the second GPU; verify windows cost 12-17 ms per token.  They break even at ~185 and
+    /// ~45 tokens (bench/feed_test.py).
+    int64_t feed_max = 128;
     int adapt_swaps = 96;
 };
 
@@ -334,7 +335,7 @@ void usage() {
                  "  --cache-ram MIB      --serve: host memory for the K/V cells of sequences a request replaced,\n"
                  "                       so switching back to them continues where they were (default 16384)\n"
                  "  --feed-max N         --serve: new prompt parts and last prompt chunks of up to N tokens run\n"
-                 "                       through verify windows instead of the batched prompt path (default 512)\n"
+                 "                       through verify windows instead of the batched prompt path (default 128)\n"
                  "  --spec T             verify windows of up to T tokens: the last one and T-1 MTP drafts (2..8)\n"
                  "  --spec-min-p P       a draft enters the window only while it and the drafts before it have at\n"
                  "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
