@@ -1250,10 +1250,30 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: %s; its rows stay on the SSD\n", err.c_str());
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker);
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
-    // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
-    // sees the memory this process actually has left rather than the card's idle figure - and refuses with both
-    // numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
-    mem_mark("the weights, the session and the drafter");
+    std::fprintf(stderr, "strata generate: session is up; locating the head\n");
+    const strata::core::WeightRef* wo = wt.find("output.weight");
+    if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
+    const int64_t n_vocab = wo->ne1;
+    strata::core::NativeHead native_head;
+    if (!o.native_head_gguf.empty()) {
+        std::vector<std::string> head_shards;
+        try {
+            head_shards = strata::gguf_split_paths(o.native_head_gguf);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata generate: native head: %s\n", e.what());
+            return 1;
+        }
+        if (!native_head.load(head_shards, g.n_embd, n_vocab, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: native head, type %d, %llu bytes\n", native_head.type(),
+                     (unsigned long long) native_head.weight_bytes());
+    }
+    // ---- R4's slot storage.  Allocated AFTER the weights, the session and the head, so `cudaMemGetInfo` inside
+    // `open` sees the memory this process actually has left rather than the card's idle figure - and refuses with
+    // both numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
+    mem_mark("the weights, the session, the drafter and the head");
     strata::core::ExpertCache xcache;
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!o.expert_profile.empty()) {
@@ -1583,26 +1603,6 @@ int main(int argc, char** argv) {
     }
 
     mem_mark("the expert cache and the graphs");
-    std::fprintf(stderr, "strata generate: session is up; locating the head\n");
-    const strata::core::WeightRef* wo = wt.find("output.weight");
-    if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
-    const int64_t n_vocab = wo->ne1;
-    strata::core::NativeHead native_head;
-    if (!o.native_head_gguf.empty()) {
-        std::vector<std::string> head_shards;
-        try {
-            head_shards = strata::gguf_split_paths(o.native_head_gguf);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "strata generate: native head: %s\n", e.what());
-            return 1;
-        }
-        if (!native_head.load(head_shards, g.n_embd, n_vocab, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "strata generate: native head, type %d, %llu bytes\n", native_head.type(),
-                     (unsigned long long) native_head.weight_bytes());
-    }
     std::vector<float> logits((size_t) n_vocab);
     float* d_logits = nullptr;
     if (cudaMalloc(&d_logits, (size_t) n_vocab * 4) != cudaSuccess) {
