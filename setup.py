@@ -19,7 +19,7 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
+Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC).
@@ -54,15 +54,19 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 2)                 # split models (Swift 1.5), STOP, cache sized after the slots are written
+MIN_ENGINE = (0, 1, 4)                 # IQ3_S: IQ4_XS GPU experts, any-size MTP head rows (v0.1.4)
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow"]
 
 MODELS = {
     "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
                "arena_gb": 35.5},
-    "IQ3_XXS": {"about": "3-bit i-quant, the best quality, slower (more CPU work per token)", "download_gb": 75.8,
+    "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
                 "ram_gb": 60, "arena_gb": 42.9},
+    # the original model only (Swift 1.5 has no IQ3_S): matches the full BF16 model on the published benchmarks
+    "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
+                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
+              "families": ("qwen",)},
 }
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
@@ -456,6 +460,42 @@ def get_prebuilt(url_base, gpu, vision) -> Path | None:
     return eng
 
 
+def update_installed_engine(url_base) -> None:
+    """An installed ready-made engine older than MIN_ENGINE is replaced before the model starts, so a plain
+    START-HERE.bat on an existing install picks up a new release.  If that cannot happen (no internet, the model
+    still running, no ready-made engine for this GPU) the installed engine is kept and starts as before."""
+    eng = ROOT / "engine"
+    info = eng / "BUILD.json"
+    if not info.exists() or not (eng / EXE).exists():
+        return
+    meta_text = info.read_text()
+    meta = json.loads(meta_text)
+    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    if meta.get("source") == "local" or ver >= MIN_ENGINE:
+        return
+    try:                                               # a running engine cannot be replaced (Windows keeps it locked)
+        for x in (EXE, VEXE):
+            if (eng / x).exists():
+                with open(eng / x, "r+b"):
+                    pass
+    except OSError:
+        warn(f"engine {meta.get('version')} is in use: close the model window and run this again to update it")
+        return
+    gpu = gpu_info()
+    new = None
+    if gpu is not None:
+        try:
+            new = get_prebuilt(url_base, gpu, "gpu")
+        except Exception as e:                         # a failed download must not stop the model from starting
+            warn(f"updating the engine failed ({e})")
+    if new is None:
+        if not info.exists():
+            info.write_text(meta_text)                 # get_prebuilt drops it before downloading: put it back
+        warn(f"could not update the engine: starting the installed {meta.get('version')}")
+        return
+    pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     nvcc, cuda_v = find_nvcc()
@@ -627,6 +667,8 @@ def main() -> int:
     # ---- 0. already installed: just start it
     have = installed_configs()
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
+        if not a.build:
+            update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], None)
         say()
@@ -681,13 +723,15 @@ def main() -> int:
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()
-    names = list(MODELS)
+    names = [m for m in MODELS if family in MODELS[m].get("families", FAMILIES)]
+    if a.model and a.model not in names:
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = "3" if ram >= 60 else "1"
-    model = a.model or names[int(ask("Which size?", ["1", "2", "3"], rec, a.yes)) - 1]
+    rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 else "1"
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     if ram < MODELS[model]["ram_gb"] - 4:
         fail(f"{model} needs about {MODELS[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
              "choose Q2_0 or IQ2_XS, or add RAM")
@@ -703,8 +747,9 @@ def main() -> int:
         for i, c in enumerate(CONTEXTS, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended for your GPU)" if c == rec_ctx else ""))
         ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, 6)], str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
-    if model == "IQ3_XXS" and ram < 90 and ctx > 131072:
-        warn("IQ3_XXS with a 262K context needs more than 64 GB of RAM (43 GB of experts + the context): using 128K")
+    if model in ("IQ3_XXS", "IQ3_S") and ram < 90 and ctx > 131072:
+        warn(f"{model} with a 262K context needs more than 64 GB of RAM ({MODELS[model]['arena_gb']:.0f} GB of experts "
+             "+ the context): using 128K")
         ctx = 131072
     ok(f"context: {ctx} tokens")
     if a.vision:

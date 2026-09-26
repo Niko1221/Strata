@@ -21,6 +21,7 @@ tokens, MTP speculative decoding on. "262K" is the model's full context window (
 | **Q2_0** | 389 | 539 | 571 | 561 | 543 | 496 |
 | **IQ2_XS** | 332 | 463 | 495 | 486 | 472 | 437 |
 | **IQ3_XXS** | 285 | 410 | 435 | 427 | 414 | - |
+| **IQ3_S** | 260 | 374 | 397 | - | 378 | - |
 
 ### Output (tokens/s)
 
@@ -29,9 +30,11 @@ tokens, MTP speculative decoding on. "262K" is the model's full context window (
 | **Q2_0** | 88.7 | 94.6 | 87.5 | 76.4 | 65.1 | 56.3 |
 | **IQ2_XS** | 82.0 | 78.0 | 65.3 | 63.7 | 52.0 | 48.0 |
 | **IQ3_XXS** | 64.6 | 65.6 | 57.3 | 54.4 | 44.8 | - |
+| **IQ3_S** | 51.2 | 54.4 | 51.1 | - | 42.2 | - |
 
-IQ3_XXS at 262K is not measured: with its 43 GB of experts, a 260K-token context brings a 64 GB PC to its memory
-limit. Use up to 128K with IQ3_XXS on 64 GB.
+IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
+to its memory limit. Use up to 128K with them on 64 GB (setup caps it). IQ3_S (engine 0.1.4 or newer) is only published
+for the original model, not for Swift 1.5.
 
 Time to first token is prompt length / prompt speed: about 7 s at 4K, 55 s at 32K, 4 minutes at 128K and 9 minutes at
 262K. The raw numbers: [`bench/results/`](../bench/results/). The [paper](paper/Strata-Paper.pdf) explains every number.
@@ -200,9 +203,14 @@ print(r.choices[0].message.content)
   add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
   clients then send it as their API key.
 
-**Current limits (v1):** one request at a time; greedy decoding (temperature is ignored); every request processes its
-whole prompt again (no conversation cache yet, so long chats have a long time-to-first-token); images only when set up
-with them (below); no video.
+**Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
+live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
+assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens
+and pictures. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`, `--turn-token ID`.
+
+**Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
+re-reads the other one); greedy decoding (temperature is ignored); images only when set up with them (below); no
+video.
 
 ---
 
