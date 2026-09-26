@@ -39,7 +39,7 @@ model - is set up for you.
 2. Double-click **`START-HERE.bat`**.
 3. Answer 4 questions - or just press Enter each time for the recommended choice:
    - **Which model?** The original, or Swift 1.5 (a version that thinks shorter and answers sooner)
-   - **Which size?** Q2_0, IQ2_XS or IQ3_XXS - see [which model](#which-model-should-i-pick)
+   - **Which size?** Q2_0, IQ2_XS, IQ3_XXS or IQ3_S - see [which model](#which-model-should-i-pick)
    - **How much context?** How much text it can keep in mind at once (it suggests one for your card)
    - **Images?** Whether it should also read pictures
 
@@ -60,6 +60,7 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 | **Q2_0** | 95 tokens/s | 65 tokens/s | 539 tokens/s |
 | **IQ2_XS** | 78 tokens/s | 52 tokens/s | 463 tokens/s |
 | **IQ3_XXS** | 66 tokens/s | 45 tokens/s | 410 tokens/s |
+| **IQ3_S** | 54 tokens/s | 42 tokens/s | 374 tokens/s |
 
 - **Writes answers** = how fast the reply appears (tokens per second).
 - **Reads your prompt** = how fast it takes in what you send (long documents, code, chat history).
@@ -76,7 +77,8 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 | --- | ---: | --- | --- | --- |
 | **Q2_0** | 66 GB | fastest | good | you want speed |
 | **IQ2_XS** | 68 GB | fast | better | you want a good all-rounder (**recommended**) |
-| **IQ3_XXS** | 76 GB | slower | best | you want the best answers (uses 43 GB of your 64 GB RAM) |
+| **IQ3_XXS** | 76 GB | slower | great | you want better answers (uses 43 GB of your 64 GB RAM) |
+| **IQ3_S** | 84 GB | slowest | best: matches the full model on the published tests | you want the very best answers (original model only; uses 50 GB of your 64 GB RAM, so close other big programs) |
 
 **The version:**
 

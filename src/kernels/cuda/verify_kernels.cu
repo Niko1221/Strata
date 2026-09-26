@@ -244,12 +244,14 @@ __global__ void ident_hits_kernel(const int32_t* __restrict__ ids, int n, int32_
     if (i == 0) *count = n;
 }
 
-__global__ void gather_rows_kernel(const uint4* __restrict__ src, long long row16, const int32_t* __restrict__ ids,
-                                   long long n, uint4* __restrict__ dst) {
-    const long long total = n * row16;
+// E = the widest element the row size divides into (16, 4 or 1 bytes): a Q6_K head row of 2560 values is 2100 bytes
+template<typename E>
+__global__ void gather_rows_kernel(const E* __restrict__ src, long long row_e, const int32_t* __restrict__ ids,
+                                   long long n, E* __restrict__ dst) {
+    const long long total = n * row_e;
     for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (long long) gridDim.x * blockDim.x) {
-        const long long r = i / row16, o = i - r * row16;
-        dst[i] = src[(long long) ids[r] * row16 + o];
+        const long long r = i / row_e, o = i - r * row_e;
+        dst[i] = src[(long long) ids[r] * row_e + o];
     }
 }
 
@@ -334,8 +336,13 @@ void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const 
 }
 
 void gather_rows(const uint8_t* src, int64_t row_bytes, const int32_t* ids, int64_t n, uint8_t* dst, void* stream) {
-    if (row_bytes % 16 != 0) { std::fprintf(stderr, "gather_rows: row size must be a multiple of 16\n"); std::exit(1); }
-    gather_rows_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>((const uint4*) src, row_bytes / 16, ids, n, (uint4*) dst);
+    cudaStream_t s = (cudaStream_t) stream;
+    if (row_bytes % 16 == 0)
+        gather_rows_kernel<<<48 * 8, 256, 0, s>>>((const uint4*) src, row_bytes / 16, ids, n, (uint4*) dst);
+    else if (row_bytes % 4 == 0)
+        gather_rows_kernel<<<48 * 8, 256, 0, s>>>((const uint32_t*) src, row_bytes / 4, ids, n, (uint32_t*) dst);
+    else
+        gather_rows_kernel<<<48 * 8, 256, 0, s>>>(src, row_bytes, ids, n, dst);
     check("gather_rows");
 }
 

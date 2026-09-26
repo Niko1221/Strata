@@ -21,6 +21,7 @@ tokens, MTP speculative decoding on. "262K" is the model's full context window (
 | **Q2_0** | 389 | 539 | 571 | 561 | 543 | 496 |
 | **IQ2_XS** | 332 | 463 | 495 | 486 | 472 | 437 |
 | **IQ3_XXS** | 285 | 410 | 435 | 427 | 414 | - |
+| **IQ3_S** | 260 | 374 | 397 | - | 378 | - |
 
 ### Output (tokens/s)
 
@@ -29,9 +30,11 @@ tokens, MTP speculative decoding on. "262K" is the model's full context window (
 | **Q2_0** | 88.7 | 94.6 | 87.5 | 76.4 | 65.1 | 56.3 |
 | **IQ2_XS** | 82.0 | 78.0 | 65.3 | 63.7 | 52.0 | 48.0 |
 | **IQ3_XXS** | 64.6 | 65.6 | 57.3 | 54.4 | 44.8 | - |
+| **IQ3_S** | 51.2 | 54.4 | 51.1 | - | 42.2 | - |
 
-IQ3_XXS at 262K is not measured: with its 43 GB of experts, a 260K-token context brings a 64 GB PC to its memory
-limit. Use up to 128K with IQ3_XXS on 64 GB.
+IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
+to its memory limit. Use up to 128K with them on 64 GB (setup caps it). IQ3_S (engine 0.1.4 or newer) is only published
+for the original model, not for Swift 1.5.
 
 Time to first token is prompt length / prompt speed: about 7 s at 4K, 55 s at 32K, 4 minutes at 128K and 9 minutes at
 262K. The raw numbers: [`bench/results/`](../bench/results/). The [paper](paper/Strata-Paper.pdf) explains every number.
