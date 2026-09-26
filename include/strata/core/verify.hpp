@@ -39,6 +39,9 @@ class NativeHead;
 /// second GPU's rows, the main GPU's zeroed unless `GpuPlanSink::host_rows_only`.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
+/// Layer `layer`'s likely experts, its router applied to the previous layer's FFN input: ids and weights (n_tok, k),
+/// host memory.
+using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
 
 struct VerifyHits {
     const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
@@ -86,8 +89,12 @@ public:
     /// launch, ~2 us).  Set before the first `run`; `print_profile` writes the per-stage table to stdout.
     void set_profile(bool on) { profile_ = on; }
     void print_profile() const;
+    /// Each layer's router also runs on the previous layer's FFN input, on a side branch of the graph; once the CPU's
+    /// rows of a layer are in, `fn` gets the next layer's prediction (the RAM is idle until the next ring).  Windows
+    /// of one token group.  Set before the first `run`.
+    void set_predict(PredictFn fn, void* user) { predict_ = fn; predict_user_ = user; }
 
-    double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
+    double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0, ms_predict = 0;
     int64_t windows = 0;
 
 private:
@@ -138,6 +145,15 @@ private:
     bool pcie_share_ = true;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    // the next layer's predicted experts: two halves by layer parity, so a prediction stays put until the host has
+    // taken it; the counter holds the predictions published in this window
+    PredictFn predict_ = nullptr;
+    void* predict_user_ = nullptr;
+    int32_t* h_pids_ = nullptr;  int32_t* m_pids_ = nullptr;     // 2 x T * k
+    float* h_pw_ = nullptr;      float* m_pw_ = nullptr;         // 2 x T * k
+    uint32_t* h_pseq_ = nullptr; uint32_t* m_pseq_ = nullptr;
+    cudaStream_t side_ = nullptr;                                 // the prediction's branch of the graph
+    cudaEvent_t fork_ = nullptr, join_ = nullptr;
 
     // device
     void* arena_ = nullptr;
@@ -153,6 +169,8 @@ private:
     int32_t* sel_ = nullptr;
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
+    float *plogits_ = nullptr, *pw_ = nullptr;                    // the next layer's router (prediction)
+    int32_t* pids_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
     static constexpr int64_t kStagingBlobs = 16;

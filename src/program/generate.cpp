@@ -233,6 +233,7 @@ struct Options {
     double second_gpu_gib = 0.0;
     int second_gpu_reserve_mib = 2048;
     double second_gpu_min_mb = 4.0;   ///< a layer's misses from which it takes its share (smaller: the CPU is quicker)
+    int second_gpu_prefetch = 4;      ///< per layer, the likeliest experts no GPU holds copied to it ahead (0 = off)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -349,6 +350,9 @@ void usage() {
                  "  --second-gpu-gib G   its VRAM for experts (default: all but --second-gpu-reserve-mib, 2048)\n"
                  "  --second-gpu-min-mb M  a layer's missed experts from which it takes its share (default 4; below\n"
                  "                       it the CPU is quicker than its ~100 us round trip)\n"
+                 "  --second-gpu-prefetch N  per layer, copy its N likeliest experts that no GPU holds (the next\n"
+                 "                       layer's router on this layer's input) to it while the RAM is idle (default 4;\n"
+                 "                       0 = off)\n"
                  "  --no-prompt-offload  with --second-gpu: the prompt path streams the experts the main GPU's cache\n"
                  "                       lacks to the main GPU instead of computing them on the second\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
@@ -434,6 +438,9 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    /// The second GPU's adaptive tier when its moves are paced behind the prefetch copies.
+    strata::core::AdaptiveTier* tier2 = nullptr;
+    std::string tier_err;
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -462,6 +469,17 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
         std::fwrite(rec, sizeof rec, 1, t->routing);
         std::fwrite(ids, sizeof(int32_t), (size_t) k, t->routing);
         std::fwrite(weights, sizeof(float), (size_t) k, t->routing);
+    }
+}
+
+/// The second GPU's prefetch from a layer's predicted routing (Verifier::set_predict).
+void drive_predict(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k) {
+    Drive* t = (Drive*) user;
+    strata::core::expert_prefetch_multi(t->d, layer, ids, w, n_tok, k);
+    // a few of the second tier's moves, queued behind the prefetch rather than in front of the next ones
+    if (t->tier2 != nullptr && !t->d.failed && !t->tier2->pump(t->tier_err)) {
+        t->d.failed = true;
+        t->d.fail = t->tier_err.c_str();
     }
 }
 
@@ -708,6 +726,7 @@ int main(int argc, char** argv) {
         else if (a == "--second-gpu-gib") o.second_gpu_gib = std::atof(next("--second-gpu-gib"));
         else if (a == "--second-gpu-reserve-mib") o.second_gpu_reserve_mib = std::atoi(next("--second-gpu-reserve-mib"));
         else if (a == "--second-gpu-min-mb") o.second_gpu_min_mb = std::atof(next("--second-gpu-min-mb"));
+        else if (a == "--second-gpu-prefetch") o.second_gpu_prefetch = std::atoi(next("--second-gpu-prefetch"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
@@ -1968,7 +1987,8 @@ int main(int argc, char** argv) {
         const int main_dev = o.main_gpu;
         cudaDeviceProp prop{};
         cudaGetDeviceProperties(&prop, o.second_gpu);
-        if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err)) {
+        if (!gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err) ||
+            !gpu2.init_prefetch(o.second_gpu_prefetch, strata::kernels::cpu::expert_layout().max_blob, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -2023,6 +2043,12 @@ int main(int argc, char** argv) {
             // lowest slots first: the last ones, which the prompt path borrows, stay empty longest
             for (size_t i = empty2.size(); ok && i-- > 0;) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
             tier2.set_upper(&tier);
+            // with the prefetch, the tier's copies go four per layer behind it, an update within ~24 layers: queued in
+            // front of the prefetch copies, an update's ~300 MB would hold them up for ~7 ms
+            if (gpu2.prefetch_slots() > 0) {
+                tier2.set_pace(4);
+                drive.tier2 = &tier2;
+            }
         }
         if (!ok) {
             std::fprintf(stderr, "strata generate: second GPU: %s\n", sizes.empty() ? "no VRAM for experts" : err.c_str());
@@ -2143,6 +2169,7 @@ int main(int argc, char** argv) {
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
+        if (gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         std::vector<int64_t> cur;
         prefill.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
@@ -2780,6 +2807,7 @@ int main(int argc, char** argv) {
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
+        if (gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
@@ -2955,11 +2983,13 @@ int main(int argc, char** argv) {
         if (rounds > 0 && drive.d.gpu2 != nullptr)
             std::printf("%-24s %.2f routed entries and %.2f experts per round in %.2f layers (%.2f left to the CPU), "
                         "%.3f ms/round waiting for it after the CPU pool; %lld experts swapped in and %lld into empty "
-                        "slots (%lld still empty)\n", "second GPU",
+                        "slots (%lld still empty); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round "
+                        "of host time)\n", "second GPU",
                         (double) gpu2.entries_done / (double) rounds, (double) gpu2.experts / (double) rounds,
                         (double) gpu2.layers / (double) rounds, (double) drive.d.gpu2_skipped / (double) rounds,
                         gpu2.ms_wait / (double) rounds, (long long) tier2.swaps, (long long) tier2.fills,
-                        (long long) tier2.free_slots());
+                        (long long) tier2.free_slots(), (double) gpu2.prefetch_copied / (double) rounds,
+                        (double) gpu2.prefetch_used / (double) rounds, ver.ms_predict / (double) rounds);
         if (rounds > 0 && !drive.d.routed.empty()) {
             // the share of the routed entries the N most-routed experts of this run take
             std::vector<uint32_t> c = drive.d.routed;

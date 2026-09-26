@@ -281,9 +281,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // the second GPU's share: group g = the expert in its slot g2_slot[g], entries g2_ent[g2_start[g] ..)
     int n2g = 0, n2e = 0;
     int32_t g2_slot[128], g2_start[129], g2_ent[128];
-    auto on_gpu2 = [&](int32_t e) {
-        return d.gpu2 != nullptr && d.host_res2[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0;
+    auto slot2 = [&](int32_t e) -> int32_t {   // its slot there, -2 - p for prefetch slot p, or -1
+        if (d.gpu2 == nullptr) return -1;
+        const int32_t s = d.host_res2[(size_t) d.layers * (size_t) d.n_expert + (size_t) e];
+        if (s >= 0) return s;
+        const int p = d.gpu2->prefetched(d.layers, e);
+        return p >= 0 ? -2 - p : -1;
     };
+    auto on_gpu2 = [&](int32_t e) { return slot2(e) != -1; };
     // The second GPU takes this layer's share only when the layer's misses are big enough that the CPU would need
     // longer for all of them than its round trip (~100 us: ~4 MB of experts at the pool's ~45 GB/s); otherwise it
     // would only add its latency.
@@ -336,7 +341,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                                                                  : (size_t) slot * (size_t) d.cache_blob));
                 } else if (on_gpu2_now(e)) {
                     kd = 2;
-                    g2_slot[n2g] = d.host_res2[(size_t) d.layers * (size_t) d.n_expert + (size_t) e];
+                    g2_slot[n2g] = slot2(e);
                     g2_start[n2g++] = n2e;
                     for (int64_t i = i0; i < n; ++i)
                         if (first_of[i] == i0) g2_ent[n2e++] = (int32_t) i;
@@ -477,6 +482,39 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     d.multi_misses += njobs;
     ++d.layers;
     d.experts += n_tok * k;
+}
+
+void expert_prefetch_multi(ExpertDispatch& d, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok,
+                           int64_t k) {
+    if (d.failed || d.gpu2 == nullptr || d.gpu2->prefetch_slots() <= 0) return;
+    // the predicted experts neither GPU holds, ranked by their summed routing weight over the window's tokens
+    int32_t cand[128];
+    float score[128];
+    int nc = 0;
+    for (int64_t i = 0; i < n_tok * k && i < 128; ++i) {
+        const int32_t e = ids[i];
+        if (e < 0 || e >= d.n_expert) continue;
+        const size_t at = (size_t) layer * (size_t) d.n_expert + (size_t) e;
+        if (d.host_res[at] >= 0 || d.host_res2[at] >= 0 || !d.src->pinned(layer, e)) continue;
+        int c = 0;
+        while (c < nc && cand[c] != e) ++c;
+        if (c == nc) { cand[nc] = e; score[nc++] = 0.0f; }
+        score[c] += w[i];
+    }
+    const int m = (std::min)(nc, d.gpu2->prefetch_slots());
+    const uint8_t* src[128];
+    for (int q = 0; q < m; ++q) {
+        int best = q;
+        for (int c = q + 1; c < nc; ++c) if (score[c] > score[best]) best = c;
+        std::swap(cand[q], cand[best]);
+        std::swap(score[q], score[best]);
+        src[q] = d.src->blob(layer, cand[q]);
+    }
+    if (!d.gpu2->prefetch(layer, cand, src, m, strata::kernels::cpu::expert_layout().blob_bytes(layer), d.gpu2_err)) {
+        d.failed = true;
+        d.fail = d.gpu2_err.c_str();
+        d.fail_layer = layer;
+    }
 }
 
 void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids, int64_t k) {

@@ -50,16 +50,40 @@ int64_t AdaptiveTier::free_slots() const {
     return n;
 }
 
+bool AdaptiveTier::submit(const Move& m, std::string& err) {
+    const uint8_t* b = src_->blob(m.layer, m.in);
+    if (b == nullptr) { err = "adaptive tier: a refill copy failed"; return false; }
+    if (m.out >= 0) (*res_)[(size_t) (m.layer * n_expert_ + m.out)] = kNotResident;   // evicted now: a miss meanwhile
+    if (cudaMemcpyAsync(cache_->device_slot(m.slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(m.layer),
+                        cudaMemcpyHostToDevice, stream_) != cudaSuccess) {
+        err = "adaptive tier: a refill copy failed";
+        return false;
+    }
+    return true;
+}
+
+bool AdaptiveTier::pump_n(size_t n, std::string& err) {
+    if (next_ >= queued_.size()) return true;
+    OnDevice on(dev_, main_);
+    for (size_t i = 0; i < n && next_ < queued_.size(); ++i)
+        if (!submit(queued_[next_++], err)) return false;
+    if (cudaEventRecord(ev_, stream_) != cudaSuccess) { err = "adaptive tier: a refill copy failed"; return false; }
+    return true;
+}
+
+bool AdaptiveTier::pump(std::string& err) { return pump_n((size_t) pace_, err); }
+
 bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay) {
     const auto t0 = std::chrono::steady_clock::now();
+    if (!failed_.empty()) { err = failed_; return false; }
     if (!pending_.empty()) return true;   // the previous moves are still in flight
     if (upper_ != nullptr) {
         upper_has_.assign((size_t) (n_layers_ * n_expert_), 0);
         for (size_t i = 0; i < upper_has_.size(); ++i) upper_has_[i] = (*upper_->res_)[i] >= 0;
         for (const auto& pr : upper_->pending_) upper_has_[(size_t) pr.first] = 1;
     }
-    struct Move { float gain; int32_t layer, in, out, slot; };   // out < 0: an empty slot
-    std::vector<Move> moves;
+    struct Ranked { float gain; int32_t layer, in, out, slot; };   // out < 0: an empty slot
+    std::vector<Ranked> moves;
     std::vector<std::pair<float, int32_t>> cand, vict;
     std::vector<int32_t>& res = *res_;
     for (int64_t l = 0; l < n_layers_; ++l) {
@@ -87,29 +111,23 @@ bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay
                              r[vict[i].second]});
         }
     }
-    std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) { return a.gain > b.gain; });
+    std::sort(moves.begin(), moves.end(), [](const Ranked& a, const Ranked& b) { return a.gain > b.gain; });
     if ((int) moves.size() > max_moves_) moves.resize((size_t) max_moves_);
-    const auto& lay = strata::kernels::cpu::expert_layout();
-    OnDevice on(dev_, main_);
-    for (const Move& m : moves) {
-        const uint8_t* b = src_->blob(m.layer, m.in);
-        // asynchronous: the copies run while the MTP drafts; the next window waits for them
-        if (b == nullptr || cudaMemcpyAsync(cache_->device_slot(m.slot), b, (size_t) lay.blob_bytes(m.layer),
-                                            cudaMemcpyHostToDevice, stream_) != cudaSuccess) {
-            err = "adaptive tier: a refill copy failed";
-            return false;
-        }
+    // the copies run beside the next windows; a move counts once admitted (apply_pending)
+    queued_.clear();
+    next_ = 0;
+    for (const Ranked& m : moves) {
         if (m.out >= 0) {
-            res[(size_t) (m.layer * n_expert_ + m.out)] = kNotResident;   // evicted now: a miss meanwhile
             ++swaps;
         } else {
             std::vector<int32_t>& fr = free_[(size_t) m.layer];
             fr.erase(std::find(fr.begin(), fr.end(), m.slot));
             ++fills;
         }
+        queued_.push_back({m.layer, m.in, m.out, m.slot});
         pending_.emplace_back((int32_t) (m.layer * n_expert_ + m.in), m.slot);   // resident once the copy has landed
     }
-    if (!moves.empty()) cudaEventRecord(ev_, stream_);
+    if (pace_ <= 0 && !pump_n(queued_.size(), err)) return false;
     if (decay)
         for (float& v : usage) v *= 0.7f;
     ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -118,6 +136,11 @@ bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay
 
 void AdaptiveTier::apply_pending(bool wait) {
     if (pending_.empty()) return;
+    if (next_ < queued_.size()) {   // paced moves not submitted yet
+        if (!wait) return;
+        std::string err;
+        if (!pump_n(queued_.size(), err)) { failed_ = err; return; }
+    }
     if (wait) cudaEventSynchronize(ev_);
     else if (cudaEventQuery(ev_) != cudaSuccess) return;
     std::vector<int32_t>& res = *res_;

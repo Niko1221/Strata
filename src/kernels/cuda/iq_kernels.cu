@@ -626,6 +626,13 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
     }
 }
 
+__global__ void rows_out_kernel(const float4* __restrict__ src, const int32_t* __restrict__ n_groups,
+                                const int32_t* __restrict__ grp_start, long long n4, float4* __restrict__ dst) {
+    const long long total = (long long) grp_start[*n_groups] * n4;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (long long) gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+
 // ---------------------------------------------------------------- q8_1 (quantize.cu)
 __global__ void quantize_q8_1_kernel(const float* __restrict__ x, block_q8_1* __restrict__ y, long long n) {
     const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
@@ -1115,6 +1122,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
     }
     check("native_expert_grouped/down");
+}
+
+void native_expert_rows_out(const float* rows, const int32_t* n_groups, const int32_t* grp_start, int64_t n_embd,
+                            int64_t max_rows, float* out, void* stream) {
+    const long long n4 = n_embd / 4, most = max_rows * n4;
+    const unsigned blocks = (unsigned) std::min<long long>((most + 255) / 256, 256);
+    rows_out_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((const float4*) rows, n_groups, grp_start, n4, (float4*) out);
+    check("native_expert_rows_out");
 }
 
 }  // namespace strata::kernels

@@ -43,7 +43,12 @@ public:
     /// tier ranked before another on the same counts).  Nothing to do while the previous moves are in flight.
     /// False when a copy could not be submitted.
     bool adapt(std::vector<float>& usage, std::string& err, bool decay = true);
-    /// Admits the landed moves into `host_res` (and `d_res`); `wait` blocks until they have landed.
+    /// Paced: adapt() only queues its moves, and each pump() submits up to `per_pump` of them (a copy queue that
+    /// never runs far ahead, so copies submitted after a pump do not wait behind a whole update).
+    void set_pace(int per_pump) { pace_ = per_pump; }
+    bool pump(std::string& err);
+    /// Admits the landed moves into `host_res` (and `d_res`) once all are submitted; `wait` submits the queued ones
+    /// and blocks until they have landed.
     void apply_pending(bool wait);
 
     int64_t swaps = 0, fills = 0;   ///< experts moved into an occupied / an empty slot
@@ -61,6 +66,13 @@ private:
     std::vector<uint8_t> upper_has_;                      // per (layer, expert), rebuilt each call
     std::vector<std::vector<int32_t>> free_;              // per layer
     std::vector<std::pair<int32_t, int32_t>> pending_;    // (residency index, slot) once the copies have landed
+    struct Move { int32_t layer, in, out, slot; };        // out: the evicted expert, < 0 for an empty slot
+    std::vector<Move> queued_;                            // this update's moves; [next_, end) not submitted yet
+    size_t next_ = 0;
+    int pace_ = 0;
+    std::string failed_;                                  // a copy apply_pending could not submit
+    bool submit(const Move& m, std::string& err);
+    bool pump_n(size_t n, std::string& err);
     cudaStream_t stream_ = nullptr;
     cudaEvent_t ev_ = nullptr;
 };

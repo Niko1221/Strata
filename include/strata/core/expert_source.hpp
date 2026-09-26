@@ -220,7 +220,7 @@ struct ExpertDispatch {
     /// the entries a cache of the N most-routed experts would serve.
     std::vector<uint32_t> routed;
     /// A second GPU's expert tier (verify windows) and its residency table (n_layers x n_expert, slot or -1): the
-    /// experts it holds and the first GPU's cache does not are computed there, beside the CPU pool.
+    /// experts it holds or has prefetched and the first GPU's cache does not are computed there, beside the CPU pool.
     SecondGpu* gpu2 = nullptr;
     const int32_t* host_res2 = nullptr;
     int64_t gpu2_entries = 0;      ///< routed entries the second GPU served
@@ -251,6 +251,10 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 /// resident experts' rows are zeroed (the GPU adds them).  Requires `host_res` (the token-graph residency).
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out);
+/// Copies `layer`'s likeliest experts that neither GPU holds to the second GPU's prefetch slots, where that layer's
+/// dispatch finds them; `ids`/`w` (n_tok, k) are the layer's predicted routing (`Verifier::set_predict`).
+void expert_prefetch_multi(ExpertDispatch& d, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok,
+                           int64_t k);
 
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about

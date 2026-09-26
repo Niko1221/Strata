@@ -36,14 +36,17 @@ SecondGpu::~SecondGpu() {
     if (dev_ < 0) return;
     DeviceScope scope(dev_, main_);
     if (s_) cudaStreamSynchronize(s_);
+    if (pre_s_) cudaStreamSynchronize(pre_s_);
     for (auto& gr : graphs_) cudaGraphExecDestroy(gr.exec);
     cache_.close();
-    void* dev[] = {d_xq_, d_plan_, d_scratch_};
+    void* dev[] = {d_xq_, d_plan_, d_scratch_, d_rows_, d_pre_};
     for (void* p : dev) if (p) cudaFree(p);
     void* host[] = {h_x_, h_out_, h_plan_};
     for (void* p : host) if (p) cudaFreeHost(p);
     if (ev_) cudaEventDestroy(ev_);
+    if (pre_ev_) cudaEventDestroy(pre_ev_);
     if (s_) cudaStreamDestroy(s_);
+    if (pre_s_) cudaStreamDestroy(pre_s_);
 }
 
 bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, int max_t, int64_t k, std::string& err) {
@@ -71,6 +74,7 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
     run("device buffers", cudaMalloc((void**) &d_xq_, (size_t) max_t * (size_t) (n_embd / 32) * 36));
     run("device buffers", cudaMalloc((void**) &d_plan_, plan_bytes(cap_)));
     run("device buffers", cudaMalloc((void**) &d_scratch_, strata::kernels::native_expert_scratch_bytes(cap_, n_ff)));
+    run("device buffers", cudaMalloc((void**) &d_rows_, ob));
     if (e != cudaSuccess) {
         err = std::string("second GPU: ") + step + ": " + cudaGetErrorString(e);
         return false;
@@ -78,6 +82,42 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
     std::memset(h_x_, 0, xb);
     std::memset(h_plan_, 0, plan_bytes(cap_));
     pending_.reserve((size_t) cap_);
+    return true;
+}
+
+bool SecondGpu::init_prefetch(int slots, uint64_t blob_bytes, std::string& err) {
+    if (slots <= 0) return true;
+    if (slots > kPrefetchMax) { err = "second GPU: at most " + std::to_string(kPrefetchMax) + " prefetch slots"; return false; }
+    DeviceScope scope(dev_, main_);
+    pre_cap_ = (blob_bytes + 255) / 256 * 256;
+    if (cudaStreamCreateWithFlags(&pre_s_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&pre_ev_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaMalloc((void**) &d_pre_, (size_t) slots * pre_cap_) != cudaSuccess) {
+        err = std::string("second GPU: prefetch slots: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    pre_max_ = slots;
+    return true;
+}
+
+bool SecondGpu::prefetch(int64_t layer, const int32_t* ids, const uint8_t* const* src, int n, uint64_t bytes,
+                         std::string& err) {
+    if (n <= 0) return true;
+    if (n > pre_max_ || bytes > pre_cap_) { err = "second GPU: a prefetch does not fit its slots"; return false; }
+    DeviceScope scope(dev_, main_);
+    bool ok = cudaStreamWaitEvent(pre_s_, ev_, 0) == cudaSuccess;   // the last submitted layer may read the slots
+    for (int i = 0; ok && i < n; ++i)
+        ok = cudaMemcpyAsync(d_pre_ + (size_t) i * pre_cap_, src[i], (size_t) bytes, cudaMemcpyHostToDevice, pre_s_) ==
+             cudaSuccess;
+    if (!ok || cudaEventRecord(pre_ev_, pre_s_) != cudaSuccess) {
+        err = std::string("second GPU: prefetch: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    (void) cudaStreamQuery(pre_s_);   // submit now, not at the next driver call
+    pre_layer_ = layer;
+    pre_n_ = n;
+    for (int i = 0; i < n; ++i) pre_ids_[i] = ids[i];
+    prefetch_copied += n;
     return true;
 }
 
@@ -98,7 +138,8 @@ bool SecondGpu::graph_for(int gu_type, int d_type, int groups, cudaGraphExec_t& 
         strata::kernels::quantize_q8_1_rows(m_x_, max_t_, n_embd_, d_xq_, s_);
         strata::kernels::native_expert_grouped(L, (const unsigned long long*) (pi + ptr_off(cap_)), pi + 4, pi,
                                                pi + 4 + cap_ + 1, pi + 4 + 2 * cap_ + 1, groups, cap_, d_xq_, d_scratch_,
-                                               m_out_, s_);
+                                               d_rows_, s_);
+        strata::kernels::native_expert_rows_out(d_rows_, pi, pi + 4, n_embd_, cap_, m_out_, s_);
     } catch (const std::exception& ex) {
         cudaStreamEndCapture(s_, &graph);
         if (graph) cudaGraphDestroy(graph);
@@ -135,13 +176,23 @@ bool SecondGpu::submit(int64_t layer, const float* x, int n_tok, int64_t k, cons
         dst[j] = j;
         tok[j] = (int32_t) (entries[j] / k);
     }
-    for (int g = 0; g < n_groups; ++g) ptr[g] = (unsigned long long) cache_.device_slot(slots[g]);
+    bool pre = false;
+    for (int g = 0; g < n_groups; ++g) {
+        if (slots[g] <= -2) {   // a prefetch slot
+            ptr[g] = (unsigned long long) (d_pre_ + (size_t) (-2 - slots[g]) * pre_cap_);
+            pre = true;
+            ++prefetch_used;
+        } else {
+            ptr[g] = (unsigned long long) cache_.device_slot(slots[g]);
+        }
+    }
     std::memcpy(h_x_, x, (size_t) n_tok * (size_t) n_embd_ * sizeof(float));
     const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) layer];
     DeviceScope scope(dev_, main_);
     cudaGraphExec_t exec = nullptr;
     if (!graph_for(f.gu_type, f.d_type, bucket(n_groups), exec, err)) return false;
-    if (cudaGraphLaunch(exec, s_) != cudaSuccess || cudaEventRecord(ev_, s_) != cudaSuccess) {
+    if ((pre && cudaStreamWaitEvent(s_, pre_ev_, 0) != cudaSuccess) || cudaGraphLaunch(exec, s_) != cudaSuccess ||
+        cudaEventRecord(ev_, s_) != cudaSuccess) {
         err = std::string("second GPU: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }

@@ -98,10 +98,13 @@ Verifier::~Verifier() {
     if (commit_exec_) cudaGraphExecDestroy(commit_exec_);
     if (cs_) cudaStreamDestroy(cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
+    if (side_) cudaStreamDestroy(side_);
+    if (fork_) cudaEventDestroy(fork_);
+    if (join_) cudaEventDestroy(join_);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_};
+                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -164,7 +167,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
               mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
+              mapped(2 * T * K * 4, (void**) &h_pids_, (void**) &m_pids_) &&
+              mapped(2 * T * K * 4, (void**) &h_pw_, (void**) &m_pw_) &&
+              mapped(64, (void**) &h_pseq_, (void**) &m_pseq_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
@@ -210,6 +216,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
         logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
+        plogits_ = b.take<float>(T * (uint64_t) g.n_expert); pw_ = b.take<float>(T * K); pids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
@@ -242,7 +249,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: copy stream create failed";
         return false;
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) {
+    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&join_, cudaEventDisableTiming) != cudaSuccess) {
         err = "verify: stream create failed";
         return false;
     }
@@ -314,6 +324,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                              row_codes, row_groups, emb_, cs);
         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
     }
+
+    // set_predict: the next layer's router on this layer's FFN input, on a side branch forked after the doorbell and
+    // joined before the next layer rewrites that input
+    auto predicts = [&](int64_t l) {
+        return predict_ != nullptr && G == 1 && l + 1 < g.n_layers && native_router_enabled();
+    };
 
     // per-layer state indices (GDN and QSA layers are numbered separately)
     std::vector<int64_t> gdn_idx((size_t) g.n_layers, -1), qsa_idx((size_t) g.n_layers, -1);
@@ -510,6 +526,28 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                          m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
         stamp(l, 5);
+        if (predicts(l)) {
+            const WeightRef* wr1 = need(LayerView(wt, l + 1), "ffn_gate_inp.weight", err);
+            if (!wr1) return false;
+            if (cudaEventRecord(fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, fork_, 0) != cudaSuccess) {
+                err = "verify: the prediction branch could not fork";
+                return false;
+            }
+            const size_t half = (size_t) ((l + 1) & 1) * (size_t) (MT * K);
+            try {
+                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wr1->data, plogits_, N, NE, n, side_);
+                native_router_top10_multi(plogits_, pids_, pw_, n, side_);
+                doorbell_publish(nullptr, pids_, pw_, 0, (int64_t) n * K, nullptr, m_pids_ + half, m_pw_ + half, m_pseq_,
+                                 side_);
+            } catch (const std::exception& e) {
+                err = "verify layer " + std::to_string(l) + " prediction: " + e.what();
+                return false;
+            }
+            if (cudaEventRecord(join_, side_) != cudaSuccess) {
+                err = "verify: the prediction branch could not join";
+                return false;
+            }
+        }
         {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
                             *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
@@ -605,6 +643,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         }
         stamp(l, 11);
+        if (predicts(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {
+            err = "verify: the prediction branch could not join";
+            return false;
+        }
         if (l == g.n_layers - 1)
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
         stamp(l, 12);
@@ -787,6 +829,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    *(volatile uint32_t*) h_pseq_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
     last_pos0_ = pos0;
@@ -847,6 +890,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
+        // the next layer's prediction, published during this layer's pool
+        if (predict_ != nullptr && G == 1 && l + 1 < g.n_layers && *(volatile uint32_t*) h_pseq_ >= (uint32_t) (l + 1)) {
+            std::atomic_thread_fence(std::memory_order_acquire);
+            const Clock::time_point c = Clock::now();
+            const size_t half = (size_t) ((l + 1) & 1) * (size_t) max_t_ * (size_t) ss.k;
+            predict_(predict_user_, l + 1, h_pids_ + half, h_pw_ + half, T, ss.k);
+            ms_predict += ms_since(c);
+        }
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
