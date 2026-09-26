@@ -19,7 +19,10 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
+Uncensored models (this fork): --family orca (gated: a Hugging Face token), mrad or rvn - community GGUFs of
+refusal-removed builds, each with its own sizes (orca IQ2_M is the one that fits 64 GB of RAM).
+
+Options: --family qwen|swift|orca|mrad|rvn, --model Q2_0|IQ2_XS|IQ3_XXS (or the family's size), --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC).
@@ -36,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -80,6 +84,41 @@ FAMILIES = {
               "mmproj_hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
               "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", "name": "swift-1.5",
               "license": "Swift Open License 1.0: https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"},
+    # Uncensored (this fork): community GGUFs of refusal-removed builds, not GSQ-RCO, so each has its own sizes -
+    # only the ones whose tensor types the engine runs (i-quant experts, an IQ4_NL PLE table, BF16-exact routers).
+    # Their experts are larger than the GSQ-RCO ones: "arena_gb" is the RAM they take (all pinned).  "extra_gb" is
+    # the disk that preparing them takes once: the PLE key made BF16 (a shard rewritten) and, when a layer's experts
+    # straddle two shards, experts.bin.
+    "orca": {"title": "Uncensored (OrcaRouter)", "by": "orcarouter's abliterated Qwen3.8-Flash-Next",
+             "about": "refusals removed; GATED: needs a free Hugging Face account + token",
+             "hf": "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/",
+             "file": "Qwen3.8-Flash-Next-Uncensored-{q}-{i:05d}-of-{n:05d}.gguf", "shards": 2, "tag": "orca-",
+             "mmproj_hf": "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/",
+             "mmproj": "mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf", "name": "orca-uncensored",
+             "gated": "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF",
+             "license": "Apache 2.0; safety alignment removed - you are responsible for its use",
+             "sizes": {"IQ2_M": {"about": "2-bit i-quant, fits 64 GB of RAM", "download_gb": 80.1, "ram_gb": 62,
+                                 "arena_gb": 48.4, "extra_gb": 50},
+                       "IQ3_XXS": {"about": "3-bit i-quant, better quality", "download_gb": 85.2, "ram_gb": 68,
+                                   "arena_gb": 53.5, "extra_gb": 45}}},
+    "mrad": {"title": "Uncensored (mradermacher)", "by": "imatrix quants of the same OrcaRouter weights",
+             "about": "refusals removed; not gated; needs ~72 GB of RAM",
+             "hf": "https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-i1-GGUF/resolve/main/",
+             "file": "Qwen3.8-Flash-Next-Uncensored.i1-{q}.gguf", "shards": 1, "tag": "mrad-",
+             "mmproj_hf": "https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/",
+             "mmproj": "Qwen3.8-Flash-Next-Uncensored.mmproj-f16.gguf", "name": "mrad-uncensored",
+             "license": "Apache 2.0; safety alignment removed - you are responsible for its use",
+             "sizes": {"IQ3_S": {"about": "3-bit i-quant", "download_gb": 88.9, "ram_gb": 72, "arena_gb": 57.3,
+                                 "extra_gb": 90}}},
+    "rvn": {"title": "Uncensored (RVN)", "by": "0bserverx's abliterated Qwen3.8-Flash-Next (RVN V6)",
+            "about": "refusals removed, a different method; not gated; needs ~70 GB of RAM",
+            "hf": "https://huggingface.co/0bserverx/RVN-Qwen3.8-Flash-Next-Abliterated-Uncensored-GGUF/resolve/main/",
+            "file": "RVN-Qwen3.8-Flash-Next-{q}-{i:05d}-of-{n:05d}.gguf", "shards": 8, "tag": "rvn-",
+            "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+            "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "rvn-uncensored",
+            "license": "Qwen Community License 1.0; safety alignment removed - you are responsible for its use",
+            "sizes": {"IQ3_XS": {"about": "3-bit i-quant", "download_gb": 86.0, "ram_gb": 70, "arena_gb": 54.4,
+                                  "extra_gb": 56}}},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
@@ -278,9 +317,51 @@ def free_gb(path):
 
 
 # ------------------------------------------------------------------------------------------------ downloads
-def download(url, dst: Path, what=None):
+def hf_token():
+    """The Hugging Face token for a gated model: $HF_TOKEN, or the one `hf auth login` saved."""
+    for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        if os.environ.get(k, "").strip():
+            return os.environ[k].strip()
+    p = Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface") / "token"
+    if p.exists():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def gated_token(fam, url, yes):
+    """Get a token that can read a gated repo, or stop with what to do."""
+    page = fam["gated"]
+    token = hf_token()
+    if token is None:
+        say(f"  {fam['title']} is gated: Hugging Face only lets signed-in users who accepted its terms download it.")
+        say(f"    1. sign in (or sign up, free) and click 'Agree and access repository' on {page}")
+        say("    2. make a token with 'Read' access at https://huggingface.co/settings/tokens")
+        if yes:
+            fail("no Hugging Face token", "set HF_TOKEN (or run `hf auth login`) and run it again")
+        try:
+            token = input("  Paste the token (hf_...): ").strip() or None
+        except EOFError:
+            token = None
+        if token is None:
+            fail("no Hugging Face token", "set HF_TOKEN (or run `hf auth login`) and run it again")
+    req = urllib.request.Request(url, method="HEAD",
+                                 headers={"User-Agent": "strata-setup", "Authorization": f"Bearer {token}"})
+    try:
+        urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            fail(f"Hugging Face refused the token for {page} (HTTP {e.code})",
+                 f"open {page} signed in with that account, accept its terms, and run it again")
+        raise
+    ok("Hugging Face access to the gated model")
+    return token
+
+
+def download(url, dst: Path, what=None, token=None):
     """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
-    A finished file gets a <name>.done mark, so a later run skips it without asking the server."""
+    A finished file gets a <name>.done mark, so a later run skips it without asking the server.
+    `token` is sent to Hugging Face for gated models."""
+    auth = {"Authorization": f"Bearer {token}"} if token else {}
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
@@ -297,7 +378,7 @@ def download(url, dst: Path, what=None):
     total = 0
     for attempt in range(5):
         try:
-            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
+            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup", **auth})
             total = int(urllib.request.urlopen(req, timeout=60).headers.get("Content-Length", 0))
             break
         except OSError as e:
@@ -311,7 +392,7 @@ def download(url, dst: Path, what=None):
     have = part.stat().st_size if part.exists() else 0
     for attempt in range(30):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
+            req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-", **auth})
             with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
                 if have and r.status != 206:                     # the server ignored the range: start over
                     f.seek(0)
@@ -604,8 +685,9 @@ def write_run_script(model, cfg_path, port):
 # ------------------------------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, "
+                    "orca / mrad / rvn = uncensored builds (orca is gated: needs a Hugging Face token)")
+    ap.add_argument("--model", choices=list(dict.fromkeys(q for f in FAMILIES.values() for q in f.get("sizes", MODELS))))
     ap.add_argument("--context", type=int)
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (yes = the encoder on the GPU)")
@@ -680,17 +762,25 @@ def main() -> int:
     ok(f"model: {fam['title']}")
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
+    if fam.get("gated"):
+        say(f"  Gated model: downloading it needs a Hugging Face account that accepted its terms on {fam['gated']}")
+        say("  and a token (HF_TOKEN, `hf auth login`, or pasted when asked).")
     say()
-    names = list(MODELS)
+    sizes = fam.get("sizes", MODELS)
+    names = list(sizes)
     for i, m in enumerate(names, 1):
-        d = MODELS[m]
+        d = sizes[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = "3" if ram >= 60 else "1"
-    model = a.model or names[int(ask("Which size?", ["1", "2", "3"], rec, a.yes)) - 1]
-    if ram < MODELS[model]["ram_gb"] - 4:
-        fail(f"{model} needs about {MODELS[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
-             "choose Q2_0 or IQ2_XS, or add RAM")
+    if sizes is not MODELS:                            # the biggest that fits, else the smallest
+        rec = str(max([i for i, m in enumerate(names, 1) if ram >= sizes[m]["ram_gb"]] or [1]))
+    if a.model and a.model not in sizes:
+        fail(f"{fam['title']} has no size {a.model}", "choose one of: " + ", ".join(names))
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
+    if ram < sizes[model]["ram_gb"] - 4:
+        fail(f"{model} needs about {sizes[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
+             "choose a smaller size or another model, or add RAM")
     ok(f"size: {model}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     rec_ctx = 32768 if gpu["vram_gb"] < 14 else 65536 if gpu["vram_gb"] < 20 else 131072
@@ -716,12 +806,17 @@ def main() -> int:
         vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
-    shards = [models_dir / fam["file"].format(q=model, i=i) for i in (1, 2)]
+    n = fam.get("shards", 2)
+    shards = [models_dir / fam["file"].format(q=model, i=i, n=n) for i in range(1, n + 1)]
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
-    need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
-        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
+    need = (0 if a.gguf_dir or have_model else sizes[model]["download_gb"]) + 8 + \
+        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
+        (0 if (ROOT / "packs" / tag.lower() / "native_experts.txt").exists() else sizes[model].get("extra_gb", 0))
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
+    token = None                                       # asked now, not after the engine step
+    if fam.get("gated") and not a.gguf_dir and not have_model:
+        token = gated_token(fam, fam["hf"].format(q=model) + shards[0].name, a.yes)
 
     # ---- 3. python packages
     step(3, "Python packages")
@@ -760,7 +855,7 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(fam["hf"].format(q=model) + s.name, s)
+            download(fam["hf"].format(q=model) + s.name, s, token=token)
     for s in shards:
         if not s.exists():
             fail(f"missing {s}")
@@ -770,7 +865,9 @@ def main() -> int:
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         else:
-            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+            if fam.get("gated") and token is None and not (mmproj.exists() and done(mmproj)):
+                token = gated_token(fam, fam["mmproj_hf"] + fam["mmproj"], a.yes)
+            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder", token=token)
         ok(f"vision encoder: {mmproj}")
 
     # ---- 6. the pack and the MTP draft layer
@@ -788,7 +885,9 @@ def main() -> int:
             run([sys.executable, str(ROOT / "tools" / "strata_tokenizer.py"), "--gguf", str(shards[0]),
                  "--out", str(pack)], env=env)   # writes <pack>/tokenizer/
     elif not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
-        # every tensor as the GGUF stores it; the experts are read from the GGUF at start (seconds to build)
+        # every tensor as the GGUF stores it; the experts are read from the GGUF at start (seconds to build).
+        # A PLE key quantized to something other than Q2_0 (community GGUFs) is made BF16 first: once, in place
+        run([sys.executable, str(ROOT / "tools" / "ple_key_bf16.py"), "--gguf", str(shards[0])], env=env)
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack)], env=env)
     ok(f"model prepared: {pack}")
     mtp = ROOT / "mtp"

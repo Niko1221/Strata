@@ -38,7 +38,8 @@ model - is set up for you.
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
 2. Double-click **`START-HERE.bat`**.
 3. Answer 4 questions - or just press Enter each time for the recommended choice:
-   - **Which model?** The original, or Swift 1.5 (a version that thinks shorter and answers sooner)
+   - **Which model?** The original, Swift 1.5 (a version that thinks shorter and answers sooner), or an
+     [uncensored build](#which-model-should-i-pick) (this fork)
    - **Which size?** Q2_0, IQ2_XS or IQ3_XXS - see [which model](#which-model-should-i-pick)
    - **How much context?** How much text it can keep in mind at once (it suggests one for your card)
    - **Images?** Whether it should also read pictures
@@ -84,6 +85,24 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 - **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)** - a fine-tune by UkisAI
   that thinks much shorter before answering, so you get the answer sooner, with about the same quality. Same speed per
   token. Its own license applies (see its page).
+- **Uncensored** (this fork only) - community builds of the original with its refusals removed ("abliterated"). They
+  answer requests the original refuses, so you are responsible for how you use them. They are not GSQ-RCO quants,
+  so each has its own sizes, and their experts are bigger (more RAM):
+
+  | Choice | Size | Download | RAM it uses | Needs |
+  | --- | --- | ---: | ---: | --- |
+  | **[OrcaRouter](https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF)** | IQ2_M | 80 GB | 48 GB | 64 GB RAM |
+  | OrcaRouter | IQ3_XXS | 85 GB | 54 GB | ~68 GB RAM |
+  | **[mradermacher](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-i1-GGUF)** (same weights as OrcaRouter) | IQ3_S | 89 GB | 57 GB | ~72 GB RAM |
+  | **[RVN](https://huggingface.co/0bserverx/RVN-Qwen3.8-Flash-Next-Abliterated-Uncensored-GGUF)** (another method) | IQ3_XS | 86 GB | 54 GB | ~70 GB RAM |
+
+  **OrcaRouter is gated:** sign in on its page and click *Agree and access repository*, make a *Read* token at
+  [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), then either set `HF_TOKEN`, run
+  `hf auth login`, or paste the token when the setup asks. The other two download without an account.
+  Preparing one the first time takes 45-90 GB more disk (the setup stores its PLE key as BF16, which rewrites one
+  of the files, and may copy its experts into one file) and a few minutes.
+  Measured: OrcaRouter IQ2_M on an RTX 3060 (12 GB), a Core i5-10400 (AVX2) and 64 GB of RAM writes ~21 tokens/s.
+  Without questions: `START-HERE.bat --family orca --model IQ2_M` (or `--family mrad` / `--family rvn`).
 
 Not sure? Take **IQ2_XS**. You can add another one later with `START-HERE.bat --setup`.
 

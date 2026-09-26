@@ -19,7 +19,8 @@ its GGUF form:
 
 Split files: every shard of the model is read (<name>-0000N-of-0000M.gguf beside --gguf), so the layers may be
 split anyhow (Swift 1.5's GGUFs put layers 13-47 in shard 2 and the PLE table in shard 1).  A layer whose experts
-are not in shard 1 names its shard in native_experts.txt (v3).  Router tensors stored as F32 whose values are
+are not in shard 1 names its shard in native_experts.txt (v3).  A layer whose gate/up/down tensors straddle two
+shards (files cut by size, e.g. the OrcaRouter GGUFs) has no GGUF offsets: experts.bin is written for such a model.  Router tensors stored as F32 whose values are
 exactly BF16 (Swift 1.5) are written as BF16, the form the engine's router takes; anything else is refused.
 """
 from __future__ import annotations
@@ -91,11 +92,45 @@ def is_expert(name: str) -> bool:
     return name.startswith("blk.") and name.endswith(("_exps.weight",))
 
 
+# what the engine can serve from the GGUF itself (src/core/native_dense.cpp `eligible`, native_mmvq_supported, the
+# native token embedding and head); any other quantized tensor must be a float in dense.bin
+NATIVE_DENSE = (".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight", ".attn_q.weight", ".attn_k.weight",
+                ".attn_v.weight", ".attn_output.weight", ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight",
+                ".ffn_down_shexp.weight")
+NATIVE_TYPES = {2, 6, 8, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 42}
+NATIVE_TOP = {"token_embd.weight", "output.weight"}
+
+
+def served_natively(t) -> bool:
+    if t.name in NATIVE_TOP:
+        return True
+    native = t.name == "blk.1.ple_key.weight" or (t.name.startswith("blk.") and t.name.endswith(NATIVE_DENSE))
+    return native and t.type_id in NATIVE_TYPES
+
+
+def dequant_bf16(mm, g, t) -> bytes | None:
+    """A quantized tensor as BF16 (round to nearest even) through llama.cpp's gguf-py, or None if it cannot.
+    Community GGUFs quantize tensors the GSQ-RCO files keep in BF16 (hc_*, ssm_alpha/beta, ple_key/value)."""
+    import _paths
+    _paths.add_gguf_py()
+    from gguf import GGMLQuantizationType
+    from gguf.quants import dequantize
+    try:
+        qt = GGMLQuantizationType(t.type_id)
+    except ValueError:
+        return None
+    ne0 = int(t.shape[0])
+    rows = t.elements // ne0
+    f = dequantize(np.asarray(tensor_bytes(mm, g, t)).reshape(rows, -1), qt).astype(np.float32).reshape(-1)
+    u = f.view(np.uint32)
+    return ((u + 0x7FFF + ((u >> 16) & 1)) >> 16).astype(np.uint16).tobytes()
+
+
 def index_standalone(src, out, model: Model) -> int:
     """Every non-expert tensor of the model: floats into dense.bin as stored (exact-BF16 F32 routers as BF16),
     quantized ones native-only."""
     rows, at = [], 0
-    served = 0
+    served = deq = 0
     with open(out / "dense.bin", "wb") as fo:
         for name, (g, t, mm, _) in model.where.items():
             if is_expert(t.name) or t.name in NOT_IN_PACK:
@@ -105,7 +140,16 @@ def index_standalone(src, out, model: Model) -> int:
                 return 1
             ne0 = int(t.shape[0])
             ne1 = int(t.shape[1]) if len(t.shape) > 1 else 0
-            if t.type_name in FLOAT:
+            raw = None if t.type_name in FLOAT or served_natively(t) else dequant_bf16(mm, g, t)
+            if raw is not None:
+                deq += 1
+                rows.append([t.name, "0", "4", str(at), str(len(raw)), "0", str(len(raw)), str(ne0), str(ne1),
+                             "0", "0", "1"] + ["0"] * 7)
+                fo.write(raw)
+                pad = (-len(raw)) % ALIGN
+                fo.write(b"\0" * pad)
+                at += len(raw) + pad
+            elif t.type_name in FLOAT:
                 raw = tensor_bytes(mm, g, t).tobytes()
                 kind = {"BF16": "4", "F16": "5", "F32": "2"}[t.type_name]
                 if t.type_name == "F32" and t.name.endswith(ROUTERS):
@@ -124,6 +168,8 @@ def index_standalone(src, out, model: Model) -> int:
             else:
                 served += 1
                 rows.append([t.name, "0", "0", "0", "0", "0", "0", str(ne0), str(ne1), "8", "0", "32"] + ["0"] * 7)
+    if deq:
+        print("dense.bin: %d quantized tensors the engine cannot serve natively, dequantized to BF16" % deq)
     write_index(out, rows, src, served, 0)
     return 0
 
@@ -237,27 +283,38 @@ def main() -> int:
         blob = per[0] + per[1] + per[2]
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         offset += blob * N_EXPERT
-    with open(out / "native_experts.txt", "w", encoding="utf-8", newline="\n") as fo:
+    # written under a temporary name and renamed last: setup.py takes an existing native_experts.txt as a finished
+    # pack, so a run stopped halfway (or while writing experts.bin) must not leave one behind
+    txt = out / "native_experts.txt"
+    txt_part = out / "native_experts.txt.part"
+    with open(txt_part, "w", encoding="utf-8", newline="\n") as fo:
         fo.write("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
                  "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
                  % (N_EXPERT, offset, src.name))
         for l, gt, dt, off, blob, ts in layout:
             ws = [model.where[t.name] for t in ts]
             if len({w[3] for w in ws}) != 1:
-                print("layer %d: its gate/up/down tensors are in different shards" % l)
-                return 1
+                # the engine reads a layer from one file: a layer split across shards (llama-gguf-split cuts by
+                # size, e.g. the OrcaRouter GGUFs) has no GGUF offsets, and experts.bin is written instead
+                print("layer %d: its gate/up/down tensors are in different shards - writing experts.bin" % l)
+                a.experts_bin = True
+                fo.write("%d %d %d %d %d\n" % (l, gt, dt, off, blob))
+                continue
             gg, shard = ws[0][0], ws[0][3]
             line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
             fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)
+        txt_part.replace(txt)
         return 0
     path = out / "experts.bin"
     if path.exists() and path.stat().st_size == offset:
         print("experts.bin exists with the right size; not rewritten")
+        txt_part.replace(txt)
         return 0
-    with open(path, "wb") as fo:
+    part = out / "experts.bin.part"
+    with open(part, "wb") as fo:
         for l, gt, dt, off, blob, ts in layout:
             parts = [model.bytes(t.name).reshape(N_EXPERT, -1) for t in ts]
             chunk = np.concatenate(parts, axis=1)          # (512, blob): gate | up | down per expert
@@ -266,6 +323,8 @@ def main() -> int:
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
+    part.replace(path)
+    txt_part.replace(txt)
     print("experts.bin: %d layers, %.2f GiB" % (n_layers, offset / 2**30))
     return 0
 
