@@ -183,8 +183,9 @@ private:
     int32_t* h_pids_ = nullptr;  int32_t* m_pids_ = nullptr;     // 2 x T * k
     float* h_pw_ = nullptr;      float* m_pw_ = nullptr;         // 2 x T * k
     uint32_t* h_pseq_ = nullptr; uint32_t* m_pseq_ = nullptr;
-    cudaStream_t side_ = nullptr;                                 // the prediction's branch of the graph
-    cudaEvent_t fork_ = nullptr, join_ = nullptr;
+    cudaStream_t side_ = nullptr;                                 // the prediction's branch of the graph, and in the
+    cudaEvent_t fork_ = nullptr, join_ = nullptr;                 // mixer the GDN gates' or the QSA indexer's beside
+    cudaEvent_t abfork_ = nullptr, abjoin_ = nullptr;             // the projections
     cudaStream_t shs_ = nullptr;                                  // the shared expert's branch (and the snapshot's copy)
     cudaEvent_t shfork_ = nullptr, shjoin_ = nullptr, res_ready_ = nullptr;
 

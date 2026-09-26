@@ -100,7 +100,7 @@ Verifier::~Verifier() {
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (side_) cudaStreamDestroy(side_);
     if (shs_) cudaStreamDestroy(shs_);
-    for (cudaEvent_t e : {fork_, join_, shfork_, shjoin_, res_ready_})
+    for (cudaEvent_t e : {fork_, join_, abfork_, abjoin_, shfork_, shjoin_, res_ready_})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
@@ -278,6 +278,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         cudaStreamCreateWithFlags(&shs_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&join_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&abfork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&abjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&res_ready_, cudaEventDisableTiming) != cudaSuccess) {
@@ -505,13 +507,26 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* hb = h_L_ + (size_t) gi * MT * C;
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
+                // alpha/beta beside the projections (a few blocks, latency-bound), joined before the recurrence
+                if (cudaEventRecord(abfork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, abfork_, 0) != cudaSuccess) {
+                    err = "verify: the GDN gates' branch could not fork";
+                    return false;
+                }
+                gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
+                             (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
+                             n, side_);
+                if (cudaEventRecord(abjoin_, side_) != cudaSuccess) {
+                    err = "verify: the GDN gates' branch could not join";
+                    return false;
+                }
                 quant(xm, N);
                 proj(wqkv, qkv + (size_t) tb * C, N, C);
                 gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
-                gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
-                             (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
-                             n, cs);
                 proj(wg, z_ + (size_t) tb * ZV, N, ZV);
+                if (cudaStreamWaitEvent(cs, abjoin_, 0) != cudaSuccess) {
+                    err = "verify: the GDN gates' branch could not join";
+                    return false;
+                }
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
                                     (int) HV, te, nullptr, cs, tb);
@@ -530,27 +545,50 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
-                auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos) {
-                    if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, cs);
-                    else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, cs);
-                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, cs);
-                    else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, cs);
+                auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos,
+                                     cudaStream_t ns) {
+                    if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, ns);
+                    else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, ns);
+                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, ns);
+                    else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, ns);
                 };
                 // the same for the n tokens' heads in one launch each: token t's positions at pos + t * NH
                 const bool batched = native_qsa_enabled() && native_rope_enabled();
-                auto norm_rope_tokens = [&](float* data, const WeightRef* norm, int heads, int cols, const int32_t* pos) {
-                    native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, n * heads, EPS, cs);
+                auto norm_rope_tokens = [&](float* data, const WeightRef* norm, int heads, int cols, const int32_t* pos,
+                                            cudaStream_t ns) {
+                    native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, n * heads, EPS, ns);
                     native_rope_apply_tokens(data, data, n * heads, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, heads,
-                                             (int) NH, cs);
+                                             (int) NH, ns);
                 };
+                // the indexer - its keys appended, the queries' block scores and top-k - on a branch beside the
+                // attention's projections, joined before the attention
+                if (cudaEventRecord(abfork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, abfork_, 0) != cudaSuccess) {
+                    err = "verify: the indexer's branch could not fork";
+                    return false;
+                }
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
+                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wik->data, idx_raw + tb * ID, N, ID, n, side_);
+                if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, side_);
+                const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                native_qsa_indexer_append_multi(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, (int) kStepCount, n,
+                                                0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                (float) qsa_freq_base(), side_);
+                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, N, IQ * ID, n, side_);
+                if (batched) norm_rope_tokens(qidx_ + tb * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + tb * NH, side_);
+                else for (int t = tb; t < te; ++t) norm_rope(qidx_ + t * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + t * NH, side_);
+                qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
+                                 s, scores_ + (size_t) tb * max_blocks_, side_, qsa_score_grid_blocks);
+                qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
+                               sel_ + (size_t) tb * cap_, side_);
+                if (cudaEventRecord(abjoin_, side_) != cudaSuccess) {
+                    err = "verify: the indexer's branch could not join";
+                    return false;
+                }
                 quant(xm, N);
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wik->data, idx_raw + tb * ID, N, ID, n, cs);
                 proj(wk, kcur_ + tb * NKV * HD, N, NKV * HD);
                 proj(wv, vcur_ + tb * NKV * HD, N, NKV * HD);
-                if (batched) norm_rope_tokens(kcur_ + tb * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + tb * NH);
-                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
-                if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
+                if (batched) norm_rope_tokens(kcur_ + tb * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + tb * NH, cs);
+                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH, cs);
                 if (st.kv_int8)
                     kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_ + tb * kStepCount,
                                        (int) kStepCount, kcur_ + tb * NKV * HD, vcur_ + tb * NKV * HD, n, s, cs);
@@ -558,10 +596,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     for (int t = tb; t < te; ++t)
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs);
-                const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                native_qsa_indexer_append_multi(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, (int) kStepCount, n,
-                                                0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                                (float) qsa_freq_base(), cs);
                 proj(wq, qfull_ + tb * NH * 2 * HD, N, NH * 2 * HD);
                 // the query halves of every token's heads (rows of 2 * HD: query, then gate)
                 if (cudaMemcpy2DAsync(qcur_ + tb * NH * HD, (size_t) HD * 4, qfull_ + tb * NH * 2 * HD, (size_t) HD * 2 * 4,
@@ -569,15 +603,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     err = "verify: the q/gate split failed";
                     return false;
                 }
-                if (batched) norm_rope_tokens(qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD, pos_ + tb * NH);
-                else for (int t = tb; t < te; ++t) norm_rope(qcur_ + t * NH * HD, wqn, (int) NH, (int) HD, pos_ + t * NH);
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, N, IQ * ID, n, cs);
-                if (batched) norm_rope_tokens(qidx_ + tb * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + tb * NH);
-                else for (int t = tb; t < te; ++t) norm_rope(qidx_ + t * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
-                qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
-                                 s, scores_ + (size_t) tb * max_blocks_, cs, qsa_score_grid_blocks);
-                qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
-                               sel_ + (size_t) tb * cap_, cs);
+                if (batched) norm_rope_tokens(qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD, pos_ + tb * NH, cs);
+                else for (int t = tb; t < te; ++t) norm_rope(qcur_ + t * NH * HD, wqn, (int) NH, (int) HD, pos_ + t * NH, cs);
+                if (cudaStreamWaitEvent(cs, abjoin_, 0) != cudaSuccess) {
+                    err = "verify: the indexer's branch could not join";
+                    return false;
+                }
                 QsaAttnPools pools;
                 pools.page_table = st.page_table;
                 if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
