@@ -2,8 +2,8 @@
 // block), for iq_kernels.cu and the parity test that keeps its earlier expert kernels.
 //
 // Transcribed from llama.cpp (ggml/src/ggml-cuda/vecdotq.cuh at the commit in third_party/ggml/VERSION.txt; MIT
-// license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h, included
-// unchanged.
+// license, third_party/ggml/LICENSE); the i-quants apply their signs another way (`sign_masks`), with the same
+// integer sums.  The block structs and codebook grids come from its ggml-common.h, included unchanged.
 #pragma once
 
 #include <cuda_fp16.h>
@@ -44,6 +44,22 @@ __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_
 }
 #define ggml_cuda_dp4a(a, b, c) __dp4a((a), (b), (c))
 
+// The i-quants' signs as byte masks (0xff where a value is negative), four values a word: the multiply puts sign bit
+// i on bit 7 of byte i, and prmt's sign-replicate mode (bit 3 of a selector nibble, which __byte_perm drops) fills
+// the byte with it.  Their dot products take sum(s g u) = sum(g u) - 2 sum((g & m) u) over the grid's unsigned
+// values: the integers llama.cpp's sign-applied grid gives, in fewer instructions than __vcmpne4 and __vsub4.
+__device__ __forceinline__ uint32_t msb_bytes(uint32_t x) {
+    uint32_t d;
+    asm("prmt.b32 %0, %1, 0, 0xBA98;" : "=r"(d) : "r"(x));
+    return d;
+}
+__device__ __forceinline__ uint2 sign_masks(uint32_t s8) {    // bit i of s8 -> byte i of (x, y)
+    return make_uint2(msb_bytes((s8 & 0x0F) * 0x10204080u), msb_bytes((s8 >> 4 & 0x0F) * 0x10204080u));
+}
+__device__ __forceinline__ uint2 ksign_masks(uint32_t v7) {   // 7 sign bits, the eighth their parity (ksigns_iq2xs)
+    return sign_masks(v7 | (__popc(v7) & 1) << 7);
+}
+
 // ---------------------------------------------------------------- the dot products (vecdotq.cuh)
 __device__ __forceinline__ float vec_dot_q2_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                    const int& kbx, const int& iqs) {
@@ -74,20 +90,19 @@ __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ v
     const int q2 = get_int_b2(bq2->qs, iqs);
     const uint8_t* aux8 = (const uint8_t*) &q2;
     const uint32_t aux32 = get_int_b2(bq2->qs, iqs + 1);
-    int sumi = 0;
+    int sp = 0, sn = 0;   // sum(g u), and over the negative values
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xxs_grid)[aux8[k0 / 2]];
-        const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
-        const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-        const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
+        const uint2 m = ksign_masks((aux32 >> (7 * k0 / 2)) & 0x7F);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 0);
-        sumi = ggml_cuda_dp4a(grid0, u0, sumi);
-        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-        const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 1);
-        sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+        sp = ggml_cuda_dp4a((int) grid_pos.x, u0, sp);
+        sn = ggml_cuda_dp4a((int) (grid_pos.x & m.x), u0, sn);
+        sp = ggml_cuda_dp4a((int) grid_pos.y, u1, sp);
+        sn = ggml_cuda_dp4a((int) (grid_pos.y & m.y), u1, sn);
     }
+    int sumi = sp - 2 * sn;
     const int ls = aux32 >> 27 | 1;
     sumi = sumi * ls / 8;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
@@ -101,25 +116,20 @@ __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(const void* __restrict__ vb
     const uint16_t* q2 = (const uint16_t*) &q2_packed;
     const int ls0 = bq2->scales[iqs / 2] & 0x0F;
     const int ls1 = bq2->scales[iqs / 2] >> 4;
-    int sumi0 = 0, sumi1 = 0;
+    int sp[2] = {0, 0}, sn[2] = {0, 0};
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const uint2 grid_pos = ((const uint2*) iq2xs_grid)[q2[l0 / 2] & 0x1FF];
-        const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
-        const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-        const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
+        const uint2 m = ksign_masks(q2[l0 / 2] >> 9);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
-        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-        const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
-        if (l0 < 4) {
-            sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
-            sumi0 = ggml_cuda_dp4a(grid_h, u1, sumi0);
-        } else {
-            sumi1 = ggml_cuda_dp4a(grid_l, u0, sumi1);
-            sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
-        }
+        const int h = l0 / 4;
+        sp[h] = ggml_cuda_dp4a((int) grid_pos.x, u0, sp[h]);
+        sn[h] = ggml_cuda_dp4a((int) (grid_pos.x & m.x), u0, sn[h]);
+        sp[h] = ggml_cuda_dp4a((int) grid_pos.y, u1, sp[h]);
+        sn[h] = ggml_cuda_dp4a((int) (grid_pos.y & m.y), u1, sn[h]);
     }
+    const int sumi0 = sp[0] - 2 * sn[0], sumi1 = sp[1] - 2 * sn[1];
     const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
@@ -135,24 +145,20 @@ __device__ __forceinline__ float vec_dot_iq2_s_q8_1(const void* __restrict__ vbq
     const uint8_t* signs_packed_8 = (const uint8_t*) &signs_packed_32;
     const int ls0 = bq2->scales[iqs / 2] & 0x0F;
     const int ls1 = bq2->scales[iqs / 2] >> 4;
-    int sumi0 = 0, sumi1 = 0;
+    int sp[2] = {0, 0}, sn[2] = {0, 0};
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
-        const int* grid_pos = (const int*) (iq2s_grid + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
-        const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
-        const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
-        const int grid_l = __vsub4(grid_pos[0] ^ signs0, signs0);
-        const int grid_h = __vsub4(grid_pos[1] ^ signs1, signs1);
+        const uint2 grid_pos = ((const uint2*) iq2s_grid)[qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)];
+        const uint2 m = sign_masks(signs_packed_8[l0 / 2]);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
-        if (l0 < 4) {
-            sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
-            sumi0 = ggml_cuda_dp4a(grid_h, u1, sumi0);
-        } else {
-            sumi1 = ggml_cuda_dp4a(grid_l, u0, sumi1);
-            sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
-        }
+        const int h = l0 / 4;
+        sp[h] = ggml_cuda_dp4a((int) grid_pos.x, u0, sp[h]);
+        sn[h] = ggml_cuda_dp4a((int) (grid_pos.x & m.x), u0, sn[h]);
+        sp[h] = ggml_cuda_dp4a((int) grid_pos.y, u1, sp[h]);
+        sn[h] = ggml_cuda_dp4a((int) (grid_pos.y & m.y), u1, sn[h]);
     }
+    const int sumi0 = sp[0] - 2 * sn[0], sumi1 = sp[1] - 2 * sn[1];
     const int sumi = (sumi0 * ls0 + sumi1 * ls1 + (sumi0 + sumi1) / 2) / 4;
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
@@ -164,20 +170,19 @@ __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(const void* __restrict__ v
     const int2 q3_packed = make_int2(get_int_b2(bq3->qs, iqs), get_int_b2(bq3->qs, iqs + 1));
     const uint8_t* q3 = (const uint8_t*) &q3_packed;
     const uint32_t aux32 = get_int_b2(bq3->qs, QK_K / 16 + iqs / 2);
-    int sumi = 0;
+    int sp = 0, sn = 0;
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
-        const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
-        const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
-        const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-        const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
+        const uint32_t gx = iq3xxs_grid[q3[l0 + 0]], gy = iq3xxs_grid[q3[l0 + 1]];
+        const uint2 m = ksign_masks((aux32 >> (7 * l0 / 2)) & 0x7F);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
-        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-        const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
-        sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
-        sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
+        sp = ggml_cuda_dp4a((int) gx, u0, sp);
+        sn = ggml_cuda_dp4a((int) (gx & m.x), u0, sn);
+        sp = ggml_cuda_dp4a((int) gy, u1, sp);
+        sn = ggml_cuda_dp4a((int) (gy & m.y), u1, sn);
     }
+    int sumi = sp - 2 * sn;
     const int ls = aux32 >> 28;
     sumi = (ls * sumi + sumi / 2) / 2;
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
@@ -192,20 +197,20 @@ __device__ __forceinline__ float vec_dot_iq3_s_q8_1(const void* __restrict__ vbq
     const int qh = bq3->qh[iqs / 2];
     const int signs_packed_32 = get_int_b2(bq3->signs, iqs / 2);
     const uint8_t* signs_packed_8 = (const uint8_t*) &signs_packed_32;
-    int sumi = 0;
+    int sp = 0, sn = 0;
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
-        const int2 grid_pos = make_int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
-                                        iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
-        const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
-        const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
-        const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+        const uint32_t gx = iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)];
+        const uint32_t gy = iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)];
+        const uint2 m = sign_masks(signs_packed_8[l0 / 2]);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
-        sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
-        sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
+        sp = ggml_cuda_dp4a((int) gx, u0, sp);
+        sn = ggml_cuda_dp4a((int) (gx & m.x), u0, sn);
+        sp = ggml_cuda_dp4a((int) gy, u1, sp);
+        sn = ggml_cuda_dp4a((int) (gy & m.y), u1, sn);
     }
+    int sumi = sp - 2 * sn;
     sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
