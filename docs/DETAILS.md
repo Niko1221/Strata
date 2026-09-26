@@ -200,9 +200,14 @@ print(r.choices[0].message.content)
   add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
   clients then send it as their API key.
 
-**Current limits (v1):** one request at a time; greedy decoding (temperature is ignored); every request processes its
-whole prompt again (no conversation cache yet, so long chats have a long time-to-first-token); images only when set up
-with them (below); no video.
+**Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
+live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
+assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens
+and pictures. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`, `--turn-token ID`.
+
+**Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
+re-reads the other one); greedy decoding (temperature is ignored); images only when set up with them (below); no
+video.
 
 ---
 

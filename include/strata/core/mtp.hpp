@@ -46,6 +46,8 @@ public:
     /// The prompt's length: prefill() skips the cells the attention window can never reach again.
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     uint64_t vram_bytes() const { return vram_; }
+    /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
+    const QsaState& kv_state() const { return st_; }
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
 

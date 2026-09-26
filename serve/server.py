@@ -127,6 +127,10 @@ class StrataEngine:
                     if cancel.is_set():
                         return
                     yield int(line[2:])
+                elif line.startswith("PP "):             # prompt progress, one per chunk: also a heartbeat (the
+                    if cancel.is_set():                   # lines reset the 10 s wait, so without this a long prompt
+                        return                            # would send no keep-alives at all)
+                    yield None
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
