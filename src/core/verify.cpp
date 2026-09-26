@@ -100,7 +100,7 @@ Verifier::~Verifier() {
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (side_) cudaStreamDestroy(side_);
     if (shs_) cudaStreamDestroy(shs_);
-    for (cudaEvent_t e : {fork_, join_, abfork_, abjoin_, shfork_, shjoin_, res_ready_})
+    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
@@ -278,8 +278,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         cudaStreamCreateWithFlags(&shs_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&join_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&abfork_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&abjoin_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&bfork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&bjoin_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&pfork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&pjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&res_ready_, cudaEventDisableTiming) != cudaSuccess) {
@@ -328,6 +330,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             gpu_stamp(stamps_ + ((size_t) T * (size_t) (g.n_layers + 1) + (size_t) row) * kStamps + i, st);
     };
     stamp(g.n_layers, 0, cs);
+    // the layer's short branches: `fork` starts stream `to` from the main stream's work so far, `mark` records what
+    // `from` has queued, `wait` makes the main stream wait for a mark
+    auto fork = [&](cudaStream_t to, cudaEvent_t ev) {
+        if (cudaEventRecord(ev, cs) == cudaSuccess && cudaStreamWaitEvent(to, ev, 0) == cudaSuccess) return true;
+        err = "verify: a branch could not fork";
+        return false;
+    };
+    auto mark = [&](cudaStream_t from, cudaEvent_t ev) {
+        if (cudaEventRecord(ev, from) == cudaSuccess) return true;
+        err = "verify: a branch could not join";
+        return false;
+    };
+    auto wait = [&](cudaEvent_t ev) {
+        if (cudaStreamWaitEvent(cs, ev, 0) == cudaSuccess) return true;
+        err = "verify: a branch could not join";
+        return false;
+    };
 
     // ---- the window's inputs, from mapped staging; the residency snapshot on the shared expert's branch (the first
     // hit plan waits for it)
@@ -484,9 +503,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (n >= 2) native_quantize_q8_1_il(x, xq_, xil_, (int) n_in, n, cs);
             else native_quantize_q8_1(x, xq_, (int) n_in, n, cs);
         };
-        auto proj = [&](const WeightRef* w, float* y, int64_t n_in, int64_t n_out) {
-            if (n >= 2) native_mmvq_il(w->native_type, w->native_data, xq_, xil_, y, (int) n_in, (int) n_out, n, cs);
-            else native_mmvq(w->native_type, w->native_data, xq_, y, (int) n_in, (int) n_out, n, cs);
+        auto proj = [&](const WeightRef* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
+            if (n >= 2) native_mmvq_il(w->native_type, w->native_data, xq_, xil_, y, (int) n_in, (int) n_out, n, ps);
+            else native_mmvq(w->native_type, w->native_data, xq_, y, (int) n_in, (int) n_out, n, ps);
         };
         try {
             if (!is_qsa_layer(g, l)) {
@@ -507,31 +526,25 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* hb = h_L_ + (size_t) gi * MT * C;
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
-                // alpha/beta beside the projections (a few blocks, latency-bound), joined before the recurrence
-                if (cudaEventRecord(abfork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, abfork_, 0) != cudaSuccess) {
-                    err = "verify: the GDN gates' branch could not fork";
-                    return false;
-                }
+                // beside qkv and the conv: alpha/beta (a few blocks, latency-bound) and the gate projection, joined
+                // before the recurrence
+                if (!fork(side_, bfork_)) return false;
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
                              n, side_);
-                if (cudaEventRecord(abjoin_, side_) != cudaSuccess) {
-                    err = "verify: the GDN gates' branch could not join";
-                    return false;
-                }
+                if (!mark(side_, bjoin_)) return false;
                 quant(xm, N);
-                proj(wqkv, qkv + (size_t) tb * C, N, C);
+                if (!fork(shs_, pfork_)) return false;
+                proj(wg, z_ + (size_t) tb * ZV, N, ZV, shs_);
+                if (!mark(shs_, pjoin_)) return false;
+                proj(wqkv, qkv + (size_t) tb * C, N, C, cs);
                 gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
-                proj(wg, z_ + (size_t) tb * ZV, N, ZV);
-                if (cudaStreamWaitEvent(cs, abjoin_, 0) != cudaSuccess) {
-                    err = "verify: the GDN gates' branch could not join";
-                    return false;
-                }
+                if (!wait(bjoin_) || !wait(pjoin_)) return false;
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
                                     (int) HV, te, nullptr, cs, tb);
                 quant(y_ + (size_t) tb * ZV, ZV);
-                proj(wout, bo_ + tb * N, ZV, N);
+                proj(wout, bo_ + tb * N, ZV, N, cs);
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
@@ -560,12 +573,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     native_rope_apply_tokens(data, data, n * heads, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, heads,
                                              (int) NH, ns);
                 };
-                // the indexer - its keys appended, the queries' block scores and top-k - on a branch beside the
-                // attention's projections, joined before the attention
-                if (cudaEventRecord(abfork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, abfork_, 0) != cudaSuccess) {
-                    err = "verify: the indexer's branch could not fork";
-                    return false;
-                }
+                // two branches beside the keys and values, joined before the attention: the indexer (its keys appended,
+                // the queries' block scores and top-k), and the queries
+                if (!fork(side_, bfork_)) return false;
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
                 bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wik->data, idx_raw + tb * ID, N, ID, n, side_);
                 if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, side_);
@@ -580,13 +590,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                  s, scores_ + (size_t) tb * max_blocks_, side_, qsa_score_grid_blocks);
                 qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                sel_ + (size_t) tb * cap_, side_);
-                if (cudaEventRecord(abjoin_, side_) != cudaSuccess) {
-                    err = "verify: the indexer's branch could not join";
+                if (!mark(side_, bjoin_)) return false;
+                quant(xm, N);
+                if (!fork(shs_, pfork_)) return false;
+                proj(wq, qfull_ + tb * NH * 2 * HD, N, NH * 2 * HD, shs_);
+                // the query halves of every token's heads (rows of 2 * HD: query, then gate)
+                if (cudaMemcpy2DAsync(qcur_ + tb * NH * HD, (size_t) HD * 4, qfull_ + tb * NH * 2 * HD, (size_t) HD * 2 * 4,
+                                      (size_t) HD * 4, (size_t) (n * NH), cudaMemcpyDeviceToDevice, shs_) != cudaSuccess) {
+                    err = "verify: the q/gate split failed";
                     return false;
                 }
-                quant(xm, N);
-                proj(wk, kcur_ + tb * NKV * HD, N, NKV * HD);
-                proj(wv, vcur_ + tb * NKV * HD, N, NKV * HD);
+                if (batched) norm_rope_tokens(qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD, pos_ + tb * NH, shs_);
+                else for (int t = tb; t < te; ++t) norm_rope(qcur_ + t * NH * HD, wqn, (int) NH, (int) HD, pos_ + t * NH, shs_);
+                if (!mark(shs_, pjoin_)) return false;
+                proj(wk, kcur_ + tb * NKV * HD, N, NKV * HD, cs);
+                proj(wv, vcur_ + tb * NKV * HD, N, NKV * HD, cs);
                 if (batched) norm_rope_tokens(kcur_ + tb * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + tb * NH, cs);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH, cs);
                 if (st.kv_int8)
@@ -596,19 +614,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     for (int t = tb; t < te; ++t)
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs);
-                proj(wq, qfull_ + tb * NH * 2 * HD, N, NH * 2 * HD);
-                // the query halves of every token's heads (rows of 2 * HD: query, then gate)
-                if (cudaMemcpy2DAsync(qcur_ + tb * NH * HD, (size_t) HD * 4, qfull_ + tb * NH * 2 * HD, (size_t) HD * 2 * 4,
-                                      (size_t) HD * 4, (size_t) (n * NH), cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
-                    err = "verify: the q/gate split failed";
-                    return false;
-                }
-                if (batched) norm_rope_tokens(qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD, pos_ + tb * NH, cs);
-                else for (int t = tb; t < te; ++t) norm_rope(qcur_ + t * NH * HD, wqn, (int) NH, (int) HD, pos_ + t * NH, cs);
-                if (cudaStreamWaitEvent(cs, abjoin_, 0) != cudaSuccess) {
-                    err = "verify: the indexer's branch could not join";
-                    return false;
-                }
+                if (!wait(bjoin_) || !wait(pjoin_)) return false;
                 QsaAttnPools pools;
                 pools.page_table = st.page_table;
                 if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
@@ -622,7 +628,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     for (int t = tb; t < te; ++t)
                         qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD, cs);
                 quant(attn32_ + tb * NH * HD, NH * HD);
-                proj(wo, bo_ + tb * N, NH * HD, N);
+                proj(wo, bo_ + tb * N, NH * HD, N, cs);
             }
         } catch (const std::exception& e) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
@@ -631,6 +637,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 2, cs);
         gr_read_group(1, true, inj_, inj2_);
         stamp(l, 3, cs);
+        // the routed experts' activations beside the router (joined before the experts)
+        if (!fork(side_, bfork_)) return false;
+        if (strata::kernels::cpu::expert_layout().native)
+            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, side_);
+        else
+            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N,
+                                 side_);
+        if (!mark(side_, bjoin_)) return false;
         // the router, the doorbell and the main GPU's routed experts - the ones its VRAM tier holds, decided here from
         // the residency snapshot the pool reads too (it leaves their rows to the GPU)
         if (l == 0 && grp == 0 && cudaStreamWaitEvent(cs, res_ready_, 0) != cudaSuccess) {
@@ -667,14 +681,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             MT * K, plan_ptr_off_, cs);
         }
         stamp(l, 4, cs);
-        // after the doorbell: the shared expert's branch first (the longest), the routed experts' activations, and the
-        // next layer's prediction
+        // after the doorbell: the shared expert's branch, and the next layer's prediction
         if (beside && !shared(l, grp)) return false;
-        if (strata::kernels::cpu::expert_layout().native)
-            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
-        else
-            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
-        stamp(l, 5, cs);
         if (predicts(l)) {
             const WeightRef* wr1 = need(LayerView(wt, l + 1), "ffn_gate_inp.weight", err);
             if (!wr1) return false;
@@ -699,6 +707,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
+        if (!wait(bjoin_)) return false;
+        stamp(l, 5, cs);
         return beside || shared(l, grp);
     };
 
