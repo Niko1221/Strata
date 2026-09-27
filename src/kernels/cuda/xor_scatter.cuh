@@ -11,25 +11,40 @@
 namespace strata::kernels {
 namespace {
 
-// NV (a power of two, at most 32) values a lane; afterwards v[0] is the sum of value xor_scatter_index<NV>(lane)
-template <int NV>
-__device__ __forceinline__ void xor_scatter(float (&v)[NV], int lane) {
-    static_assert(NV >= 1 && NV <= 32 && (NV & (NV - 1)) == 0, "NV must be a power of two <= 32");
-#pragma unroll
-    for (int s = 0; s < 5; ++s) {
-        const int o = 16 >> s, n = NV >> s;   // n: the values left before this step
-        if (n > 1) {
+// c ? a : b as a select of values: the compiler turns `c ? v[i] : v[j]` into a load from a selected address, which
+// puts the array in local memory
+__device__ __forceinline__ float select_f(bool c, float a, float b) {
+    float r;
+    asm("{ .reg .pred p; setp.ne.u32 p, %3, 0; selp.f32 %0, %1, %2, p; }" : "=f"(r) : "f"(a), "f"(b), "r"((unsigned) c));
+    return r;
+}
+
+// step S of xor_scatter (distance 16 >> S); the steps are template recursion so that every loop has a constant trip
+// count and unrolls (a rolled loop indexes v at run time, in local memory)
+template <int NV, int S>
+__device__ __forceinline__ void xor_scatter_step(float (&v)[NV], int lane) {
+    if constexpr (S < 5) {
+        constexpr int o = 16 >> S, n = NV >> S;   // n: the values left before this step
+        if constexpr (n > 1) {
             const bool hi = (lane & o) != 0;
 #pragma unroll
             for (int e = 0; e < n / 2; ++e) {
-                const float mine = hi ? v[n / 2 + e] : v[e];
-                const float other = hi ? v[e] : v[n / 2 + e];
+                const float mine = select_f(hi, v[n / 2 + e], v[e]);
+                const float other = select_f(hi, v[e], v[n / 2 + e]);
                 v[e] = mine + __shfl_xor_sync(0xffffffffu, other, o);
             }
         } else {
             v[0] += __shfl_xor_sync(0xffffffffu, v[0], o);
         }
+        xor_scatter_step<NV, S + 1>(v, lane);
     }
+}
+
+// NV (a power of two, at most 32) values a lane; afterwards v[0] is the sum of value xor_scatter_index<NV>(lane)
+template <int NV>
+__device__ __forceinline__ void xor_scatter(float (&v)[NV], int lane) {
+    static_assert(NV >= 1 && NV <= 32 && (NV & (NV - 1)) == 0, "NV must be a power of two <= 32");
+    xor_scatter_step<NV, 0>(v, lane);
 }
 
 // the value a lane's v[0] sums after xor_scatter: the halves its bits 16, 8, ... selected
