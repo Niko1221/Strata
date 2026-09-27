@@ -191,7 +191,8 @@ void verify_router(const VerifyRouterArgs& a, void* stream) {
     const auto st = static_cast<cudaStream_t>(stream);
     const int n_copy = a.x_out != nullptr ? (a.n_tok * a.n_embd / 4 + VR_THREADS - 1) / VR_THREADS : 0;
     switch (a.n_tok) {
-#define STRATA_VR(T) case T: verify_router_kernel<T><<<unsigned(n_copy + a.n_expert), VR_THREADS, 0, st>>>(a, n_copy); break;
+#define STRATA_VR(T) \
+    case T: verify_router_kernel<T><<<unsigned(n_copy + a.n_expert), VR_THREADS, 0, st>>>(a, n_copy); break;
         STRATA_VR(1) STRATA_VR(2) STRATA_VR(3) STRATA_VR(4) STRATA_VR(5) STRATA_VR(6) STRATA_VR(7) STRATA_VR(8)
 #undef STRATA_VR
     }

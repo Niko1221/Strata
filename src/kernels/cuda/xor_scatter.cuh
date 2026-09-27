@@ -15,7 +15,8 @@ namespace {
 // puts the array in local memory
 __device__ __forceinline__ float select_f(bool c, float a, float b) {
     float r;
-    asm("{ .reg .pred p; setp.ne.u32 p, %3, 0; selp.f32 %0, %1, %2, p; }" : "=f"(r) : "f"(a), "f"(b), "r"((unsigned) c));
+    asm("{ .reg .pred p; setp.ne.u32 p, %3, 0; selp.f32 %0, %1, %2, p; }"
+        : "=f"(r) : "f"(a), "f"(b), "r"((unsigned) c));
     return r;
 }
 

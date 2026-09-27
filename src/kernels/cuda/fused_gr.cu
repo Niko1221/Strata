@@ -78,10 +78,11 @@ __device__ __forceinline__ void reduce_chunks(const float (&v)[VT], int lane, F&
 // The down projection and the injection of TT tokens.  Block (s, g): warp w takes rows g DRB + w DR + [0, DR) of
 // [w_down; w_inject] over the slice's DCS columns, a lane 8 columns a step, each activation chunk loaded once for its
 // DR rows.  The slice's R' = R + bo_prev * 2 sigmoid(inj_prev / hc) times w_norm is staged in shared memory split into
-// the halves of the 8-column chunks (conflict-free 16-byte reads), the sums of squares of R' go to the scratch; the stream's 1/rms is applied to the slice sums later, since a slice lies
-// in one stream.  The group's last block (a counter) adds each row's partials in slice order, per stream times the
-// stream's 1/rms, and writes lo = silu(y / hc) or the injection; group 0's also writes rs.  Every token's arithmetic
-// is the same whatever its place in the window and the window's size.
+// the halves of the 8-column chunks (conflict-free 16-byte reads), and the sums of squares of R' go to the scratch:
+// a slice lies in one stream, so the stream's 1/rms multiplies the slice sums later.  The group's last block (a
+// counter) adds each row's partials in slice order, per stream times the stream's 1/rms, and writes lo = silu(y / hc)
+// or the injection; group 0's also writes rs.  Every token's arithmetic is the same whatever its place in the window
+// and the window's size.
 template <int TT>
 __global__ void __launch_bounds__(DTH) gr_down_split_kernel(GrMulti m, float* __restrict__ scratch) {
     static_assert(TT >= 1 && TT <= DT, "tokens a launch");
@@ -113,7 +114,8 @@ __global__ void __launch_bounds__(DTH) gr_down_split_kernel(GrMulti m, float* __
     for (int i = 0; i < DR; ++i) {
         const int rb = rb0 + i;
         const bool ok = rb < LR || has_inj;
-        const uint16_t* base = rb < LR ? m.a[0].w_down + (size_t) rb * D : m.a[0].w_inject + (size_t) (ok ? rb - LR : 0) * D;
+        const uint16_t* base =
+            rb < LR ? m.a[0].w_down + (size_t) rb * D : m.a[0].w_inject + (size_t) (ok ? rb - LR : 0) * D;
         const uint4* w4 = reinterpret_cast<const uint4*>(base + col0) + lane;
 #pragma unroll
         for (int j = 0; j < DSTEPS; ++j) w[i][j] = ok ? __ldg(w4 + j * 32) : make_uint4(0, 0, 0, 0);
