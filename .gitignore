@@ -46,3 +46,15 @@ build-vision.bat
 /dist/
 *.done
 /third_party/*.zip
+
+# Local test artifacts, scratch, and binaries
+Test/
+tools/aria2c*
+tools/*.exe
+tools/*.reg
+tools/bench_contexts.py
+download_shards.py
+run_kv_q4_test.bat
+*.png
+.vscode/
+.idea/
