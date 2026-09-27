@@ -3,6 +3,7 @@
 
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -114,6 +115,8 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
     } else {
         cudaMemsetAsync(s.block.R, 0, (size_t) g.hc * g.n_embd * 4, cs);
     }
+    // the fused hyper-connection read's scratch: its counters start at zero
+    cudaMemsetAsync(s.block.gr_scratch, 0, strata::kernels::fused_gr_scratch_bytes(), cs);
     // every GDN layer's recurrence and conv history
     cudaMemsetAsync(s.gdn_state, 0, (size_t) g.n_gdn_layers() * gdn_state_floats(g) * 4, cs);
     // and every QSA layer's cache and indexer

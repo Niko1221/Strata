@@ -387,7 +387,8 @@ int test_verify_router(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
-// ---- the hyper-connection read: fused_gr_read per token  vs  fused_gr_read_multi
+// ---- the hyper-connection read: every token of an n-token read bitwise its 1-token read, and within a rounding
+// bound of an FP64 reference (|error| <= 1e-4 x the sum of the terms' magnitudes, carried through silu and sigmoid)
 int test_gr_read(std::mt19937& rng, cudaStream_t s) {
     const int64_t N = 2560, HC = 4, D = N * HC, LR = 320;
     auto bf16 = [&](size_t n) {
@@ -400,16 +401,21 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
         }
         return v;
     };
+    auto bf = [](uint16_t v) { const uint32_t b = (uint32_t) v << 16; float f; std::memcpy(&f, &b, 4); return (double) f; };
     std::vector<float> wn((size_t) D);
     for (auto& v : wn) v = edgy(rng);
-    uint16_t *d_wd = dev<uint16_t>((size_t) (LR * D)), *d_wu = dev<uint16_t>((size_t) (D * LR)),
-             *d_wi = dev<uint16_t>((size_t) (HC * D));
+    const std::vector<uint16_t> wd = bf16((size_t) (LR * D)), wu = bf16((size_t) (D * LR)), wi = bf16((size_t) (HC * D));
+    uint16_t *d_wd = dev<uint16_t>(wd.size()), *d_wu = dev<uint16_t>(wu.size()), *d_wi = dev<uint16_t>(wi.size());
     float* d_wn = dev<float>(wn.size());
-    up(d_wd, bf16((size_t) (LR * D)));
-    up(d_wu, bf16((size_t) (D * LR)));
-    up(d_wi, bf16((size_t) (HC * D)));
+    up(d_wd, wd);
+    up(d_wu, wu);
+    up(d_wi, wi);
     up(d_wn, wn);
-    int bad = 0;
+    const size_t sb = strata::kernels::fused_gr_scratch_bytes();
+    float* d_scratch = (float*) dev<uint8_t>(sb);
+    check(cudaMemset(d_scratch, 0, sb), "memset");
+    int bad = 0, off = 0;
+    double worst = 0.0;   // the largest error as a fraction of its bound
     for (int n_tok = 1; n_tok <= 8; ++n_tok) {
         for (int variant = 0; variant < 3; ++variant) {   // apply + inject, no apply, no inject
             const bool apply = variant != 1, inject = variant != 2;
@@ -417,8 +423,8 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
             for (auto& v : R) v = edgy(rng);
             for (auto& v : bo) v = edgy(rng);
             for (auto& v : inj) v = edgy(rng);
-            // one set of outputs per path; R is updated in place when apply, so each path has its own copy
-            float* d[2][6];   // R, lo, rs, inject, mixed, xn
+            // path 0: one read of n_tok tokens; path 1: n_tok reads of one token.  R is updated in place when apply.
+            float* d[2][5];   // R, lo, rs, inject, mixed
             for (int p = 0; p < 2; ++p) {
                 d[p][0] = dev<float>(R.size());
                 up(d[p][0], R);
@@ -426,7 +432,6 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
                 d[p][2] = dev<float>((size_t) (n_tok * HC));
                 d[p][3] = dev<float>((size_t) (n_tok * HC));
                 d[p][4] = dev<float>((size_t) (n_tok * N));
-                d[p][5] = dev<float>((size_t) (n_tok * D));
                 check(cudaMemset(d[p][3], 0, (size_t) (n_tok * HC) * 4), "memset");
             }
             float *d_bo = dev<float>(bo.size()), *d_inj = dev<float>(inj.size());
@@ -444,16 +449,84 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
                     a.mixed = d[p][4] + t * N;
                     args[p].push_back(a);
                 }
-            for (int t = 0; t < n_tok; ++t) strata::kernels::fused_gr_read(args[0][(size_t) t], s);
-            strata::kernels::fused_gr_read_multi(args[1].data(), n_tok, d[1][5], s);
+            strata::kernels::fused_gr_read_multi(args[0].data(), n_tok, d_scratch, s);
+            for (int t = 0; t < n_tok; ++t) strata::kernels::fused_gr_read_multi(&args[1][(size_t) t], 1, d_scratch, s);
             check(cudaStreamSynchronize(s), "gr read");
             const char* names[5] = {"R", "lo", "rs", "inject", "mixed"};
             const size_t sizes[5] = {R.size(), (size_t) (n_tok * LR), (size_t) (n_tok * HC), (size_t) (n_tok * HC),
                                      (size_t) (n_tok * N)};
+            std::vector<float> got[5];
             for (int o = 0; o < 5; ++o) {
-                const int b = bitwise_diff(down(d[0][o], sizes[o]), down(d[1][o], sizes[o]), names[o]);
+                got[o] = down(d[0][o], sizes[o]);
+                const int b = bitwise_diff(got[o], down(d[1][o], sizes[o]), names[o]);
                 if (b) std::fprintf(stderr, "gr_read: n_tok %d variant %d: %s: %d differ\n", n_tok, variant, names[o], b);
                 bad += b;
+            }
+            // FP64 for the first token of the 1- and 4-token reads
+            if (n_tok == 1 || n_tok == 4) {
+                const float* Rt = R.data();
+                // xa: the magnitude xn's rounding scales with (R' = R + gw bo may cancel)
+                std::vector<double> Rp((size_t) D), Ra((size_t) D), xn((size_t) D), xa((size_t) D), rs(HC);
+                for (int c = 0; c < HC; ++c) {
+                    const double gw = apply ? 2.0 / (1.0 + std::exp(-(double) inj[(size_t) c] / HC)) : 0.0;
+                    double ss = 0.0;
+                    for (int64_t dd = 0; dd < N; ++dd) {
+                        const size_t i = (size_t) (c * N + dd);
+                        Rp[i] = (double) Rt[i] + gw * bo[(size_t) dd];
+                        Ra[i] = std::fabs((double) Rt[i]) + std::fabs(gw * bo[(size_t) dd]);
+                        ss += Rp[i] * Rp[i];
+                    }
+                    rs[(size_t) c] = 1.0 / std::sqrt(ss / N + 1e-6);
+                    for (int64_t dd = 0; dd < N; ++dd) {
+                        const size_t i = (size_t) (c * N + dd);
+                        xn[i] = Rp[i] * wn[i] * rs[(size_t) c];
+                        xa[i] = Ra[i] * std::fabs((double) wn[i]) * rs[(size_t) c];
+                    }
+                }
+                auto near = [&](double gpu, double ref, double bound, const char* what, int64_t i) {
+                    if (!std::isfinite(ref) && std::isinf(gpu) && (gpu > 0) == (ref > 0)) return;
+                    const double e = std::fabs(gpu - ref);
+                    worst = std::max(worst, e / (bound + 1e-300));
+                    if (!(e <= bound) && off++ < 5)
+                        std::fprintf(stderr, "  gr_read FP64: n_tok %d variant %d: %s[%lld] %.9g vs %.9g (bound %.3g)\n", n_tok,
+                                     variant, what, (long long) i, gpu, ref, bound);
+                };
+                for (int c = 0; c < HC; ++c) near(got[2][(size_t) c], rs[(size_t) c], 1e-5 * rs[(size_t) c], "rs", c);
+                if (apply)
+                    for (int64_t i = 0; i < D; ++i) near(got[0][(size_t) i], Rp[(size_t) i], 1e-6 * Ra[(size_t) i] + 1e-30, "R", i);
+                std::vector<double> lo((size_t) LR), lo_b((size_t) LR);
+                for (int64_t r = 0; r < LR + (inject ? HC : 0); ++r) {
+                    const uint16_t* w = r < LR ? wd.data() + (size_t) (r * D) : wi.data() + (size_t) ((r - LR) * D);
+                    double y = 0.0, mag = 0.0;
+                    for (int64_t i = 0; i < D; ++i) {
+                        y += bf(w[i]) * xn[(size_t) i];
+                        mag += std::fabs(bf(w[i])) * xa[(size_t) i];
+                    }
+                    if (r < LR) {
+                        const double x = y / HC;
+                        lo[(size_t) r] = x / (1.0 + std::exp(-x));
+                        lo_b[(size_t) r] = 1.1 * 1e-4 * mag / HC + 1e-30;
+                        near(got[1][(size_t) r], lo[(size_t) r], lo_b[(size_t) r], "lo", r);
+                    } else {
+                        near(got[3][(size_t) (r - LR)], y, 1e-4 * mag + 1e-30, "inject", r - LR);
+                    }
+                }
+                for (int64_t dd = 0; dd < N; ++dd) {
+                    double mixed = 0.0, bound = 0.0;
+                    for (int c = 0; c < HC; ++c) {
+                        const size_t i = (size_t) (c * N + dd);
+                        double u = 0.0, du = 0.0;
+                        for (int64_t k = 0; k < LR; ++k) {
+                            const double w = bf(wu[i * LR + (size_t) k]);
+                            u += w * lo[(size_t) k];
+                            du += std::fabs(w) * (1e-4 * std::fabs(lo[(size_t) k]) + lo_b[(size_t) k]);
+                        }
+                        const double sg = 1.0 / (1.0 + std::exp(-u));
+                        mixed += xn[i] * sg / HC;
+                        bound += (1e-4 * xa[i] + 0.25 * std::fabs(xn[i]) * du) / HC;
+                    }
+                    near(got[4][(size_t) dd], mixed, bound + 1e-30, "mixed", dd);
+                }
             }
             for (int p = 0; p < 2; ++p)
                 for (float* q : d[p]) cudaFree(q);
@@ -461,8 +534,13 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
             cudaFree(d_inj);
         }
     }
-    for (void* p : {(void*) d_wd, (void*) d_wu, (void*) d_wi, (void*) d_wn}) cudaFree(p);
-    std::printf("gr_read: %s\n", bad ? "MISMATCH" : "bitwise equal to the single-token read (1-8 tokens, 3 variants)");
+    for (void* p : {(void*) d_wd, (void*) d_wu, (void*) d_wi, (void*) d_wn, (void*) d_scratch}) cudaFree(p);
+    bad += off;
+    char msg[160];
+    std::snprintf(msg, sizeof msg,
+                  "each token bitwise its 1-token read (1-8 tokens, 3 variants); FP64 within bounds (largest error %.2g of its bound)",
+                  worst);
+    std::printf("gr_read: %s\n", bad ? "MISMATCH" : msg);
     return bad;
 }
 

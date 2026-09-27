@@ -381,6 +381,7 @@ struct BlockBuffers {
     /// because the fused read of one half reads the other half's injection while writing its own.
     float* inject2 = nullptr;                 ///< hc
     float* gr_rs = nullptr;                   ///< hc: the fused read's per-stream 1/rms
+    float* gr_scratch = nullptr;              ///< `fused_gr_scratch_bytes()`: the fused read's scratch (session_zero)
     uint8_t* head_q8k = nullptr;              ///< `q8k_bytes(n_embd)`: the head's Q8_K activation image
     strata::kernels::GrWorkspace gr;          ///< `gr_read`'s scratch
 
