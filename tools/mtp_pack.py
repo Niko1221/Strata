@@ -4,16 +4,18 @@ llama.cpp's qwen4exp converter drops the MTP head (`supports_mtp_export = False`
 no longer on this PC, so Strata packs its own from the 31 `mtp.*` tensors fetched by tools/mtp_fetch.py:
 
     python tools/mtp_pack.py --src Desktop/Strata/mtp-bf16 --experts q2_0 --out mtp-q2_0.gguf
-    python tools/mtp_pack.py --src ... --experts q4_0 --out mtp-q4_0.gguf       (acceptance comparison arm)
+    python tools/mtp_pack.py --src ... --experts iq4_nl --out mtp-iq4_nl.gguf
 
 Layout: dense tensors (attention, indexer, hyper-connections, shared expert, router, fc/norms) stay BF16 (F32 for
 1-D norms), ~0.18 GB. The routed experts keep the checkpoint's fused layout - `gate_up_proj` [512, 1280, 2560] and
 `down_proj` [512, 2560, 640], quantized along the last (input) axis - in one of:
 
-    q2_0   64-element blocks, grid {-1, 0, 1, 2} x d. The scale is chosen per block to MINIMIZE squared error over
-           that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
-           model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it unchanged. ~0.71 GB.
-    q4_0   ggml reference rounding. ~1.42 GB.       q8_0   ggml reference. ~2.67 GB.
+    q2_0    64-element blocks, grid {-1, 0, 1, 2} x d. The scale is chosen per block to MINIMIZE squared error over
+            that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
+            model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it unchanged. ~0.71 GB.
+    iq4_nl  ggml's quantizer without an importance matrix (relative RMS error ~0.078). ~1.42 GB.
+    q8_0    ggml reference (~0.006). ~2.67 GB.
+    iq4_nl and q8_0 run through the main model's native expert kernels (tools/mtp_rt.py writes them as GGUF blocks).
 
 This is round-to-nearest, not GSQ: the plan picks the expert format by MEASURED draft acceptance (P0.3/P6), not
 by this file's reconstruction error, which is reported per tensor only as a sanity check. No model runs here.
@@ -23,8 +25,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -82,26 +86,56 @@ def q2_0(w: np.ndarray) -> np.ndarray:
     return out.reshape(-1)
 
 
-def q4_0(w: np.ndarray) -> np.ndarray:
-    """ggml quantize_row_q4_0_ref: d = max / -8 (signed max), code = clamp(round(x/d + 8.5) truncated, 0, 15)."""
+IQ4_NL_GRID = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], dtype=np.float32)
+IQ4_NL_MID = (IQ4_NL_GRID[:-1] + IQ4_NL_GRID[1:]) / 2
+
+
+def iq4_nl(w: np.ndarray) -> np.ndarray:
+    """ggml quantize_row_iq4_nl without an importance matrix (quantize_row_iq4_nl_impl, block 32, ntry 7): the scale
+    that maps the block's largest |w| onto the grid's end, then the best of 15 trial scales by weighted least
+    squares (weights w^2); codes are the nearest grid values (ties to the upper). fp16 d, then 16 bytes of 4-bit
+    codes: element j in the low nibble of byte j, element j + 16 in its high nibble."""
     x = w.reshape(-1, 32).astype(np.float32)
-    idx = np.abs(x).argmax(axis=1)
-    mx = x[np.arange(x.shape[0]), idx][:, None]
-    d = mx / -8.0
-    inv = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0)
-    q = np.minimum(15, np.trunc(x * inv + 8.5)).astype(np.uint8)
-    packed = (q[:, :16] | (q[:, 16:] << 4)).astype(np.uint8)
+    wt = x * x
+    rows = np.arange(x.shape[0])
+    mx = x[rows, np.abs(x).argmax(axis=1)]                     # the signed value of the largest |w| (first one)
+    live = np.abs(mx) >= 1e-15
+    mx = np.where(live, mx, np.float32(1))
+
+    def fit(inv: np.ndarray):
+        q = IQ4_NL_GRID[np.searchsorted(IQ4_NL_MID, inv[:, None] * x, side="right")]
+        wq = wt * q
+        a, b = wq * x, wq * q
+        sqx, sq2 = a[:, 0].copy(), b[:, 0].copy()
+        for j in range(1, 32):                                 # ggml's order of the sums
+            sqx += a[:, j]
+            sq2 += b[:, j]
+        return sqx, sq2
+
+    sqx, sq2 = fit(1 / (-mx / IQ4_NL_GRID[0]))
+    d = sqx / np.where(sq2 > 0, sq2, 1)
+    best = d * sqx
+    for t in range(-7, 8):
+        sqx, sq2 = fit((t + IQ4_NL_GRID[0]) / mx)
+        better = (sq2 > 0) & (sqx * sqx > best * sq2)
+        d = np.where(better, sqx / np.where(sq2 > 0, sq2, 1), d)
+        best = np.where(better, d * sqx, best)
+    d = np.where(live, d, 0).astype(np.float32)
+    inv = np.where(d != 0, 1 / np.where(d != 0, d, 1), 0).astype(np.float32)
+    codes = np.searchsorted(IQ4_NL_MID, inv[:, None] * x, side="right").astype(np.uint8)
     out = np.empty((x.shape[0], 18), dtype=np.uint8)
     out[:, :2] = d.astype(np.float16).view(np.uint8).reshape(-1, 2)
-    out[:, 2:] = packed
+    out[:, 2:] = codes[:, :16] | (codes[:, 16:] << 4)
     return out.reshape(-1)
 
 
 def q8_0(w: np.ndarray) -> np.ndarray:
+    """ggml quantize_row_q8_0_ref: d = max|w| / 127, codes rounded half away from zero."""
     x = w.reshape(-1, 32).astype(np.float32)
     d = np.abs(x).max(axis=1, keepdims=True) / 127.0
     inv = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
-    q = np.rint(x * inv).astype(np.int8)
+    v = x * inv
+    q = (np.sign(v) * np.floor(np.abs(v) + 0.5)).astype(np.int8)
     out = np.empty((x.shape[0], 34), dtype=np.uint8)
     out[:, :2] = d.astype(np.float16).view(np.uint8).reshape(-1, 2)
     out[:, 2:] = q.view(np.uint8)
@@ -115,19 +149,18 @@ def dequant(kind: str, blob: np.ndarray, n: int) -> np.ndarray:
         qs = b[:, 2:]
         codes = np.stack([(qs >> s) & 3 for s in (0, 2, 4, 6)], axis=2).reshape(-1, 64).astype(np.float32)
         return ((codes - 1.0) * d).reshape(-1)[:n]
-    if kind == "q4_0":
+    if kind == "iq4_nl":
         b = blob.reshape(-1, 18)
         d = b[:, :2].copy().view(np.float16).astype(np.float32)
         qs = b[:, 2:]
-        q = np.concatenate([qs & 15, qs >> 4], axis=1).astype(np.float32)
-        return ((q - 8.0) * d).reshape(-1)[:n]
+        return (IQ4_NL_GRID[np.concatenate([qs & 15, qs >> 4], axis=1)] * d).reshape(-1)[:n]
     b = blob.reshape(-1, 34)
     d = b[:, :2].copy().view(np.float16).astype(np.float32)
     return (b[:, 2:].view(np.int8).astype(np.float32) * d).reshape(-1)[:n]
 
 
 QUANT = {"q2_0": (q2_0, gguf.GGMLQuantizationType.Q2_0, 64, 18),
-         "q4_0": (q4_0, gguf.GGMLQuantizationType.Q4_0, 32, 18),
+         "iq4_nl": (iq4_nl, gguf.GGMLQuantizationType.IQ4_NL, 32, 18),
          "q8_0": (q8_0, gguf.GGMLQuantizationType.Q8_0, 32, 34)}
 
 
@@ -146,7 +179,8 @@ def main() -> int:
     w.add_string("strata.mtp.source_sha256", hashlib.sha256(
         json.dumps({t["name"]: t["sha256"] for t in manifest}, sort_keys=True).encode()).hexdigest())
     w.add_string("strata.mtp.expert_format", a.experts)
-    w.add_string("strata.mtp.expert_quantizer", "per-block MSE scale search" if a.experts == "q2_0" else "ggml reference")
+    w.add_string("strata.mtp.expert_quantizer", {"q2_0": "per-block MSE scale search", "iq4_nl": "ggml quantize_iq4_nl",
+                                                 "q8_0": "ggml reference"}[a.experts])
     report = []
     for t in sorted(manifest, key=lambda t: t["name"]):
         name, shape = t["name"], t["shape"]
@@ -158,7 +192,8 @@ def main() -> int:
             x = _Experts(raw)
             if shape[-1] % block:
                 raise ValueError(f"{name}: inner dim {shape[-1]} not a multiple of {block}")
-            parts = [fn(x[e]) for e in range(shape[0])]            # one expert at a time bounds memory
+            with ThreadPoolExecutor(os.cpu_count() or 4) as ex:    # numpy releases the GIL in the quantizers
+                parts = list(ex.map(lambda e: fn(x[e]), range(shape[0])))
             blob = np.concatenate(parts)
             errs = []
             for e in range(min(a.check_experts, shape[0])):

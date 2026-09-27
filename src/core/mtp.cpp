@@ -133,11 +133,25 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
-    // ---- the 512 routed experts, one blob each
+    // ---- the 512 routed experts, one blob each: raw GGUF blocks [gate | up | down] in the formats experts.txt names
+    //      (the ggml type ids of gate/up and down), or without it the Q2_0 blob layout of cpu/expert.hpp
     {
-        const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
-        std::ifstream f(rt_dir + "/experts.bin", std::ios::binary);
+        blob_ = strata::kernels::cpu::BLOB;
+        if (std::ifstream fmt(rt_dir + "/experts.txt"); fmt) {
+            int gu = -1, dn = -1;
+            fmt >> gu >> dn;
+            if (!strata::kernels::native_expert_supported(gu, dn, g.n_embd, g.n_ff)) {
+                err = "mtp: experts.txt names formats the GPU expert kernels lack";
+                return false;
+            }
+            nat_ = strata::kernels::native_expert_layout(gu, dn, g.n_embd, g.n_ff);
+            blob_ = nat_.bytes;
+        }
+        const uint64_t bytes = (uint64_t) g.n_expert * blob_;
+        std::ifstream f(rt_dir + "/experts.bin", std::ios::binary | std::ios::ate);
         if (!f) { err = "mtp: cannot open experts.bin"; return false; }
+        if ((uint64_t) f.tellg() != bytes) { err = "mtp: experts.bin does not match its format"; return false; }
+        f.seekg(0);
         if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
         std::vector<uint8_t> chunk(64u << 20);
         for (uint64_t off = 0; off < bytes;) {
@@ -198,7 +212,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         grp_ptr_ = b.take<unsigned long long>(T * K); grp_start_ = b.take<int32_t>(T * K + 1);
         grp_counts_ = b.take<int32_t>(4);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
-        hit_scratch_ = b.take<uint8_t>(strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff));
+        nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
+            strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
+            strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
         sh_scratch_ = (float*) b.take<uint8_t>(strata::kernels::shared_expert_scratch_bytes(g.n_ff));
         x_bf16_ = b.take<uint16_t>(N);
         out_ids_ = b.take<int32_t>(T + 4);
@@ -220,8 +237,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
-    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
+    char fmts[48] = "Q2_0 blobs";
+    if (nat_.gu_type >= 0) std::snprintf(fmts, sizeof fmts, "ggml types %d/%d", nat_.gu_type, nat_.d_type);
+    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f as %s, dense %.0f)\n",
+                 (double) vram_ / 1048576.0, (double) g.n_expert * blob_ / 1048576.0, fmts,
                  (double) tensors_.back().off / 1048576.0);
     return true;
 }
@@ -362,11 +381,17 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
             else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
         }
-        moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) strata::kernels::cpu::BLOB, grp_ptr_,
-                           grp_start_, grp_counts_, hit_dst_, hit_slot_, cs);
-        quantize_q8_0_scaled(mixed_, hit_xq_, hit_xs_, (int64_t) T * N, cs);
-        moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K, hit_xq_,
-                       hit_xs_, hit_scratch_, parts_, cs);
+        moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) blob_, grp_ptr_, grp_start_, grp_counts_,
+                           hit_dst_, hit_slot_, cs);
+        if (nat_.gu_type >= 0) {
+            quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
+            native_expert_grouped(nat_, grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K,
+                                  (int64_t) T * K, nat_xq_, hit_scratch_, parts_, cs);
+        } else {
+            quantize_q8_0_scaled(mixed_, hit_xq_, hit_xs_, (int64_t) T * N, cs);
+            moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K,
+                           hit_xq_, hit_xs_, hit_scratch_, parts_, cs);
+        }
         NativeSharedWeights nsw;
         nsw.gate_type = GGML_Q8_0; nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
         nsw.up_type = GGML_Q8_0; nsw.up_data = q8("mlp.shared_expert.up_proj.weight");

@@ -3,9 +3,12 @@
     python tools/mtp_rt.py --gguf <Strata>/mtp-bf16/mtp-q2_0.gguf --out <Strata>/mtp-bf16/rt
 
 Writes
-  experts.bin   512 routed experts in the engine's blob layout (`include/strata/kernels/cpu/expert.hpp`): gate/up
-                rows interleaved (2r = gate r, 2r+1 = up r), then down rows; the Q2_0 codes in one plane and the fp16
-                scales in another.  A lossless relayout of the GGUF's Q2_0 blocks (same bytes, `cpu_expert_fixture.py`).
+  experts.bin   512 routed experts.  Q2_0 (tools/mtp_pack.py's default) in the engine's blob layout
+                (`include/strata/kernels/cpu/expert.hpp`): gate/up rows interleaved (2r = gate r, 2r+1 = up r), then
+                down rows; the Q2_0 codes in one plane and the fp16 scales in another, a lossless relayout of the
+                GGUF's blocks (same bytes, `cpu_expert_fixture.py`).  Other formats (iq4_nl, q8_0) as the GGUF's
+                blocks, [gate rows | up rows | down rows] per expert, for the native expert kernels.
+  experts.txt   only with the GGUF-block layout: the ggml type ids of gate/up and down.
   dense.bin     every other tensor: the large projections quantized to Q8_0 (ggml's reference rounding) so the
                 engine's multi-column MMVQ can run them; the hyper-connection and router weights kept BF16; the
                 RMSNorm weights as F32 with the Gemma "+1" applied (vLLM GemmaRMSNorm scales by 1 + w).
@@ -68,12 +71,23 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     r = gguf.GGUFReader(a.gguf)
     tens = {t.name: t for t in r.tensors}
-    gu = np.asarray(tens["mtp.layers.0.mlp.experts.gate_up_proj"].data)
-    dn = np.asarray(tens["mtp.layers.0.mlp.experts.down_proj"].data)
-    assert gu.shape == (NE, 2 * FF, 720) and dn.shape == (NE, H, 180), (gu.shape, dn.shape)
+    gut, dnt = tens["mtp.layers.0.mlp.experts.gate_up_proj"], tens["mtp.layers.0.mlp.experts.down_proj"]
+    gu, dn = np.asarray(gut.data), np.asarray(dnt.data)
+    q2 = gguf.GGMLQuantizationType.Q2_0
+    fmt = out / "experts.txt"
     with open(out / "experts.bin", "wb") as f:
-        for e in range(NE):
-            f.write(blob_of(gu[e], dn[e]))
+        if gut.tensor_type == q2 and dnt.tensor_type == q2:
+            assert gu.shape == (NE, 2 * FF, 720) and dn.shape == (NE, H, 180), (gu.shape, dn.shape)
+            for e in range(NE):
+                f.write(blob_of(gu[e], dn[e]))
+            fmt.unlink(missing_ok=True)
+        else:
+            assert gu.shape[:2] == (NE, 2 * FF) and dn.shape[:2] == (NE, H), (gu.shape, dn.shape)
+            for e in range(NE):
+                f.write(gu[e].tobytes())
+                f.write(dn[e].tobytes())
+            fmt.write_text(f"{int(gut.tensor_type)} {int(dnt.tensor_type)}\n", encoding="utf-8")
+    blob = (out / "experts.bin").stat().st_size // NE
     lines = []
     off = 0
     with open(out / "dense.bin", "wb") as f:
@@ -102,7 +116,8 @@ def main() -> int:
             lines.append(f"{short} {kind} {rows} {cols} {off} {len(raw)}")
             off += len(raw)
     (out / "dense.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"experts.bin {NE * BLOB} B, dense.bin {off} B, {len(lines)} tensors -> {out}")
+    print(f"experts.bin {NE * blob} B ({gut.tensor_type.name}/{dnt.tensor_type.name}), dense.bin {off} B, "
+          f"{len(lines)} tensors -> {out}")
     for l in lines:
         print("  " + l)
     return 0
