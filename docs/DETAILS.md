@@ -111,8 +111,8 @@ With `--second-gpu N`, CUDA device N (the engine runs on `--main-gpu`, default 0
 each layer while the CPU computes the rest, copies each next layer's likeliest missing experts to itself while the RAM
 is idle, and computes the prompt's experts the first GPU lacks; it may be the card that drives the display. Build for
 both GPUs' architectures (`-DCMAKE_CUDA_ARCHITECTURES="86;120"`). On an RTX 3090 plus an RTX 5070 Ti (12.6 GB of its
-VRAM), 16K-131K prompts: UD-Q4_K_XL 1819-2063 tok/s instead of 992-1130, generation 80-100 tok/s instead of 58-65;
-IQ3_XXS 1959-2184 instead of 1516-1699, generation 102-126 instead of 97-111. When the card has no free VRAM, the
+VRAM), 16K-131K prompts: UD-Q4_K_XL 1852-2075 tok/s instead of 992-1130, generation 89-104 tok/s instead of 58-65;
+IQ3_XXS 1986-2190 instead of 1516-1699, generation 112-139 instead of 97-111. When the card has no free VRAM, the
 engine runs on the main GPU alone.
 
 ## Before you start
