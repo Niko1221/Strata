@@ -789,19 +789,27 @@ def main() -> int:
     print(f"ready: http://{a.host}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
-    print(f"       open http://{a.host}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
+    print(f"       open http://{a.host}:{a.port}/ in a browser to chat; Ctrl+C or close this window to stop the model",
+          flush=True)
     if a.open:
         import webbrowser
         webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
+    code = 0
     try:
-        threading.Event().wait()
+        # a sleep, not threading.Event().wait(): on Windows Ctrl+C interrupts only the former
+        while not hasattr(engine, "proc") or engine.proc.poll() is None:
+            time.sleep(1)
+        print(f"the engine exited (code {engine.proc.returncode})" + (f"; see {cfg['log']}" if cfg.get("log") else ""),
+              flush=True)
+        code = 1
     except KeyboardInterrupt:
-        httpd.shutdown()
-        if hasattr(engine, "close"):
-            engine.close()
-        if vision:
-            vision.close()
-    return 0
+        pass
+    httpd.shutdown()
+    if hasattr(engine, "close"):
+        engine.close()
+    if vision:
+        vision.close()
+    return code
 
 
 if __name__ == "__main__":

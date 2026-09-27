@@ -3019,6 +3019,7 @@ int main(int argc, char** argv) {
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        const uint32_t sleeps0 = pool.sleeps();
         if (o.stats) drive.d.routed.assign((size_t) (g.n_layers * g.n_expert), 0);
         if (use_mtp)
             mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
@@ -3155,10 +3156,10 @@ int main(int argc, char** argv) {
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
-                        "CPU pool call %.3f ms/round\n", "pool multi", pool.ms_multi_gu / rounds,
+                        "CPU pool call %.3f ms/round; %u worker sleeps\n", "pool multi", pool.ms_multi_gu / rounds,
                         pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
                         (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
-                        (drive.cpu_ms - pool_ms0) / rounds);
+                        (drive.cpu_ms - pool_ms0) / rounds, pool.sleeps() - sleeps0);
         if (rounds > 0)
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,
@@ -3311,16 +3312,14 @@ int main(int argc, char** argv) {
         std::printf("%-24s %.3f ms/token over %lld layers (%.0f positions, %lld dispatches)\n",
                     "  the CPU expert pool", pool_positions > 0.0 ? drive.cpu_ms / pool_positions : 0.0,
                     (long long) g.n_layers, pool_positions, (long long) drive.calls);
-        // **AND WHERE INSIDE `run()` IT WENT.**  Three phases per layer and they were one number, which cannot
-        // tell a pool that is slow at the WORK from one that is slow at the SYNCHRONISATION - opposite fixes.
-        // Wait-for-park is expected to be ~0 (the workers re-parked at the end of the previous layer); the
-        // question is whether the time is in the drain or in the re-park barrier.
+        // **AND WHERE INSIDE `run()` IT WENT.**  They were one number, which cannot tell a pool that is slow at
+        // the WORK from one that is slow at the SYNCHRONISATION - opposite fixes: the drain, or the barrier that
+        // closes the phase.
         if (pool_positions > 0.0) {
-            double wp = 0, dr = 0, rp = 0;
-            pool.phase_ms(wp, dr, rp);
+            double dr = 0, cl = 0;
+            pool.phase_ms(dr, cl);
             const double per = pool_positions;
-            std::printf("%-24s   wait-park %.3f  drain %.3f  re-park %.3f  ms/token\n",
-                        "  pool phases", wp / per, dr / per, rp / per);
+            std::printf("%-24s   drain %.3f  close %.3f  ms/token\n", "  pool phases", dr / per, cl / per);
         }
         std::printf("%-24s %lld blobs read\n", "  expert blobs", (long long) srcp->reads());
         // ---- **R4's DISPATCH MEASUREMENT: h, ON THE ENGINE'S OWN ROUTING.**  No offline trace, no corpus

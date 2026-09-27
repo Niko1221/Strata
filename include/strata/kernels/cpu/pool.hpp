@@ -11,18 +11,26 @@
 // one batch.  A ring would add a wrap-around to get wrong and buy nothing.  What is kept from the phase is
 // the part that matters: `head`/`done` are single fetch_add counters, one claim per worker, no lock.
 //
-// THE COMPLETION PROTOCOL, because this is where a pool usually goes wrong.  `run()` waits for `done == n`
-// AND for every worker to PARK.  Waiting only for `done` is not enough: a worker can still be inside the
-// drain loop after its last `done` increment, and the host resetting `head` underneath it would let that
-// worker claim a job from the NEXT batch before the next batch has been published.  The
-// `done`-then-`parked` pair makes the handover unambiguous, and the second wait costs a few hundred cycles
-// against a layer that takes milliseconds.
+// THE PHASE PROTOCOL, because this is where a pool usually goes wrong.  One atomic word holds the phase's
+// epoch, whether it is open, and how many workers are parked.  The host writes a phase's jobs while the
+// previous phase is closed, then opens the next epoch; a worker joins with a compare-exchange on the whole
+// word, so it can only join the phase it saw open.  The host closes a phase once `done == n` AND every
+// worker that joined has parked again.  Waiting only for `done` is not enough: a worker can still be inside
+// the drain loop after its last `done` increment, and the host resetting `head` underneath it would let it
+// claim a job from the NEXT batch.  Closing is what makes a late worker harmless: one that notices a phase
+// only after the host finished it (it was asleep, or descheduled) finds it closed and waits for the next.
+//
+// IDLE WORKERS SLEEP.  A parked worker spins for `kIdleSpin`, then blocks on the word (`std::atomic::wait`:
+// WaitOnAddress, a futex) until the host opens a phase; the host wakes them only when one sleeps.  Generation
+// opens phases every few hundred microseconds, and a round's longest gap (head, drafts, the first layer) is
+// a few ms, so they sleep only between requests and while a prompt runs on the GPUs.
 #pragma once
 
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -102,7 +110,7 @@ public:
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
 
-    /// Publish `n` jobs, then block until every one has been claimed AND every worker has parked.
+    /// Publish `n` jobs, then block until every one is done AND the phase is closed.
     /// `jobs` must outlive the call (it does, and the workers never touch it afterwards).
     void run(ExpertJob* jobs, int n);
 
@@ -125,28 +133,27 @@ public:
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
     int64_t multi_bytes = 0;
 
-    /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
-    /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to
-    /// it.
-    long long pauses() const { return 0; }
+    /// How long a parked worker spins before it sleeps.
+    static constexpr std::chrono::milliseconds kIdleSpin{50};
+    /// How many times a worker has gone to sleep (each worker counts once per idle stretch).
+    uint32_t sleeps() const { return sleeps_.load(std::memory_order_relaxed); }
 
-    /// **WHERE `run()` SPENDS ITS TIME, in milliseconds accumulated over its lifetime.**  Three phases per
-    /// layer - wait for every worker to be parked, wait for the drain, wait for them to re-park - and until now
-    /// all three were reported as one number.  Without the split there is no way to tell a pool that is slow at
-    /// the WORK from one that is slow at the SYNCHRONISATION, and those need opposite fixes: the first is a
-    /// kernel problem and the second is a barrier problem.
+    /// **WHERE `run()` SPENDS ITS TIME, in milliseconds accumulated over its lifetime**: the drain, and closing
+    /// the phase (the joined workers parking again).  Without the split there is no way to tell a pool that is
+    /// slow at the WORK from one that is slow at the SYNCHRONISATION, and those need opposite fixes.
     ///
     /// Only the host thread touches these, in `run()`, so they need no atomics.
-    void phase_ms(double& wait_park, double& drain, double& repark) const {
-        wait_park = ms_wait_park_;
+    void phase_ms(double& drain, double& close) const {
         drain = ms_drain_;
-        repark = ms_repark_;
+        close = ms_close_;
     }
 
 private:
     void worker(int id);
     void drain(int id, ExpertScratch& scratch);
     void run_phase(int mode, int n_tasks, void (*first)(void*) = nullptr, void* ctx = nullptr);
+    void open_phase();
+    void close_phase();
 
     int n_ = 0;
     bool host_works_ = true;
@@ -155,26 +162,21 @@ private:
     /// The host's own scratch when `host_works_`.  A separate object rather than a share of `scratch_[i]`,
     /// because a worker may own any index and the two must not be able to collide.
     ExpertScratch host_scratch_;
-    // `run()`'s three phases, accumulated.  Host-thread only; see `phase_ms`.
-    double ms_wait_park_ = 0.0;
+    // `run()`'s phases, accumulated.  Host-thread only; see `phase_ms`.
     double ms_drain_ = 0.0;
-    double ms_repark_ = 0.0;
-    // ---- EACH ATOMIC GETS ITS OWN CACHE LINE, AND THE SPIN COUNTER IS GONE.  (Review finding C3.)
+    double ms_close_ = 0.0;
+    // ---- EACH ATOMIC GETS ITS OWN CACHE LINE, AND THE PARK LOOP WRITES NOTHING SHARED.  (Review finding C3.)
     //
-    // These were six adjacent atomics, which put `head_`, `done_`, `parked_` and `epoch_` on ONE cache line -
-    // the four that workers and the host actually contend on, invalidating each other on every access.
-    //
-    // Worse, the parked spin did `pauses_.fetch_add(1)` on EVERY iteration: a LOCKED read-modify-write, five
-    // workers against one line, at roughly one iteration per `_mm_pause`.  So the line the host must WRITE to
-    // publish work (`epoch_`) and READ to confirm the workers are parked (`parked_`) was being hammered by the
-    // very threads waiting for it.  That is contention the pool imposes on itself.
-    //
-    // The counter was diagnostic only - `pauses()` was read in one place, to print a number nothing branched on
-    // - so it is deleted rather than amortised.  `alignas(64)` then stops the remaining four sharing.
+    // Adjacent atomics that workers and the host contend on invalidate each other on every access, and a
+    // diagnostic counter the park loop once incremented on every iteration hammered the very line the host
+    // writes to publish work.  `alignas(64)` keeps them apart; the park loop only reads `state_` (a worker
+    // writes it once to join a phase and once to park again, and `sleepers_` only when it goes to sleep).
     alignas(64) std::atomic<uint32_t> head_{0};
     alignas(64) std::atomic<uint32_t> done_{0};
-    alignas(64) std::atomic<uint32_t> parked_{0};
-    alignas(64) std::atomic<uint32_t> epoch_{0};
+    /// epoch << 32 | kClosed (bit 31) | parked workers
+    alignas(64) std::atomic<uint64_t> state_{0};
+    alignas(64) std::atomic<uint32_t> sleepers_{0};
+    std::atomic<uint32_t> sleeps_{0};
     alignas(64) std::atomic<bool> stop_{false};
     std::vector<std::thread> threads_;
     std::vector<ExpertScratch> scratch_;   // one per worker: no allocation, no false sharing of the hot data

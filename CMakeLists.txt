@@ -465,6 +465,10 @@ else()
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
+# The expert pool against serial runs; `--stress` needs no pack (synthetic experts, idle gaps that put the workers
+# to sleep).
+add_executable(pool_test src/kernels/cpu/pool_test.cpp)
+target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
@@ -551,9 +555,8 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME expert_parity COMMAND expert_parity --selftest
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-  add_executable(pool_test src/kernels/cpu/pool_test.cpp)
-  target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME pool_stress COMMAND pool_test --stress)
 endif()
 
 if(STRATA_BUILD_TESTS)

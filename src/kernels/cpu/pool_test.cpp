@@ -13,8 +13,16 @@
 //      mode the park protocol exists to prevent, so `run()` is called many times in a row.
 //   4. A BATCH BIGGER AND SMALLER THAN THE WORKER COUNT, because `n < workers` leaves most workers claiming
 //      nothing and `n > workers` is the real case (10 experts, 5 workers).
+//   5. (--stress, synthetic experts, no file) SLEEPING AND LATE WORKERS.  Idle workers sleep after `kIdleSpin`;
+//      a phase opened while they sleep is often finished by the host alone before they wake, and a worker that
+//      wakes then must not join it: the host may already be writing the next phase.  Thousands of batches, with
+//      idle gaps either side of `kIdleSpin` and one-expert batches after the long ones, every output bitwise
+//      against a serial run of the same kernels.
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert.hpp"
+#if defined(STRATA_NATIVE_EXPERTS)
+#include "ggml.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -22,8 +30,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace cpu = strata::kernels::cpu;
@@ -49,19 +59,224 @@ double now_ms() {
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
+// ---- 5: --stress
+const float kSentinel = -1.2345e33f;
+
+std::vector<float> gauss_vec(std::mt19937& rng, size_t n, float sd) {
+    std::normal_distribution<float> g(0.0f, sd);
+    std::vector<float> v(n);
+    for (auto& x : v) x = g(rng);
+    return v;
+}
+
+double median(std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+}
+
+/// The pause before a batch: mostly none (generation's layers come back to back), sometimes up to 2 ms, and one
+/// in 40 longer than `kIdleSpin`, so every worker is asleep when the batch is published.  True for a long one.
+bool gap(std::mt19937& rng) {
+    const unsigned r = rng() % 40;
+    if (r == 0) {
+        std::this_thread::sleep_for(cpu::ExpertPool::kIdleSpin + std::chrono::milliseconds(15));
+        return true;
+    }
+    if (r < 5) std::this_thread::sleep_for(std::chrono::microseconds(100 + rng() % 1900));
+    return false;
+}
+
+struct StressStats {
+    long long batches = 0, outputs = 0, differ = 0;
+    int long_gaps = 0;
+    std::vector<double> ms_spinning, ms_after_sleep;   // one-expert batches
+};
+
+void stress_report(const char* what, const StressStats& s, uint32_t sleeps) {
+    std::printf("  %-34s %s (%lld of %lld outputs differ, %lld batches; %d long gaps, %u worker sleeps)\n", what,
+                s.differ ? "*** NO ***" : "identical to serial", s.differ, s.outputs, s.batches, s.long_gaps, sleeps);
+    std::printf("  %-34s %.3f ms while the workers spin, %.3f ms right after they slept (median)\n",
+                "  a one-expert batch", median(s.ms_spinning), median(s.ms_after_sleep));
+}
+
+/// `run()`: whole Q2_0 experts.  Random codes with finite scales: the protocol is under test, not the kernel.
+StressStats stress_run(cpu::ExpertPool& pool, std::mt19937& rng, int iters) {
+    const int NB = 4, NA = 4, MAXJ = 16;
+    std::vector<std::vector<uint8_t>> blobs((size_t) NB, std::vector<uint8_t>(cpu::BLOB));
+    for (auto& b : blobs) {
+        for (auto& v : b) v = (uint8_t) rng();
+        for (size_t o = cpu::O_GU_SCALES; o + 2 <= cpu::BLOB; o += 2) {
+            const uint16_t h = (uint16_t) (0x2000 | (rng() & 0x3FF));   // fp16 in [2^-7, 2^-6)
+            std::memcpy(b.data() + o, &h, 2);
+        }
+    }
+    std::vector<cpu::ActQ> acts((size_t) NA);
+    for (auto& a : acts) cpu::act_quant_q8_1(gauss_vec(rng, cpu::H, 1.0f).data(), cpu::H, a);
+    std::vector<cpu::ExpertJob> jobs((size_t) MAXJ);
+    std::vector<float> out((size_t) MAXJ * cpu::H), ref(cpu::H);
+    cpu::ExpertScratch ws;
+    StressStats s;
+    for (int it = 0; it < iters; ++it) {
+        const bool slept = gap(rng);
+        s.long_gaps += slept;
+        const bool tiny = slept ? rng() % 2 == 0 : rng() % 20 == 0;
+        const int n = tiny ? 1 : 1 + (int) (rng() % MAXJ);
+        for (int j = 0; j < n; ++j) {
+            jobs[(size_t) j].blob = blobs[rng() % NB].data();
+            jobs[(size_t) j].act = &acts[rng() % NA];
+            jobs[(size_t) j].out = out.data() + (size_t) j * cpu::H;
+            std::fill(jobs[(size_t) j].out, jobs[(size_t) j].out + cpu::H, kSentinel);
+        }
+        const double t0 = now_ms();
+        pool.run(jobs.data(), n);
+        const double ms = now_ms() - t0;
+        if (tiny) (slept ? s.ms_after_sleep : s.ms_spinning).push_back(ms);
+        for (int j = 0; j < n; ++j) {
+            cpu::s2_expert_vnni_q(jobs[(size_t) j].blob, *jobs[(size_t) j].act, ref.data(), ws);
+            s.differ += std::memcmp(ref.data(), jobs[(size_t) j].out, sizeof(float) * cpu::H) != 0;
+        }
+        s.outputs += n;
+        ++s.batches;
+    }
+    return s;
+}
+
+#if defined(STRATA_NATIVE_EXPERTS)
+/// `run_split_multi_native`: one layer's experts in GGUF formats, split by rows, several tokens per expert.
+StressStats stress_native(cpu::ExpertPool& pool, std::mt19937& rng, int iters, ggml_type gu, ggml_type dn,
+                          std::string& err) {
+    StressStats s;
+    cpu::NativeFmt f;
+    if (!cpu::native_fmt((int) gu, (int) dn, cpu::H, cpu::FF, f, err)) return s;
+    const int NB = 4, NA = 8, MAXE = 12, MAXNT = 4;
+    // ggml's quantizers on random weights (valid blocks), one thread per expert: the i-quant ones are slow
+    std::vector<std::vector<uint8_t>> blobs((size_t) NB, std::vector<uint8_t>(f.bytes));
+    {
+        std::vector<std::thread> th;
+        for (int b = 0; b < NB; ++b)
+            th.emplace_back([&f, &blobs, gu, dn, b, seed = rng()] {
+                std::mt19937 r(seed);
+                uint8_t* p = blobs[(size_t) b].data();
+                ggml_quantize_chunk(gu, gauss_vec(r, (size_t) cpu::FF * cpu::H, 0.02f).data(), p, 0, cpu::FF, cpu::H, nullptr);
+                ggml_quantize_chunk(gu, gauss_vec(r, (size_t) cpu::FF * cpu::H, 0.02f).data(), p + f.up_off, 0, cpu::FF,
+                                    cpu::H, nullptr);
+                ggml_quantize_chunk(dn, gauss_vec(r, (size_t) cpu::H * cpu::FF, 0.02f).data(), p + f.down_off, 0, cpu::H,
+                                    cpu::FF, nullptr);
+            });
+        for (auto& t : th) t.join();
+    }
+    std::vector<std::vector<uint8_t>> acts((size_t) NA, std::vector<uint8_t>(cpu::kNativeActBytes));
+    for (auto& a : acts) cpu::native_quant_act(f, gauss_vec(rng, cpu::H, 1.0f).data(), a.data());
+    std::vector<cpu::ExpertJobMulti> jobs((size_t) MAXE);
+    std::vector<float> out((size_t) MAXE * MAXNT * cpu::H), ref((size_t) MAXNT * cpu::H);
+    std::vector<float> ff((size_t) MAXNT * cpu::FF);
+    std::vector<uint8_t> hq((size_t) MAXNT * cpu::kNativeHBytes);
+    for (int it = 0; it < iters; ++it) {
+        const bool slept = gap(rng);
+        s.long_gaps += slept;
+        const bool tiny = slept ? rng() % 2 == 0 : rng() % 20 == 0;
+        const int n = tiny ? 1 : 1 + (int) (rng() % MAXE);
+        for (int e = 0; e < n; ++e) {
+            cpu::ExpertJobMulti& j = jobs[(size_t) e];
+            j = cpu::ExpertJobMulti{};
+            j.blob = blobs[rng() % NB].data();
+            j.nt = tiny ? 1 : 1 + (int) (rng() % MAXNT);
+            int tok[NA];
+            std::iota(tok, tok + NA, 0);
+            std::shuffle(tok, tok + NA, rng);
+            for (int t = 0; t < j.nt; ++t) {
+                j.nact[t] = acts[(size_t) tok[t]].data();
+                j.out[t] = out.data() + ((size_t) e * MAXNT + (size_t) t) * cpu::H;
+                std::fill(j.out[t], j.out[t] + cpu::H, kSentinel);
+            }
+        }
+        const double t0 = now_ms();
+        pool.run_split_multi_native(f, jobs.data(), n);
+        const double ms = now_ms() - t0;
+        if (tiny) (slept ? s.ms_after_sleep : s.ms_spinning).push_back(ms);
+        // the same kernels and token groups on this thread, every row at once
+        for (int e = 0; e < n; ++e) {
+            const cpu::ExpertJobMulti& j = jobs[(size_t) e];
+            float* ffp[cpu::MAXT];
+            float* rp[cpu::MAXT];
+            const void* hqp[cpu::MAXT];
+            for (int t = 0; t < j.nt; ++t) {
+                ffp[t] = ff.data() + (size_t) t * cpu::FF;
+                rp[t] = ref.data() + (size_t) t * cpu::H;
+                hqp[t] = hq.data() + (size_t) t * cpu::kNativeHBytes;
+            }
+            cpu::native_gu_rows(f, j.blob, j.nact, j.nt, ffp, 0, cpu::FF);
+            for (int t = 0; t < j.nt; ++t) cpu::native_quant_h(f, ffp[t], hq.data() + (size_t) t * cpu::kNativeHBytes);
+            cpu::native_down_rows(f, j.blob, hqp, j.nt, rp, 0, cpu::H);
+            for (int t = 0; t < j.nt; ++t) s.differ += std::memcmp(rp[t], j.out[t], sizeof(float) * cpu::H) != 0;
+            s.outputs += j.nt;
+        }
+        ++s.batches;
+    }
+    return s;
+}
+#endif
+
+int stress(int iters) {
+    std::mt19937 rng(20260927);
+    cpu::ExpertPool pool;
+    std::printf("  %-34s %d + the host thread; they sleep after %lld ms without work\n", "workers", pool.workers(),
+                (long long) cpu::ExpertPool::kIdleSpin.count());
+    int bad = 0;
+    if (cpu::cpu_features().usable()) {
+        const uint32_t z0 = pool.sleeps();
+        const StressStats s = stress_run(pool, rng, iters);
+        stress_report("run(), whole Q2_0 experts", s, pool.sleeps() - z0);
+        bad += s.differ != 0 || s.long_gaps == 0 || pool.sleeps() == z0;
+    } else {
+        std::printf("  run(): SKIPPED, the CPU lacks %s\n", cpu::cpu_features().reason());
+    }
+#if defined(STRATA_NATIVE_EXPERTS)
+    const struct { ggml_type gu, dn; const char* name; } fmts[] = {
+        {GGML_TYPE_Q4_K, GGML_TYPE_Q5_1, "native rows, Q4_K / Q5_1"},             // ggml-cpu's dot products
+        {GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL, "native rows, IQ3_XXS / IQ4_NL"},   // + the AVX-512 i-quant kernel
+    };
+    for (const auto& ft : fmts) {
+        std::string err;
+        const uint32_t z0 = pool.sleeps();
+        const StressStats s = stress_native(pool, rng, iters, ft.gu, ft.dn, err);
+        if (!err.empty()) {
+            std::printf("  %s: %s\n", ft.name, err.c_str());
+            ++bad;
+            continue;
+        }
+        stress_report(ft.name, s, pool.sleeps() - z0);
+        bad += s.differ != 0 || s.long_gaps == 0 || pool.sleeps() == z0;
+    }
+#else
+    std::printf("  native rows: SKIPPED, built without STRATA_NATIVE_EXPERTS\n");
+#endif
+    std::printf("\npool stress: %d failures\n", bad);
+    return bad ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
+    int stress_iters = 0;
     const char* path = "pack/full/experts.bin";
     long long layer = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--selftest") selftest = true;
+        else if (a == "--stress") stress_iters = 1500;
+        else if (a == "--iters" && i + 1 < argc) stress_iters = std::atoi(argv[++i]);
         else if (a == "--file" && i + 1 < argc) path = argv[++i];
         else if (a == "--layer" && i + 1 < argc) layer = std::atoll(argv[++i]);
-        else { std::fprintf(stderr, "usage: pool_test [--selftest] [--file P] [--layer N]\n"); return 2; }
+        else {
+            std::fprintf(stderr, "usage: pool_test [--selftest] [--file P] [--layer N]\n"
+                                 "       pool_test --stress [--iters N]   (synthetic experts, no file)\n");
+            return 2;
+        }
     }
+    if (stress_iters > 0) return stress(stress_iters);
 
     const cpu::CpuFeatures feat = cpu::cpu_features();
     if (!feat.usable()) {

@@ -61,6 +61,11 @@ std::vector<int> physical_cores(bool skip_first) {
 
 namespace {
 
+// `state_`: the epoch in the high half, then the closed bit, then the parked workers
+constexpr uint64_t kClosed = 1ull << 31;
+constexpr uint64_t kParked = kClosed - 1;
+constexpr uint64_t kEpoch = 1ull << 32;
+
 void pin_this_thread(int core) {
     if (core < 0) return;
 #if defined(_WIN32)
@@ -111,6 +116,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works) : host_works_(h
     const std::vector<int> cores = physical_cores(true);
     n_ = n_workers > 0 ? n_workers : (int) cores.size();
     if (n_ < 1) n_ = 1;
+    state_.store(kClosed | (uint64_t) n_, std::memory_order_relaxed);   // epoch 0, closed, everyone parked
     scratch_.resize((size_t) n_);
     split_.resize((size_t) kMaxSplit);
     split_multi_.resize((size_t) kMaxSplitMulti);
@@ -125,41 +131,64 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works) : host_works_(h
 }
 
 ExpertPool::~ExpertPool() {
-    stop_.store(true, std::memory_order_release);
-    // Bump the epoch so a PARKED worker notices the stop flag rather than sleeping through it.
-    epoch_.fetch_add(1, std::memory_order_release);
+    stop_.store(true, std::memory_order_seq_cst);
+    // a new value, so a sleeping worker's wait returns and it sees the stop flag
+    state_.fetch_add(kEpoch, std::memory_order_seq_cst);
+    state_.notify_all();
     for (auto& t : threads_) t.join();
 }
 
 void ExpertPool::worker(int id) {
-    uint32_t seen = 0;
-    // ARRIVE at the park before the first wait, so `parked_ == n_` is true from construction.  Counting only
-    // on the RETURN from a drain leaves `parked_` at 0 until each worker has finished one batch, and the first
-    // `run()` - which waits for `parked_ == n_` before publishing - then deadlocks.  It deadlocks on the very
-    // first call, which is the good case; a version that deadlocked on the second would be far worse.
-    parked_.fetch_add(1, std::memory_order_acq_rel);
+    uint32_t seen = 0;   // the last epoch this worker joined
     for (;;) {
-        // Park: wait for work.  `_mm_pause` rather than a bare spin because it yields the pipeline to the
-        // sibling hyperthread; `epoch_` is bumped once per LAYER, not once per expert, so most of these
-        // iterations are spent here with nothing to do.
-        //
-        // **AND NOTHING ELSE HAPPENS IN HERE.**  This loop used to do `pauses_.fetch_add(1)` on every iteration
-        // - a locked read-modify-write, five workers against one cache line - so the workers spent their wait
-        // invalidating each other's caches and the very line the host writes to publish work.  The counter was
-        // diagnostic and nothing branched on it.  See the note on the atomics in pool.hpp.
-        while (epoch_.load(std::memory_order_acquire) == seen) {
+        // Park: wait for an open phase this worker has not joined.  `_mm_pause` rather than a bare spin because
+        // it yields the pipeline to the sibling hyperthread.  The loop writes nothing shared (see the note on
+        // the atomics in pool.hpp) until it joins, or goes to sleep after `kIdleSpin` without work.
+        uint64_t s = state_.load(std::memory_order_acquire);
+        auto idle_from = std::chrono::steady_clock::now();
+        for (uint32_t spins = 1;; ++spins) {
             if (stop_.load(std::memory_order_relaxed)) return;
+            if (!(s & kClosed) && (uint32_t) (s >> 32) != seen) {
+                // join; fails when the host has closed this phase or other workers joined since `s` was read
+                if (state_.compare_exchange_weak(s, s - 1, std::memory_order_acq_rel, std::memory_order_acquire)) break;
+                continue;
+            }
             _mm_pause();
+            if (spins % 1024 == 0 && std::chrono::steady_clock::now() - idle_from > kIdleSpin) {
+                // seq_cst, against open_phase's store then load: the host sees this sleeper or this worker's
+                // wait sees the new epoch
+                sleepers_.fetch_add(1, std::memory_order_seq_cst);
+                sleeps_.fetch_add(1, std::memory_order_relaxed);
+                state_.wait(s, std::memory_order_seq_cst);
+                sleepers_.fetch_sub(1, std::memory_order_seq_cst);
+                idle_from = std::chrono::steady_clock::now();
+            }
+            s = state_.load(std::memory_order_acquire);
         }
-        if (stop_.load(std::memory_order_acquire)) return;
-        seen = epoch_.load(std::memory_order_relaxed);
-        parked_.fetch_sub(1, std::memory_order_acq_rel);   // leaving the park
+        seen = (uint32_t) (s >> 32);
 
         // Drain: one claim per iteration, so a slow worker takes fewer experts and a fast one takes more.
         // Every job is the same size (all experts are 1,382,400 bytes), so there is nothing to schedule.
         drain(id, scratch_[(size_t) id]);
-        parked_.fetch_add(1, std::memory_order_acq_rel);   // back at the park
+        state_.fetch_add(1, std::memory_order_release);   // parked again
     }
+}
+
+void ExpertPool::open_phase() {
+    // The previous phase is closed, so no worker is inside a drain and none can join until this store.
+    const uint64_t s = state_.load(std::memory_order_relaxed);
+    state_.store(((s >> 32) + 1) << 32 | (uint64_t) n_, std::memory_order_seq_cst);
+    if (sleepers_.load(std::memory_order_seq_cst) != 0) state_.notify_all();
+}
+
+void ExpertPool::close_phase() {
+    // Every job is done; wait for the workers that joined to park again, and shut the phase in the same step,
+    // so a worker that notices it late cannot join it.
+    const uint64_t open = (state_.load(std::memory_order_relaxed) & ~kParked) | (uint64_t) n_;
+    for (uint64_t s = open;
+         !state_.compare_exchange_weak(s, open | kClosed, std::memory_order_acq_rel, std::memory_order_relaxed);
+         s = open)
+        _mm_pause();
 }
 
 void ExpertPool::drain(int id, ExpertScratch& scratch) {
@@ -240,16 +269,15 @@ void ExpertPool::drain(int id, ExpertScratch& scratch) {
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks, void (*first)(void*), void* ctx) {
-    while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
     mode_ = mode;
     njobs_ = n_tasks;
     head_.store(0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_release);
+    open_phase();
     if (first != nullptr) first(ctx);
     if (host_works_) drain(-1, host_scratch_);
     while (done_.load(std::memory_order_acquire) != (uint32_t) n_tasks) _mm_pause();
-    while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
+    close_phase();
 }
 
 void ExpertPool::run_split(ExpertJob* jobs, int n) {
@@ -348,20 +376,17 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
         for (int i = 0; i < n; ++i) s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
         return;
     }
-    // Wait for every worker to be parked BEFORE touching the batch, so the publish below is the only thing
-    // that can move a worker into the drain loop.
+    // The previous phase is closed, so no worker can be in the drain loop while the batch is written.
     //
-    // THE THREE PHASES ARE TIMED SEPARATELY.  They were one number, which cannot distinguish a pool that is
-    // slow at the WORK from one that is slow at the SYNCHRONISATION - and those need opposite fixes.
-    const auto t_a = std::chrono::steady_clock::now();
-    while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
+    // THE PHASES ARE TIMED SEPARATELY.  They were one number, which cannot distinguish a pool that is slow at
+    // the WORK from one that is slow at the SYNCHRONISATION - and those need opposite fixes.
     const auto t_b = std::chrono::steady_clock::now();
     jobs_ = jobs;
     njobs_ = n;
     mode_ = 0;
     head_.store(0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_release);   // release: jobs_/njobs_ are visible before the bump
+    open_phase();   // seq_cst: jobs_/njobs_ are visible to a worker that joins
 
     // ---- **THE HOST DRAINS TOO (R2.2), INSTEAD OF SPINNING ON `done_`.**
     //
@@ -388,15 +413,14 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     }
 
     while (done_.load(std::memory_order_acquire) != (uint32_t) n) _mm_pause();
-    // And park again, so the next `run` starts from a known state.  See the header for why `done` alone is
-    // not enough.
+    // And close the phase, so the next `run` starts from a known state.  See the header for why `done` alone
+    // is not enough.
     const auto t_c = std::chrono::steady_clock::now();
-    while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) _mm_pause();
+    close_phase();
     const auto t_d = std::chrono::steady_clock::now();
 
-    ms_wait_park_ += std::chrono::duration<double, std::milli>(t_b - t_a).count();
     ms_drain_ += std::chrono::duration<double, std::milli>(t_c - t_b).count();
-    ms_repark_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
+    ms_close_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
 }
 
 }  // namespace strata::kernels::cpu
