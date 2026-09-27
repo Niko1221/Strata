@@ -44,8 +44,17 @@ __device__ __forceinline__ float warp_max(float value) {
     for (int mask = 16; mask; mask >>= 1) value = fmaxf(value, __shfl_xor_sync(0xffffffffu, value, mask, 32));
     return value;
 }
+// A float as a uint32 in the same order (sign flipped for positives, all bits for negatives), and back.
+__device__ __forceinline__ unsigned order_key(float f) {
+    const unsigned b = __float_as_uint(f);
+    return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+__device__ __forceinline__ float order_key_float(unsigned k) {
+    return __uint_as_float((k & 0x80000000u) ? (k & 0x7fffffffu) : ~k);
+}
 // One token, one warp: 512 logits -> the top 10 ids and weights; ids2 and weights2 take copies when given.  The logits
-// load through the L2 (another block may have written them).
+// load through the L2 (another block may have written them).  Each round takes the largest probability and, among
+// equal ones, the lowest expert (a lane's own best, then two warp reductions); only the winning lane rescans.
 __device__ __forceinline__ void route_token(const float* __restrict__ logits, int32_t* __restrict__ ids,
                                             float* __restrict__ weights, int32_t* ids2, float* weights2, int lane) {
     float values[16];
@@ -67,22 +76,27 @@ __device__ __forceinline__ void route_token(const float* __restrict__ logits, in
         values[i] *= reciprocal;
         if (__isnanf(values[i])) values[i] = -FLT_MAX;
     }
+    float lbest = values[0];   // the lane's largest value, the lowest index among equal ones
+    int li = 0;
+#pragma unroll
+    for (int i = 1; i < 16; ++i)
+        if (values[i] > lbest) { lbest = values[i]; li = i; }
     float selected = 0.0f, selected_sum = 0.0f;
+#pragma unroll 1
     for (int rank = 0; rank < 10; ++rank) {
-        float best = values[0];
-        int expert = lane;
-#pragma unroll
-        for (int i = 1; i < 16; ++i) {
-            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
-        }
-#pragma unroll
-        for (int mask = 16; mask; mask >>= 1) {
-            const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
-            const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
-            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
-        }
+        const unsigned mine = order_key(lbest);
+        const unsigned top = __reduce_max_sync(0xffffffffu, mine);
+        const int expert = __reduce_min_sync(0xffffffffu, mine == top ? lane + li * 32 : 0x7fffffff);
+        const float best = order_key_float(top);
         if ((expert & 31) == lane) {
-            values[expert / 32] = -INFINITY;
+#pragma unroll
+            for (int i = 0; i < 16; ++i)
+                if (i == li) values[i] = -INFINITY;
+            lbest = values[0];
+            li = 0;
+#pragma unroll
+            for (int i = 1; i < 16; ++i)
+                if (values[i] > lbest) { lbest = values[i]; li = i; }
             ids[rank] = expert;
             if (ids2 != nullptr) ids2[rank] = expert;
             // Deliberately accumulate by WINNING EXPERT lane, not output rank.
@@ -110,42 +124,40 @@ __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ id
 
 // ================================ plan v0.3 P6: the verify window's router in one kernel ================================
 //
-// For T tokens: a block a row of the logits (bf16_gemv_fp32_mmvf_multi's 256-thread block, mmvf_multi_row), the first
-// blocks also copying the input rows to mapped memory, a 16-byte store (a full PCIe transaction) a thread; the last
-// block to finish routes the tokens (`route`, a warp each), publishes their ids and weights, writes the ring's number
-// and plans the main GPU's hits (hit_plan_block).  In place of the gemv, the top 10, doorbell_publish and
-// verify_hit_plan.
+// For T tokens: when the input rows have a mapped copy, the first blocks (scheduled first) only copy them, a 16-byte
+// store (a full PCIe transaction) a thread, and fence; then a block a row of the logits (bf16_gemv_fp32_mmvf_multi's
+// 256-thread block, mmvf_multi_row).  The last block to finish routes the tokens (`route_token`, a warp each); the
+// routing warps, which wrote the mapped ids and weights, fence; then the ring's number, and the plan of the main
+// GPU's hits (hit_plan_block).  In place of the gemv, the top 10, doorbell_publish and verify_hit_plan.
 constexpr int VR_THREADS = 256;   // mmvf_block_size of n_embd a multiple of 512
 template <int TT>
-__global__ void __launch_bounds__(VR_THREADS) verify_router_kernel(VerifyRouterArgs a) {
+__global__ void __launch_bounds__(VR_THREADS) verify_router_kernel(VerifyRouterArgs a, int n_copy) {
     __shared__ bool s_last;
-    const int t = (int) threadIdx.x, lane = t & 31, warp = t >> 5;
-    bool mapped = false;
-    if (a.x_out != nullptr) {
-        const int i = (int) blockIdx.x * VR_THREADS + t;
-        if (i < TT * a.n_embd / 4) {
+    const int t = (int) threadIdx.x, lane = t & 31, warp = t >> 5, b = (int) blockIdx.x;
+    if (b < n_copy) {
+        for (int i = b * VR_THREADS + t; i < TT * a.n_embd / 4; i += n_copy * VR_THREADS)
             reinterpret_cast<float4*>(a.x_out)[i] = reinterpret_cast<const float4*>(a.x)[i];
-            mapped = true;
-        }
+        __threadfence_system();   // this thread's writes before the block counts as done
+    } else {
+        const int row = b - n_copy;
+        float acc[kMmvfMaxRows];
+        mmvf_multi_row<VR_THREADS>(a.x, a.w + (size_t) row * a.n_embd, a.n_embd, TT, acc);
+        if (t == 0)
+            for (int k = 0; k < TT; ++k) a.logits[(size_t) k * a.n_expert + row] = acc[k];
+        __threadfence();
     }
-    float acc[kMmvfMaxRows];
-    mmvf_multi_row<VR_THREADS>(a.x, a.w + (size_t) blockIdx.x * a.n_embd, a.n_embd, TT, acc);
-    if (t == 0)
-        for (int k = 0; k < TT; ++k) a.logits[(size_t) k * a.n_expert + blockIdx.x] = acc[k];
-    if (mapped) __threadfence_system();   // this thread's writes before the block counts as done
-    else __threadfence();
     __syncthreads();
     if (t == 0) s_last = atomicAdd(a.counter, 1u) == gridDim.x - 1;
     __syncthreads();
     if (!s_last) return;
-    if (warp < TT)
+    if (warp < TT) {
         route_token(a.logits + (size_t) warp * a.n_expert, a.ids + warp * 10, a.weights + warp * 10,
                     a.ids_out != nullptr ? a.ids_out + warp * 10 : nullptr,
                     a.w_out != nullptr ? a.w_out + warp * 10 : nullptr, lane);
-    __threadfence_system();
-    __syncthreads();
-    if (t == 0) {
         __threadfence_system();
+    }
+    __syncthreads();
+    if (t == 0) {   // warp 0 routed and fenced
         *(volatile uint32_t*) a.seq = a.ring;
         *a.counter = 0u;   // for the next launch
     }
@@ -177,10 +189,9 @@ void verify_router(const VerifyRouterArgs& a, void* stream) {
         !a.x || !a.w || !a.logits || !a.ids || !a.weights || !a.seq || !a.counter || (a.plan && (!a.res || !a.slot_ptr)))
         throw std::invalid_argument("verify_router: 1..8 tokens, 512 experts, n_embd a multiple of 512, and buffers");
     const auto st = static_cast<cudaStream_t>(stream);
-    if (a.x_out != nullptr && a.n_tok * a.n_embd / 4 > a.n_expert * VR_THREADS)
-        throw std::invalid_argument("verify_router: the blocks copy the input rows a float4 a thread");
+    const int n_copy = a.x_out != nullptr ? (a.n_tok * a.n_embd / 4 + VR_THREADS - 1) / VR_THREADS : 0;
     switch (a.n_tok) {
-#define STRATA_VR(T) case T: verify_router_kernel<T><<<unsigned(a.n_expert), VR_THREADS, 0, st>>>(a); break;
+#define STRATA_VR(T) case T: verify_router_kernel<T><<<unsigned(n_copy + a.n_expert), VR_THREADS, 0, st>>>(a, n_copy); break;
         STRATA_VR(1) STRATA_VR(2) STRATA_VR(3) STRATA_VR(4) STRATA_VR(5) STRATA_VR(6) STRATA_VR(7) STRATA_VR(8)
 #undef STRATA_VR
     }
