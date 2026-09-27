@@ -1118,6 +1118,16 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     return true;
 }
 
+bool Verifier::copy_logits(int T, float* out, std::string& err) const {
+    if (cudaMemcpyAsync(out, head_logits_, (size_t) T * (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+                        cs_) != cudaSuccess ||
+        cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = std::string("verify: reading the logits back: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    return true;
+}
+
 void Verifier::print_profile() const {
     if (prof_windows_ == 0) return;
     static const char* const names[kStamps] = {"stamp gap",      "HC read, mixer",   "mixer",          "HC read, FFN",

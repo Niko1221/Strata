@@ -93,6 +93,8 @@ public:
     /// graph writes them there itself, so reading them waits for no copy engine.
     void set_host_rows(bool on) { host_rows_ = on; }
     const float* final_R_host() const { return h_rows_; }
+    /// The head's logits of the last window's first `T` tokens, T * n_vocab floats, copied to host memory `out`.
+    bool copy_logits(int T, float* out, std::string& err) const;
 
     /// Where the pool publishes each layer's PCIe share of the misses; give it to the dispatch
     /// (`ExpertDispatch::plan`) before the first `run`.

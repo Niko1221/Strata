@@ -254,6 +254,7 @@ struct Options {
     bool spec_split = false;   ///< opt-in split verify window (the overlap study: exact, ~7% slower)
     bool window_profile = false;   ///< GPU timestamps between the verify window's stages, printed by --stats
     std::string window_hashes;     ///< per verify window: a hash of its final residual rows and its argmaxes
+    std::string window_logits;     ///< per emitted position: the 64 likeliest tokens and their log-probabilities
     bool prefill_profile = false;  ///< GPU time per section of the batched prompt path
     /// Plan v0.3 P8: stay resident and take requests on stdin (see the --serve block in main).
     bool serve = false;
@@ -380,6 +381,9 @@ void usage() {
                  "                       of its final residual rows and its argmaxes: two builds that do the same\n"
                  "                       arithmetic write the same file (fixed text through --spec-follow,\n"
                  "                       --adapt-every 0; not --serve)\n"
+                 "  --window-logits PATH per token the verify windows emit, a line with its index among the generated\n"
+                 "                       tokens, the token and the 64 likeliest as id:log-probability, from the\n"
+                 "                       head's logits (comparisons with llama.cpp, bench/parity.py; not --serve)\n"
                  "  --window-profile     with --stats: the GPU time of each stage of the verify window (timestamps\n"
                  "                       inside the graph; each costs ~2 us)\n"
                  "  --prefill-profile    the GPU time of each section of the batched prompt path (not --serve)\n"
@@ -749,6 +753,7 @@ int main(int argc, char** argv) {
         else if (a == "--window-profile") o.window_profile = true;
         else if (a == "--prefill-profile") o.prefill_profile = true;
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
+        else if (a == "--window-logits") o.window_logits = next("--window-logits");
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
@@ -3015,6 +3020,27 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: cannot write %s\n", o.window_hashes.c_str());
             return 1;
         }
+        std::FILE* wlog = o.window_logits.empty() ? nullptr : std::fopen(o.window_logits.c_str(), "w");
+        if (!o.window_logits.empty() && wlog == nullptr) {
+            std::fprintf(stderr, "strata generate: cannot write %s\n", o.window_logits.c_str());
+            return 1;
+        }
+        std::vector<float> wl(wlog != nullptr ? (size_t) o.spec * (size_t) n_vocab : 0);
+        std::vector<int32_t> wl_ids(wlog != nullptr ? (size_t) n_vocab : 0);
+        auto write_logits = [&](int64_t k, int32_t emitted, const float* l) {   // generated token k's line
+            constexpr int K = 64;
+            double m = l[0], s = 0;
+            for (int64_t i = 1; i < n_vocab; ++i) m = std::max(m, (double) l[i]);
+            for (int64_t i = 0; i < n_vocab; ++i) s += std::exp((double) l[i] - m);
+            const double lse = m + std::log(s);
+            for (int64_t i = 0; i < n_vocab; ++i) wl_ids[(size_t) i] = (int32_t) i;
+            std::partial_sort(wl_ids.begin(), wl_ids.begin() + K, wl_ids.end(),
+                              [&](int32_t a, int32_t b) { return l[a] > l[b] || (l[a] == l[b] && a < b); });
+            std::fprintf(wlog, "%lld %d", (long long) k, (int) emitted);
+            for (int j = 0; j < K; ++j)
+                std::fprintf(wlog, " %d:%.6f", (int) wl_ids[(size_t) j], (double) l[wl_ids[(size_t) j]] - lse);
+            std::fprintf(wlog, "\n");
+        };
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const double pool_ms0 = drive.cpu_ms;
@@ -3059,6 +3085,10 @@ int main(int argc, char** argv) {
                              drive.d.fail ? drive.d.fail : "(no message)");
                 return 1;
             }
+            if (wlog != nullptr && !ver.copy_logits(T, wl.data(), err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
             if (hashes != nullptr) {   // FNV-1a over the window's final residual rows
                 const size_t n_floats = (size_t) T * (size_t) (g.hc * g.n_embd);
                 uint64_t h = 1469598103934665603ull;
@@ -3099,6 +3129,8 @@ int main(int argc, char** argv) {
             ++accepted_hist[(size_t) a];
             bool eos = false;
             for (int i = 0; i <= a && (int64_t) produced.size() < max_new && !eos; ++i) {
+                if (wlog != nullptr)
+                    write_logits((int64_t) produced.size(), outv[(size_t) i], wl.data() + (size_t) i * (size_t) n_vocab);
                 produced.push_back(outv[(size_t) i]);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
@@ -3132,6 +3164,7 @@ int main(int argc, char** argv) {
                              (long long) produced.size(), (long long) rounds);
         }
         if (hashes != nullptr) std::fclose(hashes);
+        if (wlog != nullptr) std::fclose(wlog);
         std::printf("%-24s %lld rounds of %d, drafts accepted %lld of %lld (%.3f), %.2f tokens per round\n",
                     "speculation", (long long) rounds, o.spec, (long long) drafts_ok, (long long) drafts_total,
                     drafts_total > 0 ? (double) drafts_ok / (double) drafts_total : 0.0,
