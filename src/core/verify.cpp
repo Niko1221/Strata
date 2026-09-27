@@ -100,7 +100,7 @@ Verifier::~Verifier() {
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (side_) cudaStreamDestroy(side_);
     if (shs_) cudaStreamDestroy(shs_);
-    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_})
+    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
@@ -285,7 +285,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         cudaEventCreateWithFlags(&pjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&shjoin_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&res_ready_, cudaEventDisableTiming) != cudaSuccess) {
+        cudaEventCreateWithFlags(&res_ready_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&done_, cudaEventDisableTiming) != cudaSuccess) {
         err = "verify: stream create failed";
         return false;
     }
@@ -1002,7 +1003,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
     const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
-    if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+    if (le != cudaSuccess || cudaEventRecord(done_, cs_) != cudaSuccess) {
+        err = std::string("verify: launch: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
     if (ple_on) {   // before layer 1: the graph waits for the flag, raised even when a read failed
@@ -1064,6 +1068,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
+        if (tail_ != nullptr && k + 1 == g.n_layers * G) tail_(tail_user_);
         // the next layer's prediction, published during this layer's pool, else microseconds later (its branch is
         // joined before the next layer): waited for, so the experts the second GPU takes never depend on timing
         if (predict_ != nullptr && G == 1 && l + 1 < g.n_layers && native_router_enabled()) {

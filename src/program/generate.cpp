@@ -447,9 +447,32 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
-    /// The second GPU's adaptive tier when its moves are paced behind the prefetch copies.
+    /// The second GPU's adaptive tier, paced: its copies go between windows, where the RAM is idle (the head, the
+    /// commit, the drafts); through the layers they slowed the CPU pool's RAM reads, and on that GPU's one copy engine
+    /// they held up the prefetch copies.  An update is ranked at a window's tail, and its copies go out as far as they
+    /// end before the next window's first pool (`gap_ms`, a running average of that gap, at the tier's measured copy
+    /// rate), the rest at the last tail before the next update.
     strata::core::AdaptiveTier* tier2 = nullptr;
+    double gap_ms = 0;
+    Clock::time_point tail_at{}, copies_end{};   // the last window's CPU rows done; the gap's queued copies end
+    bool gap_open = false;                       // no pool since the tail
+    bool adapt_next = false;                     // an update is ranked at this window's tail
+    bool flush_next = false;                     // the next window's tail ranks one: this gap takes the rest
     std::string tier_err;
+    /// The adaptive tiers' update (ranking, copy submission) on a thread of its own, joined before the next window:
+    /// started at the window's tail when the second tier is paced, else after the window.
+    std::function<bool()> adapt;
+    std::thread adapt_thr;
+    bool adapt_ok = true;
+    void start_adapt() {
+        adapt_ok = true;
+        adapt_thr = std::thread([this] { adapt_ok = adapt(); });
+    }
+    bool join_adapt() {
+        if (adapt_thr.joinable()) adapt_thr.join();
+        return adapt_ok;
+    }
+    ~Drive() { join_adapt(); }
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -485,8 +508,34 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
 void drive_predict(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k) {
     Drive* t = (Drive*) user;
     strata::core::expert_prefetch_multi(t->d, layer, ids, w, n_tok, k);
-    // a few of the second tier's moves, queued behind the prefetch rather than in front of the next ones
-    if (t->tier2 != nullptr && !t->d.failed && !t->tier2->pump(t->tier_err)) {
+}
+
+/// The second tier's queued moves that end before the next window's first pool, or all of them.
+bool pump_gap(Drive* t, std::string& err, bool all = false) {
+    if (t->tier2 == nullptr) return true;
+    const Clock::time_point start = std::max(Clock::now(), t->copies_end);
+    const double left = t->gap_ms - std::chrono::duration<double, std::milli>(start - t->tail_at).count();
+    const double rate = t->tier2->copy_rate();
+    const bool paced = !all && rate > 0 && t->gap_ms > 0;
+    if (paced && left <= 0) return true;
+    uint64_t sent = 0;
+    if (!t->tier2->pump(paced ? (uint64_t) (left * rate) : UINT64_MAX, sent, err)) return false;
+    if (rate > 0)
+        t->copies_end = start + std::chrono::duration_cast<Clock::duration>(
+                                    std::chrono::duration<double, std::milli>((double) sent / rate));
+    return true;
+}
+
+/// A window's last CPU rows are in (Verifier::set_tail).
+void drive_tail(void* user) {
+    Drive* t = (Drive*) user;
+    t->tail_at = Clock::now();
+    t->copies_end = t->tail_at;
+    t->gap_open = true;
+    if (t->d.failed) return;
+    if (t->adapt_next) {
+        t->start_adapt();
+    } else if (!pump_gap(t, t->tier_err, t->flush_next)) {
         t->d.failed = true;
         t->d.fail = t->tier_err.c_str();
     }
@@ -498,6 +547,11 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     Drive* t = (Drive*) user;
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
+    if (t->gap_open) {   // the first pool after a window: the RAM's idle time between them
+        t->gap_open = false;
+        const double gap = std::chrono::duration<double, std::milli>(a - t->tail_at).count();
+        if (gap < 20.0) t->gap_ms = t->gap_ms > 0 ? 0.8 * t->gap_ms + 0.2 * gap : gap;
+    }
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
@@ -2136,12 +2190,7 @@ int main(int argc, char** argv) {
                 // lowest slots first: the last ones, which the prompt path borrows, stay empty longest
                 for (size_t i = empty2.size(); i-- > 0;) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
                 tier2.set_upper(&tier);
-                // with the prefetch, the tier's copies go four per layer behind it, an update within ~24 layers:
-                // queued in front of the prefetch copies, an update's ~300 MB would hold them up for ~7 ms
-                if (gpu2.prefetch_slots() > 0) {
-                    tier2.set_pace(4);
-                    drive.tier2 = &tier2;
-                }
+                if (tier2.set_paced()) drive.tier2 = &tier2;   // its copies between windows (Drive::tier2)
             }
         }
         if (ok) {
@@ -2161,8 +2210,10 @@ int main(int argc, char** argv) {
     std::string adapt_err;
     auto adapt = [&]() -> bool {
         const bool two = tier2.on();
-        return tier.adapt(drive.d.usage, adapt_err, !two) && (!two || tier2.adapt(drive.d.usage, adapt_err));
+        return tier.adapt(drive.d.usage, adapt_err, !two) &&
+               (!two || (tier2.adapt(drive.d.usage, adapt_err) && pump_gap(&drive, adapt_err)));
     };
+    drive.adapt = adapt;
     auto apply_pending = [&](bool wait) {
         tier.apply_pending(wait);
         tier2.apply_pending(wait);
@@ -2286,6 +2337,10 @@ int main(int argc, char** argv) {
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
+            ver.set_tail(&drive_tail, &drive);
+            tier.set_after(ver.window_done());
+        }
         prefill.draft = &mtp;
         drive.d.plan = ver.plan_sink();
         drive.d.host_res = ver.residency();   // the snapshot the windows decide their GPU hits by
@@ -2537,6 +2592,7 @@ int main(int argc, char** argv) {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
+                    drive.adapt_next = drive.flush_next = false;
                     apply_pending(false);
                     if (!ver.run(T, window.data(), j, &drive_pool_multi, &drive, outv.data(), err) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) err = drive.d.fail;
@@ -2595,18 +2651,19 @@ int main(int argc, char** argv) {
                 drive.d.failed = false;
                 apply_pending(false);
                 tr("window", p, T);
+                drive.adapt_next = !drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0;
+                drive.flush_next = !drive.d.usage.empty() && ((rounds + 2) % o.adapt_every) == 0;
                 if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err) || drive.d.failed) {
+                    drive.join_adapt();
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
-                std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
-                bool adapt_ok = true;
-                if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
-                    adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+                // the adaptive tier beside the commit and the draft (as in generate)
+                if (drive.adapt_next && !drive.adapt_thr.joinable()) drive.start_adapt();
                 if (!ver.commit(a + 1, err, false)) {   // beside the draft
-                    if (adapt_thr.joinable()) adapt_thr.join();
+                    drive.join_adapt();
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
@@ -2624,8 +2681,7 @@ int main(int argc, char** argv) {
                 const bool drafted = (eos || produced_n >= max_new ||
                                       mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) &&
                                      ver.wait_commit(err);
-                if (adapt_thr.joinable()) adapt_thr.join();
-                if (!adapt_ok) {
+                if (!drive.join_adapt()) {
                     std::printf("ERR an adaptive refill failed\n");
                     return 1;
                 }
@@ -2992,6 +3048,10 @@ int main(int argc, char** argv) {
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
+            ver.set_tail(&drive_tail, &drive);
+            tier.set_after(ver.window_done());
+        }
         drive.d.plan = ver.plan_sink();
         drive.d.host_res = ver.residency();   // the snapshot the windows decide their GPU hits by
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
@@ -3075,17 +3135,22 @@ int main(int argc, char** argv) {
             drive.d.experts = 0;
             drive.d.failed = false;
             apply_pending(false);
+            drive.adapt_next = !drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0;
+            drive.flush_next = !drive.d.usage.empty() && ((rounds + 2) % o.adapt_every) == 0;
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
+                drive.join_adapt();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
             if (drive.d.failed) {
+                drive.join_adapt();
                 std::fprintf(stderr, "strata generate: the expert pool failed at layer %lld expert %lld: %s\n",
                              (long long) drive.d.fail_layer, (long long) drive.d.fail_expert,
                              drive.d.fail ? drive.d.fail : "(no message)");
                 return 1;
             }
             if (wlog != nullptr && !ver.copy_logits(T, wl.data(), err)) {
+                drive.join_adapt();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
@@ -3113,12 +3178,9 @@ int main(int argc, char** argv) {
             }
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
-            std::thread adapt_thr;
-            bool adapt_ok = true;
-            if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
-                adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+            if (drive.adapt_next && !drive.adapt_thr.joinable()) drive.start_adapt();
             if (!ver.commit(a + 1, err, false)) {   // beside the draft
-                if (adapt_thr.joinable()) adapt_thr.join();
+                drive.join_adapt();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
@@ -3136,7 +3198,7 @@ int main(int argc, char** argv) {
                 if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
             }
             if (eos) {
-                if (adapt_thr.joinable()) adapt_thr.join();
+                drive.join_adapt();
                 if (!ver.wait_commit(err)) {
                     std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                     return 1;
@@ -3147,8 +3209,7 @@ int main(int argc, char** argv) {
             const bool drafted = (!use_mtp || (int64_t) produced.size() >= max_new ||
                                   mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) &&
                                  ver.wait_commit(err);
-            if (adapt_thr.joinable()) adapt_thr.join();
-            if (!adapt_ok) {
+            if (!drive.join_adapt()) {
                 std::fprintf(stderr, "strata generate: %s\n", adapt_err.c_str());
                 return 1;
             }
@@ -3204,12 +3265,14 @@ int main(int argc, char** argv) {
         if (rounds > 0 && drive.d.gpu2 != nullptr)
             std::printf("%-24s %.2f routed entries and %.2f experts per round in %.2f layers (%.2f left to the CPU), "
                         "%.3f ms/round waiting for it after the CPU pool; %lld experts swapped in and %lld into empty "
-                        "slots (%lld still empty); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round "
-                        "of host time, %lld predictions waited for)\n", "second GPU",
+                        "slots (%lld still empty, %lld moves dropped; its copies between windows, %.2f ms, at %.1f "
+                        "GB/s); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round of host time, %lld "
+                        "predictions waited for)\n", "second GPU",
                         (double) gpu2.entries_done / (double) rounds, (double) gpu2.experts / (double) rounds,
                         (double) gpu2.layers / (double) rounds, (double) drive.d.gpu2_skipped / (double) rounds,
                         gpu2.ms_wait / (double) rounds, (long long) tier2.swaps, (long long) tier2.fills,
-                        (long long) tier2.free_slots(), (double) gpu2.prefetch_copied / (double) rounds,
+                        (long long) tier2.free_slots(), (long long) tier2.dropped, drive.gap_ms,
+                        tier2.copy_rate() / 1e6, (double) gpu2.prefetch_copied / (double) rounds,
                         (double) gpu2.prefetch_used / (double) rounds, ver.ms_predict / (double) rounds,
                         (long long) ver.predict_late);
         if (rounds > 0 && !drive.d.routed.empty()) {

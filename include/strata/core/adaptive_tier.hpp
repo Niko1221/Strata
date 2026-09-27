@@ -38,20 +38,26 @@ public:
     /// A tier in front of this one: the experts it holds or is loading are not candidates here, and this tier's
     /// copies of them are evicted first.
     void set_upper(const AdaptiveTier* upper) { upper_ = upper; }
+    /// The copies wait for `ev` (on the cache's GPU): the last work that may read the slots they overwrite.
+    void set_after(cudaEvent_t ev) { after_ = ev; }
 
     /// Ranks and submits this call's moves, then decays `usage` (n_layers x n_expert) unless `decay` is false (a
     /// tier ranked before another on the same counts).  Nothing to do while the previous moves are in flight.
     /// False when a copy could not be submitted.
     bool adapt(std::vector<float>& usage, std::string& err, bool decay = true);
-    /// Paced: adapt() only queues its moves, and each pump() submits up to `per_pump` of them (a copy queue that
-    /// never runs far ahead, so copies submitted after a pump do not wait behind a whole update).
-    void set_pace(int per_pump) { pace_ = per_pump; }
-    bool pump(std::string& err);
+    /// Paced: adapt() only queues its moves, and `pump` submits them in order while they fit `budget` bytes, `sent`
+    /// the bytes submitted: the copies go where the RAM and the copy engine are idle.  The next adapt() drops the
+    /// moves not submitted by then and admits the landed ones before it ranks.  `copy_rate()`: a running average of
+    /// the batches' measured rates (bytes per ms), 0 until the first has landed.
+    bool set_paced();
+    bool pump(uint64_t budget, uint64_t& sent, std::string& err);
+    double copy_rate() const { return rate_; }
     /// Admits the landed moves into `host_res` (and `d_res`) once all are submitted; `wait` submits the queued ones
     /// and blocks until they have landed.
     void apply_pending(bool wait);
 
     int64_t swaps = 0, fills = 0;   ///< experts moved into an occupied / an empty slot
+    int64_t dropped = 0;            ///< paced: moves the next update dropped before their copies went out
     double ms = 0;                  ///< host time in `adapt`
 
 private:
@@ -69,7 +75,11 @@ private:
     struct Move { int32_t layer, in, out, slot; };        // out: the evicted expert, < 0 for an empty slot
     std::vector<Move> queued_;                            // this update's moves; [next_, end) not submitted yet
     size_t next_ = 0;
-    int pace_ = 0;
+    bool paced_ = false;
+    cudaEvent_t after_ = nullptr;
+    cudaEvent_t t0_ = nullptr, t1_ = nullptr;   // paced: around the last batch, whose `batch_` bytes are not timed yet
+    uint64_t batch_ = 0;
+    double rate_ = 0;
     std::string failed_;                                  // a copy apply_pending could not submit
     bool submit(const Move& m, std::string& err);
     bool pump_n(size_t n, std::string& err);

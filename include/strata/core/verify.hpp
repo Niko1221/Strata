@@ -47,6 +47,8 @@ using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, i
 /// Layer `layer`'s likely experts, its router applied to the previous layer's FFN input: ids and weights (n_tok, k),
 /// host memory.
 using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
+/// The window's last CPU rows are in.
+using TailFn = void (*)(void* user);
 
 /// The main GPU's VRAM expert tier.
 struct VerifyHits {
@@ -118,6 +120,11 @@ public:
     /// rows of a layer are in, `fn` gets the next layer's prediction (the RAM is idle until the next ring), waited
     /// for when it comes later (`predict_late`).  Windows of one token group.  Set before the first `run`.
     void set_predict(PredictFn fn, void* user) { predict_ = fn; predict_user_ = user; }
+    /// `fn` runs once the window's last CPU rows are in: the RAM stays idle until the next window's first pool (the
+    /// head, the commit, the drafts).  The main GPU may still run the window then: `window_done` follows its graph.
+    /// Set before the first `run`.
+    void set_tail(TailFn fn, void* user) { tail_ = fn; tail_user_ = user; }
+    cudaEvent_t window_done() const { return done_; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0, ms_predict = 0;
     int64_t windows = 0, predict_late = 0;
@@ -182,6 +189,8 @@ private:
     // taken it; the counter holds the predictions published in this window
     PredictFn predict_ = nullptr;
     void* predict_user_ = nullptr;
+    TailFn tail_ = nullptr;
+    void* tail_user_ = nullptr;
     int32_t* h_pids_ = nullptr;  int32_t* m_pids_ = nullptr;     // 2 x T * k
     float* h_pw_ = nullptr;      float* m_pw_ = nullptr;         // 2 x T * k
     uint32_t* h_pseq_ = nullptr; uint32_t* m_pseq_ = nullptr;
@@ -194,6 +203,7 @@ private:
     cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;               // shs_'s projections
     cudaStream_t shs_ = nullptr;                                  // the shared expert's branch (and the snapshot's copy)
     cudaEvent_t shfork_ = nullptr, shjoin_ = nullptr, res_ready_ = nullptr;
+    cudaEvent_t done_ = nullptr;                                  // after the last window's graph
 
     // device
     void* arena_ = nullptr;

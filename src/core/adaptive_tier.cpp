@@ -19,8 +19,15 @@ struct OnDevice {   // the tier's GPU current for one call (when it has one), th
 AdaptiveTier::~AdaptiveTier() {
     OnDevice on(dev_, main_);
     if (stream_) cudaStreamSynchronize(stream_);
-    if (ev_) cudaEventDestroy(ev_);
+    cudaEvent_t evs[] = {ev_, t0_, t1_};
+    for (cudaEvent_t e : evs) if (e) cudaEventDestroy(e);
     if (stream_) cudaStreamDestroy(stream_);
+}
+
+bool AdaptiveTier::set_paced() {
+    OnDevice on(dev_, main_);
+    paced_ = cudaEventCreate(&t0_) == cudaSuccess && cudaEventCreate(&t1_) == cudaSuccess;
+    return paced_;
 }
 
 bool AdaptiveTier::init(ExpertCache& cache, ExpertSource& src, std::vector<int32_t>& host_res, int32_t* d_res,
@@ -66,17 +73,61 @@ bool AdaptiveTier::submit(const Move& m, std::string& err) {
 bool AdaptiveTier::pump_n(size_t n, std::string& err) {
     if (next_ >= queued_.size()) return true;
     OnDevice on(dev_, main_);
+    if (after_ != nullptr && cudaStreamWaitEvent(stream_, after_, 0) != cudaSuccess) {
+        err = "adaptive tier: a refill copy failed";
+        return false;
+    }
     for (size_t i = 0; i < n && next_ < queued_.size(); ++i)
         if (!submit(queued_[next_++], err)) return false;
     if (cudaEventRecord(ev_, stream_) != cudaSuccess) { err = "adaptive tier: a refill copy failed"; return false; }
     return true;
 }
 
-bool AdaptiveTier::pump(std::string& err) { return pump_n((size_t) pace_, err); }
+bool AdaptiveTier::pump(uint64_t budget, uint64_t& sent, std::string& err) {
+    sent = 0;
+    size_t n = 0;
+    for (; next_ + n < queued_.size(); ++n) {
+        const uint64_t b = strata::kernels::cpu::expert_layout().blob_bytes(queued_[next_ + n].layer);
+        if (sent + b > budget) break;
+        sent += b;
+    }
+    if (n == 0) return true;
+    OnDevice on(dev_, main_);
+    float took = 0;
+    if (batch_ > 0 && cudaEventQuery(t1_) == cudaSuccess && cudaEventElapsedTime(&took, t0_, t1_) == cudaSuccess &&
+        took > 0) {
+        const double r = (double) batch_ / (double) took;   // the last batch has landed
+        rate_ = rate_ > 0 ? 0.8 * rate_ + 0.2 * r : r;
+        batch_ = 0;
+    }
+    const bool timed = batch_ == 0 && n >= 4;   // a batch of a few copies: its start and end dominate
+    if (timed && cudaEventRecord(t0_, stream_) != cudaSuccess) { err = "adaptive tier: a refill copy failed"; return false; }
+    if (!pump_n(n, err)) return false;
+    if (timed) {
+        if (cudaEventRecord(t1_, stream_) != cudaSuccess) { err = "adaptive tier: a refill copy failed"; return false; }
+        batch_ = sent;
+    }
+    return true;
+}
 
 bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay) {
     const auto t0 = std::chrono::steady_clock::now();
     if (!failed_.empty()) { err = failed_; return false; }
+    if (paced_) {   // the moves not submitted by now give way to this call's (ranked again if still worth it)
+        for (size_t i = next_; i < queued_.size(); ++i) {
+            const Move& m = queued_[i];
+            if (m.out >= 0) {
+                --swaps;
+            } else {
+                free_[(size_t) m.layer].push_back(m.slot);
+                --fills;
+            }
+        }
+        dropped += (int64_t) (queued_.size() - next_);
+        queued_.resize(next_);
+        pending_.resize(next_);
+        apply_pending(false);
+    }
     if (!pending_.empty()) return true;   // the previous moves are still in flight
     if (upper_ != nullptr) {
         upper_has_.assign((size_t) (n_layers_ * n_expert_), 0);
@@ -128,7 +179,7 @@ bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay
         queued_.push_back({m.layer, m.in, m.out, m.slot});
         pending_.emplace_back((int32_t) (m.layer * n_expert_ + m.in), m.slot);   // resident once the copy has landed
     }
-    if (pace_ <= 0 && !pump_n(queued_.size(), err)) return false;
+    if (!paced_ && !pump_n(queued_.size(), err)) return false;
     if (decay)
         for (float& v : usage) v *= 0.7f;
     ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
