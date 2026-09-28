@@ -849,5 +849,15 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
     target_link_libraries(conversation_transfer_test PRIVATE strata_engine)
     add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
     set_tests_properties(conversation_transfer_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+
+    # The NVMe cold tier's own fixture: the turn-boundary key, the image filter, the pooled-row count and the
+    # spare-row re-publish, the version / geometry / integrity refusals, and the drafter-ring window.
+    add_executable(kv_nvme_host_test src/platform/kv_nvme_host_test.cpp)
+    target_include_directories(kv_nvme_host_test PRIVATE include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_options(kv_nvme_host_test PRIVATE
+      -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
+    target_link_libraries(kv_nvme_host_test PRIVATE strata_engine)
+    add_test(NAME kv_nvme_host_test COMMAND kv_nvme_host_test)
+    set_tests_properties(kv_nvme_host_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
   endif()
 endif()
