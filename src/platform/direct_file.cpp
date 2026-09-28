@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <algorithm>
+#include <thread>
+#include <condition_variable>
+#include <mutex>
 #include <vector>
 
 #if defined(_WIN32)
@@ -185,12 +189,48 @@ void DirectFile::wake() {
 
 #else
 // ------------------------------------------------------------------------------------------------ POSIX
-// Phase L replaces this with io_uring. Until then a read completes inside `submit`, which is correct and
-// keeps the tree compiling on Linux (plan v0.3 section 5.1 rule 4).
+// A read used to complete inside `submit` (a plain pread), so on Linux the PLE reader's "in flight" reads ran one
+// after another on the caller's thread: ~16 table rows per token read back to back, 8-9% of decode spent blocked in
+// "submit".  Now `submit` queues the request and a pool of threads issues the preads concurrently, which gives the
+// NVMe the queue depth the Windows overlapped path always had.  Same contract: `wait` returns completions (blocking
+// up to its timeout), and `wake` makes a blocked `wait` return one WAKE_TAG completion.
 struct DirectFile::Impl {
+    struct Req { uint64_t offset; void* buffer; uint32_t length; uint64_t tag; };
     int fd = -1;
     uint64_t size = 0;
+    std::mutex mu;
+    std::condition_variable cv_req, cv_done;
+    std::deque<Req> reqs;
     std::deque<Completion> done;
+    std::vector<std::thread> workers;
+    int wakes = 0;
+    bool stop = false;
+
+    void work() {
+        for (;;) {
+            Req r;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv_req.wait(lk, [&] { return stop || !reqs.empty(); });
+                if (stop && reqs.empty()) return;
+                r = reqs.front();
+                reqs.pop_front();
+            }
+            uint32_t got = 0;
+            bool ok = true;
+            while (got < r.length) {
+                const ssize_t n = pread(fd, (uint8_t*) r.buffer + got, r.length - got, (off_t) (r.offset + got));
+                if (n < 0) { ok = false; break; }
+                if (n == 0) break;                  // end of file: a legal short read at the table's last page
+                got += (uint32_t) n;
+            }
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                done.push_back(Completion{r.tag, got, ok});
+            }
+            cv_done.notify_all();
+        }
+    }
 };
 
 DirectFile::DirectFile() : impl_(new Impl) {}
@@ -203,14 +243,27 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     struct stat st;
     if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
     impl_->size = (uint64_t) st.st_size;
+    const char* env = std::getenv("STRATA_PLE_IO_THREADS");
+    const int n = env ? std::max(1, std::atoi(env)) : 32;
+    impl_->stop = false;
+    for (int i = 0; i < n; ++i) impl_->workers.emplace_back([this] { impl_->work(); });
     return true;
 }
 
 void DirectFile::close() {
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->stop = true;
+    }
+    impl_->cv_req.notify_all();
+    for (auto& t : impl_->workers) t.join();
+    impl_->workers.clear();
     if (impl_->fd >= 0) ::close(impl_->fd);
     impl_->fd = -1;
     impl_->size = 0;
+    impl_->reqs.clear();
     impl_->done.clear();
+    impl_->wakes = 0;
 }
 
 bool DirectFile::is_open() const { return impl_->fd >= 0; }
@@ -221,15 +274,34 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
         err = "DirectFile: unaligned request";
         return false;
     }
-    const ssize_t got = pread(impl_->fd, buffer, length, (off_t) offset);
-    impl_->done.push_back(Completion{tag, got < 0 ? 0u : (uint32_t) got, got >= 0});
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->reqs.push_back(Impl::Req{offset, buffer, length, tag});
+    }
+    impl_->cv_req.notify_one();
     return true;
 }
 
-void DirectFile::wake() {}   // reads complete inside submit; nothing ever blocks in wait
+void DirectFile::wake() {
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        ++impl_->wakes;
+    }
+    impl_->cv_done.notify_all();
+}
 
-int DirectFile::wait(Completion* out, int max, int) {
+int DirectFile::wait(Completion* out, int max, int timeout_ms) {
+    std::unique_lock<std::mutex> lk(impl_->mu);
+    auto ready = [&] { return !impl_->done.empty() || impl_->wakes > 0; };
+    if (!ready()) {
+        if (timeout_ms < 0) impl_->cv_done.wait(lk, ready);
+        else if (timeout_ms > 0) impl_->cv_done.wait_for(lk, std::chrono::milliseconds(timeout_ms), ready);
+    }
     int n = 0;
+    if (impl_->wakes > 0 && n < max) {
+        --impl_->wakes;
+        out[n++] = Completion{WAKE_TAG, 0, true};
+    }
     while (n < max && !impl_->done.empty()) {
         out[n++] = impl_->done.front();
         impl_->done.pop_front();
