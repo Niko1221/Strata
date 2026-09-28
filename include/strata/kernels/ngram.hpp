@@ -110,6 +110,9 @@ struct PleIoOptions {
     uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
     uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
+    /// dual-3090 (--ple-io ram): mmap mode with the whole table locked in RAM at open (a box with RAM to spare:
+    /// no SSD read ever sits on the prompt or token path)
+    bool lock = false;
 };
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every

@@ -6,8 +6,12 @@
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#endif
 #include <vector>
 #include <stdexcept>
 
@@ -194,6 +198,20 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             return false;
         }
         impl_->n_rows = n_rows;
+    }
+    if (io.mode == PleIo::Mmap && io.lock && impl_->data != nullptr) {
+#if !defined(_WIN32)
+        const uint64_t page = 4096;
+        const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
+        const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
+        madvise((void*) a0, a1 - a0, MADV_WILLNEED);
+        if (mlock((const void*) a0, a1 - a0) != 0) {
+            std::fprintf(stderr, "strata: PLE table mlock failed (%s): touching its pages instead\n", std::strerror(errno));
+            volatile uint8_t sink = 0;
+            for (uintptr_t p = a0; p < a1; p += page) sink = sink + *(const volatile uint8_t*) p;
+            (void) sink;
+        }
+#endif
     }
     impl_->mode = io.mode;
     return true;
