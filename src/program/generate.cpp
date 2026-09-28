@@ -2353,7 +2353,14 @@ int main(int argc, char** argv) {
             c.imgs = imgs_below(req_imgs, L);
             if (cudaDeviceSynchronize() != cudaSuccess || !checkpoint_save(c, ss, g)) return false;
             checks.push_back(std::move(c));
-            while ((int) checks.size() > o.prompt_cache) checks.erase(checks.begin());   // the oldest goes first
+            while ((int) checks.size() > o.prompt_cache) {
+                // Keep the root checkpoint (checks[0], holding system prompt) when branching or evicting
+                if (checks.size() > 2 && checks[0].ids.size() <= checks[1].ids.size()) {
+                    checks.erase(checks.begin() + 1);
+                } else {
+                    checks.erase(checks.begin());
+                }
+            }
             return true;
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
@@ -2878,16 +2885,20 @@ int main(int argc, char** argv) {
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);
-            // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
-            // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
-            // chat renders the same history - but not always the same header or the thinking of this reply - so that
-            // checkpoint is the one it reuses.
-            int64_t turn_at = -1;
-            if (o.prompt_cache > 0 && o.turn_token >= 0)
-                for (int64_t i = n - 1; i > resume; --i)
-                    if (ids[(size_t) i] == o.turn_token) { turn_at = i; break; }
+            // The prompt is read in parts when it has turn boundaries past `resume`:
+            // - The first turn boundary past position 0 captures the root checkpoint (system prompt).
+            // - The last turn boundary (turn_last) captures the conversation so far before the new reply.
+            int64_t turn_first = -1, turn_last = -1;
+            if (o.prompt_cache > 0 && o.turn_token >= 0) {
+                for (int64_t i = read_from + 1; i < n - 1; ++i) {
+                    if (ids[(size_t) i] == o.turn_token) {
+                        if (read_from == 0 && turn_first < 0) turn_first = i;
+                        turn_last = i;
+                    }
+                }
+            }
             int64_t at = read_from;
-            for (const int64_t to : {reread_to, turn_at, n - 1}) {
+            for (const int64_t to : {reread_to, turn_first, turn_last, n - 1}) {
                 if (to <= at) continue;
                 const bool win = windows_ok(at, to);
                 if (win && !refill(err)) {
@@ -2916,7 +2927,7 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if (to == turn_at && !checkpoint_at(to)) {
+                if ((to == turn_first || to == turn_last) && !checkpoint_at(to)) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
