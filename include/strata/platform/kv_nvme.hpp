@@ -58,6 +58,9 @@ struct NvmeHeader {
 /// full-L snapshot (which includes them) can never full-prefix-match the next turn.
 /// `at` is the SHARED core's checkpoint type (docs/nvme-kv-cache-convergence.md step 2): its `ids` are the
 /// boundary, and its blobs are validated against `conversation_state_sizes` before a byte of them is written.
+/// `imgs` are the images BELOW that boundary - the checkpoint's own list, not the live conversation's pictures.
+/// An image at or past `L` describes a token the snapshot does not hold, and the dump refuses one: the resume
+/// match compares the next request's images below `L` against this segment.
 /// Its `dead` / `block_pos` blobs are deliberately NOT written: the file still carries the LIVE device arrays,
 /// which is what our v2 envelope has always held.  Which of the two the disk format owns is collision C5 - step 3.
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
@@ -101,8 +104,9 @@ public:
     void set_cap_bytes(int64_t bytes) { cap_ = bytes; }      ///< 0 = unlimited (the default)
     /// Dumps the live session.  Idempotent: an exact match is skipped (its recency is refreshed); the previous
     /// dump of the same growing conversation is superseded (its file deleted) so a conversation stays one file.
-    /// `at` takes the snapshot at a turn boundary (see nvme_dump_at): its `ids` are the key and its blobs are the
-    /// running state there.  Without it the snapshot is the full consumed state at DONE.
+    /// `at` takes the snapshot at a turn boundary (see nvme_dump_at): its `ids` are the key, its `imgs` the
+    /// pictures below that boundary, and its blobs the running state there.  Without it the snapshot is the full
+    /// consumed state at DONE, and `imgs` are the pictures below the whole consumed prefix.
     bool dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,

@@ -162,6 +162,15 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         err = "nvme_dump: turn-boundary checkpoint does not fit this engine";
         return false;
     }
+    // Every image record must lie INSIDE the prefix this snapshot is keyed by.  The resume match compares the next
+    // request's images below `L` against this segment, so a picture at or past `L` describes a token the snapshot
+    // does not hold and makes the file unmatchable; a negative one is a caller that never filtered at all.
+    for (const strata::core::ConversationImageKey& im : imgs)
+        if (im.start < 0 || im.start >= L) {
+            err = "nvme_dump: an image record (start " + std::to_string(im.start) +
+                  ") is not inside the " + std::to_string(L) + "-token prefix the snapshot is keyed by";
+            return false;
+        }
     FILE* f = std::fopen(path, "wb");
     if (!f) { err = std::string("nvme_dump: open ") + path; return false; }
 
@@ -449,12 +458,19 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     // re-sending history will never reproduce.  The boundary and its running state arrive as ONE shared
     // checkpoint, so the key and the blobs cannot disagree about which point in the conversation is stored.
     const std::vector<int32_t>& key = at ? at->ids : ids;
+    // THE IMAGES DESCRIBE THE SAME POINT AS THE KEY.  `imgs` is the LIVE list - every picture the session holds,
+    // including the ones in the message being answered now, whose `start` is at or past the boundary.  The
+    // checkpoint's own list is the filtered one (`checkpoint_at` builds it as imgs_below(req_imgs, c.ids.size())),
+    // and it is the list the NEXT request will recompute with imgs_below(req_imgs, e.L).  Passing the live list
+    // wrote pictures the snapshot's prefix does not contain, so an entry for any conversation that had a picture
+    // could never be matched - neither by the resume loop nor by the idempotent skip below.
+    const std::vector<strata::core::ConversationImageKey>& stored = at ? at->imgs : imgs;
     if (key.empty()) { err = "kv-nvme: empty session"; return false; }
     // exact match: this state is already stored - refresh its recency and skip the write (imgs too: same pad-token
     // ids with different pictures are a different session)
     for (NvmeEntry& e : entries_)
-        if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == imgs.size() &&
-            std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(imgs.begin(), imgs.end(), e.imgs.begin())) {
+        if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == stored.size() &&
+            std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(stored.begin(), stored.end(), e.imgs.begin())) {
             e.mtime = (int64_t) ::time(nullptr);
             return true;
         }
@@ -478,7 +494,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     char name[64];
     std::snprintf(name, sizeof name, "kv-%ld-%ld.bin", pid(), seq_++);
     const std::string path = dir_ + "/" + name;
-    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, imgs, cvec, at, err)) {
+    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, stored, cvec, at, err)) {
         std::error_code ec;
         fs::remove(path, ec);   // a failed dump must not leave a partial file for the next scan to admit
         return false;
