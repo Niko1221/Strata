@@ -548,7 +548,7 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
     // THE PROOF A RECOVERY NEEDS.  Everything above is written; this sync is what shows the device took it.  A
     // failure here is still `transfer_failed` - the writes happened and nothing shows they landed - while a
     // SUCCESS here is the one piece of evidence that lets a caller reset the session and re-read the prompt
-    // (docs/nvme-kv-cache-design.md §4.6): the context answered after the last write.
+    // (docs/nvme-kv-cache-design.md §5): the context answered after the last write.
     if (cudaDeviceSynchronize() != cudaSuccess) {
         err = "nvme_restore: device synchronize after the apply pass";
         consume_cuda_error();

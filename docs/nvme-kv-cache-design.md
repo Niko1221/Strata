@@ -65,8 +65,9 @@ the digest) before anything is applied - a corrupt snapshot fails without touchi
   stored entry whose ids (and image keys, and cvec state) are a prefix of the incoming prompt is
   restored into the arena (`pread` into the pinned host copies, H2D for the indexer/gdn/ple
   arrays), `kv_stream_reset` makes every VRAM slot refill on demand, the drafter ring is refilled,
-  and the request continues from `resume`. A failed promote drops the entry and falls back to the
-  clean path (session_zero + full read) - a half-applied snapshot can never be decoded from.
+  and the request continues from `resume`.  A promote that the tier **refuses** drops the entry and falls back to
+  the clean path (`session_zero` + full read); a promote that fails a **transfer** stops the engine.  See §5 - the
+  two used to be the same sentence, and the fallback that sentence described has never actually run.
 - **Cap** - `--kv-nvme-max GB` evicts the least recently stored snapshots (the last entry is never
   evicted; the store is never emptied). Snapshots accumulate one per conversation turn
   (cross-restart supersession needs a conversation identity a single-session engine does not have;
@@ -104,7 +105,105 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
    `conversation_checkpoint_restore` does.  `STRATA_STATE_HASH` spans the same rows, so the DONE-vs-restore
    comparison can actually see the difference.
 
-## 5. Test record
+## 5. The failure contract (C7)
+
+Three classes, named by **one enum in both tiers**: `strata::core::ConversationRestore { restored, invalid,
+transfer_failed }` - the shared core's, which `nvme_restore` and `KvNvmeStore::restore` now return instead of a
+`bool`.  A serve loop with two failure vocabularies eventually gets two policies, and the two tiers already
+behave differently for the same event.
+
+### 5.0 First, the finding this contract replaced
+
+**The clean-reset fallback this document has been describing since §3 has never run.**  A failed promote left the
+CUDA last error unconsumed, and the fallback's own first step reads it:
+
+`resume = 0` → `session_zero` (`generate.cpp:3025-3026`) → `qsa_state_zero` (`layer.cpp:657`) → `kv_stream_reset` for
+every streamed layer (`layer.cpp:676`) → `check("reset")` (`kv_stream.cu:199-202`), which prints
+`kv_stream: reset: <error>` and calls **`std::exit(1)`**.  `--kv-nvme` forces streamed KV (`generate.cpp:1099-1103`),
+so that chain always runs when the tier is on.  `cudaGetLastError()` returns the last error **and clears it**; left
+unread it is sticky, so the error a *restore* caused was reported by the *reset*, and the process died there.
+This tree had already been taught the same lesson by a `cudaHostRegister` failure whose unread error made an
+unrelated kernel launch report "out of memory" (`pinned.cu:170-183`), and `graph.cpp:110-118` states the rule for
+captures.
+
+So today's behaviour was **neither our claimed recovery nor their fatal rule**: it was an unintended exit at an
+unrelated point, with the diagnosis misattributed to the reset.  The fallback only looked like it worked because
+nobody ran a failing restore - every recorded test corrupts the *file* (a refusal, which never reaches the
+transfer pass) and none injects a failing *copy*.
+
+### 5.1 `invalid` - recoverable: drop the snapshot, re-read the prompt
+
+Every refusal the tier can make **before the apply pass begins**: bad magic, a format version it does not write,
+the geometry key, header sizes that would size an impossible read, a truncated file, a segment walk that does not
+account for the file, the payload digest, a live array too small for the snapshot, a null target buffer.  Also the
+store's own stale-index case (the file applied cleanly but no longer matches the entry the scan built), which is
+recoverable for the opposite reason - see §5.3.
+
+*Why it is safe, not merely convenient:* `kv_nvme_host_test` asserts each of these paths makes **zero `cudaMemcpy`
+calls and zero CUDA calls of any kind**, leaves every session buffer at a poison sentinel, hands the caller no
+ids/imgs, and leaves no CUDA error pending.  Nothing was written, so the clean path has nothing to undo.
+
+*Operator sees:* `strata serve: nvme promote refused (<reason>); reading the prompt instead`, then `RESUME 0`.
+The snapshot file is deleted - a file the tier will not read is not worth keeping.
+
+### 5.2 `transfer_failed` - fatal: the engine stops
+
+A `cudaMemcpy` in the apply pass or in the spare-row re-publish, or either `cudaDeviceSynchronize` (the one that
+now opens the apply pass, and the one that closes it).
+
+*Why it is fatal:* the apply pass is a **loop**, so a failure in its middle leaves the session half-written by
+construction.  The fixture shows the mix rather than arguing it - fail the second device copy and the GDN state is
+the snapshot's while the PLE history is not; fail the last one and every segment landed while
+`pooled[L / idx_block]` still holds the snapshot's stale value and `dead` holds the value it must become, i.e. a
+session that looks restored and is one invariant short.  The shared core's own fixture asserts the same shape for
+its restore (`conversation_validation_test.cpp:167-169`).  And nothing has yet shown the CUDA context still
+answers, which is exactly the proof §5.4 says a recovery owes.
+
+*Operator sees:* `strata serve: nvme promote FAILED (transfer): <segment + byte count>`, then
+`… the snapshot is half-applied and nothing proves the CUDA context still answers - not attempting a clean reset.
+The snapshot is left on disk; stopping this engine.`, and the client gets `ERR restoring a stored conversation
+snapshot failed: <reason>` before the process exits with 1.  The snapshot is **not** dropped: a transfer failure
+says nothing about the file.  This is the same consequence the RAM tier already gives a failed checkpoint restore
+(`generate.cpp:3044-3045`) and the same one issue #57's core calls `transfer_failed`.
+
+*Why stopping is recovery, not defeat:* under `serve/server.py` the engine runs behind a supervisor that notices a
+dead engine and starts it again on the next request (`serve/server.py:686-695`).  A **new process** is a new CUDA
+context, a new pinned arena and new captured graphs - the state the in-process reset could not prove it reached.
+
+### 5.3 A stale-format store - recoverable, and an operator action
+
+A store full of snapshots this build cannot read is **not** a startup failure and **not** a transfer failure: it
+is §5.1 reached before any file is even opened for restore.  `KvNvmeStore::open` counts stale-version files
+separately from malformed ones, skips them, keeps them on disk, and reports the version it found.  Nothing is
+promotable, so every request re-prefills.  *Operator sees:*
+`strata serve: kv-nvme: N snapshot(s) of format version 2 in DIR: this build writes version 3 and refuses older
+files. They stay on disk and are skipped, so nothing can be promoted from them and every request re-prefills - to
+keep them working, re-dump them with the binary that wrote them; to stop the skip, remove them and let the store
+rebuild`.  Both options are stated because both are legitimate: 113 GB of v2 snapshots is either a corpus to
+re-dump with the old binary or a store to delete and let refill - what it must not be is an ambiguity.
+
+### 5.4 What a future clean reset must prove before it may exist
+
+A clean reset after a transfer failure is not forbidden forever; it is unproven today.  Before it may exist, all
+three of these have to be demonstrated **on device**:
+
+1. that a real failed host-to-device `cudaMemcpy` leaves a **non-sticky** context error - i.e. that the next
+   launch, the next `kv_stream_reset` and the next graph replay succeed rather than reporting the old failure;
+2. that the **captured graphs** survive it (they are captured once, before the serve loop - `session.cpp:164`,
+   `graph.cpp:106` - so the question is whether replaying them after a failed copy is sound, not whether they can
+   be re-captured);
+3. that the **pinned arena** and the streamed page table are back in the residency contract, which §5.1's
+   `session_zero` path does when nothing was written and does not obviously do when something was.
+
+The mechanism would be a **device-usability probe** - consume the error, `cudaDeviceSynchronize()`, and a bounded
+write-and-read-back through a scratch device buffer - run before the tier reports `transfer_failed`, with a clean
+reset allowed only when it passes.  **It is not implemented, and it is unvalidated on this machine**: the GPU
+holds a live ~24 GB engine, the host fixture's copies are `memcpy`, and an unvalidated guard in front of an
+unvalidated recovery is worse than a clean exit.  The one piece of the proof this tier *can* show today is the
+restore's own final `cudaDeviceSynchronize()`: a success there means the device answered after the last write,
+which is why the store's stale-index case is recoverable and a mid-apply failure is not.
+
+## 6. Test record
 
 Oracles and harnesses (all exit non-zero on failure):
 - `tools/nvme_p0_test.sh` - bit-exact restore: `STRATA_STATE_HASH` (refactored into
@@ -115,16 +214,21 @@ Oracles and harnesses (all exit non-zero on failure):
   after a process restart, LRU cap eviction. ~8 min.
 - Live-server HTTP tests (`/v1/chat/completions`, streaming) - the needle test and the short
   correctness suite (driver scripts were run ad hoc; assertions listed below).
-- `kv_nvme_host_test` (ctest, `STRATA_BUILD_CONVERSATION_TESTS=ON`) - the tier's format and resume rules with no
-  CUDA context: a synthetic session whose device arrays are host buffers, CUDA linked and never initialised.
-  Asserts the turn-boundary key (10 ids, not the consumed 26), the refusal of a picture at or past `L`, the
-  promote of a boundary snapshot by a request that drops the reasoning tokens (and that a consumed-state
-  snapshot is NOT promotable by that request), `pooled[L / idx_block] == dead` after a restore with the completed
-  rows untouched and row `L / idx_block + 1` never written, `block_pos` / tails taken from the boundary
-  checkpoint, the drafter-ring window, and the version-2 / geometry / integrity / truncation / pooled-rows
-  refusals by their messages.  113 checks.  It does NOT prove the bytes are really device memory, that
-  `kv_stream_reset` refills slots (its launch is a no-op), or that a promoted session generates the same tokens -
-  those remain the GPU oracles' job.
+- `kv_nvme_host_test` (ctest, `STRATA_BUILD_CONVERSATION_TESTS=ON`) - the tier's format, resume and **failure**
+  rules with no CUDA context: a synthetic session whose device arrays are host buffers, CUDA linked and never
+  initialised, the copies wrapped into `memcpy` and the runtime's **last-error state modelled** (returned once,
+  then cleared) so a copy or a sync can be made to fail at a chosen call number.  Asserts the turn-boundary key
+  (10 ids, not the consumed 26), the refusal of a picture at or past `L`, the promote of a boundary snapshot by a
+  request that drops the reasoning tokens (and that a consumed-state snapshot is NOT promotable by that request),
+  `pooled[L / idx_block] == dead` after a restore with the completed rows untouched and row `L / idx_block + 1`
+  never written, `block_pos` / tails taken from the boundary checkpoint, the drafter-ring window, and §5's
+  three classes: 9 pre-apply refusals (`invalid`, zero CUDA calls, every buffer still at the poison sentinel, no
+  error left pending), 6 injected transfer failures (`transfer_failed`, no error left pending, and the session
+  shown to be half-applied), a failed dump leaving no entry and no partial file, and a store of version-2 files
+  opening cleanly with 0 entries while the same files at version 3 promote.  **249 checks** (18 refusals, 6
+  transfer failures).  It does NOT prove the bytes are really device memory, that `kv_stream_reset` refills slots
+  (its launch is a no-op), whether a real failed copy leaves a sticky context error, or that a promoted session
+  generates the same tokens - those remain the GPU oracles' job.
 
 Results:
 - **P0**: restore-exactness PASS (post-restore hash == dumper's hash, deterministic across runs);
@@ -146,9 +250,11 @@ Results:
   shared-prefix sessions answer their own needles with no cross-contamination; a 3-session
   rotation x 2 rounds is 6/6 correct; an identical repeat turn is served without prefill and adds
   exactly one per-turn snapshot; a corrupted snapshot is refused ("integrity check failed"), the
-  request falls back to a full re-prefill and still answers correctly.
+  request falls back to a full re-prefill and still answers correctly.  **Read that last result as §5.1, not as
+  §5.2**: a corrupt file is refused before the tier writes anything, so this suite has never exercised a
+  transfer failure - which is why the never-running fallback §5.0 describes survived all of it.
 
-## 6. Known limitations / follow-ups
+## 7. Known limitations / follow-ups
 
 - **Restore reads the whole file into RAM** (atomicity) - a streamed `pread` directly into the
   pinned buffers with size-then-digest validation would halve promote time and drop the transient
@@ -161,8 +267,13 @@ Results:
 - **Determinism**: engine decode is run-to-run nondeterministic (pre-existing in 0.1.13's MMQ
   path); judge restores by state-hash equality and answer coherence, never by token equality
   across runs.
+- **A transfer failure ends the request and the process** (§5.2).  The supervisor in `serve/server.py:686-695`
+  restarts the engine on the next request, so the cost is one restart (~1-2 min), not a lost conversation - but
+  the only route to recovering a promote in process is the device-usability probe §5.4 describes, and that probe
+  is unvalidated on this machine.  Until a GPU run shows what a real failed host-to-device copy does to the
+  context, "the engine stopped" is the honest answer.
 
-## 7. Prior art this design was checked against
+## 8. Prior art this design was checked against
 
 vLLM's Automatic Prefix Caching (radix-tree content addressing - adopted in spirit: automatic,
 prefix-keyed; simplified to exact keys for a single-session server) and its tiered KV offloading

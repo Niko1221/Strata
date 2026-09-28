@@ -3977,7 +3977,7 @@ int main(int argc, char** argv) {
                     const strata::core::ConversationRestore got =
                         kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
                     if (got == strata::core::ConversationRestore::transfer_failed) {
-                        // **FATAL, BY THE CONTRACT** (docs/nvme-kv-cache-design.md §4.6).  A CUDA copy or sync
+                        // **FATAL, BY THE CONTRACT** (docs/nvme-kv-cache-design.md §5).  A CUDA copy or sync
                         // failure happens AT OR AFTER the first write, and the apply pass is a loop: the session is
                         // half-applied by construction (`kv_nvme_host_test` shows it - fail the second device copy
                         // and the GDN state is the snapshot's while the PLE history is not), and nothing has yet
