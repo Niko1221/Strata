@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <type_traits>
 
 #include <filesystem>
 #include <sys/stat.h>
@@ -27,10 +28,15 @@ namespace strata::platform {
 
 // The envelope's image segment is one 16-byte (start, hash) record per image.  The plumbing now names the shared
 // core's type instead of std::pair<int64_t, uint64_t>; the BYTES must not move in this step, and this is what
-// proves they did not (docs/nvme-kv-cache-convergence.md step 2).
-static_assert(sizeof(strata::core::ConversationImageKey) == sizeof(std::pair<int64_t, uint64_t>) &&
+// proves they did not (docs/nvme-kv-cache-convergence.md step 2).  sizeof/alignof alone would not prove it: they
+// say the record is still 16 bytes, not that `start` is still the first eight of them.  A standard-layout class
+// lays its non-static data members out in declaration order, so pinning that here makes the record's own layout
+// explicit - a field added, retyped OR REORDERED fails the build.  (The pair comparison is the tripwire against
+// the width the v2 files were actually written with, not a claim about std::pair's layout.)
+static_assert(std::is_standard_layout_v<strata::core::ConversationImageKey> &&
+              sizeof(strata::core::ConversationImageKey) == sizeof(std::pair<int64_t, uint64_t>) &&
               alignof(strata::core::ConversationImageKey) == alignof(std::pair<int64_t, uint64_t>),
-              "the shared image key must keep the v2 envelope's 16-byte image record");
+              "the shared image key must keep the v2 envelope's 16-byte (start, hash) image record");
 
 namespace {
 
