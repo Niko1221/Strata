@@ -87,8 +87,14 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
    valid while its cells hold the entry's tokens. Strata's own split - positional KV is rewindable,
    running state is checkpointed - is what makes a correct restore possible at all.
 3. **Turn-boundary keying** (see §3): the matchable prefix is the prompt the client will re-send.
-4. **Refuse, never convert** across format/geometry changes.
-5. **Payload digest** - hashed during the write with the same hasher that feeds the file (a plain
+4. **A spill is a re-keyed dump, never a copy of a parked image** - `nvme_dump_at` is the only path to disk and
+   it writes the boundary's ids, the boundary's pictures and the boundary's running state, all describing
+   position `L`.  A parked conversation's consumed ids include the model's hidden reasoning tokens, so copying a
+   parked image verbatim produces a snapshot no next turn can match.  A picture at or past `L` is refused for the
+   same reason: it describes a token the snapshot does not hold.
+5. **Refuse, never convert** across format/geometry changes - including a file of another format version, which is
+   refused by version (naming the one found) before any segment is walked.
+6. **Payload digest** - hashed during the write with the same hasher that feeds the file (a plain
    write inside the payload silently desynchronizes the digest from the bytes; this exact bug
    shipped briefly and was caught by the corruption test).
 

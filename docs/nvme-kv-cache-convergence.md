@@ -64,6 +64,15 @@ request falling back to re-prefill before that fix.
 
 **Rule for any spill path: a spill re-keys at the turn boundary. It does not copy the parked image.**
 
+**Made explicit in step 3** (the rule was already the rule; what was missing was where it is written down): the
+disk-adapter API states it on `nvme_dump_at` itself - it is the ONLY path to disk, it writes the boundary's ids,
+the boundary's pictures and the boundary's running state, and all three describe position `L`; a picture at or
+past `L` is refused rather than written.  `docs/nvme-kv-cache-design.md` §4.4 states it as a correctness rule.
+The envelope now says the same thing in its own fields: the geometry key, `L`, the ids, the image records and the
+running-state segments are all the boundary's (C5), and the pooled row count is a function of `L` alone (C4).
+What remains open is C1's *policy* question below - whether a RAM-tier eviction also spills through `nvme_dump_at`
+- not its semantics.
+
 ### C2 - `ConvCheckpoint` gains `dead` and `block_pos`
 
 Theirs: `gdn, ple, tails, dead, block_pos`. Ours: `gdn, ple, tails`. Our `NvmeRunning{gdn, ple, tails}`
@@ -307,6 +316,9 @@ silently does nothing for every conversation containing a picture.
   than a live session costs.
 - **C4, C5, C6** - one pooled-row formula, whose `dead` / `block_pos` the envelope owns, and where the drafter
   ring is restored.  These are the format decisions the `NvmeHeader` section is the input to.
+  **All three are settled in step 3** (C4: their `L / idx_block + 1`; C5: the boundary checkpoint's copies;
+  C6: the disk adapter, with a collapse condition), and C3's re-publish rule with them.  They are written into
+  their sections above and into format version 3.
 - **C7, C8, C9, C10, C11** are untouched by step 2.
 - **The RAM policy stays imported dormant, on purpose.**  `ConversationCache`, `conversation_prefix`,
   `SavedConversation`, `conversation_checkpoint_validate`, `conversation_snapshot_*`, `conversation_kv_*`,
