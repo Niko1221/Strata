@@ -110,5 +110,8 @@ else echo "INFO end-to-end hash B vs C (informational: DONE-time consumed-window
 if [ "$T_A2" = "$T_B" ]; then echo "INFO: A' (full re-prefill) also matched"; else echo "INFO: A' differs from B - expected: batched prefill vs decode/short-read rounding (the engine's own accepted path dependence)"; fi
 RES=$(grep -o '^RESUME [0-9]*' "$OUT/B.out" | tail -1)
 if [ "$RES" = "RESUME $LD" ]; then echo "PASS resume: $RES"; else echo "FAIL resume: got '$RES' (want RESUME $LD)"; FAIL=1; fi
-if [ -n "$H_Bc" ] && [ "$H_Bc" != "$H_A2" ]; then echo "PASS negative control: corruption detected (the test can fail)"; else echo "FAIL negative control: corruption NOT detected - the test is decorative"; FAIL=1; fi
+# with the payload-integrity footer a corrupted snapshot is REFUSED at restore (the spike path exits)
+if grep -q "integrity check failed" "$OUT/Bc.err" 2>/dev/null || [ -n "$H_Bc" ] && [ "$H_Bc" != "$H_A2" ]; then
+  echo "PASS negative control: corruption detected (the test can fail)"
+else echo "FAIL negative control: corruption NOT detected - the test is decorative"; FAIL=1; fi
 [ "$FAIL" = "0" ] && { echo "ALL PASS"; exit 0; } || { echo "SOME FAILURES"; exit 1; }

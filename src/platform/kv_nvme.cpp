@@ -81,6 +81,24 @@ int kv_array_count(const strata::core::QsaState& st) { return (st.kv_q4 || !st.k
 
 bool wr(FILE* f, const void* p, size_t n) { return n == 0 || std::fwrite(p, 1, n, f) == n; }
 
+uint64_t fnv1a_up(uint64_t h, const void* p, size_t n) {
+    const uint8_t* q = (const uint8_t*) p;
+    for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+// a hashing writer: everything after the header is hashed as it is written, and the digest rides at
+// the end of the file - a flipped byte anywhere in the payload fails the restore's integrity check
+struct HashWr {
+    FILE* f = nullptr;
+    uint64_t h = 1469598103934665603ull;
+    bool wr(const void* p, size_t n) {
+        if (n == 0) return true;
+        h = fnv1a_up(h, p, n);
+        return std::fwrite(p, 1, n, f) == n;
+    }
+};
+
 /// 64-bit file position (long is 32-bit on Windows, where a 3.3 GiB f16 snapshot would overflow ftell)
 long long ftell64(FILE* f) {
 #ifdef _WIN32
@@ -139,8 +157,9 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     h.idx_dim = g.idx_key_dim; h.page_size = z.page_size; h.idx_block = z.idx_block;
     h.max_cells = ss.qsa_states[0].max_cells;
     if (!wr(f, &h, sizeof h)) { err = "nvme_dump: header"; std::fclose(f); return false; }
-    if (!wr(f, ids.data(), ids.size() * sizeof(int32_t))) { err = "nvme_dump: ids"; std::fclose(f); return false; }
-    if (!imgs.empty() && !wr(f, imgs.data(), imgs.size() * sizeof(std::pair<int64_t, uint64_t>))) {
+    HashWr hw{f};
+    if (!hw.wr(ids.data(), ids.size() * sizeof(int32_t))) { err = "nvme_dump: ids"; std::fclose(f); return false; }
+    if (!imgs.empty() && !hw.wr(imgs.data(), imgs.size() * sizeof(std::pair<int64_t, uint64_t>))) {
         err = "nvme_dump: imgs"; std::fclose(f); return false;
     }
 
@@ -149,14 +168,14 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     auto dump_dev = [&](const void* dptr, size_t bytes) {
         tmp.resize(bytes);
         if (bytes && cudaMemcpy(tmp.data(), dptr, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-        return wr(f, tmp.data(), bytes);
+        return hw.wr(tmp.data(), bytes);
     };
     if (at_boundary) {
-        if (!wr(f, running.gdn, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
+        if (!hw.wr(running.gdn, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
     } else if (!dump_dev(ss.gdn_state, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
     if (ss.ple_hist) {
         const bool have_blob = running.ple != nullptr;
-        if (!(have_blob ? wr(f, running.ple, z.ple) : dump_dev(ss.ple_hist, z.ple))) {
+        if (!(have_blob ? hw.wr(running.ple, z.ple) : dump_dev(ss.ple_hist, z.ple))) {
             err = "nvme_dump: ple"; std::fclose(f); return false;
         }
     }
@@ -169,12 +188,12 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
             KvArr ka = kv_host_arrays(st, g.head_dim, a);
             if (!ka.p) { err = "nvme_dump: null host KV array"; std::fclose(f); return false; }
             const size_t bytes = (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w;
-            if (!wr(f, ka.p, bytes)) { err = "nvme_dump: kv"; std::fclose(f); return false; }
+            if (!hw.wr(ka.p, bytes)) { err = "nvme_dump: kv"; std::fclose(f); return false; }
         }
         if (!dump_dev(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4)) { err = "nvme_dump: pooled"; std::fclose(f); return false; }
         if (at_boundary) {
             // the tail AT L: the checkpoint's per-layer tail blob (the state as of the boundary)
-            if (!wr(f, running.tails + (size_t) i * z.tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
+            if (!hw.wr(running.tails + (size_t) i * z.tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
         } else if (!dump_dev(st.idx_tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
         if (!dump_dev(st.idx_dead, z.dead)) { err = "nvme_dump: dead"; std::fclose(f); return false; }
         if (!dump_dev(st.idx_block_pos, 4)) { err = "nvme_dump: block_pos"; std::fclose(f); return false; }
@@ -189,7 +208,7 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
             KvArr ka = kv_host_arrays(mtp_state, g.head_dim, a);
             if (!ka.p) continue;
             const size_t bytes = (size_t) mp * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w;
-            if (!wr(f, ka.p, bytes)) { err = "nvme_dump: mtp kv"; std::fclose(f); return false; }
+            if (!hw.wr(ka.p, bytes)) { err = "nvme_dump: mtp kv"; std::fclose(f); return false; }
             ++wrote;
         }
         // the count went into the header, which is already written: rewrite just that field
@@ -198,6 +217,8 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
             std::fseek(f, 0, SEEK_END) != 0) { err = "nvme_dump: mtp_host"; std::fclose(f); return false; }
     }
 
+    const uint64_t digest = hw.h;
+    if (!wr(f, &digest, sizeof digest)) { err = "nvme_dump: footer"; std::fclose(f); return false; }
     std::fflush(f);
 #ifndef _WIN32
     ::fsync(::fileno(f));   // crash consistency: a DONE dump survives a power cut
@@ -298,9 +319,17 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         }
     }
     if (bad) { err = "nvme_restore: truncated snapshot"; return false; }
+    if (buf.size() < at + sizeof(uint64_t)) { err = "nvme_restore: no integrity footer"; return false; }
+    uint64_t digest = 0;
+    std::memcpy(&digest, buf.data() + buf.size() - sizeof digest, sizeof digest);
+    // the digest covers the PAYLOAD only (the header is written unhashed before the hasher exists, and its
+    // geometry fields are validated field-by-field): hash [sizeof(NvmeHeader), at)
+    const uint64_t expect = fnv1a_up(1469598103934665603ull, buf.data() + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
+    if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return false; }
     // the file is complete but its layout differs: idx_pooled_rows, PLE presence or the drafter's ring size
-    if (at != buf.size()) err = "nvme_restore: layout mismatch (idx_pooled_rows / PLE / drafter ring?) - refusing";
-    if (at != buf.size() || mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) return false;
+    if (at != buf.size() - sizeof(uint64_t))
+        err = "nvme_restore: layout mismatch (idx_pooled_rows / PLE / drafter ring?) - refusing";
+    if (at != buf.size() - sizeof(uint64_t) || mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) return false;
 
     // ---- everything validated: apply ----
     ids.assign(idp, idp + L);
@@ -355,7 +384,8 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
                     h.n_head_kv != g.n_head_kv || h.head_dim != g.head_dim || h.idx_dim != g.idx_key_dim ||
                     h.page_size != shp.page_size || h.idx_block != shp.idx_block ||
                     h.L < 1 || h.n_imgs < 0 ||
-                    fb < sizeof(NvmeHeader) + (uint64_t) h.L * 4 + (uint64_t) h.n_imgs * 16) { ++skipped; continue; }
+                    fb < sizeof(NvmeHeader) + (uint64_t) h.L * 4 + (uint64_t) h.n_imgs * 16
+                        + sizeof(uint64_t)) { ++skipped; continue; }   // no room for the integrity footer
                 ids.assign((size_t) h.L, 0);
                 if (!f.read((char*) ids.data(), (size_t) h.L * sizeof(int32_t))) { ++skipped; continue; }
                 fbytes = fb;
