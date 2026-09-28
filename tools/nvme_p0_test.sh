@@ -13,11 +13,17 @@
 #   2. (end-to-end) B's final STATE_HASH + greedy continuation must equal A's.
 set -u
 cd /local/strata
+# The engine and the model files live in the checkout; the HEADER these scripts must agree with is the one in
+# the tree the scripts live in (tools/nvme_header_layout.sh reads kNvmeHeaderBytes / kNvmeFormatVersion from it,
+# and nvme_snapshot_ids refuses a snapshot whose version field disagrees).
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$ROOT/tools/nvme_header_layout.sh"
 E=build/strata
 OUT=/tmp/nvme-p0
 mkdir -p "$OUT"; rm -f "$OUT"/*
 export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
 export STRATA_STATE_HASH=1 STRATA_NVME_HASH=1
+NVME_PYTHON=.venv/bin/python
 
 ARGS="--serve --pack packs/iq3_xxs
  --native models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf
@@ -64,11 +70,11 @@ NA=$(grep -c '^T ' "$OUT/A.out")
 if [ ! -f "$OUT/snap.bin" ] || [ "$NA" -lt 8 ]; then echo "FAIL: A generated only $NA tokens"; exit 1; fi
 ls -la "$OUT/snap.bin"
 # the authoritative token history is the SNAPSHOT's ids (stdout T lines are not the consumed sequence)
-# HDR = sizeof(NvmeHeader), pinned by a static_assert in include/strata/platform/kv_nvme.hpp (v3: 208 bytes)
-HDR=208
-.venv/bin/python -c 'import struct,sys; f=open(sys.argv[1]+"/snap.bin","rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(int(sys.argv[3])); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[1]+"/full_ids.txt","w").write(",".join(map(str,ids))); print("snapshot L:",L,file=sys.stderr)' "$OUT" "$HDR"
+nvme_header_layout "$ROOT" || exit 1
+LD=$(nvme_snapshot_ids "$OUT/snap.bin" "$OUT/full_ids.txt")
+if [ -z "$LD" ]; then echo "FAIL: could not read $OUT/snap.bin at HDR=$HDR version=$NVME_VERSION"; exit 1; fi
+echo "snapshot L=$LD (header $HDR bytes, format version $NVME_VERSION)"
 FULL=$(cat "$OUT/full_ids.txt")
-LD=$(awk -F, '{print NF}' "$OUT/full_ids.txt")
 PROMPT_AB="$FULL,$TAIL"
 
 echo "== A': pure-recompute reference (same token history, no restore; EXPECTED to differ: prefill vs decode rounding) =="
@@ -83,7 +89,7 @@ T_C=$(awk "/^RESUME /{r++} r==2 && /^T /{print \$2}" "$OUT/C.out" | paste -sd, -
 grep -E "RESUME|nvme_restore" "$OUT/B.out" "$OUT/B.err" 2>/dev/null | head -4
 
 echo "== B': negative control (corrupted GDN in the snapshot) =="
-OFF=$((HDR + LD*4 + 1000))            # header(208, v3) + ids(LD*4) + 1000 bytes into the GDN region
+OFF=$((HDR + LD*4 + 1000))            # header($HDR, version $NVME_VERSION) + ids(LD*4) + 1000 bytes into the GDN region
 cp "$OUT/snap.bin" "$OUT/snap-corrupt.bin"
 printf '\377' | dd of="$OUT/snap-corrupt.bin" bs=1 seek=$OFF conv=notrunc status=none
 run Bc "$PROMPT_AB" "--nvme-restore $OUT/snap-corrupt.bin"

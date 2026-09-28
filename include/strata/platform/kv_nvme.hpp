@@ -25,6 +25,17 @@
 
 namespace strata::platform {
 
+/// THE FORMAT VERSION this build writes, and THE HEADER SIZE a reader must skip to reach the ids.  Both are
+/// named here, once, because two things besides this file depend on them: the `static_assert`s under the struct
+/// (which pin them against the layout the file depends on), and `tools/nvme_p0_test.sh` /
+/// `tools/nvme_steps123_test.sh`, which read a snapshot's ids at a fixed offset and were previously told the
+/// number by hand (`HDR=208`, before that a hardcoded `104`).  A shell script cannot evaluate a C++
+/// `sizeof`, so the scripts read these two lines (`tools/nvme_header_layout.sh`) and refuse to run if either is
+/// missing - and they also check the version field of the file they are reading against `$NVME_VERSION`, so a
+/// snapshot written by a DIFFERENT build is caught instead of being parsed at the wrong offset.
+inline constexpr uint32_t kNvmeFormatVersion = 3;
+inline constexpr uint64_t kNvmeHeaderBytes = 208;
+
 /// On-disk header.  Carries the geometry + format tag so a restore refuses (never converts) a mismatch.
 ///
 /// THIS IS A RAW C++ STRUCT COPIED INTO THE ENVELOPE, which is exactly what the shared core's boundary forbids for
@@ -41,7 +52,7 @@ struct NvmeHeader {
     // which for a turn-boundary snapshot is a position the snapshot does not describe, so the two files are not
     // interchangeable even though the segments are the same size in the same order: a reader cannot tell them
     // apart from the bytes.  Version 2 is therefore REFUSED, not reinterpreted.
-    uint32_t version = 3;
+    uint32_t version = kNvmeFormatVersion;
     int64_t L = 0;                 // ids consumed (the prefix length)
     int64_t n_imgs = 0;
     int32_t cvec = 0;
@@ -62,8 +73,9 @@ struct NvmeHeader {
 // padding-free at 208 bytes, which is what lets the ids start at a fixed offset; a field added, widened or
 // REORDERED fails the build rather than silently re-mapping every segment after it.  The integrity footer covers
 // only the payload, so the header - the one thing that can move the whole layout - has to be pinned here.
-static_assert(sizeof(NvmeHeader) == 208 && alignof(NvmeHeader) == 8,
-              "the NVMe envelope's 208-byte header moved: the ids no longer start where a reader expects");
+static_assert(sizeof(NvmeHeader) == kNvmeHeaderBytes && alignof(NvmeHeader) == 8,
+              "the NVMe envelope's header no longer matches kNvmeHeaderBytes: the ids no longer start where a "
+              "reader expects (tools/nvme_header_layout.sh reads that constant for the shell oracles)");
 static_assert(offsetof(NvmeHeader, L) == 8 && offsetof(NvmeHeader, geometry) == 32 &&
                   offsetof(NvmeHeader, page_size) == 176 && offsetof(NvmeHeader, mtp_host) == 200,
               "the NVMe header gained padding or reordered a field: the file is no longer a described record");
