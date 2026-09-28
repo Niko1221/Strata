@@ -222,6 +222,8 @@ struct QsaState {
     int kv_mode = 0;
     int64_t n_slots = 0;
     strata::kernels::KvHostPools host;
+    void* host_base = nullptr;      ///< CPU address of the authoritative host KV allocation
+    uint64_t host_bytes = 0;        ///< allocation size, including alignment padding
     strata::kernels::KvStreamMap map;
     int64_t idx_pooled_rows = 0;     ///< rows of `idx_pooled` (a ring, which has no indexer, keeps 2)
 

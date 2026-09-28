@@ -50,6 +50,8 @@ public:
     uint64_t vram_bytes() const { return vram_; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
+    void* state_arena() const { return state_arena_; }
+    uint64_t state_bytes() const { return state_bytes_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
     /// `upto` (a conversation-cache resume). No-op unless the drafter's K/V is a ring.
     void kv_restore(int64_t upto);
@@ -101,6 +103,7 @@ private:
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
     void* state_arena_ = nullptr;
+    uint64_t state_bytes_ = 0;
     QsaState st_;
     void* arena_ = nullptr;
 

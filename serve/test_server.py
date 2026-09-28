@@ -24,6 +24,7 @@ ANSWER = "x" * 2000                              # longer than the old 1024 fall
 class RecordingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_max_new = max_new
+        self.last_sampling = sampling.copy()
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
 
@@ -61,6 +62,14 @@ class MaxTokens(unittest.TestCase):
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
         return s, b, u.get("input_tokens"), u.get("output_tokens")
+
+    def test_auxiliary_marker_reaches_engine_through_both_apis(self):
+        for api in ("openai", "anthropic"):
+            for marker in (True, False):
+                with self.subTest(api=api, marker=marker):
+                    status, body, _, _ = self.call(api, max_tokens=1, strata_auxiliary=marker)
+                    self.assertEqual(status, 200, body)
+                    self.assertIs(self.engine.last_sampling.get("strata_auxiliary"), marker)
 
     def test_unset_budget_is_the_rest_of_the_context(self):
         cases = {"openai": [{"max_tokens": -1}, {"max_tokens": 0}, {}, {"max_tokens": None},
@@ -378,6 +387,27 @@ class WebApp(unittest.TestCase):
             self.assertEqual(self.get("/")[0], 200)                  # the page itself asks for the key
         finally:
             self.svc.api_key = ""
+
+
+class AuxiliaryStateWire(unittest.TestCase):
+    def test_explicit_boolean_only(self):
+        from serve.server import StrataEngine
+        for value in (False, None, 1, "true"):
+            self.assertNotIn("aux=", StrataEngine.sampling_keys({"strata_auxiliary": value}))
+        self.assertIn("aux=1", StrataEngine.sampling_keys({"strata_auxiliary": True}))
+        self.assertNotIn("aux=", StrataEngine.sampling_keys({"reasoning_effort": "none"}))
+
+    def test_text_and_image_protocol(self):
+        import io, queue, threading
+        from types import SimpleNamespace
+        from serve.server import StrataEngine
+        for emb, expected in ((None, "GEN 3 aux=1 1,2\n"), ("picture.bin", "GENI 3 aux=1 picture.bin 1,2\n")):
+            engine = StrataEngine.__new__(StrataEngine)
+            engine.proc = SimpleNamespace(stdin=io.StringIO())
+            engine.lines = queue.Queue()
+            engine.lines.put("DONE 1 2 0 0 stop 0 0 0")
+            self.assertEqual(list(engine.generate([1,2], 3, {"strata_auxiliary": True}, threading.Event(), emb)), [])
+            self.assertEqual(engine.proc.stdin.getvalue(), expected)
 
 
 if __name__ == "__main__":

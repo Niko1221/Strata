@@ -176,6 +176,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[0], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
     qsa_state_zero(st_, g, nullptr);
+    state_bytes_ = sb;
     cudaDeviceSynchronize();
     vram_ += sb;
 

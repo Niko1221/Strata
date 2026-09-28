@@ -205,7 +205,12 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
-        return keys + StrataEngine.projection_key(sampling)
+        return keys + StrataEngine.projection_key(sampling) + StrataEngine.auxiliary_key(sampling)
+
+    @staticmethod
+    def auxiliary_key(sampling: dict) -> str:
+        # Explicit client intent, never guessed from reasoning level or prompt text.
+        return " aux=1" if sampling.get("strata_auxiliary") is True else ""
 
     @staticmethod
     def projection_key(sampling: dict) -> str:
@@ -219,7 +224,7 @@ class StrataEngine:
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
-        head = f"GENI {int(max_new)}{self.projection_key(sampling or {})} {embeddings}" if embeddings else \
+        head = f"GENI {int(max_new)}{self.projection_key(sampling or {})}{self.auxiliary_key(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {}) if not embeddings else ''}"
         try:
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")

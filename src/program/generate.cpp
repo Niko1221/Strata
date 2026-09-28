@@ -42,6 +42,7 @@
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
+#include "strata/program/conversation_state.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -256,6 +257,7 @@ struct Options {
     /// prompt again, the v0.1.2 behaviour).  One is the GDN recurrence of the 36 layers, the QSA indexer tails and
     /// the PLE history (~118 MB of host RAM); the KV cache itself is positional and stays where it is.
     int prompt_cache = 6;
+    int64_t conversation_cache_mib = 0; // opt-in: one complete parked conversation in RAM
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
@@ -343,6 +345,8 @@ void usage() {
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
                  "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
                  "                       of RAM each; 0 = read every prompt from the start)\n"
+                 "  --conversation-cache-mib N  Windows: park one complete conversation in RAM across unrelated calls\n"
+                 "                       (default 0/off; budget excludes small checkpoints; keeps 2560 MiB RAM free)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
@@ -869,6 +873,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--conversation-cache-mib") o.conversation_cache_mib = std::max(0LL, std::atoll(next("--conversation-cache-mib")));
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
@@ -2336,6 +2341,17 @@ int main(int argc, char** argv) {
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
         std::vector<ConvCheckpoint> checks;
+        // Explicit aux=1 calls preserve the primary state, even if a summary is
+        // longer than the primary prompt. A non-auxiliary request ends that batch:
+        // restore a matching prefix or discard the old snapshot (e.g. compression
+        // rewrote history). Auxiliary states never replace a primary snapshot.
+        bool live_auxiliary = false;
+        strata::program::ConversationState parked_state;
+        std::vector<int32_t> parked_ids;
+        std::vector<ImgKey> parked_imgs;
+        std::vector<ConvCheckpoint> parked_checks;
+        int32_t parked_ple_prev[2] = {-1, -1}, parked_ple_token = -1;
+        bool parked_cvec = true;
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         Clock::time_point pp_t0 = Clock::now();
@@ -2570,6 +2586,7 @@ int main(int argc, char** argv) {
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            bool req_auxiliary = false;
             if (endp != nullptr) {   // GENI takes only cvec=; its file path is the first token without an =
                 for (;;) {
                     while (*endp == ' ') ++endp;
@@ -2582,6 +2599,7 @@ int main(int argc, char** argv) {
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "aux") req_auxiliary = std::atoi(tok.c_str() + eq + 1) == 1;
                     else if (geni) {}   // image requests decode greedily
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
@@ -2730,12 +2748,79 @@ int main(int argc, char** argv) {
                         from_live = false;
                     }
             }
+            if (o.prompt_cache > 0 && o.conversation_cache_mib > 0) {
+                int64_t parked_resume = 0;
+                if (!req_auxiliary && parked_state.bytes() && parked_cvec == cvec_cached) {
+                    if (starts_with(parked_ids, parked_imgs)) parked_resume = (int64_t) parked_ids.size();
+                    for (const auto& c : parked_checks)
+                        if (starts_with(c.ids, c.imgs)) parked_resume = std::max(parked_resume, (int64_t) c.ids.size());
+                }
+                if (parked_resume > resume) {
+                    const auto t0 = Clock::now();
+                    if (!parked_state.restore()) {
+                        std::printf("ERR restoring a complete conversation state failed\n");
+                        return 1; // never continue with partially restored state
+                    }
+                    live = std::move(parked_ids); live_imgs = std::move(parked_imgs);
+                    checks = std::move(parked_checks);
+                    ss.ple_prev[0] = parked_ple_prev[0]; ss.ple_prev[1] = parked_ple_prev[1];
+                    ss.ple_token = parked_ple_token;
+                    resume = parked_resume;
+                    from_live = (int64_t) live.size() == resume && starts_with(live, live_imgs);
+                    const auto bytes = parked_state.bytes();
+                    parked_state.clear(); parked_ids.clear(); parked_imgs.clear(); parked_checks.clear();
+                    std::fprintf(stderr, "strata conversation: restored %lld tokens, %llu MiB, %.1f ms\n",
+                        (long long) resume, (unsigned long long) (bytes >> 20),
+                        std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                } else if (req_auxiliary && !live_auxiliary && live_ok) {
+                    // Drop an older snapshot before allocating its replacement.
+                    parked_state.clear(); parked_ids.clear(); parked_imgs.clear(); parked_checks.clear();
+                    uint64_t available = 0;
+#ifdef _WIN32
+                    MEMORYSTATUSEX mem{}; mem.dwLength = sizeof(mem);
+                    if (GlobalMemoryStatusEx(&mem)) available = mem.ullAvailPhys;
+#endif
+                    // Unsupported physical-memory telemetry disables admission safely.
+                    std::vector<strata::program::ConversationRange> ranges;
+                    const auto z = conv_state_sizes(g);
+                    ranges.push_back({ss.gdn_state, z.gdn, true});
+                    if (ss.ple_hist) ranges.push_back({ss.ple_hist, z.ple, true});
+                    const auto qbytes = strata::core::qsa_state_bytes(g, ss.max_cells, true) +
+                        (g.n_qsa_layers() - 1) * strata::core::qsa_state_bytes(g, ss.max_cells, false);
+                    ranges.push_back({ss.qsa_state_arena, (size_t) qbytes, true});
+                    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+                        const auto& q = ss.qsa_states[i];
+                        if (q.host_bytes) ranges.push_back({q.host_base, (size_t) q.host_bytes, false});
+                    }
+                    ranges.push_back({mtp.state_arena(), (size_t) mtp.state_bytes(), true});
+                    const auto& mq = mtp.kv_state();
+                    if (mq.host_bytes) ranges.push_back({mq.host_base, (size_t) mq.host_bytes, false});
+                    const auto t0 = Clock::now();
+                    if (parked_state.save(ranges, (uint64_t) o.conversation_cache_mib << 20,
+                                          available, 2560ull << 20)) {
+                        parked_ids = live; parked_imgs = live_imgs; parked_checks = std::move(checks);
+                        resume = 0; from_live = false; // the checkpoints now belong to the parked state
+                        parked_ple_prev[0] = ss.ple_prev[0]; parked_ple_prev[1] = ss.ple_prev[1];
+                        parked_ple_token = ss.ple_token; parked_cvec = cvec_cached;
+                        std::fprintf(stderr, "strata conversation: parked %zu tokens, %llu MiB, %.1f ms\n",
+                            parked_ids.size(), (unsigned long long) (parked_state.bytes() >> 20),
+                            std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    } else {
+                        std::fprintf(stderr, "strata conversation: admission skipped (budget/RAM/copy); cold prefill\n");
+                    }
+                } else if (!req_auxiliary) {
+                    // Rewritten history/new primary task: the old state cannot
+                    // help, and must not block caching the new primary later.
+                    parked_state.clear(); parked_ids.clear(); parked_imgs.clear(); parked_checks.clear();
+                }
+            }
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
                              return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
                          }), checks.end());
             live_ok = false;   // until this request has finished, the session is in between
+            live_auxiliary = req_auxiliary;
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
