@@ -122,4 +122,14 @@ if [ "$RES" = "RESUME $LD" ]; then echo "PASS resume: $RES"; else echo "FAIL res
 if grep -q "integrity check failed" "$OUT/Bc.err" 2>/dev/null || [ -n "$H_Bc" ] && [ "$H_Bc" != "$H_A2" ]; then
   echo "PASS negative control: corruption detected (the test can fail)"
 else echo "FAIL negative control: corruption NOT detected - the test is decorative"; FAIL=1; fi
+# AND it must be refused as the RECOVERABLE class.  A corrupt file is refused before the tier writes anything, so
+# it can never be reported as a transfer failure - the two classes have different consequences (one re-prefills,
+# the other stops the engine), and a log reader has to be able to tell them apart.
+# docs/nvme-kv-cache-design.md §5.1 / §5.2.
+if grep -q "nvme_restore failed (refused)" "$OUT/Bc.err" 2>/dev/null; then
+  echo "PASS failure class: the corrupt snapshot is refused, not a transfer"
+else echo "FAIL failure class: expected 'nvme_restore failed (refused)' in Bc.err"; FAIL=1; fi
+if grep -q "nvme_restore failed (transfer)" "$OUT/Bc.err" 2>/dev/null; then
+  echo "FAIL failure class: a corrupt FILE reported as a transfer failure"; FAIL=1
+else echo "PASS no transfer failure reported for a corrupt file"; fi
 [ "$FAIL" = "0" ] && { echo "ALL PASS"; exit 0; } || { echo "SOME FAILURES"; exit 1; }
