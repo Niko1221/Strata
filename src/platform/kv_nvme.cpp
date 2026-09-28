@@ -92,6 +92,33 @@ bool sizes_of(const strata::core::ModelGeometry& g, Sizes& z, std::string& err) 
     return true;
 }
 
+/// C6: THE DRAFTER'S RING IS REFILLED BY THE ADAPTER, right after it applies a snapshot - not by whichever
+/// call site happened to remember.  The collapse condition is written in docs/nvme-kv-cache-convergence.md: this
+/// is the right home while the adapter reads straight into the pinned pools, because the refill is part of the
+/// residency contract for bytes it just wrote; it folds into `conversation_kv_restore` (which already calls
+/// `kv_ring_restore`, conversation_snapshot.cpp:171) the moment the adapter adopts that wholesale.
+///
+/// The blocks are the ones the serve loop's own refill computed: [b1 - n_slots, b1) below the restored prefix.
+/// Those are exactly the slots a LONGER previous turn could have clobbered, because the ring table is static -
+/// `block -> block % n_slots` (kv_stream.hpp:76-79) - so with more blocks than slots, blocks past b1 wrap onto
+/// the slots that belong to blocks below it.  Blocks past b1 are deliberately left alone: the drafter's attention
+/// reads only cells below the one it is writing (`n_kv = pos + 1`, layer.cpp:813) and the request continues from
+/// L, so every cell past L is written before anything can read it.  The adapter's drafter copy covers
+/// [0, min(L, max_cells)), so the refill is clamped to the same window it restored.
+void refill_drafter_ring(strata::core::QsaState& st, const strata::core::ModelGeometry& g, const Sizes& z, int64_t L) {
+    if (st.kv_mode != 2 || L <= 0 || st.n_slots <= 0) return;   // only a ring needs a ring refill
+    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+    s.n_head = g.n_head;
+    s.n_head_kv = g.n_head_kv;
+    s.head_dim = g.head_dim;
+    s.idx_n_head = g.idx_q_heads;
+    s.idx_dim = g.idx_key_dim;
+    const int64_t b1 = (std::min<int64_t>(L, st.max_cells) + z.page_size - 1) / z.page_size;
+    const int64_t b0 = std::max<int64_t>(0, b1 - st.n_slots);
+    strata::kernels::kv_ring_restore(strata::core::qsa_attn_pools(st), st.host, strata::core::qsa_kv_format(st),
+                                     b0, b1, st.n_slots, s, nullptr);
+}
+
 // bytes per (cell, head) row of one KV array, for the state's format
 int64_t row_bytes(const strata::core::QsaState& st, int64_t head_dim) {
     if (st.kv_q4) return (int64_t) strata::kernels::kv_q4_bytes_per_head((int) head_dim);
@@ -459,6 +486,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     }
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
         strata::kernels::kv_stream_reset(ss.qsa_states[i].map, nullptr);   // refill slots from the host copy on demand
+    refill_drafter_ring(mtp_state, g, z, L);   // C6: the drafter's ring, by the tier that just wrote its host copy
 
     // the PLE token window, oldest first (as checkpoint_restore leaves it)
     ss.ple_prev[0] = L >= 2 ? ids[(size_t) L - 2] : -1;

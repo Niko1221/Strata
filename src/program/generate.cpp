@@ -3456,7 +3456,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: nvme_restore failed: %s\n", rerr.c_str());
                 return 1;
             }
-            mtp.kv_restore(rL);   // refill the drafter ring from its now-restored host copy
+            // C6: no refill here.  `nvme_restore` refilled the drafter's ring as part of applying the snapshot it
+            // read (kv_nvme.cpp), which is the tier's own rule rather than one every call site must remember.
             live.swap(r_ids);
             live_imgs.swap(r_imgs);
             live_ok = o.prompt_cache > 0;
@@ -3672,6 +3673,10 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
+            // C6: a promote is indistinguishable from a live-session resume at `from_live` (both leave the session
+            // holding what the arena holds), and the refill below is the RAM tier's rule - so the tier that read a
+            // snapshot says so explicitly.  `nvme_restore` refilled the drafter's ring itself (kv_nvme.cpp).
+            bool from_nvme = false;
             if (o.prompt_cache > 0) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
@@ -3708,6 +3713,7 @@ int main(int argc, char** argv) {
                     } else {
                         resume = best->L;
                         from_live = true;
+                        from_nvme = true;
                         live = best->ids;
                         live_imgs = best->imgs;
                         std::fprintf(stderr, "strata serve: nvme promote: resumed %lld tokens from %s\n",
@@ -3765,8 +3771,11 @@ int main(int argc, char** argv) {
                 }
             }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
-            // host copies and slots are always current (every writer writes both), so they need nothing
-            if (resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
+            // host copies and slots are always current (every writer writes both), so they need nothing.
+            // C6: NOT for a promote - `nvme_restore` refilled the drafter's ring as part of applying the snapshot
+            // it read, and this call site is the rule for the resumes that never went through the adapter (a RAM
+            // checkpoint, or the live session).
+            if (resume > 0 && reread_to <= 0 && !from_nvme) mtp.kv_restore(resume);
             tr("request", n, geni ? 1 : 0);
             mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
