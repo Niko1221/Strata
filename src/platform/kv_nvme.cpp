@@ -47,14 +47,18 @@ struct Sizes {
     strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
 };
 
-Sizes sizes_of(const strata::core::ModelGeometry& g) {
+bool sizes_of(const strata::core::ModelGeometry& g, Sizes& z, std::string& err) {
     const strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    Sizes z;
     z.page_size = s.page_size;
     z.idx_block = s.idx_block;
-    std::string error;
-    strata::core::conversation_state_sizes(g, z.state, error);   // the geometry has already been checked by open()
-    return z;
+    // The shared core can REFUSE to size a geometry (a non-positive field, an overflow in the byte product).  It
+    // says so with a string naming which one, and that string used to be dropped on the floor here: a refused
+    // sizing left every count at zero, and the envelope was then laid out and walked with zero-length segments.
+    if (!strata::core::conversation_state_sizes(g, z.state, err)) {
+        err = "kv-nvme: " + err;
+        return false;
+    }
+    return true;
 }
 
 // bytes per (cell, head) row of one KV array, for the state's format
@@ -146,7 +150,8 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
     // the generation that followed), and the per-token scratch (block_pos) rides along harmlessly.
     const bool at_boundary = at != nullptr;
-    const Sizes z = sizes_of(g);
+    Sizes z;
+    if (!sizes_of(g, z, err)) return false;   // never lay the envelope out with zeroed byte counts
     const int64_t L = (int64_t) ids.size();
     if (L < 1) { err = "nvme_dump: empty session"; return false; }
     if (g.n_qsa_layers() > 0 && ss.qsa_states[0].kv_mode == 0) {
@@ -267,7 +272,8 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
 bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
                   std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err) {
-    const Sizes z = sizes_of(g);
+    Sizes z;
+    if (!sizes_of(g, z, err)) return false;   // the walk must not be sized with zeroed byte counts either
     FILE* f = std::fopen(path, "rb");
     if (!f) { err = std::string("nvme_restore: open ") + path; return false; }
     if (std::fseek(f, 0, SEEK_END) != 0) { err = "nvme_restore: seek"; std::fclose(f); return false; }
