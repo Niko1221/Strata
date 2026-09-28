@@ -88,19 +88,10 @@ For model acceptance, reserve the server for the test and retain the request JSO
 - Exercise host-backed KV positions beyond the resident window with MTP enabled, plus a known tool call and
   independently tested generated code. Record peak RAM and dedicated/shared GPU memory separately.
 
-Initial local measurements used Strata 0.1.12 plus this patch, Swift 1.5 GSQ-RCO IQ3_XXS, a Ryzen 9 7940HS,
-64 GB RAM and RTX 4070 Laptop 8 GB, 65,536 context, int8 KV, 32,768 resident KV and MTP spec 5. These historical
-numbers are **not measurements of newer upstream prompt kernels**:
-
-| Case | Snapshot off | Snapshot on |
-|---|---:|---:|
-| 5,585-token continuation after auxiliary calls: prompt time | 21.775 s | 0.334 s |
-| Same continuation: reused tokens | 0 | 5,578 |
-| 41,570-token continuation after auxiliaries | not measured in paired control | 41,563 reused; 0.439 s prompt time |
-
-The known lookup answers were correct. The snapshot occupied approximately 1,514 MiB. Reported timings include
-the restore within prompt processing; they exclude unrelated tool execution. They do not establish bitwise parity
-under every model/configuration or guarantee arbitrary agent-task success.
+Bounded validation covered known-answer restoration after marked auxiliary calls, including histories beyond
+resident KV. These checks do not establish bitwise parity under every model/configuration, indefinite stability,
+or arbitrary agent-task success. For a performance comparison, keep the workload and inference settings matched;
+report prompt processing, snapshot transfer, generation and tool execution separately.
 
 To disable the feature, remove `--conversation-cache-mib` (or set it to zero) and stop marking auxiliary calls.
 No model conversion or project-history change is required.
