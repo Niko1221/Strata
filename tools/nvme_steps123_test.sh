@@ -7,11 +7,16 @@
 #   Step 3: --kv-nvme-max caps the store; the least recently stored snapshots are evicted.
 set -u
 cd /local/strata
+# See tools/nvme_header_layout.sh: the snapshot offset and format version come from the header in THIS tree, not
+# from a number written into this script by whoever last changed the header.
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$ROOT/tools/nvme_header_layout.sh"
 E=build/strata
 OUT=/tmp/nvme-s123
 STORE=$OUT/store
 rm -rf "$OUT"; mkdir -p "$OUT"
 export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+NVME_PYTHON=.venv/bin/python
 
 ARGS="--serve --pack packs/iq3_xxs
  --native models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf
@@ -57,13 +62,13 @@ wait_done() { # $1 outfile, $2 how many DONE lines
   echo "TIMEOUT waiting for DONE #$2 in $1"; return 1
 }
 snap_ids() { # $1 snapshot file: prints L, writes the comma ids to $OUT/full.txt
-  # HDR = sizeof(NvmeHeader), pinned by a static_assert in include/strata/platform/kv_nvme.hpp
-  HDR=208
-  .venv/bin/python -c 'import struct,sys; f=open(sys.argv[1],"rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(int(sys.argv[3])); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[2]+"/full.txt","w").write(",".join(map(str,ids))); print(L)' "$1" "$OUT" "$HDR"
+  nvme_snapshot_ids "$1" "$OUT/full.txt"
 }
 fsize() { stat -c %s "$1" 2>/dev/null || echo 0; }
 
 echo "== process 1: Step 1 (automatic cascade + supersede, same process) =="
+nvme_header_layout "$ROOT" || exit 1
+echo "reading snapshots at header $HDR bytes, format version $NVME_VERSION"
 FIFO=$OUT/in; mkfifo "$FIFO"
 $E $ARGS --kv-nvme $STORE < "$FIFO" > "$OUT/proc1.out" 2> "$OUT/proc1.err" &
 EPID=$!
