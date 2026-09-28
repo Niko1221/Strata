@@ -171,6 +171,10 @@ struct Options {
     /// is reserved for a host thread that has nothing to do while the drain runs.
     bool no_host_worker = false;
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    /// VRAM / pinned RAM / SSD tiers (TieredExpertSource): for a machine whose RAM does not hold every expert.
+    bool tiered_experts = false;
+    double host_budget_gib = -1.0;   ///< the PINNED tier's size; < 0 = auto (MemAvailable - reserve)
+    double host_reserve_gib = 8.0;   ///< auto leaves this much RAM for the cold tier's page cache and the OS
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -972,6 +976,12 @@ int main(int argc, char** argv) {
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--tiered-experts") o.tiered_experts = true;
+        else if (a == "--host-budget-gib") {
+            const std::string v = next("--host-budget-gib");
+            o.host_budget_gib = (v == "auto") ? -1.0 : std::atof(v.c_str());
+        }
+        else if (a == "--host-reserve-gib") o.host_reserve_gib = std::atof(next("--host-reserve-gib"));
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
         else if (a == "--keep-canonical") o.keep_canonical = true;
@@ -1446,8 +1456,18 @@ int main(int argc, char** argv) {
     // note in `pinned.cu`.
     strata::core::FileExpertSource src;
     strata::core::ArenaExpertSource arena_src;
+    strata::core::TieredExpertSource tiered_src;
     strata::core::ExpertSource* srcp = nullptr;
-    if (o.mmap_experts) {
+    if (o.tiered_experts) {
+        tiered_src.set_gguf(o.native_preset);
+        if (!tiered_src.open(o.pack, g.n_layers, g.n_expert, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: experts via the tiered source (%s); tiers are set after the cache fill\n",
+                     tiered_src.note().c_str());
+        srcp = &tiered_src;
+    } else if (o.mmap_experts) {
         if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -1702,6 +1722,16 @@ int main(int argc, char** argv) {
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile; slot 0 verified\n",
                      (long long) prefilled, (long long) want);
+    }
+    if (o.tiered_experts) {
+        const int64_t budget = o.host_budget_gib < 0 ? -1 : (int64_t) (o.host_budget_gib * 1073741824.0);
+        if (!tiered_src.settle(o.expert_cache > 0 ? &xcache : nullptr, profile, budget,
+                               (int64_t) (o.host_reserve_gib * 1073741824.0), /*threads=*/8, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: %s\n", tiered_src.note().c_str());
+        mem_mark("settling the expert tiers");
     }
 
     Drive drive;
@@ -2300,6 +2330,7 @@ int main(int argc, char** argv) {
         thits.scratch = drive.d.hit_scratch;
         thits.hit_out = drive.d.hit_out;
         drive.d.host_res = host_res.data();
+        if (o.tiered_experts) tiered_src.set_residency(host_res.data());
         std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
                      (long long) resident);
     }
@@ -2590,10 +2621,13 @@ int main(int argc, char** argv) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
                 const uint8_t* b = srcp->blob(s.layer, s.in);
+                // fill_slot: a blob that straddles a tiered-source registration edge goes through a bounce buffer
+                std::string ferr;
                 if (slot < 0 || b == nullptr ||
-                    cudaMemcpyAsync(xcache.device_slot(slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                    cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess)
+                    !xcache.fill_slot(slot, b, adapt_stream, ferr, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer))) {
+                    if (!ferr.empty()) std::fprintf(stderr, "strata serve: %s\n", ferr.c_str());
                     return false;
+                }
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
@@ -3805,9 +3839,11 @@ int main(int argc, char** argv) {
                 const int32_t slot = host_res[out];
                 const uint8_t* b = srcp->blob(s.layer, s.in);
                 // asynchronous: the copies run while the MTP drafts; the next window waits for them
+                std::string ferr;
+                // fill_slot: a blob that straddles a tiered-source registration edge goes through a bounce buffer
                 if (slot < 0 || b == nullptr ||
-                    cudaMemcpyAsync(xcache.device_slot(slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                    cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess) {
+                    !xcache.fill_slot(slot, b, adapt_stream, ferr, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer))) {
+                    if (!ferr.empty()) std::fprintf(stderr, "strata generate: %s\n", ferr.c_str());
                     std::fprintf(stderr, "strata generate: an adaptive refill failed\n");
                     return false;
                 }
