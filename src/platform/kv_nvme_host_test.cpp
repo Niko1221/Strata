@@ -7,21 +7,29 @@
 // the turn-boundary key, the image filter, the pooled-row count, the spare-row re-publish, the version and
 // geometry refusals, the drafter-ring window - are checkable on a machine running no model at all.
 //
-// HOW THE DEVICE IS STOOD IN.  The tier touches the device in four ways: `cudaMemcpy` for the indexer / gdn / ple
-// segments, `cudaMemcpyAsync` in the drafter-ring refill, `kv_stream_reset`'s kernel launch, and a final
-// `cudaDeviceSynchronize`.  The target links with `-Wl,--wrap=...` - the shared core's own
-// `conversation_transfer_test` uses the same technique - and the wrappers below turn the first two into plain
-// `memcpy`, the launch into a no-op and the sync into success.  `main` also forces `CUDA_VISIBLE_DEVICES=-1`
+// HOW THE DEVICE IS STOOD IN.  The tier touches the device in five ways: `cudaMemcpy` for the indexer / gdn / ple
+// segments, `cudaMemcpyAsync` in the drafter-ring refill, `kv_stream_reset`'s kernel launch, a
+// `cudaDeviceSynchronize` before the writes and one after them.  The target links with `-Wl,--wrap=...` - the
+// shared core's own `conversation_transfer_test` uses the same technique - and the wrappers below turn the copies
+// into plain `memcpy`, let either sync be made to fail on a chosen call number, and MODEL the runtime's last-error
+// state (returned once, then cleared) instead of suppressing it.  `main` also forces `CUDA_VISIBLE_DEVICES=-1`
 // before any CUDA call, so this fixture cannot reach a GPU even if it is run by hand on a busy machine.
 //
 // WHAT IT PROVES: the bytes and the decisions.  Every segment the tier writes and reads, the arithmetic that
-// sizes them, the key a snapshot is stored under, the match that promotes one, and which refusal fires first.
+// sizes them, the key a snapshot is stored under, the match that promotes one, which refusal fires first, and -
+// since step 5 - WHICH KIND of failure each one is: the recoverable class, which provably makes no CUDA call and
+// writes nothing, versus the transfer class, which provably leaves a half-written session and must not be
+// recovered from.  It also models the CUDA last-error state, so a tier that handles a copy failure without
+// consuming the error is caught here rather than by the next kernel launch.
 //
 // WHAT IT CANNOT PROVE, and no host fixture can:
 //   * that the arrays are really device memory or that `cudaMemcpy` moves them - the wrappers replace it, so a
 //     wrong `cudaMemcpyKind` would pass here;
 //   * that `kv_stream_reset` refills the streamed layers' slots: its launch is a no-op, so the fixture asserts
 //     nothing about a page table;
+//   * whether a real failed H2D copy leaves a STICKY context error or a benign one.  That is the question the
+//     failure contract refuses to guess at: the tier classifies the failure and stops, rather than claiming the
+//     device is fine.  Only a GPU run can show what a real failure does, and the GPU is held by a live engine;
 //   * that a promoted session generates the same TOKENS as the session that was dumped.  That oracle is
 //     `STRATA_STATE_HASH` in tools/nvme_p0_test.sh, and the fingerprint lives in the program layer;
 //   * a real model's geometry, a real tokenizer, or a conversation over HTTP.
@@ -37,21 +45,47 @@
 #include <cstring>
 
 // ---- the host stand-in for the device (the target links -Wl,--wrap=<name>; see the file header) ----
+//
+// THE CUDA ERROR STATE IS MODELLED, NOT SUPPRESSED.  `cudaGetLastError()` returns the last error AND CLEARS it,
+// and that is load-bearing for the failure contract (C7): a tier that handles a copy failure without reading the
+// error leaves it for the NEXT `cudaGetLastError()` in the engine - and on the serve loop's drop-and-restart path
+// that next call is `kv_stream_reset`'s `check()` (kv_stream.cu:199-202), which EXITS the process.  So these
+// wrappers record what a failed copy set and hand it back exactly once, the way CUDA does.  A restore that
+// consumed its own error reads back "no error"; one that did not leaves a pending error this fixture can see.
+namespace {
+int copy_calls = 0, sync_calls = 0;
+int fail_copy = 0, fail_sync = 0;              // the Nth cudaMemcpy / cudaDeviceSynchronize fails (0 = never)
+cudaError_t pending_error = cudaSuccess;       // what a real `cudaGetLastError()` would be reporting
+void reset_faults() { copy_calls = sync_calls = fail_copy = fail_sync = 0; pending_error = cudaSuccess; }
+}
 extern "C" cudaError_t __wrap_cudaMemcpy(void* dst, const void* src, size_t n, cudaMemcpyKind) {
-    if (!dst || !src) return cudaErrorInvalidValue;
+    ++copy_calls;
+    if (fail_copy != 0 && copy_calls == fail_copy) { pending_error = cudaErrorInvalidValue; return pending_error; }
+    if (!dst || !src) { pending_error = cudaErrorInvalidValue; return pending_error; }
     std::memcpy(dst, src, n);
     return cudaSuccess;
 }
 extern "C" cudaError_t __wrap_cudaMemcpyAsync(void* dst, const void* src, size_t n, cudaMemcpyKind, cudaStream_t) {
-    if (!dst || !src) return cudaErrorInvalidValue;
+    // Never injected: a failure here goes to `kv_ring_restore`'s `check("ring restore")` (kv_stream.cu:223-234),
+    // which exits the process - the fixture would end instead of asserting.  It is asserted in the contract text
+    // instead: a residency refill that cannot launch is fatal by construction, not by choice.
+    if (!dst || !src) { pending_error = cudaErrorInvalidValue; return pending_error; }
     std::memcpy(dst, src, n);
     return cudaSuccess;
 }
-extern "C" cudaError_t __wrap_cudaDeviceSynchronize() { return cudaSuccess; }
-/// `kv_stream_reset` launches a kernel.  With no device the launch only SETS an error, and `check()` in
-/// kv_stream.cu exits the process on it.  Reporting "no error" is what lets the tier run at all - and it is also
-/// why this fixture asserts nothing about what that kernel would have done to the page table.
-extern "C" cudaError_t __wrap_cudaGetLastError() { return cudaSuccess; }
+extern "C" cudaError_t __wrap_cudaDeviceSynchronize() {
+    ++sync_calls;
+    if (fail_sync != 0 && sync_calls == fail_sync) { pending_error = cudaErrorUnknown; return pending_error; }
+    return cudaSuccess;
+}
+/// Faithful: returns the pending error AND clears it.  `kv_stream_reset` launches a real kernel, which with no
+/// device only SETS an error; because this wrapper answers for the runtime's own state, `check()` sees what the
+/// tier left behind - which is exactly the thing C7 turns on.
+extern "C" cudaError_t __wrap_cudaGetLastError() {
+    const cudaError_t e = pending_error;
+    pending_error = cudaSuccess;
+    return e;
+}
 
 #include <algorithm>
 #include <array>
@@ -75,7 +109,7 @@ using strata::platform::NvmeHeader;
 
 namespace {
 
-int checks = 0, refusals = 0;
+int checks = 0, refusals = 0, fatalities = 0;
 std::string last_error;
 
 void ck(bool ok, const char* what) {
@@ -86,6 +120,19 @@ void ck_eq(int64_t got, int64_t want, const char* what) {
     ++checks;
     if (got != want) {
         std::fprintf(stderr, "FAIL: %s (got %lld, want %lld)\n", what, (long long) got, (long long) want);
+        std::exit(1);
+    }
+}
+/// THE FLOOR EVERY FAILURE PATH MUST CLEAR: the tier reported its own failure, so it must have CONSUMED the CUDA
+/// error it handled.  A pending error here is a restore that would make the next `cudaGetLastError()` in the
+/// engine - `kv_stream_reset`'s `check()`, which exits - report this failure as if it had happened there.
+/// (`pinned.cu:170-183` is this tree paying for that exact trap before.)
+void ck_no_pending_error(const char* what) {
+    ++checks;
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "FAIL: %s left a CUDA error pending (%s) for the next caller to misread\n",
+                     what, cudaGetErrorString(e));
         std::exit(1);
     }
 }
@@ -284,9 +331,51 @@ struct Session {
     int draft_k_array() const { return draft_k_tag; }
     int draft_ks_array() const { return draft_ks_tag; }
 
+    // ---- the "did the restore touch anything?" oracle (the shared core's fixture has the same one) ----
+    /// Fill every buffer the tier could ever write with a sentinel, so "untouched" is a byte-level claim.  Never 0:
+    /// 0 is what a fresh session holds and what several other checks here assert.
+    void poison() {
+        auto fill = [](std::vector<uint8_t>& b) { std::fill(b.begin(), b.end(), SENTINEL); };
+        for (Store& s : stores) { fill(s.k); fill(s.v); fill(s.ks); fill(s.vs); fill(s.pooled);
+                                   fill(s.tail); fill(s.dead); fill(s.bpos); }
+        fill(draft_store.k); fill(draft_store.v); fill(draft_store.ks); fill(draft_store.vs);
+        fill(draft_store.pooled); fill(draft_store.tail); fill(draft_store.dead); fill(draft_store.bpos);
+        fill(draft_store.slot_k); fill(draft_store.slot_v); fill(draft_store.slot_ks); fill(draft_store.slot_vs);
+        fill(gdn); fill(ple);
+        ss.ple_prev[0] = -1;
+        ss.ple_prev[1] = -1;
+    }
+    static bool is_sentinel(const std::vector<uint8_t>& b) {
+        return std::all_of(b.begin(), b.end(), [](uint8_t x) { return x == SENTINEL; });
+    }
+    /// Every array the tier writes is still the sentinel - i.e. the failure happened before it wrote anything.
+    bool untouched() const {
+        for (const Store& s : stores)
+            if (!(is_sentinel(s.k) && is_sentinel(s.v) && is_sentinel(s.ks) && is_sentinel(s.vs) &&
+                  is_sentinel(s.pooled) && is_sentinel(s.tail) && is_sentinel(s.dead) && is_sentinel(s.bpos)))
+                return false;
+        if (!(is_sentinel(draft_store.k) && is_sentinel(draft_store.v) && is_sentinel(draft_store.ks) &&
+              is_sentinel(draft_store.vs) && is_sentinel(draft_store.pooled) && is_sentinel(draft_store.tail) &&
+              is_sentinel(draft_store.dead) && is_sentinel(draft_store.bpos))) return false;
+        if (!(is_sentinel(draft_store.slot_k) && is_sentinel(draft_store.slot_v) &&
+              is_sentinel(draft_store.slot_ks) && is_sentinel(draft_store.slot_vs))) return false;
+        return is_sentinel(gdn) && is_sentinel(ple) && ss.ple_prev[0] == -1 && ss.ple_prev[1] == -1;
+    }
+    /// The PLE window is the last thing `nvme_restore` writes, so it says "the apply pass finished" in a form the
+    /// store's own API can be checked against (the store does not hand back `L`).
+    int64_t ple_prev_last() const { return ss.ple_prev[1]; }
+
+    static constexpr uint8_t SENTINEL = 0xA5;
+
   private:
     int draft_k_tag = -1, draft_ks_tag = -1;
 };
+
+/// One pooled ROW still holding the poison sentinel - the row-level form of "this write did not happen".
+bool row_is_sentinel(const std::vector<uint8_t>& pooled, int64_t row, int64_t idx_dim) {
+    const uint8_t* p = pooled.data() + (size_t) row * (size_t) idx_dim * 4;
+    return std::all_of(p, p + (size_t) idx_dim * 4, [](uint8_t x) { return x == Session::SENTINEL; });
+}
 
 // ================================ the envelope, read back as bytes ================================
 
@@ -425,7 +514,8 @@ void fixture_turn_boundary(const std::string& dir) {
     R.clear_indexer();
     ck(row_value(R.stores[0].pooled, SPARE_ROW, S.g.idx_key_dim) != DEAD,
        "the fresh session's spare row is not `dead` before the restore, so the re-publish is observable");
-    ck(store.restore(e, R.ss, R.draft, R.g, err), "the snapshot restores");
+    ck(store.restore(e, R.ss, R.draft, R.g, err) == strata::core::ConversationRestore::restored,
+       "the snapshot restores");
     ck_eq(R.ss.ple_prev[1], boundary.back(), "the PLE window is the boundary's last token");
     for (int64_t i = 0; i < n_qsa; ++i) {
         const Store& s = R.stores[(size_t) i];
@@ -542,7 +632,8 @@ void fixture_refusals(const std::string& dir) {
         std::vector<ConversationImageKey> imgs;
         bool cvec = false;
         int64_t L = 0;
-        return strata::platform::nvme_restore(path.c_str(), into.ss, into.draft, into.g, ids, imgs, cvec, L, e);
+        return strata::platform::nvme_restore(path.c_str(), into.ss, into.draft, into.g, ids, imgs, cvec, L, e) ==
+               strata::core::ConversationRestore::restored;
     };
 
     {   // a version-2 file is refused BY NAME, before any segment is walked
@@ -599,6 +690,446 @@ void fixture_refusals(const std::string& dir) {
     }
 }
 
+#ifndef _WIN32
+/// Runs `fn` with the C stderr redirected into a temp file and returns what it wrote.  The store's scan message is
+/// the ONLY thing an operator holding a directory of unreadable snapshots sees, so the fixture reads it rather
+/// than assuming it.
+template <class Fn>
+std::string capture_stderr(Fn&& fn) {
+    const std::string p = "/tmp/kv-nvme-stderr-" + std::to_string((long) ::getpid()) + ".txt";
+    const int saved = dup(2);
+    if (saved < 0) { fn(); return {}; }
+    std::fflush(stderr);
+    if (std::freopen(p.c_str(), "w", stderr) == nullptr) { ::close(saved); fn(); return {}; }
+    fn();
+    std::fflush(stderr);
+    dup2(saved, 2);
+    ::close(saved);
+    std::ifstream f(p);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+#endif
+
+// ================================ fixture 4: THE FAILURE CONTRACT (collision C7) ================================
+//
+// THE QUESTION: which failures may a caller recover from, and which ones mean the process must stop.  Our tier
+// used to answer "all of them, by dropping the snapshot and re-reading the prompt"; the shared core answers
+// "a transfer failure is fatal".  This fixture decides between them with the tier's own behaviour rather than by
+// argument, and it does it with the CUDA error state MODELLED (see the wrappers above) because the whole question
+// turns on what a failed copy leaves behind for the next caller.
+//
+// THE SHAPE OF `nvme_restore`, which is what makes the two classes distinguishable at all:
+//   validation pass  - file read, header, geometry, segment walk, layout end, payload digest.  No CUDA call.
+//   pre-apply sync   - the device must answer before a byte is written (the shared core does the same,
+//                      conversation_state.cpp:258).
+//   apply pass       - a LOOP over the recorded segments.  A failure in its middle is a HALF-WRITTEN session.
+//   residency pass   - kv_stream_reset per layer, the spare-row re-publish, the drafter ring refill.
+//   post-apply sync  - the device took everything above.  This is the proof a clean reset needs.
+void fixture_failure_contract(const std::string& dir) {
+    using Restore = strata::core::ConversationRestore;
+    const std::string path = dir + "/snap.bin";
+
+    Session S;
+    S.seed_indexer(11.0f, L_CONSUMED / SHP.idx_block, 12.0f);
+    S.tag_kv();
+    std::string err;
+    reset_faults();
+    ck(strata::platform::nvme_dump(path.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, err),
+       "the failure fixture has a snapshot to mutate");
+    const std::vector<uint8_t> good = slurp(path);
+    // cudaMemcpy calls the apply pass makes, in order: gdn, ple, then per QSA layer pooled / tail / dead /
+    // block_pos, then one spare-row re-publish per layer.  The KV segments are plain memcpy into the pinned host
+    // copies and are NOT counted - which is itself part of the contract's evidence.
+    const int device_applies = 2 + (int) S.g.n_qsa_layers() * 5;
+
+    struct Res {
+        Restore kind = Restore::restored;
+        std::string err;
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+    };
+    auto restore_bytes = [&](const std::vector<uint8_t>& bytes, Session& into, const std::string& p) -> Res {
+        std::ofstream f(p, std::ios::binary);
+        f.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        f.close();
+        Res r;
+        r.kind = strata::platform::nvme_restore(p.c_str(), into.ss, into.draft, into.g, r.ids, r.imgs, r.cvec, r.L,
+                                                r.err);
+        return r;
+    };
+
+    // ---- CLASS 1: every refusal the tier can make BEFORE the apply pass.  Recoverable, and provably so. ----
+    auto expect_recoverable = [&](const std::vector<uint8_t>& bytes, const char* must_name, const char* label) {
+        reset_faults();
+        Session R;
+        R.poison();
+        const Res r = restore_bytes(bytes, R, path);
+        ++refusals;
+        ck(r.kind == Restore::invalid, label);
+        if (r.err.find(must_name) == std::string::npos) {
+            std::fprintf(stderr, "FAIL: the refusal for '%s' was: %s\n", must_name, r.err.c_str());
+            std::exit(1);
+        }
+        ck_eq(copy_calls, 0, "a refused snapshot made not one cudaMemcpy");
+        ck_eq(sync_calls, 0, "a refused snapshot made not one CUDA call at all");
+        ck(R.untouched(), "the refused restore left every session buffer at its sentinel");
+        ck(r.ids.empty() && r.imgs.empty(), "the caller is not handed a prefix from a refused snapshot");
+        ck_no_pending_error(must_name);
+        last_error = r.err;
+    };
+    {
+        std::vector<uint8_t> b = good; std::memcpy(b.data(), "XXXX", 4);
+        expect_recoverable(b, "bad magic", "a foreign file is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; uint32_t old = 2; std::memcpy(b.data() + 4, &old, 4);
+        expect_recoverable(b, "version 2", "a stale format version is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; b[32 + 17 * 8] ^= 0xFF;
+        expect_recoverable(b, "geometry/format mismatch", "another geometry is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; int64_t huge = 1LL << 40; std::memcpy(b.data() + 8, &huge, 8);
+        expect_recoverable(b, "malformed header sizes", "a header that would size an impossible read is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; b.resize(b.size() - 4096);
+        expect_recoverable(b, "truncated snapshot", "a truncated file is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; b.resize(b.size() + 8, 0x5A);   // trailing junk: the walk ends short of it
+        expect_recoverable(b, "layout mismatch", "a file the segment walk cannot account for is refused");
+    }
+    {
+        std::vector<uint8_t> b = good; b[strata::platform::kNvmeHeaderBytes + 40 + 16 + 100] ^= 0xFF;
+        expect_recoverable(b, "integrity check failed", "a flipped payload byte is refused");
+    }
+    {   // a live engine too small for the snapshot: refused by the same guard the dump uses
+        Session T;
+        T.seed_indexer(7.0f, 1, 1.0f);
+        for (size_t i = 0; i < T.stores.size(); ++i) {
+            T.stores[i].pooled.assign(2 * T.g.idx_key_dim * 4, 0);   // 2 rows; this snapshot needs 3
+            T.layers[i].idx_pooled = (float*) T.stores[i].pooled.data();
+            T.layers[i].idx_pooled_rows = 2;
+        }
+        T.poison();
+        reset_faults();
+        const Res r = restore_bytes(good, T, path);
+        ++refusals;
+        ck(r.kind == Restore::invalid, "a snapshot too large for the live arrays is refused, not clamped");
+        ck(r.err.find("needs 3") != std::string::npos && r.err.find("holds 2") != std::string::npos,
+           "and the refusal names both counts");
+        ck_eq(copy_calls, 0, "the too-large snapshot performed no cudaMemcpy");
+        ck(T.untouched(), "and wrote nothing");
+        ck_no_pending_error("the pooled-rows refusal");
+    }
+    {   // a null target buffer is a refusal, not a transfer (the shared core validates the same thing first)
+        Session T;
+        T.seed_indexer(7.0f, 1, 1.0f);
+        T.layers[0].host.k_q = nullptr;
+        T.poison();
+        reset_faults();
+        const Res r = restore_bytes(good, T, path);
+        ++refusals;
+        ck(r.kind == Restore::invalid, "a missing target buffer is refused before the first copy");
+        ck(r.err.find("null host KV array") != std::string::npos, "and says which array is missing");
+        ck_eq(copy_calls, 0, "a refused target buffer means no copy was attempted");
+        ck(T.untouched(), "and nothing was written");
+        ck_no_pending_error("the null-array refusal");
+    }
+
+    // ---- CLASS 2: a CUDA failure at or after the first write.  Fatal, and half-applied by construction. ----
+    auto expect_fatal = [&](int which_copy, int which_sync, const char* must_name, const char* label) {
+        reset_faults();
+        fail_copy = which_copy;
+        fail_sync = which_sync;
+        Session R;
+        R.poison();
+        const Res r = restore_bytes(good, R, path);
+        ++fatalities;
+        ck(r.kind == Restore::transfer_failed, label);
+        if (r.err.find(must_name) == std::string::npos) {
+            std::fprintf(stderr, "FAIL: the transfer failure for '%s' was: %s\n", label, r.err.c_str());
+            std::exit(1);
+        }
+        // THE FLOOR: the tier handled the failure, so it must have consumed the error it caused.  If it did not,
+        // the next `cudaGetLastError()` in the engine - `kv_stream_reset`'s `check()`, which exits the process -
+        // reports THIS failure as though it had happened there.
+        ck_no_pending_error(label);
+        last_error = r.err;
+    };
+    {   // the device is already unusable BEFORE a byte is written: fatal, and nothing applied
+        expect_fatal(0, 1, "before the apply pass", "a failed pre-apply synchronize is a transfer failure");
+        ck_eq(copy_calls, 0, "the pre-apply sync failed before any copy was attempted");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_sync = 1;
+        restore_bytes(good, R, path);
+        ck(R.untouched(), "a pre-apply sync failure wrote nothing: the session is provably intact");
+    }
+    {   // the FIRST device segment fails: fatal, and (because it is first) nothing applied yet
+        expect_fatal(1, 0, "host-to-device transfer failed for the gdn", "the first copy failing is a transfer failure");
+        ck_eq(copy_calls, 1, "exactly one cudaMemcpy happened before the tier stopped");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_copy = 1;
+        restore_bytes(good, R, path);
+        ck(R.untouched(), "and it was the first write, so nothing landed");
+    }
+    {   // THE HEADLINE: a failure in the MIDDLE of the apply pass leaves a HALF-WRITTEN session.  This is the
+        // same shape the shared core's own fixture asserts for its restore
+        // (`conversation_validation_test.cpp:167-169`: "partial CUDA transfer failure is fatal, not an
+        // invalid-image fallback" / "fault fixture genuinely produced partial state").
+        expect_fatal(2, 0, "host-to-device transfer failed for the ple", "a copy failing mid-apply is fatal");
+        ck_eq(copy_calls, 2, "the tier stopped at the second device segment");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_copy = 2;
+        restore_bytes(good, R, path);
+        ck(!Session::is_sentinel(R.gdn), "the GDN state WAS written");
+        ck(Session::is_sentinel(R.ple), "the PLE history was not");
+        ck(Session::is_sentinel(R.stores[0].pooled), "nor was the first layer's indexer");
+        ck(!R.untouched(), "the session is genuinely half-applied - which is why no clean reset is claimed here");
+    }
+    {   // deeper into the pass: more of the session is already the snapshot's
+        expect_fatal(5, 0, "host-to-device transfer failed for the dead", "a late copy failing is fatal");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_copy = 5;
+        restore_bytes(good, R, path);
+        ck(!Session::is_sentinel(R.gdn) && !Session::is_sentinel(R.ple), "gdn and ple landed");
+        ck(!Session::is_sentinel(R.stores[0].pooled) && !Session::is_sentinel(R.stores[0].tail),
+           "layer 0's pooled and tail landed");
+        ck(Session::is_sentinel(R.stores[1].bpos) && Session::is_sentinel(R.stores[1].pooled),
+           "layer 1 did not: the mix is the whole point");
+    }
+    {   // the LAST device write of the residency pass fails: everything else is in, the invariant is not
+        expect_fatal(device_applies, 0, "spare pooled row", "the spare-row re-publish failing is fatal");
+        ck_eq(copy_calls, device_applies, "it is the last cudaMemcpy the tier makes");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_copy = device_applies;
+        restore_bytes(good, R, path);
+        ck(!Session::is_sentinel(R.stores[1].dead), "every other segment landed");
+        // The pooled SEGMENT (rows [0, L/idx_block + 1)) landed, so the spare row holds the STALE value a
+        // boundary dump can only produce, while `dead` holds the value the row must be given.  The invariant the
+        // writers maintain at every block completion (`pooled[n_bid] == dead`, qsa.cu:213) is the one thing
+        // missing - the session looks restored and is one invariant short of usable.
+        ck(row_value(R.stores[1].pooled, SPARE_ROW, S.g.idx_key_dim) == 12.0f,
+           "the spare row still holds the snapshot's STALE value");
+        ck(row_value(R.stores[1].dead, 0, S.g.idx_key_dim) == 11.0f, "while `dead` holds the value it must become");
+        ck(row_value(R.stores[0].pooled, SPARE_ROW, S.g.idx_key_dim) == 11.0f,
+           "layer 0 got its re-publish: the half-applied state is per layer, not all-or-nothing");
+    }
+    {   // every write succeeded and the device will not confirm them: still fatal, because nothing proves they landed
+        expect_fatal(0, 2, "after the apply pass", "a failed post-apply synchronize is a transfer failure");
+        ck_eq(copy_calls, device_applies, "every segment was copied");
+        ck_eq(sync_calls, 2, "and the tier stopped at the second sync");
+        Session R;
+        R.poison();
+        reset_faults();
+        fail_sync = 2;
+        restore_bytes(good, R, path);
+        ck(!R.untouched(), "the session holds the snapshot but no confirmation - the proof a reset needs is absent");
+    }
+    {   // the same file with a healthy device: restored, two syncs, every write accounted for
+        reset_faults();
+        Session R;
+        R.poison();
+        const Res r = restore_bytes(good, R, path);
+        ck(r.kind == Restore::restored, "the same snapshot restores when nothing is injected");
+        ck_eq(copy_calls, device_applies, "every device segment was copied");
+        ck_eq(sync_calls, 2, "one sync before the writes and one after: the contract's two proofs");
+        ck(!R.untouched(), "and the session holds it");
+        ck(row_value(R.stores[0].pooled, SPARE_ROW, S.g.idx_key_dim) == 11.0f,
+           "the spare row is the re-published one, as fixture 1 asserts");
+        ck_no_pending_error("the successful restore");
+    }
+
+    // ---- the store reports the same classes, and adds one of its own ----
+    {
+        const std::string sdir = dir + "/store";
+        strata::platform::KvNvmeStore store;
+        reset_faults();
+        ck(store.open(sdir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the store opens");
+        ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err), "the store dumps");
+        ck_eq(store.size(), 1, "one entry");
+        const NvmeEntry& e = store.entries()[0];
+
+        {   // a transfer failure through the store is the same class as through nvme_restore
+            reset_faults();
+            fail_copy = 2;
+            Session R;
+            R.poison();
+            ck(store.restore(e, R.ss, R.draft, R.g, err) == Restore::transfer_failed,
+               "the store reports a transfer failure exactly as the tier does");
+            ck(err.find("host-to-device transfer failed") != std::string::npos,
+               "and carries the tier's message, not a generic one");
+            ck(!R.untouched(), "and the session it left is half-applied");
+            ck_no_pending_error("the store's transfer failure");
+        }
+        {   // a corrupt file through the store is the recoverable class, with no CUDA call at all
+            std::vector<uint8_t> bad = slurp(e.path);
+            bad[strata::platform::kNvmeHeaderBytes + 8] ^= 0xFF;
+            std::ofstream f(e.path, std::ios::binary);
+            f.write((const char*) bad.data(), (std::streamsize) bad.size());
+            f.close();
+            reset_faults();
+            Session R;
+            R.poison();
+            ck(store.restore(e, R.ss, R.draft, R.g, err) == Restore::invalid,
+               "a corrupt stored snapshot is the recoverable class");
+            ck(err.find("integrity check failed") != std::string::npos, "named by the tier's own reason");
+            ck_eq(copy_calls, 0, "with no cudaMemcpy");
+            ck(R.untouched(), "and nothing written");
+        }
+        {   // THE TOCTOU THE STORE ADDS: the file no longer matches its index, but it APPLIED CLEANLY.  The tier's
+            // final sync succeeded, which is the proof the contract demands of a recovery - so this one IS
+            // recoverable, and the caller may drop the entry and re-read the prompt.
+            reset_faults();
+            ck(strata::platform::nvme_dump(e.path.c_str(), S.ss, S.draft, S.g, ids_of(8), {}, true, err),
+               "a second, shorter snapshot is written over the stored file");
+            Session R;
+            R.poison();
+            reset_faults();   // count only what the RESTORE does
+            ck(store.restore(e, R.ss, R.draft, R.g, err) == Restore::invalid,
+               "a stale index is the recoverable class, not a fatal one");
+            ck(err.find("entry changed under us") != std::string::npos, "and says what disagreed");
+            ck_eq(copy_calls, device_applies, "the snapshot was FULLY applied");
+            ck_eq(sync_calls, 2, "including the final sync: the device answered after the last write");
+            ck_eq(R.ple_prev_last(), 107, "the session holds the NEW snapshot completely (its last token)");
+            ck_no_pending_error("the stale-index case");
+        }
+    }
+
+    // ---- a failed DUMP publishes nothing, which is why the dump side needs no failure contract ----
+    {
+        const std::string ddir = dir + "/dumpfail";
+        strata::platform::KvNvmeStore store;
+        reset_faults();
+        ck(store.open(ddir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the dump-failure store opens");
+        Session P;
+        P.seed_indexer(13.0f, L_CONSUMED / SHP.idx_block, 14.0f);
+        P.poison();
+        reset_faults();
+        fail_copy = 1;
+        ck(!store.dump(P.ss, P.draft, P.g, ids_of(L_BOUNDARY), {}, true, nullptr, err),
+           "a dump whose device read fails returns false");
+        ck(err.find("nvme_dump: gdn") != std::string::npos, "and names the segment it could not read");
+        ck_eq(store.size(), 0, "no entry was added");
+        int files = 0;
+        for (const auto& de : fs::directory_iterator(ddir))
+            if (de.path().filename().string().rfind("kv-", 0) == 0) ++files;
+        ck_eq(files, 0, "and no partial file was left for the next scan to admit");
+        ck(P.untouched(), "a dump only reads: the session it failed on is byte-for-byte what it was");
+        ck_no_pending_error("the failed dump");
+        reset_faults();
+        ck(store.dump(P.ss, P.draft, P.g, ids_of(L_BOUNDARY), {}, true, nullptr, err),
+           "the same dump succeeds once the device answers - a dump failure is not a sticky condition");
+    }
+}
+
+// ================================ fixture 5: a store full of snapshots this build cannot read ================================
+//
+// STEP 3'S OPERATOR CASE.  `/local/strata/kvstore` holds 113 GB of version-2 snapshots and this build writes
+// version 3.  The question the contract has to answer is whether that is a fatal misconfiguration or a
+// recoverable condition - and the answer has to come from what the code actually does at startup.
+void fixture_stale_store(const std::string& dir) {
+    using Restore = strata::core::ConversationRestore;
+    Session S;
+    S.seed_indexer(21.0f, L_CONSUMED / SHP.idx_block, 22.0f);
+    S.tag_kv();
+    std::string err;
+    const std::string snap = dir + "/good.bin";
+    reset_faults();
+    ck(strata::platform::nvme_dump(snap.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, err),
+       "the stale-store fixture has a v3 snapshot to copy");
+    const std::vector<uint8_t> good = slurp(snap);
+
+    const std::string v2dir = dir + "/v2store";
+    for (int i = 1; i <= 3; ++i) {
+        std::vector<uint8_t> v2 = good;
+        uint32_t old = 2;
+        std::memcpy(v2.data() + 4, &old, 4);
+        std::ofstream f(v2dir + "/kv-1-" + std::to_string(i) + ".bin", std::ios::binary);
+        f.write((const char*) v2.data(), (std::streamsize) v2.size());
+        f.close();
+    }
+
+    strata::platform::KvNvmeStore store;
+    bool opened = false;
+#ifndef _WIN32
+    const std::string noise = capture_stderr([&] {
+        opened = store.open(v2dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err);
+    });
+#else
+    opened = store.open(v2dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err);
+    const std::string noise;
+#endif
+    ck(opened, "a store of snapshots this build cannot read is NOT a startup failure: the server still starts");
+    ck(err.empty(), "and it is not reported as an error");
+    ck_eq(store.size(), 0, "none of its files become entries, so nothing can be promoted from it");
+    ck_eq((int64_t) store.total_bytes(), 0, "and none of its bytes count against the cap");
+    ck(noise.find("format version 2") != std::string::npos, "the operator is told the version the store holds");
+    ck(noise.find("this build writes version 3") != std::string::npos, "and the version this build writes");
+    ck(noise.find("refuses older files") != std::string::npos, "and that they are refused, not converted");
+    ck(noise.find("re-dump them with the binary that wrote them") != std::string::npos,
+       "and what to do about them: re-dump, do not delete and hope");
+    int files = 0;
+    for (const auto& de : fs::directory_iterator(v2dir))
+        if (de.path().filename().string().rfind("kv-", 0) == 0) ++files;
+    ck_eq(files, 3, "the stale files STAY on disk: a tier that cannot read them does not delete an operator's data");
+
+    // THE CONSEQUENCE FOR THE NEXT REQUEST: no entry, so no promote, so a full re-prefill.  The same request that
+    // fixture 1 shows promoting a v3 entry is the one used here, so the null result is the store's, not the
+    // match's.
+    const std::vector<int32_t> boundary = ids_of(L_BOUNDARY);
+    std::vector<int64_t> request(boundary.begin(), boundary.end());
+    for (int64_t i = 0; i < 6; ++i) request.push_back(900 + i);
+    // The request's only picture is in the NEW message (token 16, past the stored prefix), so the entry's empty
+    // image list is the right one to match against: `kv_nvme_match` filters the request's pictures below the
+    // ENTRY's length, exactly as `checkpoint_at` filters them when it keys a checkpoint.
+    const std::vector<ConversationImageKey> req_imgs = {{16, 0xCCCC}};
+    ck(strata::platform::kv_nvme_match(store.entries(), request, req_imgs, true, 0) == nullptr,
+       "a stale store re-prefills: the recoverable condition, proven by the match returning nothing");
+
+    {   // the control that keeps the check above from being vacuous: the SAME files at version 3 do become entries
+        const std::string v3dir = dir + "/v3store";
+        for (int i = 1; i <= 3; ++i) {
+            std::ofstream f(v3dir + "/kv-1-" + std::to_string(i) + ".bin", std::ios::binary);
+            f.write((const char*) good.data(), (std::streamsize) good.size());
+            f.close();
+        }
+        strata::platform::KvNvmeStore live;
+        reset_faults();
+        ck(live.open(v3dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the same store at version 3 opens");
+        ck_eq(live.size(), 3, "and every file becomes an entry");
+        ck(strata::platform::kv_nvme_match(live.entries(), request, req_imgs, true, 0) != nullptr,
+           "and the same request promotes from it: the skip is the version, not the match");
+        // and a v2 file read directly (not through a scan) is the recoverable class, with nothing written
+        Session R;
+        R.poison();
+        reset_faults();
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+        ck(strata::platform::nvme_restore((v2dir + "/kv-1-1.bin").c_str(), R.ss, R.draft, R.g, ids, imgs, cvec, L,
+                                         err) == Restore::invalid,
+           "reading one stale file directly is the recoverable class too");
+        ck_eq(copy_calls, 0, "with no cudaMemcpy");
+        ck(R.untouched(), "and nothing written");
+    }
+}
+
 /// The row count itself, at the boundaries that matter - including the non-aligned one C3 lives at.
 void fixture_pooled_rows() {
     ck_eq(strata::kernels::qsa_pooled_rows(0, SHP), 0, "an empty prefix owns no rows");
@@ -621,16 +1152,20 @@ int main() {
     const std::string root = "/tmp/kv-nvme-host-test-" + std::to_string((long) ::getpid());
     std::error_code ec;
     fs::remove_all(root, ec);
-    for (const char* sub : {"/boundary", "/boundary/full", "/images", "/refusals"})
+    for (const char* sub : {"/boundary", "/boundary/full", "/images", "/refusals", "/failure", "/failure/store",
+                            "/failure/dumpfail", "/stale", "/stale/v2store", "/stale/v3store"})
         fs::create_directories(root + sub, ec);
 
     fixture_pooled_rows();
     fixture_turn_boundary(root + "/boundary");
     fixture_image_filter(root + "/images");
     fixture_refusals(root + "/refusals");
+    fixture_failure_contract(root + "/failure");
+    fixture_stale_store(root + "/stale");
 
     fs::remove_all(root, ec);
-    std::printf("kv_nvme_host_test: %d checks passed (%d refusals asserted); no CUDA context, no model\n",
-                checks, refusals);
+    std::printf("kv_nvme_host_test: %d checks passed (%d refusals, %d transfer failures asserted); no CUDA context, "
+                "no model\n",
+                checks, refusals, fatalities);
     return 0;
 }

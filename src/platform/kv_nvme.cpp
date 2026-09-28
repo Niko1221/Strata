@@ -140,6 +140,23 @@ int kv_array_count(const strata::core::QsaState& st) { return (st.kv_q4 || !st.k
 
 bool wr(FILE* f, const void* p, size_t n) { return n == 0 || std::fwrite(p, 1, n, f) == n; }
 
+/// **CONSUME THE CUDA ERROR THIS FUNCTION JUST HANDLED, OR IT LIES ABOUT SOMETHING ELSE LATER.**
+/// `cudaGetLastError()` returns the last error AND CLEARS it; until something reads it, the error state is
+/// sticky.  This tree has already paid for that trap once: `pinned.cu:170-183` caught a `cudaHostRegister`
+/// failure, handled it (the arena is simply not pinned), and the NEXT `cudaGetLastError()` in the engine -
+/// `gr_read`'s launch check - then reported "out of memory" for kernels that allocate nothing.  `graph.cpp:110-118`
+/// states the same rule for a capture: an error left on the stream makes EndCapture succeed with a broken graph.
+///
+/// On the tier's failure paths the next `cudaGetLastError()` is not some distant call: the serve loop's fallback
+/// runs `session_zero` (generate.cpp:2992) -> `qsa_state_zero` (layer.cpp:657) -> `kv_stream_reset` (layer.cpp:676)
+/// -> `check("reset")` (kv_stream.cu:199-202), which EXITS the process on whatever it finds.  A restore that
+/// failed to copy and left its error pending therefore aborts the re-prefill with a message naming the reset.
+///
+/// Consuming the error does NOT make a transfer failure recoverable - a sticky context error (an illegal access,
+/// a failed launch) comes straight back from the next call - it makes the REPORT true, and it is the floor below
+/// which no clean reset is worth discussing.
+void consume_cuda_error() { (void) cudaGetLastError(); }
+
 uint64_t fnv1a_up(uint64_t h, const void* p, size_t n) {
     const uint8_t* q = (const uint8_t*) p;
     for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; }
@@ -255,7 +272,10 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     std::vector<uint8_t> tmp;
     auto dump_dev = [&](const void* dptr, size_t bytes) {
         tmp.resize(bytes);
-        if (bytes && cudaMemcpy(tmp.data(), dptr, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        if (bytes && cudaMemcpy(tmp.data(), dptr, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            consume_cuda_error();   // the dump reports its own failure; do not leave the error for the next caller
+            return false;
+        }
         return hw.wr(tmp.data(), bytes);
     };
     if (at_boundary) {
@@ -340,25 +360,32 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
     return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, nullptr, err);
 }
 
-bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
-                  const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
-                  std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err) {
+strata::core::ConversationRestore nvme_restore(const char* path, strata::core::SessionState& ss,
+                                               strata::core::QsaState& mtp_state, const strata::core::ModelGeometry& g,
+                                               std::vector<int32_t>& ids,
+                                               std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
+                                               int64_t& L, std::string& err) {
+    using Restore = strata::core::ConversationRestore;
+    // Every refusal below that returns `invalid` happens before the first `Apply` runs, so it provably writes
+    // nothing to the session.  Every `transfer_failed` is a CUDA copy or a sync: it happens at or after the first
+    // apply, and the tier cannot prove the context still answers.
     Sizes z;
-    if (!sizes_of(g, z, err)) return false;   // the walk must not be sized with zeroed byte counts either
+    if (!sizes_of(g, z, err)) return Restore::invalid;   // the walk must not be sized with zeroed byte counts either
     FILE* f = std::fopen(path, "rb");
-    if (!f) { err = std::string("nvme_restore: open ") + path; return false; }
-    if (std::fseek(f, 0, SEEK_END) != 0) { err = "nvme_restore: seek"; std::fclose(f); return false; }
+    if (!f) { err = std::string("nvme_restore: open ") + path; return Restore::invalid; }
+    if (std::fseek(f, 0, SEEK_END) != 0) { err = "nvme_restore: seek"; std::fclose(f); return Restore::invalid; }
     const long long fsize = ftell64(f);
     std::rewind(f);
     // a stray huge file (or a directory opened by mistake) must not become an allocation
     if (fsize < (long long) sizeof(NvmeHeader) || fsize > (long long) 64 << 30) {
-        err = "nvme_restore: not a snapshot (size)"; std::fclose(f); return false;
+        err = "nvme_restore: not a snapshot (size)"; std::fclose(f); return Restore::invalid;
     }
-    // ATOMIC: the whole snapshot is read and validated before anything is applied, so a truncated file fails
-    // without touching the session.
+    // VALIDATION IS ATOMIC: the whole snapshot is read and validated before anything is applied, so a truncated
+    // or corrupt file fails without touching the session.  (The APPLY pass below is not atomic - it is a loop, and
+    // a CUDA failure in its middle is `transfer_failed` for that reason.)
     std::vector<uint8_t> buf((size_t) fsize);
     if (std::fread(buf.data(), 1, buf.size(), f) != buf.size()) {
-        err = "nvme_restore: read"; std::fclose(f); return false;
+        err = "nvme_restore: read"; std::fclose(f); return Restore::invalid;
     }
     std::fclose(f);
     size_t at = sizeof(NvmeHeader);
@@ -372,24 +399,24 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
 
     NvmeHeader h;
     std::memcpy(&h, buf.data(), sizeof h);
-    if (h.magic != NvmeHeader{}.magic) { err = "nvme_restore: not a strata NVMe snapshot (bad magic)"; return false; }
+    if (h.magic != NvmeHeader{}.magic) { err = "nvme_restore: not a strata NVMe snapshot (bad magic)"; return Restore::invalid; }
     if (h.version != NvmeHeader{}.version) {
         err = "nvme_restore: snapshot is format version " + std::to_string(h.version) +
               ", this build writes version " + std::to_string(NvmeHeader{}.version) +
               " - refusing (an older snapshot is re-dumped by the engine that wrote it; nothing converts it)";
-        return false;
+        return Restore::invalid;
     }
     if (h.geometry != strata::core::conversation_geometry_key(g) ||
         h.page_size != z.shapes.page_size || h.idx_block != z.shapes.idx_block ||
         h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
         h.max_cells > ss.qsa_states[0].max_cells) {
-        err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return false;
+        err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return Restore::invalid;
     }
     // the counts are only trusted once they fit the file (a corrupt header must not size an allocation)
     if (h.L < 1 || (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size() ||
         h.n_imgs < 0 ||
         (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey) + (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size()) {
-        err = "nvme_restore: malformed header sizes"; return false;
+        err = "nvme_restore: malformed header sizes"; return Restore::invalid;
     }
     L = h.L;
     const int32_t* idp = (const int32_t*) take((size_t) L * sizeof(int32_t));
@@ -397,28 +424,34 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     const void* imgp = h.n_imgs ? take((size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey)) : nullptr;
 
     // ---- walk the rest, recording the applies; nothing is written until the walk succeeds ----
-    struct Apply { void* dst; const void* src; size_t bytes; bool device; };
+    struct Apply { void* dst; const void* src; size_t bytes; bool device; const char* what; };
     std::vector<Apply> applies;
-    auto seg = [&](void* dst, size_t bytes, bool device) {
+    auto seg = [&](void* dst, size_t bytes, bool device, const char* what) {
         const uint8_t* p = take(bytes);
-        if (p) applies.push_back({dst, p, bytes, device});
+        if (p) applies.push_back({dst, p, bytes, device, what});
     };
-    seg(ss.gdn_state, z.state.gdn, true);
-    if (ss.ple_hist) seg(ss.ple_hist, z.state.ple, true);
+    seg(ss.gdn_state, z.state.gdn, true, "gdn");
+    if (ss.ple_hist) seg(ss.ple_hist, z.state.ple, true, "ple");
     const int64_t n_pages = (L + z.shapes.page_size - 1) / z.shapes.page_size;
     int64_t pooled_rows = 0;
-    if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) { err = "nvme_restore: " + err; return false; }
+    if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) {
+        err = "nvme_restore: " + err;
+        return Restore::invalid;
+    }
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         strata::core::QsaState& st = ss.qsa_states[i];
         for (int a = 0; a < kv_array_count(st); ++a) {
             KvArr ka = kv_host_arrays(st, g.head_dim, a);
-            if (!ka.p) { err = "nvme_restore: null host KV array"; return false; }
-            seg(ka.p, (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false);
+            // A null target buffer is a REFUSAL, not a transfer: their core validates the same thing before its
+            // first copy (`conversation_snapshot.cpp:104-106`, "missing target state buffer").
+            if (!ka.p) { err = "nvme_restore: null host KV array"; return Restore::invalid; }
+            seg(ka.p, (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false,
+                "kv");
         }
-        seg(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4, true);
-        seg(st.idx_tail, z.state.tail, true);
-        seg(st.idx_dead, z.state.dead, true);
-        seg(st.idx_block_pos, z.state.block_pos, true);
+        seg(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4, true, "pooled");
+        seg(st.idx_tail, z.state.tail, true, "tail");
+        seg(st.idx_dead, z.state.dead, true, "dead");
+        seg(st.idx_block_pos, z.state.block_pos, true, "block_pos");
     }
     int64_t mtp_arrays = 0;
     {
@@ -427,36 +460,47 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         for (int a = 0; a < kv_array_count(mtp_state); ++a) {
             KvArr ka = kv_host_arrays(mtp_state, g.head_dim, a);
             if (!ka.p) continue;
-            seg(ka.p, (size_t) mp * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false);
+            seg(ka.p, (size_t) mp * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false,
+                "drafter kv");
             ++mtp_arrays;
         }
     }
     // ORDER MATTERS: decide layout first, integrity second - a layout-drifted file (an engine upgrade
     // changed a sizing formula) would otherwise misreport as "corrupt"
-    if (bad) { err = "nvme_restore: truncated snapshot"; return false; }
+    if (bad) { err = "nvme_restore: truncated snapshot"; return Restore::invalid; }
     if (buf.size() < at + sizeof(uint64_t)) {
         err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + " past payload of a "
               + std::to_string(buf.size()) + "-byte file: idx_pooled_rows / PLE / drafter ring changed?) - refusing";
-        return false;
+        return Restore::invalid;
     }
     if (at != buf.size() - sizeof(uint64_t)) {
         err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + ", file payload "
               + std::to_string(buf.size() - sizeof(uint64_t)) + ": idx_pooled_rows / PLE / drafter ring changed?) - refusing";
-        return false;
+        return Restore::invalid;
     }
     if (mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) {
         err = "nvme_restore: layout mismatch (drafter arrays " + std::to_string(mtp_arrays) + " != header "
               + std::to_string(h.mtp_host) + ") - refusing";
-        return false;
+        return Restore::invalid;
     }
     uint64_t digest = 0;
     std::memcpy(&digest, buf.data() + buf.size() - sizeof digest, sizeof digest);
     // the digest covers the PAYLOAD only (the header is written unhashed before the hasher exists, and its
     // geometry fields are validated field-by-field): hash [sizeof(NvmeHeader), at)
     const uint64_t expect = fnv1a_up(1469598103934665603ull, buf.data() + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
-    if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return false; }
+    if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return Restore::invalid; }
 
-    // ---- everything validated: apply ----
+    // ---- everything validated: apply.  THE APPLY PASS BEGINS WITH A SYNC, exactly as their
+    // `conversation_snapshot_restore` does (`conversation_state.cpp:258`, and their fixture asserts a failure here
+    // mutates nothing: `conversation_validation_test.cpp:158-161`).  It proves the device answers BEFORE a single
+    // byte is written, so a context that is already unusable fails as `transfer_failed` with the session
+    // untouched, rather than half-applying and failing later.
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "nvme_restore: device synchronize before the apply pass";
+        consume_cuda_error();
+        return Restore::transfer_failed;
+    }
+
     ids.assign(idp, idp + L);
     if (imgp) {
         imgs.resize((size_t) h.n_imgs);
@@ -466,7 +510,10 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     for (const Apply& a : applies) {
         if (a.device) {
             if (cudaMemcpy(a.dst, a.src, a.bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
-                err = "nvme_restore: H2D"; return false;
+                err = std::string("nvme_restore: host-to-device transfer failed for the ") + a.what +
+                      " segment (" + std::to_string(a.bytes) + " bytes)";
+                consume_cuda_error();
+                return Restore::transfer_failed;
             }
         } else {
             std::memcpy(a.dst, a.src, a.bytes);
@@ -487,8 +534,9 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         const int64_t row = L / z.shapes.idx_block;   // < idx_pooled_rows: snapshot_pooled_rows checked it
         if (cudaMemcpy(ss.qsa_states[i].idx_pooled + (size_t) row * g.idx_key_dim,
                        ss.qsa_states[i].idx_dead, z.state.dead, cudaMemcpyHostToDevice) != cudaSuccess) {
-            err = "nvme_restore: pooled spare row";
-            return false;
+            err = "nvme_restore: host-to-device transfer failed while re-publishing the spare pooled row";
+            consume_cuda_error();
+            return Restore::transfer_failed;
         }
     }
     refill_drafter_ring(mtp_state, g, z, L);   // C6: the drafter's ring, by the tier that just wrote its host copy
@@ -497,8 +545,16 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     ss.ple_prev[0] = L >= 2 ? ids[(size_t) L - 2] : -1;
     ss.ple_prev[1] = L >= 1 ? ids[(size_t) L - 1] : -1;
 
-    if (cudaDeviceSynchronize() != cudaSuccess) { err = "nvme_restore: sync"; return false; }
-    return true;
+    // THE PROOF A RECOVERY NEEDS.  Everything above is written; this sync is what shows the device took it.  A
+    // failure here is still `transfer_failed` - the writes happened and nothing shows they landed - while a
+    // SUCCESS here is the one piece of evidence that lets a caller reset the session and re-read the prompt
+    // (docs/nvme-kv-cache-design.md §4.6): the context answered after the last write.
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "nvme_restore: device synchronize after the apply pass";
+        consume_cuda_error();
+        return Restore::transfer_failed;
+    }
+    return Restore::restored;
 }
 
 // ================================ the store ================================
@@ -639,15 +695,27 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     return true;
 }
 
-bool KvNvmeStore::restore(const NvmeEntry& e, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
-                          const strata::core::ModelGeometry& g, std::string& err) {
+strata::core::ConversationRestore KvNvmeStore::restore(const NvmeEntry& e, strata::core::SessionState& ss,
+                                              strata::core::QsaState& mtp_state,
+                                              const strata::core::ModelGeometry& g, std::string& err) {
     int64_t L = 0;
     bool cvec = false;
     std::vector<int32_t> ids;
     std::vector<strata::core::ConversationImageKey> imgs;
-    if (!nvme_restore(e.path.c_str(), ss, mtp_state, g, ids, imgs, cvec, L, err)) return false;
-    if (L != e.L || cvec != e.cvec || imgs != e.imgs) { err = "kv-nvme: entry changed under us"; return false; }
-    return true;
+    const strata::core::ConversationRestore r =
+        nvme_restore(e.path.c_str(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+    if (r != strata::core::ConversationRestore::restored) return r;
+    if (L != e.L || cvec != e.cvec || imgs != e.imgs) {
+        // The file disagreed with the index the scan built - a TOCTOU on the store, not on the device.  It is the
+        // RECOVERABLE class on the tier's own evidence: `nvme_restore` applied every segment and its final
+        // `cudaDeviceSynchronize()` succeeded, so the context answered after the last write, and the session holds
+        // a complete, digest-verified snapshot rather than a half-applied one.  The caller drops the entry and
+        // re-reads the prompt; that is the clean reset the contract permits, and it is permitted precisely because
+        // this path has the proof a clean reset needs.
+        err = "kv-nvme: entry changed under us";
+        return strata::core::ConversationRestore::invalid;
+    }
+    return strata::core::ConversationRestore::restored;
 }
 
 void KvNvmeStore::drop(const NvmeEntry& e) {
