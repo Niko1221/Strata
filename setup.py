@@ -19,7 +19,8 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
+Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
+(--rope-scale F, for contexts past the trained 262144), --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
@@ -77,7 +78,9 @@ MODELS = {
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
 }
-CONTEXTS = [8192, 32768, 65536, 131072, 262144]
+# Contexts past 262144 (the model's trained length) extend it by rope scaling - the engine refuses them
+# without --rope-scaling, and the setup adds the flag when the chosen context needs it (below).
+CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
@@ -1588,6 +1591,11 @@ def main() -> int:
     ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--context", type=int)
+    ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
+                    help="extend the context past the model's trained 262144: linear (position interpolation) or "
+                         "yarn, llama.cpp's types; required for --context 393216/524288")
+    ap.add_argument("--rope-scale", type=float, help="the extension factor for --rope-scaling (default 2 when a "
+                                                     "scaled context is chosen without one)")
     ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
@@ -1851,8 +1859,24 @@ def main() -> int:
         say("  Context length = how much text the model can see at once (your chat, files, tool output).")
         say("  Longer needs more VRAM for it, so fewer experts fit on the GPU:")
         for i, c in enumerate(CONTEXTS, 1):
-            say(f"  {i}) {c // 1024}K tokens" + ("   (recommended for your GPU)" if c == rec_ctx else ""))
-        ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, 6)], str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
+            note = ("   (recommended for your GPU)" if c == rec_ctx else "") + \
+                   ("   (needs rope scaling)" if c > 262144 else "")
+            say(f"  {i}) {c // 1024}K tokens{note}")
+        ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, len(CONTEXTS) + 1)],
+                               str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
+    if ctx > 262144 and a.rope_scaling in (None, "none"):
+        fail(f"a {ctx // 1024}K context is past the model's trained 262144: pass --rope-scaling linear or yarn "
+             "(the engine scales the rotary angles; see docs/DETAILS.md)")
+    rope_scale = a.rope_scale
+    if ctx > 262144 and rope_scale is None:
+        # the smallest factor that covers the chosen context, on the safe side
+        rope_scale = 1.5 if ctx <= 393216 else 2.0
+        ok(f"rope scaling: factor {rope_scale:g} (covers {ctx // 1024}K; override with --rope-scale)")
+    elif rope_scale is not None and a.rope_scaling in (None, "none"):
+        fail("--rope-scale needs --rope-scaling linear or yarn")
+    if a.rope_scaling not in (None, "none") and rope_scale is None:
+        rope_scale = 2.0
+        ok("rope scaling: factor 2 (override with --rope-scale)")
     # The experts' arena plus the context's KV (in RAM from 64K up: ~13.7 KB/token at 8 bits) must fit, with room
     # for everything else. Counted, not a fixed 90 GB: 24 GB of room keeps the rule for 64 GB PCs as it was (128K
     # for both 3-bit models), while a box with ~84 GB keeps the 262K it asked for (measured: a Colab A100-40G runs
@@ -2026,6 +2050,8 @@ def main() -> int:
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
+    if a.rope_scaling not in (None, "none"):
+        args += ["--rope-scaling", a.rope_scaling, "--rope-scale", f"{rope_scale:g}"]
     if ctx > 8192:
         args += ["--kv", kv]
     if low_ram:
