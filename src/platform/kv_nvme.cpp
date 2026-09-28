@@ -156,9 +156,14 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
     // the generation that followed).  `block_pos` is NOT truncated and is not "per-token": it is one int32 per
     // QSA layer of device-internal scratch - the pooling kernel writes the completed block's first-cell position
-    // into it and the rotation reads it back on the device (qsa.hpp:199-204) - so the live value is rewritten
-    // before anything can read a stale one.  conversation_state_sizes sizes it at sizeof(int32_t), the same 4
-    // bytes this file hardcoded before, so the segment did not move; whose copy the envelope owns is C5.
+    // into it (qsa.cu:216, native_qsa_indexer.cu:94) and the rotation reads it back on the device
+    // (qsa.hpp:199-204).  That is why C5 was settled in favour of the CHECKPOINT's copy: at a boundary the live
+    // `block_pos` names a block COMPLETED BY TOKENS PAST the boundary, so the live read would write a running-
+    // state value that does not describe the prefix the file is keyed by.  `dead` is the cell-0 key (qsa.cu:187,
+    // written only when pos == 0) and is constant for the sequence, so the two copies agree there - but the pair
+    // is written from ONE source, which is what lets the envelope say "every running-state byte is the state at
+    // L".  conversation_state_sizes sizes block_pos at sizeof(int32_t), so the segment did not move; only its
+    // source did, and the version bump is what stops a v2 file being read as if it had been written at L.
     const bool at_boundary = at != nullptr;
     Sizes z;
     if (!sizes_of(g, z, err)) return false;   // never lay the envelope out with zeroed byte counts
@@ -171,6 +176,8 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     if (at_boundary && (at->ids.size() != ids.size() ||
                         at->gdn.size() != z.state.gdn ||
                         at->tails.size() != z.state.tail * (size_t) g.n_qsa_layers() ||
+                        at->dead.size() != z.state.dead * (size_t) g.n_qsa_layers() ||
+                        at->block_pos.size() != z.state.block_pos * (size_t) g.n_qsa_layers() ||
                         (!at->ple.empty() && at->ple.size() != z.state.ple))) {
         // the checkpoint is the shared core's, so its blobs are checked against the shared core's byte counts
         // rather than trusted because the caller handed over three raw pointers
@@ -237,10 +244,19 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
             // the tail AT L: the checkpoint's per-layer tail blob (the state as of the boundary)
             if (!hw.wr(at->tails.data() + (size_t) i * z.state.tail, z.state.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
         } else if (!dump_dev(st.idx_tail, z.state.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
-        // dead and block_pos stay LIVE-device reads: the checkpoint now carries its own copies (C2), but which of
-        // the two the disk envelope owns is collision C5, and this step does not change the format.
-        if (!dump_dev(st.idx_dead, z.state.dead)) { err = "nvme_dump: dead"; std::fclose(f); return false; }
-        if (!dump_dev(st.idx_block_pos, z.state.block_pos)) { err = "nvme_dump: block_pos"; std::fclose(f); return false; }
+        // C5: the envelope owns the CHECKPOINT's copies.  With a boundary, every running-state segment above is
+        // already taken from it, so `dead` / `block_pos` follow the same rule instead of reaching for the live
+        // device arrays; without one, the live arrays are the state at L and are the only source there is.
+        if (at_boundary) {
+            if (!hw.wr(at->dead.data() + (size_t) i * z.state.dead, z.state.dead)) {
+                err = "nvme_dump: dead"; std::fclose(f); return false;
+            }
+            if (!hw.wr(at->block_pos.data() + (size_t) i * z.state.block_pos, z.state.block_pos)) {
+                err = "nvme_dump: block_pos"; std::fclose(f); return false;
+            }
+        } else if (!dump_dev(st.idx_dead, z.state.dead) || !dump_dev(st.idx_block_pos, z.state.block_pos)) {
+            err = "nvme_dump: dead/block_pos"; std::fclose(f); return false;
+        }
     }
 
     // MTP drafter host KV copy (ring): cells [0, min(L, max_cells)); the header records how many arrays went out
@@ -311,7 +327,13 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
 
     NvmeHeader h;
     std::memcpy(&h, buf.data(), sizeof h);
-    if (h.magic != NvmeHeader{}.magic || h.version != 2) { err = "nvme_restore: bad header"; return false; }
+    if (h.magic != NvmeHeader{}.magic) { err = "nvme_restore: not a strata NVMe snapshot (bad magic)"; return false; }
+    if (h.version != NvmeHeader{}.version) {
+        err = "nvme_restore: snapshot is format version " + std::to_string(h.version) +
+              ", this build writes version " + std::to_string(NvmeHeader{}.version) +
+              " - refusing (an older snapshot is re-dumped by the engine that wrote it; nothing converts it)";
+        return false;
+    }
     if (h.n_qsa != g.n_qsa_layers() || h.n_gdn != g.n_gdn_layers() || h.n_head_kv != g.n_head_kv ||
         h.head_dim != g.head_dim || h.idx_dim != g.idx_key_dim || h.page_size != z.page_size ||
         h.idx_block != z.idx_block || h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
@@ -424,7 +446,7 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
     fs::create_directories(dir, ec);
     if (ec) { err = "kv-nvme: create " + dir + ": " + ec.message(); return false; }
     const strata::kernels::QsaShapes shp = strata::kernels::qsa_real_shapes();
-    size_t skipped = 0;
+    size_t skipped = 0, stale = 0; uint32_t stale_version = 0;
     try {
         for (const fs::directory_entry& de : fs::directory_iterator(dir, ec)) {
             if (ec) break;
@@ -435,7 +457,14 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
             uint64_t fbytes = 0;
             try {
                 std::ifstream f(de.path(), std::ios::binary);
-                if (!f.read((char*) &h, sizeof h) || h.magic != NvmeHeader{}.magic || h.version != 2) { ++skipped; continue; }
+                if (!f.read((char*) &h, sizeof h) || h.magic != NvmeHeader{}.magic) { ++skipped; continue; }
+                if (h.version != NvmeHeader{}.version) {
+                    // a format version this build cannot read is a DIFFERENT kind of skip from a malformed file:
+                    // it is the whole store, and the operator needs the version it found to know which binary
+                    // still serves it
+                    ++stale; stale_version = h.version;
+                    continue;
+                }
                 const uint64_t fb = (uint64_t) de.file_size(ec);
                 // the full geometry tag (restore checks it again): another format/shape is left on disk, never converted
                 if (h.kv_format != fmt_ || h.n_qsa != g.n_qsa_layers() || h.n_gdn != g.n_gdn_layers() ||
@@ -472,6 +501,10 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
         }
     } catch (const std::exception& ex) { err = std::string("kv-nvme: scan: ") + ex.what(); return false; }
     if (skipped) std::fprintf(stderr, "strata serve: kv-nvme: %zu malformed/foreign snapshot(s) skipped in %s\n", skipped, dir.c_str());
+    if (stale)
+        std::fprintf(stderr, "strata serve: kv-nvme: %zu snapshot(s) of format version %u in %s: this build writes "
+                             "version %u and refuses older files (they stay on disk; re-dump them with the binary "
+                             "that wrote them)\n", stale, stale_version, dir.c_str(), NvmeHeader{}.version);
     enforce_cap();
     return true;
 }

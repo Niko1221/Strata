@@ -32,7 +32,12 @@ namespace strata::platform {
 /// what this tag has to become in step 3.  No second geometry key is introduced here.
 struct NvmeHeader {
     uint32_t magic = 0x5E564D45;   // "^VME"
-    uint32_t version = 2;          // v2 adds `mtp_host` (the drafter arrays written)
+    // v3: the running-state `dead` / `block_pos` segments hold the TURN-BOUNDARY checkpoint's copies, not the
+    // live device arrays (collision C5).  A v2 file's `block_pos` is the state at the point the dump was taken,
+    // which for a turn-boundary snapshot is a position the snapshot does not describe, so the two files are not
+    // interchangeable even though the segments are the same size in the same order: a reader cannot tell them
+    // apart from the bytes.  Version 2 is therefore REFUSED, not reinterpreted.
+    uint32_t version = 3;
     int64_t L = 0;                 // ids consumed (the prefix length)
     int64_t n_imgs = 0;
     int32_t cvec = 0;
@@ -61,8 +66,17 @@ struct NvmeHeader {
 /// `imgs` are the images BELOW that boundary - the checkpoint's own list, not the live conversation's pictures.
 /// An image at or past `L` describes a token the snapshot does not hold, and the dump refuses one: the resume
 /// match compares the next request's images below `L` against this segment.
-/// Its `dead` / `block_pos` blobs are deliberately NOT written: the file still carries the LIVE device arrays,
-/// which is what our v2 envelope has always held.  Which of the two the disk format owns is collision C5 - step 3.
+/// Its `dead` / `block_pos` blobs ARE what the file carries (collision C5, settled here): every running-state
+/// segment - gdn / ple / tails / dead / block_pos - comes from ONE source, the boundary checkpoint when one is
+/// given and the live device arrays otherwise (where the live arrays ARE the state at `L`).  The alternative -
+/// reading `dead` / `block_pos` off the live device at a turn boundary - writes a value from past `L`: the
+/// pooling kernel rewrites `block_pos` with each completed block's first-cell position (qsa.cu:216), so the live
+/// copy describes a position the snapshot does not hold.
+///
+/// THE SPILL PRIMITIVE (collision C1): this is the ONLY way a session reaches disk.  A spill re-keys at the chat
+/// turn boundary; it never copies a parked image verbatim.  A parked (RAM-evicted) conversation's consumed ids
+/// include the model's hidden reasoning tokens, which a client re-sending history will not reproduce, so its
+/// checkpoint - not its live arrays - is what a spill may write.
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                   const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
