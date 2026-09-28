@@ -607,3 +607,51 @@ if(STRATA_BUILD_TESTS)
     add_subdirectory(tests)
   endif()
 endif()
+
+# ---- host-only fixtures: the shared conversation core and the NVMe cold tier ------------------------------
+# A switch of its own rather than STRATA_BUILD_TESTS: the published source leaves `tests/` out, so turning the
+# suite on in this worktree would fail on the missing subdirectory.  These fixtures sit beside the code they test,
+# and they need no model, no dataset and no GPU (docs/nvme-kv-cache-convergence.md step 4).
+#
+# `kv_nvme_host_test` and `conversation_transfer_test` stand in for the device with GNU link wrapping - the same
+# technique the shared core's own transfer fixture uses - so a target that LINKS CUDA never initialises it.  Both
+# tests also run with CUDA_VISIBLE_DEVICES=-1, and `kv_nvme_host_test` sets it itself, so neither can reach a GPU
+# that is busy running the engine.
+option(STRATA_BUILD_CONVERSATION_TESTS "Build the host-only conversation-core and NVMe-tier fixtures" OFF)
+if(STRATA_BUILD_CONVERSATION_TESTS)
+  enable_testing()
+
+  # The shared core's own CPU-only fixtures (issue #57), ported verbatim.
+  add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
+  target_include_directories(conversation_cache_test PRIVATE include)
+  target_link_libraries(conversation_cache_test PRIVATE strata_warnings)
+  add_test(NAME conversation_cache_test COMMAND conversation_cache_test)
+
+  # `conversation_memory.cpp` is compiled into this target only: the RAM-admission policy stays unwired in the
+  # engine (collision C10), which is what step 2's "imported as the declared boundary only" was protecting.
+  add_executable(conversation_memory_test src/core/conversation_memory_test.cpp src/core/conversation_memory.cpp)
+  target_include_directories(conversation_memory_test PRIVATE include)
+  target_link_libraries(conversation_memory_test PRIVATE strata_warnings)
+  add_test(NAME conversation_memory_test COMMAND conversation_memory_test)
+
+  # The core's host-only validation fixtures, including its overflow-checked byte arithmetic.  CUDA is linked
+  # because the file links `strata_engine`; every case returns before the first CUDA call.
+  add_executable(conversation_validation_test src/core/conversation_validation_test.cpp)
+  target_include_directories(conversation_validation_test PRIVATE include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+  target_link_libraries(conversation_validation_test PRIVATE strata_engine)
+  add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
+  set_tests_properties(conversation_validation_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+
+  if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # The same source with the transfers wrapped: the variant that walks a SUCCESSFUL restore, plus a failed copy
+    # and a failed sync, without a device.
+    add_executable(conversation_transfer_test src/core/conversation_validation_test.cpp)
+    target_include_directories(conversation_transfer_test PRIVATE include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
+    target_link_options(conversation_transfer_test PRIVATE
+      -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
+    target_link_libraries(conversation_transfer_test PRIVATE strata_engine)
+    add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
+    set_tests_properties(conversation_transfer_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+  endif()
+endif()
