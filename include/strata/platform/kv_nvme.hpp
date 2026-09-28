@@ -121,13 +121,37 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err);
 
-/// Read a snapshot back into `ss` (and the drafter's state).  Atomic: the whole file is read and validated
-/// before anything is applied, so a truncated snapshot fails without touching the session.  On success
-/// `ids`/`imgs`/`cvec`/`L` are the stored prefix; the caller sets the live session from them so the existing
-/// `starts_with` resume path takes over.
-bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
-                  const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
-                  std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err);
+/// Read a snapshot back into `ss` (and the drafter's state), and say WHICH KIND of failure happened if it did.
+///
+/// THE FAILURE CONTRACT (collision C7, docs/nvme-kv-cache-design.md §4.6).  The return type is the SHARED CORE's
+/// `ConversationRestore`, not a `bool` and not a second enum: the RAM tier and the disk tier report a failed
+/// restore with one vocabulary, so one serve-loop rule can cover both.  What the two values mean HERE:
+///
+///   `restored`        - every segment applied and the final `cudaDeviceSynchronize()` succeeded.
+///   `invalid`         - RECOVERABLE.  Either the tier refused before the apply pass began (magic, format version,
+///                       geometry, header sizes, layout walk, payload digest, a live array too small, a null target
+///                       buffer) - so no session byte was written - or the snapshot applied cleanly and something
+///                       OTHER than the session disagreed (see `KvNvmeStore::restore`).  In both cases the caller
+///                       may drop the snapshot and re-read the prompt from token 0.
+///   `transfer_failed` - FATAL.  A `cudaMemcpy` inside the apply pass, or a `cudaDeviceSynchronize` before or after
+///                       it, failed.  The apply pass is a loop, so a failure in its middle leaves the session
+///                       HALF-WRITTEN by construction (the shared core's own fixture asserts exactly this shape for
+///                       its restore: `conversation_validation_test.cpp:167-169`), and nothing has yet shown the
+///                       CUDA context still answers.  A clean reset from here is the recovery the core's boundary
+///                       says needs "its own proof that the CUDA context remains usable"; this tier does not have
+///                       that proof, so it reports the class and lets the caller stop.
+///
+/// The atomicity claim is therefore about the VALIDATION pass, not about the whole function: the file is read,
+/// walked and digest-checked before any `Apply` runs, so every pre-apply refusal provably touches nothing.  Once
+/// the apply pass has begun, only the final sync can prove anything.
+///
+/// On success `ids`/`imgs`/`cvec`/`L` are the stored prefix; the caller sets the live session from them so the
+/// existing `starts_with` resume path takes over.
+strata::core::ConversationRestore nvme_restore(const char* path, strata::core::SessionState& ss,
+                                               strata::core::QsaState& mtp_state,
+                                               const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                               std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
+                                               int64_t& L, std::string& err);
 
 /// One stored session: its snapshot file and the token prefix AND pictures it was keyed by (both read at scan
 /// time, so the resume match never trusts a filename - and never compares a request's pictures against an entry
@@ -194,10 +218,19 @@ public:
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
               const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err());
-    /// Reads `e` back into the live arena (see nvme_restore).  The caller then sets `live` from `e`.
-    bool restore(const NvmeEntry& e, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
-                 const strata::core::ModelGeometry& g, std::string& err);
-    /// Forgets an entry (its file is deleted): a snapshot that failed to restore is not worth keeping.
+    /// Reads `e` back into the live arena (see nvme_restore for the failure contract).  The caller then sets
+    /// `live` from `e`.
+    /// The one failure this class adds is a TOCTOU: the file disagreed with its own digest and applied cleanly,
+    /// but its header no longer matches the entry the scan built.  That is `invalid`, not `transfer_failed`, on
+    /// the tier's own evidence - the restore's final `cudaDeviceSynchronize()` succeeded, which is the proof a
+    /// recovery needs that the device answered after the last write - and the session now holds a complete,
+    /// self-consistent snapshot rather than a half-applied one.
+    strata::core::ConversationRestore restore(const NvmeEntry& e, strata::core::SessionState& ss,
+                                              strata::core::QsaState& mtp_state,
+                                              const strata::core::ModelGeometry& g, std::string& err);
+    /// Forgets an entry (its file is deleted): a snapshot the tier refused is not worth keeping.  A transfer
+    /// failure is NOT a reason to drop one - it says nothing about the file - and the caller must not reach this
+    /// on that path anyway, because the process is stopping.
     void drop(const NvmeEntry& e);
     const std::vector<NvmeEntry>& entries() const { return entries_; }
     uint64_t total_bytes() const { return total_; }

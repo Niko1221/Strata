@@ -3470,7 +3470,8 @@ int main(int argc, char** argv) {
             bool r_cvec = false;
             int64_t rL = 0;
             std::string rerr;
-            if (!strata::platform::nvme_restore(o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs, r_cvec, rL, rerr)) {
+            if (strata::platform::nvme_restore(o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs,
+                                               r_cvec, rL, rerr) != strata::core::ConversationRestore::restored) {
                 std::fprintf(stderr, "strata serve: nvme_restore failed: %s\n", rerr.c_str());
                 return 1;
             }
@@ -3712,7 +3713,9 @@ int main(int argc, char** argv) {
                     strata::platform::kv_nvme_match(kvstore.entries(), ids, req_imgs, cvec_cached, resume);
                 if (best != nullptr) {
                     std::string nerr;
-                    if (!kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr)) {
+                    const strata::core::ConversationRestore rstored =
+                        kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
+                    if (rstored != strata::core::ConversationRestore::restored) {
                         // a snapshot that will not restore is not worth keeping; and a half-applied one must not be
                         // trusted: fall back to the clean path (session_zero + full read), never a mixed state
                         std::fprintf(stderr, "strata serve: nvme promote failed (%s); reading the prompt instead\n",
