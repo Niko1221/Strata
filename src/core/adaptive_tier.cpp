@@ -101,6 +101,11 @@ bool AdaptiveTier::pump(uint64_t budget, uint64_t& sent, std::string& err) {
         batch_ = 0;
     }
     const bool timed = batch_ == 0 && n >= 4;   // a batch of a few copies: its start and end dominate
+    // timed from when the work that may read its slots is done (pump_n waits for it too)
+    if (after_ != nullptr && cudaStreamWaitEvent(stream_, after_, 0) != cudaSuccess) {
+        err = "adaptive tier: a refill copy failed";
+        return false;
+    }
     if (timed && cudaEventRecord(t0_, stream_) != cudaSuccess) { err = "adaptive tier: a refill copy failed"; return false; }
     if (!pump_n(n, err)) return false;
     if (timed) {

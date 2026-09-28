@@ -526,6 +526,12 @@ bool pump_gap(Drive* t, std::string& err, bool all = false) {
     return true;
 }
 
+/// Whether the second GPU's work so far succeeded (Verifier::set_watch).
+bool drive_watch(void* user, std::string& err) {
+    Drive* t = (Drive*) user;
+    return t->d.gpu2 == nullptr || t->d.gpu2->healthy(err);
+}
+
 /// A window's last CPU rows are in (Verifier::set_tail).
 void drive_tail(void* user) {
     Drive* t = (Drive*) user;
@@ -2190,6 +2196,7 @@ int main(int argc, char** argv) {
                 // lowest slots first: the last ones, which the prompt path borrows, stay empty longest
                 for (size_t i = empty2.size(); i-- > 0;) tier2.add_free(empty2[i], (int32_t) (pre.size() + i));
                 tier2.set_upper(&tier);
+                tier2.set_after(gpu2.done_event());   // a window's last share may still read its slots
                 if (tier2.set_paced()) drive.tier2 = &tier2;   // its copies between windows (Drive::tier2)
             }
         }
@@ -2338,6 +2345,10 @@ int main(int argc, char** argv) {
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0)
             ver.set_predict(&drive_predict, &drive, o.adapt_every > 0 && o.adapt_swaps > 0);
+        if (drive.d.gpu2 != nullptr) {
+            ver.set_gpu2(true);
+            ver.set_watch(&drive_watch, &drive);
+        }
         if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
             ver.set_tail(&drive_tail, &drive);
             tier.set_after(ver.window_done());
@@ -3050,6 +3061,10 @@ int main(int argc, char** argv) {
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
         if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0)
             ver.set_predict(&drive_predict, &drive, o.adapt_every > 0 && o.adapt_swaps > 0);
+        if (drive.d.gpu2 != nullptr) {
+            ver.set_gpu2(true);
+            ver.set_watch(&drive_watch, &drive);
+        }
         if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
             ver.set_tail(&drive_tail, &drive);
             tier.set_after(ver.window_done());
@@ -3266,13 +3281,14 @@ int main(int argc, char** argv) {
                         (long long) tier.swaps, o.adapt_every, tier.ms / rounds);
         if (rounds > 0 && drive.d.gpu2 != nullptr)
             std::printf("%-24s %.2f routed entries and %.2f experts per round in %.2f layers (%.2f left to the CPU), "
-                        "%.3f ms/round waiting for it after the CPU pool; %lld experts swapped in and %lld into empty "
-                        "slots (%lld still empty, %lld moves dropped; its copies between windows, %.2f ms, at %.1f "
-                        "GB/s); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round of host time, %lld "
-                        "predictions waited for)\n", "second GPU",
+                        "its rows after the CPU's in %.2f layers, %.3f ms/round; %lld experts swapped in and %lld into "
+                        "empty slots (%lld still empty, %lld moves dropped; its copies between windows, %.2f ms, at "
+                        "%.1f GB/s); %.2f experts per round prefetched, %.2f of them used (%.3f ms/round of host "
+                        "time, %lld predictions waited for)\n", "second GPU",
                         (double) gpu2.entries_done / (double) rounds, (double) gpu2.experts / (double) rounds,
                         (double) gpu2.layers / (double) rounds, (double) drive.d.gpu2_skipped / (double) rounds,
-                        gpu2.ms_wait / (double) rounds, (long long) tier2.swaps, (long long) tier2.fills,
+                        (double) ver.late2 / (double) rounds, ver.ms_late2 / (double) rounds,
+                        (long long) tier2.swaps, (long long) tier2.fills,
                         (long long) tier2.free_slots(), (long long) tier2.dropped, drive.gap_ms,
                         tier2.copy_rate() / 1e6, (double) gpu2.prefetch_copied / (double) rounds,
                         (double) gpu2.prefetch_used / (double) rounds, ver.ms_predict / (double) rounds,

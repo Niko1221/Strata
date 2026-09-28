@@ -225,6 +225,26 @@ __global__ void fetch_blobs_kernel(const unsigned long long* __restrict__ src, c
     }
 }
 
+// block (x, i): part x of listed row i, block (0, i) also its entry of the device list
+__global__ void fetch_listed_rows_kernel(const int32_t* list, const float4* src, float4* __restrict__ dst,
+                                         int32_t* __restrict__ list_dev, int cap, long long n4) {
+    const int n = min(list[0], cap), i = (int) blockIdx.y;
+    const bool first = blockIdx.x == 0 && threadIdx.x == 0;
+    if (i >= n) {
+        if (i == 0 && first) list_dev[0] = 0;
+        return;
+    }
+    const int r = list[4 + i];
+    if (first) {
+        list_dev[4 + i] = r;
+        if (i == 0) list_dev[0] = n;
+    }
+    if (r < 0 || r >= cap) return;
+    const long long step = (long long) gridDim.x * blockDim.x;
+    for (long long c = (long long) blockIdx.x * blockDim.x + threadIdx.x; c < n4; c += step)
+        dst[r * n4 + c] = src[r * n4 + c];
+}
+
 __global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes) {
     const int k = threadIdx.x;
     if (k < *n) ptr[k] = base + (unsigned long long) k * (unsigned long long) bytes;
@@ -315,6 +335,15 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
     if (blob_bytes % 16 != 0) { std::fprintf(stderr, "fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
     fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16));
     check("fetch_blobs");
+}
+
+void fetch_listed_rows(const int32_t* list, const float* src, float* dst, int32_t* list_dev, int cap, int64_t n_embd,
+                       void* stream) {
+    if (cap <= 0) return;
+    const long long n4 = n_embd / 4;
+    fetch_listed_rows_kernel<<<dim3((unsigned) ((n4 + 255) / 256), (unsigned) cap), 256, 0, (cudaStream_t) stream>>>(
+        list, (const float4*) src, (float4*) dst, list_dev, cap, n4);
+    check("fetch_listed_rows");
 }
 
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {

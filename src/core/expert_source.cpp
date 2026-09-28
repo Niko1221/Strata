@@ -316,8 +316,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     // The second GPU takes this layer's share only when the layer's misses are big enough that the CPU would need
     // longer for all of them than its round trip (~100 us: ~4 MB of experts at the pool's ~45 GB/s); otherwise it
-    // would only add its latency.
-    if (d.gpu2 != nullptr) {
+    // would only add its latency.  Its rows reach the main GPU through the sink.
+    GpuPlanSink* const S2 = d.gpu2 != nullptr && d.plan != nullptr && d.plan->gpu2_flag != nullptr ? d.plan : nullptr;
+    d.gpu2_used = false;
+    if (S2 != nullptr) {
         uint64_t miss_bytes = 0, gpu2_bytes = 0;
         for (int q = 0; q < nd; ++q) {
             const int32_t e = ids[distinct[q]];
@@ -370,6 +372,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (first_of[i] == i0) kind[i] = kd;
     }
     g2_start[n2g] = n2e;
+    if (S2 != nullptr) {   // the main GPU takes the second GPU's rows once their flag rises: at once without a share
+        S2->gpu2_list[0] = n2e;
+        for (int i = 0; i < n2e; ++i) S2->gpu2_list[4 + i] = g2_ent[i];
+        if (n2g == 0) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            *(volatile uint32_t*) S2->gpu2_flag = S2->ring;
+            S2->gpu2_ring = S2->ring;
+        }
+    }
     if (P != nullptr) {                          // the PCIe groups: staging slot q, their entries in routing order
         const uint64_t bb = lay.blob_bytes(d.layers);
         int entries = 0;
@@ -421,8 +432,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
             if (kind[i] >= 0) {             // a GPU computes this entry (a VRAM hit, a PCIe read, the second GPU)
                 if (kind[i] == 0) ++d.cache_hits;
-                if (kind[i] == 2) ++d.gpu2_entries;
-                if (!skip_gpu_rows) std::memset(row, 0, (size_t) H * sizeof(float));
+                if (kind[i] == 2) ++d.gpu2_entries;   // its row is the second GPU's to write
+                else if (!skip_gpu_rows) std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
             }
             ++d.cache_refused;
@@ -451,18 +462,22 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
     const auto c3 = std::chrono::steady_clock::now();
     // the second GPU's share goes out once the CPU's workers have started on theirs: its launch takes the host
-    // tens of microseconds
+    // tens of microseconds.  It writes its rows into `out` itself.
     struct Submit2 {
         ExpertDispatch* d;
         const float* x;
         int n_tok, n_groups;
         int64_t k;
         const int32_t *slots, *starts, *entries;
+        float* out;
         bool ok;
-    } s2{&d, x_f, (int) n_tok, n2g, k, g2_slot, g2_start, g2_ent, true};
+    } s2{&d, x_f, (int) n_tok, n2g, k, g2_slot, g2_start, g2_ent, out, true};
     void (*submit2)(void*) = [](void* p) {
         Submit2& s = *(Submit2*) p;
-        s.ok = s.d->gpu2->submit(s.d->layers, s.x, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.d->gpu2_err);
+        GpuPlanSink& S = *s.d->plan;
+        s.ok = s.d->gpu2->submit(s.d->layers, s.x, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.out,
+                                 S.gpu2_flag, S.ring, s.d->gpu2_err);
+        if (s.ok) S.gpu2_ring = S.ring;
     };
     if (n2g <= 0) submit2 = nullptr;
     pt("run", njobs);
@@ -473,12 +488,6 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
     if (!s2.ok) {
-        d.failed = true;
-        d.fail = d.gpu2_err.c_str();
-        d.fail_layer = d.layers;
-        return;
-    }
-    if (n2g > 0 && !d.gpu2->finish(out, d.gpu2_err)) {   // the second GPU's rows, over the zeroed ones
         d.failed = true;
         d.fail = d.gpu2_err.c_str();
         d.fail_layer = d.layers;

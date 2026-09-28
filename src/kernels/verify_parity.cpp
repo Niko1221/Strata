@@ -78,7 +78,8 @@ int bitwise_diff(const std::vector<float>& a, const std::vector<float>& b, const
     return bad;
 }
 
-// ---- the MoE combine: copy all rows + add the hits + one combine per token  vs  native_moe_gather_combine
+// ---- the MoE combine: copy all rows + add the hits + one combine per token  vs  the second GPU's rows taken into VRAM
+// (fetch_listed_rows) and native_moe_gather_combine
 int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
     const int64_t N = 2560, K = 10;
     int bad = 0;
@@ -91,23 +92,35 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             for (auto& v : host) v = edgy(rng);
             for (auto& v : w) v = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
             for (auto& v : shared) v = edgy(rng);
-            // the GPU's entries, in a random order and a random share (none, some, all)
-            std::vector<int32_t> dst;
-            for (int32_t r = 0; r < rows; ++r)
+            // the GPU's entries, in a random order and a random share (none, some, all); from rep 4 on the second GPU
+            // takes some of the rest
+            std::vector<int32_t> dst, raw;
+            for (int32_t r = 0; r < rows; ++r) {
                 if (rep == 1 || (rep != 0 && rng() % 3 != 0)) dst.push_back(r);
+                else if (rep >= 4 && rng() % 2 == 0) raw.push_back(r);
+            }
             std::shuffle(dst.begin(), dst.end(), rng);
+            std::shuffle(raw.begin(), raw.end(), rng);
             const int32_t count = (int32_t) dst.size();
-            // the old path's host rows: the pool zeroed the GPU's
+            // the old path's host rows: the pool zeroed the GPU's, the host copied the second GPU's in
             std::vector<float> host_zeroed = host;
             for (int32_t r : dst) std::fill(host_zeroed.begin() + r * N, host_zeroed.begin() + (r + 1) * N, 0.0f);
-            // the new path's mapped rows: the GPU's rows hold garbage it must not read
-            std::vector<float> host_poison = host;
+            for (int32_t r : raw)
+                std::copy(hit.begin() + r * N, hit.begin() + (r + 1) * N, host_zeroed.begin() + r * N);
+            // the new path's mapped rows: the GPU's rows hold garbage it must not read, the second GPU wrote its own;
+            // its device rows hold garbage until they are fetched
+            std::vector<float> host_poison = host, hit_poison = hit;
             for (int32_t r : dst) std::fill(host_poison.begin() + r * N, host_poison.begin() + (r + 1) * N, NAN);
+            for (int32_t r : raw) {
+                std::copy(hit.begin() + r * N, hit.begin() + (r + 1) * N, host_poison.begin() + r * N);
+                std::fill(hit_poison.begin() + r * N, hit_poison.begin() + (r + 1) * N, NAN);
+            }
 
             float *d_hit = dev<float>(hit.size()), *d_parts = dev<float>(hit.size()), *d_w = dev<float>(w.size()),
                   *d_sh = dev<float>(shared.size()), *d_out_old = dev<float>(shared.size()),
                   *d_out_new = dev<float>(shared.size());
-            int32_t *d_dst = dev<int32_t>(std::max<size_t>(1, dst.size()) + 64), *d_count = dev<int32_t>(3);
+            int32_t *d_dst = dev<int32_t>(std::max<size_t>(1, dst.size()) + 64), *d_count = dev<int32_t>(3),
+                    *d_list = dev<int32_t>((size_t) (4 + rows));
             up(d_hit, hit);
             up(d_w, w);
             up(d_sh, shared);
@@ -115,10 +128,15 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             // the new path takes them as two lists (the window's VRAM share and the pool's PCIe share), split at random
             const int32_t split = rep % 2 == 0 ? count : (int32_t) (rng() % (dst.size() + 1));
             up(d_count, std::vector<int32_t>{count, split, count - split});
-            float* h_map = nullptr;
-            float* m_map = nullptr;
+            check(cudaMemset(d_list, 0xff, (size_t) (4 + rows) * 4), "memset");
+            float *h_map = nullptr, *m_map = nullptr;
+            int32_t *h_list = nullptr, *m_list = nullptr;
             check(cudaHostAlloc((void**) &h_map, host.size() * sizeof(float), cudaHostAllocMapped), "cudaHostAlloc");
             check(cudaHostGetDevicePointer((void**) &m_map, h_map, 0), "cudaHostGetDevicePointer");
+            check(cudaHostAlloc((void**) &h_list, (size_t) (4 + rows) * 4, cudaHostAllocMapped), "cudaHostAlloc");
+            check(cudaHostGetDevicePointer((void**) &m_list, h_list, 0), "cudaHostGetDevicePointer");
+            h_list[0] = (int32_t) raw.size();
+            std::copy(raw.begin(), raw.end(), h_list + 4);
 
             // old: copy all rows, add the hits, combine per token
             std::memcpy(h_map, host_zeroed.data(), host.size() * sizeof(float));
@@ -130,19 +148,37 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             check(cudaStreamSynchronize(s), "old path");
             // new
             std::memcpy(h_map, host_poison.data(), host.size() * sizeof(float));
-            strata::kernels::native_moe_gather_combine(d_hit, m_map, d_dst, d_count + 1, rep % 2 == 0 ? nullptr : d_dst + split,
-                                                       d_count + 2, d_w, d_sh, d_out_new, N, K, n_tok, s);
+            up(d_hit, hit_poison);
+            const bool second = rep >= 4;
+            if (second) strata::kernels::fetch_listed_rows(m_list, m_map, d_hit, d_list, (int) rows, N, s);
+            strata::kernels::native_moe_gather_combine(d_hit, m_map, d_dst, d_count + 1,
+                                                       rep % 2 == 0 ? nullptr : d_dst + split, d_count + 2,
+                                                       second ? d_list + 4 : nullptr, second ? d_list : nullptr, d_w,
+                                                       d_sh, d_out_new, N, K, n_tok, s);
             check(cudaStreamSynchronize(s), "new path");
-            const int b = bitwise_diff(down(d_out_old, shared.size()), down(d_out_new, shared.size()), "gather_combine");
+            int b = bitwise_diff(down(d_out_old, shared.size()), down(d_out_new, shared.size()), "gather_combine");
+            if (second) {
+                std::vector<int32_t> want((size_t) (4 + rows), -1), got = down(d_list, (size_t) (4 + rows));
+                want[0] = (int32_t) raw.size();
+                std::copy(raw.begin(), raw.end(), want.begin() + 4);
+                for (int i = 1; i < 4; ++i) got[(size_t) i] = -1;
+                if (got != want) {
+                    std::fprintf(stderr, "fetch_listed_rows: n_tok %d rep %d: the device list differs\n", n_tok, rep);
+                    ++b;
+                }
+            }
             if (b) std::fprintf(stderr, "gather_combine: n_tok %d rep %d: %d of %zu differ\n", n_tok, rep, b, shared.size());
             bad += b;
             cudaFreeHost(h_map);
+            cudaFreeHost(h_list);
             for (void* p : {(void*) d_hit, (void*) d_parts, (void*) d_w, (void*) d_sh, (void*) d_out_old,
-                            (void*) d_out_new, (void*) d_dst, (void*) d_count})
+                            (void*) d_out_new, (void*) d_dst, (void*) d_count, (void*) d_list})
                 cudaFree(p);
         }
     }
-    std::printf("gather_combine: %s\n", bad ? "MISMATCH" : "bitwise equal (n_tok 1-4, 8; 8 plans each, one or two lists)");
+    std::printf("gather_combine: %s\n",
+                bad ? "MISMATCH"
+                    : "bitwise equal (n_tok 1-4, 8; 8 plans each, one or two lists, the second GPU's rows fetched)");
     return bad;
 }
 

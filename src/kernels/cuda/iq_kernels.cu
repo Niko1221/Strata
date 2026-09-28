@@ -182,10 +182,27 @@ __global__ void __launch_bounds__(DOWN_WARPS * 32) native_down_kernel(const unsi
 }
 
 __global__ void rows_out_kernel(const float4* __restrict__ src, const int32_t* __restrict__ n_groups,
-                                const int32_t* __restrict__ grp_start, long long n4, float4* __restrict__ dst) {
-    const long long total = (long long) grp_start[*n_groups] * n4;
-    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (long long) gridDim.x * blockDim.x)
-        dst[i] = src[i];
+                                const int32_t* __restrict__ grp_start, const int32_t* __restrict__ ent_dst,
+                                long long n4, float4* const* out, uint32_t* const* flag, const int32_t* ring,
+                                unsigned* counter) {
+    const int e0 = grp_start[0];
+    const long long total = (long long) (grp_start[*n_groups] - e0) * n4, step = (long long) gridDim.x * blockDim.x;
+    float4* o = *out;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += step) {
+        const long long at = (long long) ent_dst[e0 + i / n4] * n4 + i % n4;
+        o[at] = src[at];
+    }
+    uint32_t* f = *flag;
+    if (f == nullptr) return;
+    __shared__ bool last;
+    __threadfence_system();   // this thread's rows before the block counts as done
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(counter, 1u) == gridDim.x - 1;
+    __syncthreads();
+    if (last && threadIdx.x == 0) {
+        *counter = 0u;   // for the next launch
+        *(volatile uint32_t*) f = (uint32_t) *ring;
+    }
 }
 
 // ---------------------------------------------------------------- q8_1 (quantize.cu)
@@ -697,11 +714,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/down");
 }
 
-void native_expert_rows_out(const float* rows, const int32_t* n_groups, const int32_t* grp_start, int64_t n_embd,
-                            int64_t max_rows, float* out, void* stream) {
+void native_expert_rows_out(const float* rows, const int32_t* n_groups, const int32_t* grp_start,
+                            const int32_t* ent_dst, int64_t n_embd, int64_t max_rows, float* const* out,
+                            uint32_t* const* flag, const int32_t* ring, unsigned* counter, void* stream) {
     const long long n4 = n_embd / 4, most = max_rows * n4;
     const unsigned blocks = (unsigned) std::min<long long>((most + 255) / 256, 256);
-    rows_out_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((const float4*) rows, n_groups, grp_start, n4, (float4*) out);
+    rows_out_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((const float4*) rows, n_groups, grp_start, ent_dst, n4,
+                                                               (float4* const*) out, flag, ring, counter);
     check("native_expert_rows_out");
 }
 

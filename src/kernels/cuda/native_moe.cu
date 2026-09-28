@@ -49,28 +49,31 @@ constexpr int kMaxK = 15;
 __global__ void gather_combine(const float* __restrict__ gpu_rows, const float* host_rows,
                                const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
                                const int32_t* __restrict__ dst2, const int32_t* __restrict__ count2,
+                               const int32_t* __restrict__ dst3, const int32_t* __restrict__ count3,
                                const float* __restrict__ weights, const float* __restrict__ shared,
                                float* __restrict__ output, int64_t n_embd, int k) {
-    __shared__ unsigned on_gpu;   // bit j: row t*k + j is the GPU's
+    __shared__ unsigned on_gpu, as_is;   // bit j: row t*k + j is in gpu_rows, a hit / a row taken as it is
     const int t = blockIdx.y;
-    if (threadIdx.x == 0) on_gpu = 0u;
+    if (threadIdx.x == 0) on_gpu = as_is = 0u;
     __syncthreads();
-    const int c = *count, c2 = dst2 != nullptr ? *count2 : 0;
-    for (int i = threadIdx.x; i < c + c2; i += blockDim.x) {
-        const int r = (i < c ? dst[i] : dst2[i - c]) - t * k;
-        if (r >= 0 && r < k) atomicOr(&on_gpu, 1u << r);
+    const int c = *count, c2 = dst2 != nullptr ? *count2 : 0, c3 = dst3 != nullptr ? *count3 : 0;
+    for (int i = threadIdx.x; i < c + c2 + c3; i += blockDim.x) {
+        const int r = (i < c ? dst[i] : i < c + c2 ? dst2[i - c] : dst3[i - c - c2]) - t * k;
+        if (r >= 0 && r < k) atomicOr(i < c + c2 ? &on_gpu : &as_is, 1u << r);
     }
     __syncthreads();
     const int64_t col = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (col >= n_embd) return;
-    const unsigned mask = on_gpu;
+    const unsigned mask = on_gpu, same = as_is;
     const float* w = weights + int64_t(t) * k;
     float v[kMaxK];
 #pragma unroll
     for (int j = 0; j < kMaxK; ++j) {
         if (j >= k) break;
         const int64_t at = (int64_t(t) * k + j) * n_embd + col;
-        if ((mask >> j) & 1u) {
+        if ((same >> j) & 1u) {
+            v[j] = gpu_rows[at];
+        } else if ((mask >> j) & 1u) {
             const float h = gpu_rows[at];
             v[j] = __float_as_uint(h) == 0x80000000u ? 0.0f : h;   // 0 + h: the host's zeroed row plus the hit
         } else {
@@ -115,15 +118,18 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 void native_moe_gather_combine(const float* gpu_rows, const float* host_rows, const int32_t* dst,
-                               const int32_t* count, const int32_t* dst2, const int32_t* count2, const float* weights,
-                               const float* shared, float* output, int64_t n_embd, int64_t k, int n_tok, void* stream) {
+                               const int32_t* count, const int32_t* dst2, const int32_t* count2, const int32_t* dst3,
+                               const int32_t* count3, const float* weights, const float* shared, float* output,
+                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
     if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > kMaxK || n_tok < 1 ||
-        !gpu_rows || !host_rows || !dst || !count || (dst2 != nullptr && count2 == nullptr) || !weights || !output)
+        !gpu_rows || !host_rows || !dst || !count || (dst2 != nullptr && count2 == nullptr) ||
+        (dst3 != nullptr && count3 == nullptr) || !weights || !output)
         throw std::invalid_argument("native MoE gather-combine requires a stream, positive width, 1..15 experts "
                                     "and its buffers");
     const dim3 grid(unsigned((n_embd + 255) / 256), unsigned(n_tok));
     gather_combine<<<grid, 256, 0, static_cast<cudaStream_t>(stream)>>>(gpu_rows, host_rows, dst, count, dst2, count2,
-                                                                         weights, shared, output, n_embd, int(k));
+                                                                         dst3, count3, weights, shared, output, n_embd,
+                                                                         int(k));
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

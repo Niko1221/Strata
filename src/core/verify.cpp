@@ -58,8 +58,8 @@ struct Bump {
     }
 };
 
-bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped) != cudaSuccess) return false;
+bool mapped(size_t bytes, void** h, void** d, unsigned flags = cudaHostAllocMapped) {
+    if (cudaHostAlloc(h, bytes, flags) != cudaSuccess) return false;
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
@@ -100,12 +100,15 @@ Verifier::~Verifier() {
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (side_) cudaStreamDestroy(side_);
     if (shs_) cudaStreamDestroy(shs_);
-    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_})
+    if (g2s_) cudaStreamDestroy(g2s_);
+    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_, g2fork_,
+                          g2join_[0], g2join_[1]})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_, h_rows_, h_res_};
+                     h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_, h_rows_, h_res_, h_flag2_,
+                     h_list2_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -154,7 +157,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const uint64_t TS = (uint64_t) (s.idx_block - 1) * ID;
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
 
-    // ---- mapped staging
+    // ---- mapped staging (portable where the second GPU writes: its rows and flags)
+    const unsigned portable = cudaHostAllocMapped | cudaHostAllocPortable;
+    list2_stride_ = (4 + (int64_t) (T * K) + 3) & ~3ll;
     bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(T * strata::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
               mapped(T * NH * 4, (void**) &h_pos_, (void**) &m_pos_) &&
@@ -168,7 +173,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
               mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
+              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_, portable) &&
+              mapped(128, (void**) &h_flag2_, (void**) &m_flag2_, portable) &&
+              mapped((size_t) (2 * list2_stride_) * 4, (void**) &h_list2_, (void**) &m_list2_) &&
               mapped(2 * T * K * 4, (void**) &h_pids_, (void**) &m_pids_) &&
               mapped(2 * T * K * 4, (void**) &h_pw_, (void**) &m_pw_) &&
               mapped(64, (void**) &h_pseq_, (void**) &m_pseq_) &&
@@ -235,6 +242,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         pbias_ = b.take<float>((uint64_t) (g.n_layers * g.n_expert));
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
+        list2_ = b.take<int32_t>(2 * (uint64_t) list2_stride_);
         ring_count_ = b.take<unsigned>(2);
         plan_ = b.take<int32_t>(2 * (uint64_t) plan_stride_); dplan_ = b.take<int32_t>(2 * (uint64_t) plan_stride_);
         res_ = b.take<int32_t>((uint64_t) res_words_); slot_ptr_ = b.take<unsigned long long>((uint64_t) hits.slots);
@@ -287,6 +295,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&shs_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&g2s_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&g2fork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&g2join_[0], cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&g2join_[1], cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&join_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&bfork_, cudaEventDisableTiming) != cudaSuccess ||
@@ -704,7 +716,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             MT * K, plan_ptr_off_, cs);
         }
         stamp(l, 4, cs);
-        // after the doorbell: the shared expert's branch, and the next layer's prediction
+        // after the doorbell: the second GPU's rows of this token group, taken into VRAM once their flag rises; the
+        // shared expert's branch; and the next layer's prediction
+        if (gpu2_) {
+            if (!fork(g2s_, g2fork_)) return false;
+            wait_flag_ge(m_flag2_ + (size_t) grp * 16, (uint32_t) (l * G + grp + 1), g2s_);
+            fetch_listed_rows(m_list2_ + grp * list2_stride_, m_ymiss_ + (size_t) tb * K * N,
+                              hit_out_ + (size_t) tb * K * N, list2_ + grp * list2_stride_, (int) (n * K), N, g2s_);
+            stamp(l, kLayerStamps + 1, g2s_);
+            if (!mark(g2s_, g2join_[grp])) return false;
+        }
         if (beside && !shared(l, grp)) return false;
         if (branches(l) &&
             (cudaEventRecord(fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, fork_, 0) != cudaSuccess)) {
@@ -807,15 +828,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 8, cs);
         wait_flag_ge(m_flag_, ring, cs);                       // the CPU's share is in the mapped rows
         stamp(l, 9, cs);
+        if (gpu2_ && !wait(g2join_[grp])) return false;        // the second GPU's, in `hit_out`
+        stamp(l, 10, cs);
         if (beside && cudaStreamWaitEvent(cs, shjoin_, 0) != cudaSuccess) {
             err = "verify: the shared expert's branch could not join";
             return false;
         }
         if (native_moe_combine_enabled()) {
-            // only the host's rows cross PCIe; the GPU's come from `hit_out` (the pool leaves their rows unwritten)
+            // only the CPU's rows cross PCIe here; the GPUs' come from `hit_out` (the pool leaves their rows unwritten)
+            const int32_t* list2 = gpu2_ ? list2_ + grp * list2_stride_ : nullptr;
             try {
                 native_moe_gather_combine(hit_out, m_ymiss_ + (size_t) tb * K * N, vram.dst, vram.counts + 1, pcie.dst,
-                                          pcie.counts != nullptr ? pcie.counts + 1 : nullptr, w_ + tb * K, shared_ + tb * N,
+                                          pcie.counts != nullptr ? pcie.counts + 1 : nullptr,
+                                          list2 != nullptr ? list2 + 4 : nullptr, list2, w_ + tb * K, shared_ + tb * N,
                                           bo_ + tb * N, N, K, n, cs);
             } catch (const std::exception& e) {
                 err = "verify layer " + std::to_string(l) + " combine: " + e.what();
@@ -831,14 +856,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
             }
         }
-        stamp(l, 10, cs);
+        stamp(l, 11, cs);
         if (branches(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {
             err = "verify: the prediction branch could not join";
             return false;
         }
         if (l == g.n_layers - 1)
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
-        stamp(l, 11, cs);
+        stamp(l, 12, cs);
         return true;
     };
 
@@ -1029,6 +1054,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     *(volatile uint32_t*) h_flagB_ = 0;
     *(volatile uint32_t*) h_pseq_ = 0;
     *(volatile uint32_t*) h_pleflag_ = 0;
+    h_flag2_[0] = h_flag2_[16] = 0;
+    sink_.gpu2_ring = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
     last_pos0_ = pos0;
@@ -1042,6 +1069,15 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
+    // on a failure every wait of the graph passes, so it runs to its end before the next window resets the flags
+    auto release = [&] {
+        h_list2_[0] = h_list2_[list2_stride_] = 0;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        for (uint32_t* f : {h_flag_, h_flagA_, h_flagB_, h_pleflag_, h_flag2_, h_flag2_ + 16})
+            *(volatile uint32_t*) f = 0xffffffffu;
+        cudaStreamSynchronize(cs_);
+        return false;
+    };
     if (ple_on) {   // before layer 1: the graph waits for the flag, raised even when a read failed
         const Clock::time_point tp = Clock::now();
         bool ok = true;
@@ -1050,12 +1086,22 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         _mm_sfence();
         *(volatile uint32_t*) h_pleflag_ = 1;
         ms_host += ms_since(tp);
-        if (!ok) return false;
+        if (!ok) return release();
     }
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
     const int G = groups_[T] > 0 ? groups_[T] : 1;
     const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
+    // a pool whose second-GPU rows came after the CPU's: the host time until they were in
+    const volatile uint32_t* late_flag = nullptr;
+    uint32_t late_want = 0;
+    Clock::time_point late_at{};
+    auto settle = [&](bool now) {
+        if (late_flag != nullptr && (now || *late_flag >= late_want)) {
+            ms_late2 += ms_since(late_at);
+            late_flag = nullptr;
+        }
+    };
     for (int64_t k = 0; k < g.n_layers * G; ++k) {
         const int64_t l = k / G;
         const int grp = (int) (k % G);
@@ -1064,6 +1110,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         auto last_flush = a;
         uint32_t spins = 0;
         while (*seq < want) {
+            settle(false);
             _mm_pause();
             if ((++spins & 1023u) != 0) continue;
             const auto now = Clock::now();
@@ -1073,10 +1120,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 if (q != cudaErrorNotReady && *seq < want) {
                     err = "verify: layer " + std::to_string(l) + " never rang (" +
                           (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
-                    return false;
+                    return release();
                 }
+                if (watch_ != nullptr && !watch_(watch_user_, err)) return release();
             }
-            if (now - a > std::chrono::seconds(20)) { err = "verify: timed out at layer " + std::to_string(l); return false; }
+            if (now - a > std::chrono::seconds(20)) {
+                err = "verify: timed out at layer " + std::to_string(l);
+                return release();
+            }
         }
         const Clock::time_point b = Clock::now();
         VDBG("layer %lld rang\n", (long long) l);
@@ -1098,9 +1149,21 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             *(volatile uint32_t*) h_flagA_ = want;
             raise_flag(h_flagB_, want);
         }
+        if (gpu2_ && sink_.gpu2_ring != want) {   // no second-GPU share went out (the pool failed): an empty one
+            sink_.gpu2_list[0] = 0;
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            *(volatile uint32_t*) sink_.gpu2_flag = want;
+        }
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
+        if (gpu2_ && *(volatile uint32_t*) sink_.gpu2_flag < want) {
+            settle(true);   // a split window's other token group
+            late_flag = sink_.gpu2_flag;
+            late_want = want;
+            late_at = Clock::now();
+            ++late2;
+        }
         if (tail_ != nullptr && k + 1 == g.n_layers * G) tail_(tail_user_);
         // the next layer's prediction, published during this layer's pool, else microseconds later (its branch is
         // joined before the next layer): waited for, so the experts the second GPU takes never depend on timing
@@ -1108,8 +1171,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const Clock::time_point c = Clock::now();
             if (*(volatile uint32_t*) h_pseq_ < (uint32_t) (l + 1)) {
                 ++predict_late;
-                while (*(volatile uint32_t*) h_pseq_ < (uint32_t) (l + 1) && Clock::now() - c < std::chrono::milliseconds(50))
+                while (*(volatile uint32_t*) h_pseq_ < (uint32_t) (l + 1) &&
+                       Clock::now() - c < std::chrono::milliseconds(50)) {
+                    settle(false);
                     _mm_pause();
+                }
             }
             if (*(volatile uint32_t*) h_pseq_ >= (uint32_t) (l + 1)) {
                 std::atomic_thread_fence(std::memory_order_acquire);
@@ -1119,6 +1185,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             ms_predict += ms_since(c);
         }
     }
+    while (late_flag != nullptr && ms_since(late_at) < 50.0) {   // the last layer's (the graph ends after them)
+        settle(false);
+        _mm_pause();
+    }
+    settle(true);
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
     cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
@@ -1136,8 +1207,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const unsigned long long before = l == 0 ? w[1] : (st - kStamps)[kLayerStamps - 1];
             prof_ns_[(size_t) kind * kStamps] += (double) (st[0] - before);
             for (int i = 1; i < kLayerStamps; ++i) prof_ns_[(size_t) kind * kStamps + i] += (double) (st[i] - st[i - 1]);
-            // the shared expert's branch, from the doorbell (it forks there) to its end
+            // the shared expert's branch and the second GPU's rows', from the doorbell (they fork there) to their ends
             prof_ns_[(size_t) kind * kStamps + kLayerStamps] += (double) (st[kLayerStamps] - st[4]);
+            if (gpu2_) prof_ns_[(size_t) kind * kStamps + kLayerStamps + 1] += (double) (st[kLayerStamps + 1] - st[4]);
             {   // the wait for the CPU's rows, by bucket
                 const double us = (double) (st[9] - st[8]) / 1e3;
                 int b = 0;
@@ -1171,12 +1243,13 @@ void Verifier::print_profile() const {
     if (prof_windows_ == 0) return;
     static const char* const names[kStamps] = {"stamp gap",      "HC read, mixer",   "mixer",          "HC read, FFN",
                                                "router, ring, hits", "expert inputs", "VRAM experts",
-                                               "wait for PCIe plan", "PCIe experts", "wait for CPU",   "rows + combine",
-                                               "last HC write",  "shared expert, beside"};
+                                               "wait for PCIe plan", "PCIe experts", "wait for CPU",
+                                               "wait for 2nd GPU", "rows + combine", "last HC write",
+                                               "shared expert, beside", "2nd GPU rows, beside"};
     const double nw = (double) prof_windows_;
     std::printf("%-24s GPU time over %lld windows, ms per window: inputs %.3f, head %.3f, whole window %.3f; "
-                "one stamp %.2f us (each stage below includes one; the last runs from the ring beside the "
-                "five before \"rows + combine\")\n", "window profile", (long long) prof_windows_,
+                "one stamp %.2f us (each stage below includes one; the last two run from the ring beside the "
+                "six before \"rows + combine\")\n", "window profile", (long long) prof_windows_,
                 prof_window_ns_[0] / nw / 1e6, prof_window_ns_[1] / nw / 1e6, prof_window_ns_[2] / nw / 1e6,
                 prof_window_ns_[3] / nw / 1e3);
     std::printf("  %-22s %12s %12s %14s\n", "stage", "GDN us/layer", "QSA us/layer", "ms per window");
@@ -1218,6 +1291,11 @@ void Verifier::set_plan_slot(int grp) {
     const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
     sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
+    if (gpu2_) {
+        sink_.gpu2_list = h_list2_ + (size_t) grp * (size_t) list2_stride_;
+        sink_.gpu2_flag = h_flag2_ + (size_t) grp * 16;
+        sink_.ring = cur_layer_ + 1;
+    }
 }
 
 // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.

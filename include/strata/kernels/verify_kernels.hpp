@@ -55,6 +55,11 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 /// into dst + k * blob_bytes with coalesced 16-byte loads - the PCIe share of a layer's missed experts, staged
 /// into VRAM before the grouped expert kernel reads them.  Launched for a capacity of `cap` blobs.
 void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream);
+/// A list in mapped host memory, [n, pad x3, rows...]: each listed row of `src` (mapped, n_embd floats, a multiple of
+/// 4) to the same row of `dst`, and the list to `list_dev` (device, the same layout).  At most `cap` rows; rows
+/// outside [0, cap) are not copied.  The second GPU's rows of a verify window's layer, taken while the CPU works.
+void fetch_listed_rows(const int32_t* list, const float* src, float* dst, int32_t* list_dev, int cap, int64_t n_embd,
+                       void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
 /// The main GPU's share of a verify window's layer, decided on the device: the entries of `ids` (n = tokens * k,

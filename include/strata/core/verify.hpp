@@ -40,10 +40,12 @@ namespace strata::core {
 
 class NativeHead;
 
-/// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd): the CPU's and the
-/// second GPU's rows, the main GPU's zeroed unless `GpuPlanSink::host_rows_only`.
+/// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd): the CPU's rows, the
+/// main GPU's zeroed unless `GpuPlanSink::host_rows_only`; a second GPU writes its own (`set_gpu2`).
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
+/// False, with the reason, when work the window waits for failed (the second GPU's).
+using WatchFn = bool (*)(void* user, std::string& err);
 /// Layer `layer`'s likely experts, its router applied to an estimate of its FFN input (`Verifier::set_predict`): ids
 /// and weights (n_tok, k), host memory.
 using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
@@ -128,9 +130,19 @@ public:
     /// Set before the first `run`.
     void set_tail(TailFn fn, void* user) { tail_ = fn; tail_user_ = user; }
     cudaEvent_t window_done() const { return done_; }
+    /// The pool gives a second GPU a share of each layer (`GpuPlanSink::gpu2_flag`): it writes its rows into the
+    /// pool's rows and raises its token group's flag, and a branch of the window, forked at the ring, takes them
+    /// into VRAM while the CPU works.  Set before the first `run`.
+    void set_gpu2(bool on) { gpu2_ = on; }
+    /// `fn` is asked every ~2 ms while the host waits for a ring: on failure the window's waits are released and `run`
+    /// returns the reason.  Set before the first `run`.
+    void set_watch(WatchFn fn, void* user) { watch_ = fn; watch_user_ = user; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0, ms_predict = 0;
     int64_t windows = 0, predict_late = 0;
+    /// Layers whose second-GPU rows came after the CPU's, and the host time from the CPU's rows to theirs.
+    int64_t late2 = 0;
+    double ms_late2 = 0;
 
 private:
     bool capture(int T, std::string& err);
@@ -188,6 +200,15 @@ private:
     bool pcie_share_ = true;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    // the second GPU's share (set_gpu2), per token group: the flag it raises (64 bytes apart) and its entries,
+    // [n, pad x3, entries] (mapped; `list2_` their device copies, which the combine reads)
+    bool gpu2_ = false;
+    uint32_t* h_flag2_ = nullptr; uint32_t* m_flag2_ = nullptr;
+    int32_t* h_list2_ = nullptr; int32_t* m_list2_ = nullptr;
+    int32_t* list2_ = nullptr;
+    int64_t list2_stride_ = 0;
+    WatchFn watch_ = nullptr;
+    void* watch_user_ = nullptr;
     // the next layer's predicted experts: two halves by layer parity, so a prediction stays put until the host has
     // taken it; the counter holds the predictions published in this window
     PredictFn predict_ = nullptr;
@@ -207,6 +228,8 @@ private:
     cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;               // shs_'s projections
     cudaStream_t shs_ = nullptr;                                  // the shared expert's branch (and the snapshot's copy)
     cudaEvent_t shfork_ = nullptr, shjoin_ = nullptr, res_ready_ = nullptr;
+    cudaStream_t g2s_ = nullptr;                                  // the second GPU's rows, per token group
+    cudaEvent_t g2fork_ = nullptr, g2join_[2] = {};
     cudaEvent_t done_ = nullptr;                                  // after the last window's graph
 
     // device
@@ -249,8 +272,8 @@ private:
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
 
     // --window-profile: stamps [window size][layer, then one row for the window][stage]: a layer's main-stream stages,
-    // then the end of its shared expert's branch
-    static constexpr int kLayerStamps = 12, kStamps = 13;
+    // then the ends of its shared expert's branch and of the second GPU's rows' branch
+    static constexpr int kLayerStamps = 13, kStamps = 15;
     bool profile_ = false;
     unsigned long long* stamps_ = nullptr;
     std::vector<unsigned long long> h_stamps_;

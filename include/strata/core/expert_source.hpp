@@ -89,6 +89,13 @@ struct GpuPlanSink {
     int pcie_mode = 0;
     /// The GPU reads only the rows it did not compute, so the pool leaves the GPU's rows of `out` unwritten.
     bool host_rows_only = false;
+    /// The second GPU's share of this token group (mapped; null without one): its entries, [n, pad x3, entries], and
+    /// the flag its graph raises to `ring` once their rows are in `out`, which the main GPU waits for.  The pool
+    /// raises the flag itself when the second GPU takes no share, and sets `gpu2_ring` to `ring` once the flag is
+    /// raised or a share is submitted.
+    int32_t* gpu2_list = nullptr;
+    uint32_t* gpu2_flag = nullptr;
+    uint32_t ring = 0, gpu2_ring = 0;
 };
 
 /// The adapter's own state.  One per session, reused every layer so the token path allocates nothing (P2.T10).
@@ -248,7 +255,8 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
 /// Plan v0.3 P6: the pool for a verify window of `n_tok` tokens.  `x_f` is (n_tok, n_embd), `ids` (n_tok, k) and
 /// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it;
-/// resident experts' rows are the main GPU's (zeroed, or left unwritten with `GpuPlanSink::host_rows_only`).
+/// resident experts' rows are the main GPU's (zeroed, or left unwritten with `GpuPlanSink::host_rows_only`), and the
+/// second GPU writes its share's rows itself, after this returns (`GpuPlanSink::gpu2_flag`).
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out);
 /// Copies `layer`'s likeliest experts that neither GPU holds to the second GPU's prefetch slots, where that layer's

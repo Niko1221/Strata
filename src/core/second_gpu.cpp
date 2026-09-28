@@ -7,16 +7,21 @@
 
 #include <immintrin.h>
 
-#include <chrono>
 #include <cstring>
 #include <exception>
 
 namespace strata::core {
 namespace {
 
-// the plan block: [n_groups, pad x3] [starts: cap+1] [dst: cap] [tok: cap] (8-byte aligned) [slot addresses: cap]
-int64_t ptr_off(int64_t cap) { return (4 + (cap + 1) + 2 * cap + 1) / 2 * 2; }   // in int32 units
-size_t plan_bytes(int64_t cap) { return (size_t) ptr_off(cap) * 4 + (size_t) cap * 8; }
+// the plan block: [groups of part 0, of part 1, ring, pad] [starts, part 0: cap+1] [part 1: cap+1] [dst: cap]
+// [tok: cap] (8-byte aligned) [slot addresses, part 0: cap] [part 1: cap] [out] [flag after part 0] [after part 1]
+struct PlanLayout {
+    int64_t starts[2], dst, tok, ptr;   // int32 offsets; `ptr` even
+    size_t bytes;
+    explicit PlanLayout(int64_t cap)
+        : starts{4, 4 + cap + 1}, dst(4 + 2 * (cap + 1)), tok(dst + cap), ptr((tok + cap + 1) & ~1ll),
+          bytes((size_t) ptr * 4 + (size_t) (2 * cap + 3) * 8) {}
+};
 
 // the grouped kernels' grids are sized for the bucket a layer's group count falls in
 int bucket(int groups) {
@@ -39,9 +44,9 @@ SecondGpu::~SecondGpu() {
     if (pre_s_) cudaStreamSynchronize(pre_s_);
     for (auto& gr : graphs_) cudaGraphExecDestroy(gr.exec);
     cache_.close();
-    void* dev[] = {d_xq_, d_plan_, d_scratch_, d_rows_, d_pre_};
+    void* dev[] = {d_xq_, d_plan_, d_scratch_, d_rows_, d_count_, d_pre_};
     for (void* p : dev) if (p) cudaFree(p);
-    void* host[] = {h_x_, h_out_, h_plan_};
+    void* host[] = {h_x_, h_plan_};
     for (void* p : host) if (p) cudaFreeHost(p);
     if (ev_) cudaEventDestroy(ev_);
     if (pre_ev_) cudaEventDestroy(pre_ev_);
@@ -58,30 +63,36 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
     cap_ = (int64_t) max_t * k;
     DeviceScope scope(dev_, main_);
     const size_t xb = (size_t) max_t * (size_t) n_embd * sizeof(float), ob = (size_t) cap_ * (size_t) n_embd * sizeof(float);
+    const size_t pb = PlanLayout(cap_).bytes;
     const unsigned pm = cudaHostAllocPortable | cudaHostAllocMapped;
     const char* step = nullptr;
     cudaError_t e = cudaSuccess;
+    int unified = 0;
     auto run = [&](const char* what, cudaError_t r) { if (e == cudaSuccess && r != cudaSuccess) { e = r; step = what; } };
     run("context", cudaFree(nullptr));
+    run("unified addressing", cudaDeviceGetAttribute(&unified, cudaDevAttrUnifiedAddressing, dev_));
     run("stream", cudaStreamCreateWithFlags(&s_, cudaStreamNonBlocking));
     run("event", cudaEventCreateWithFlags(&ev_, cudaEventDisableTiming));
     run("pinned staging", cudaHostAlloc((void**) &h_x_, xb, pm));
-    run("pinned staging", cudaHostAlloc((void**) &h_out_, ob, pm));
-    run("pinned staging", cudaHostAlloc((void**) &h_plan_, plan_bytes(cap_), pm));
+    run("pinned staging", cudaHostAlloc((void**) &h_plan_, pb, pm));
     run("mapped staging", cudaHostGetDevicePointer((void**) &m_x_, h_x_, 0));
-    run("mapped staging", cudaHostGetDevicePointer((void**) &m_out_, h_out_, 0));
     run("mapped staging", cudaHostGetDevicePointer((void**) &m_plan_, h_plan_, 0));
     run("device buffers", cudaMalloc((void**) &d_xq_, (size_t) max_t * (size_t) (n_embd / 32) * 36));
-    run("device buffers", cudaMalloc((void**) &d_plan_, plan_bytes(cap_)));
+    run("device buffers", cudaMalloc((void**) &d_plan_, pb));
     run("device buffers", cudaMalloc((void**) &d_scratch_, strata::kernels::native_expert_scratch_bytes(cap_, n_ff)));
     run("device buffers", cudaMalloc((void**) &d_rows_, ob));
+    run("device buffers", cudaMalloc((void**) &d_count_, sizeof(unsigned)));
+    run("device buffers", cudaMemset(d_count_, 0, sizeof(unsigned)));
     if (e != cudaSuccess) {
         err = std::string("second GPU: ") + step + ": " + cudaGetErrorString(e);
         return false;
     }
+    if (!unified) {   // it writes its rows through the host pointers of the first GPU's mapped memory
+        err = "second GPU: no unified addressing";
+        return false;
+    }
     std::memset(h_x_, 0, xb);
-    std::memset(h_plan_, 0, plan_bytes(cap_));
-    pending_.reserve((size_t) cap_);
+    std::memset(h_plan_, 0, pb);
     return true;
 }
 
@@ -121,25 +132,35 @@ bool SecondGpu::prefetch(int64_t layer, const int32_t* ids, const uint8_t* const
     return true;
 }
 
-bool SecondGpu::graph_for(int gu_type, int d_type, int groups, cudaGraphExec_t& exec, std::string& err) {
+bool SecondGpu::graph_for(int gu_type, int d_type, int groups, int part, bool prep, cudaGraphExec_t& exec,
+                          std::string& err) {
     for (const auto& gr : graphs_)
-        if (gr.gu == gu_type && gr.d == d_type && gr.groups == groups) { exec = gr.exec; return true; }
+        if (gr.gu == gu_type && gr.d == d_type && gr.groups == groups && gr.part == part && gr.prep == prep) {
+            exec = gr.exec;
+            return true;
+        }
     const strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(gu_type, d_type, n_embd_, n_ff_);
+    const PlanLayout P(cap_);
     const auto* pi = (const int32_t*) d_plan_;
+    const auto* p64 = (const unsigned long long*) (pi + P.ptr);
     cudaGraph_t graph = nullptr;
     if (cudaStreamBeginCapture(s_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "second GPU: cannot capture";
         return false;
     }
     try {
-        // a kernel copies the plan (a copy node costs ~15 us on this link); the grouped kernels read the group
-        // count from it and skip the groups past it
-        strata::kernels::copy_i32_from_mapped((int32_t*) d_plan_, (const int32_t*) m_plan_, (int64_t) plan_bytes(cap_) / 4, s_);
-        strata::kernels::quantize_q8_1_rows(m_x_, max_t_, n_embd_, d_xq_, s_);
-        strata::kernels::native_expert_grouped(L, (const unsigned long long*) (pi + ptr_off(cap_)), pi + 4, pi,
-                                               pi + 4 + cap_ + 1, pi + 4 + 2 * cap_ + 1, groups, cap_, d_xq_, d_scratch_,
-                                               d_rows_, s_);
-        strata::kernels::native_expert_rows_out(d_rows_, pi, pi + 4, n_embd_, cap_, m_out_, s_);
+        if (prep) {
+            // a kernel copies the plan (a copy node costs ~15 us on this link); the grouped kernels read the group
+            // count from it and skip the groups past it
+            strata::kernels::copy_i32_from_mapped((int32_t*) d_plan_, (const int32_t*) m_plan_, (int64_t) P.bytes / 4,
+                                                  s_);
+            strata::kernels::quantize_q8_1_rows(m_x_, max_t_, n_embd_, d_xq_, s_);
+        }
+        strata::kernels::native_expert_grouped(L, p64 + part * cap_, pi + P.starts[part], pi + part, pi + P.dst,
+                                               pi + P.tok, groups, cap_, d_xq_, d_scratch_, d_rows_, s_);
+        strata::kernels::native_expert_rows_out(d_rows_, pi + part, pi + P.starts[part], pi + P.dst, n_embd_, cap_,
+                                                (float* const*) (p64 + 2 * cap_),
+                                                (uint32_t* const*) (p64 + 2 * cap_ + 1 + part), pi + 2, d_count_, s_);
     } catch (const std::exception& ex) {
         cudaStreamEndCapture(s_, &graph);
         if (graph) cudaGraphDestroy(graph);
@@ -155,43 +176,57 @@ bool SecondGpu::graph_for(int gu_type, int d_type, int groups, cudaGraphExec_t& 
     cudaGraphDestroy(graph);
     cudaGraphUpload(exec, s_);
     cudaStreamSynchronize(s_);
-    graphs_.push_back({gu_type, d_type, groups, exec});
+    graphs_.push_back({gu_type, d_type, groups, part, prep, exec});
     return true;
 }
 
 bool SecondGpu::submit(int64_t layer, const float* x, int n_tok, int64_t k, const int32_t* slots, const int32_t* starts,
-                       const int32_t* entries, int n_groups, std::string& err) {
+                       const int32_t* entries, int n_groups, float* out, uint32_t* flag, uint32_t ring,
+                       std::string& err) {
     const int n = starts[n_groups];
     if (n_groups <= 0 || n > cap_ || n_tok > max_t_) { err = "second GPU: a layer's share is out of range"; return false; }
-    // the plan: rows 0..n-1 in entry order
+    cudaError_t q;
+    while ((q = cudaEventQuery(ev_)) == cudaErrorNotReady) _mm_pause();
+    if (q != cudaSuccess) {
+        err = std::string("second GPU: ") + cudaGetErrorString(q);
+        return false;
+    }
+    // the plan: the experts in its cache first (part 0), then the prefetched ones (part 1), their entries in that order
+    const PlanLayout P(cap_);
     auto* pi = (int32_t*) h_plan_;
-    int32_t* start = pi + 4;
-    int32_t* dst = start + cap_ + 1;
-    int32_t* tok = dst + cap_;
-    auto* ptr = (unsigned long long*) (pi + ptr_off(cap_));
-    pi[0] = n_groups;
-    pending_.assign(entries, entries + n);
-    for (int g = 0; g <= n_groups; ++g) start[g] = starts[g];
-    for (int j = 0; j < n; ++j) {
-        dst[j] = j;
-        tok[j] = (int32_t) (entries[j] / k);
-    }
-    bool pre = false;
-    for (int g = 0; g < n_groups; ++g) {
-        if (slots[g] <= -2) {   // a prefetch slot
-            ptr[g] = (unsigned long long) (d_pre_ + (size_t) (-2 - slots[g]) * pre_cap_);
-            pre = true;
-            ++prefetch_used;
-        } else {
-            ptr[g] = (unsigned long long) cache_.device_slot(slots[g]);
+    auto* p64 = (unsigned long long*) (pi + P.ptr);
+    int ng[2] = {0, 0}, e = 0;
+    for (int part = 0; part < 2; ++part) {
+        int32_t* st = pi + P.starts[part];
+        for (int g = 0; g < n_groups; ++g) {
+            const bool pre = slots[g] <= -2;
+            if (pre != (part == 1)) continue;
+            p64[(size_t) part * (size_t) cap_ + (size_t) ng[part]] =
+                pre ? (unsigned long long) (d_pre_ + (size_t) (-2 - slots[g]) * pre_cap_)
+                    : (unsigned long long) cache_.device_slot(slots[g]);
+            st[ng[part]++] = e;
+            for (int j = starts[g]; j < starts[g + 1]; ++j, ++e) {
+                pi[P.dst + e] = entries[j];
+                pi[P.tok + e] = (int32_t) (entries[j] / k);
+            }
         }
+        st[ng[part]] = e;
+        pi[part] = ng[part];
     }
+    pi[2] = (int32_t) ring;
+    p64[2 * cap_] = (unsigned long long) out;
+    p64[2 * cap_ + 1] = ng[1] == 0 ? (unsigned long long) flag : 0;   // the last launch raises it
+    p64[2 * cap_ + 2] = ng[1] > 0 ? (unsigned long long) flag : 0;
     std::memcpy(h_x_, x, (size_t) n_tok * (size_t) n_embd_ * sizeof(float));
     const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) layer];
     DeviceScope scope(dev_, main_);
-    cudaGraphExec_t exec = nullptr;
-    if (!graph_for(f.gu_type, f.d_type, bucket(n_groups), exec, err)) return false;
-    if ((pre && cudaStreamWaitEvent(s_, pre_ev_, 0) != cudaSuccess) || cudaGraphLaunch(exec, s_) != cudaSuccess ||
+    cudaGraphExec_t own = nullptr, pre = nullptr;
+    if ((ng[0] > 0 && !graph_for(f.gu_type, f.d_type, bucket(ng[0]), 0, true, own, err)) ||
+        (ng[1] > 0 && !graph_for(f.gu_type, f.d_type, bucket(ng[1]), 1, ng[0] == 0, pre, err)))
+        return false;
+    if ((own != nullptr && cudaGraphLaunch(own, s_) != cudaSuccess) ||
+        (pre != nullptr &&
+         (cudaStreamWaitEvent(s_, pre_ev_, 0) != cudaSuccess || cudaGraphLaunch(pre, s_) != cudaSuccess)) ||
         cudaEventRecord(ev_, s_) != cudaSuccess) {
         err = std::string("second GPU: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -199,23 +234,15 @@ bool SecondGpu::submit(int64_t layer, const float* x, int n_tok, int64_t k, cons
     ++layers;
     experts += n_groups;
     entries_done += n;
+    prefetch_used += ng[1];
     return true;
 }
 
-bool SecondGpu::finish(float* out, std::string& err) {
-    const auto t0 = std::chrono::steady_clock::now();
-    cudaError_t q;
-    while ((q = cudaEventQuery(ev_)) == cudaErrorNotReady) _mm_pause();
-    ms_wait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    if (q != cudaSuccess) {
-        err = std::string("second GPU: ") + cudaGetErrorString(q);
-        return false;
-    }
-    for (size_t j = 0; j < pending_.size(); ++j)
-        std::memcpy(out + (size_t) pending_[j] * (size_t) n_embd_, h_out_ + j * (size_t) n_embd_,
-                    (size_t) n_embd_ * sizeof(float));
-    pending_.clear();
-    return true;
+bool SecondGpu::healthy(std::string& err) const {
+    const cudaError_t q = cudaEventQuery(ev_);
+    if (q == cudaSuccess || q == cudaErrorNotReady) return true;
+    err = std::string("second GPU: ") + cudaGetErrorString(q);
+    return false;
 }
 
 }  // namespace strata::core

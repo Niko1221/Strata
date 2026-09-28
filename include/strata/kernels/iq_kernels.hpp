@@ -64,10 +64,13 @@ size_t native_expert_scratch_bytes(int64_t cap_entries, int64_t n_ff);
 void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream);
-/// Copies the first grp_start[*n_groups] rows of `rows` (n_embd floats each, n_embd % 4 == 0) to `out`, at most
-/// `max_rows`, in 16-byte stores: rows bound for mapped host memory cross PCIe in full transactions (the grouped
-/// kernels' one-float stores there cost ~0.2 ms a layer).  Counts are read on the device.
-void native_expert_rows_out(const float* rows, const int32_t* n_groups, const int32_t* grp_start, int64_t n_embd,
-                            int64_t max_rows, float* out, void* stream);
+/// Entries [grp_start[0], grp_start[*n_groups]): entry e's row ent_dst[e] of `rows` (n_embd floats each,
+/// n_embd % 4 == 0) to the same row of `*out`, at most `max_rows` rows, in 16-byte stores: rows bound for mapped host
+/// memory cross PCIe in full transactions (the grouped kernels' one-float stores there cost ~0.2 ms a layer).  Then,
+/// unless `*flag` is null, `**flag = *ring` once every row is visible to the host.  Counts and pointers are read on
+/// the device; `counter` (device, zero) is left zero.
+void native_expert_rows_out(const float* rows, const int32_t* n_groups, const int32_t* grp_start,
+                            const int32_t* ent_dst, int64_t n_embd, int64_t max_rows, float* const* out,
+                            uint32_t* const* flag, const int32_t* ring, unsigned* counter, void* stream);
 
 }  // namespace strata::kernels
