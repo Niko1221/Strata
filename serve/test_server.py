@@ -390,6 +390,28 @@ class WebApp(unittest.TestCase):
 
 
 class AuxiliaryStateWire(unittest.TestCase):
+    def test_running_engine_version_overrides_directory_manifest(self):
+        import io
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from serve.server import StrataEngine
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "BUILD.json"
+            for reported, saved, expected in (("0.1.13", "0.1.12", "0.1.13"),
+                                               (None, "0.1.12", "0.1.12"),
+                                               ("0.1.13", None, "0.1.13")):
+                with self.subTest(reported=reported, saved=saved):
+                    if saved:
+                        manifest.write_text(json.dumps({"version": saved}))
+                    elif manifest.exists():
+                        manifest.unlink()
+                    output = (f"INFO engine={reported}\n" if reported else "") + "READY 4096 stop\n"
+                    proc = SimpleNamespace(stdout=io.StringIO(output))
+                    with patch("serve.server.subprocess.Popen", return_value=proc), patch("serve.server.threading.Thread"):
+                        engine = StrataEngine(str(Path(folder) / "custom.exe"), [])
+                    self.assertEqual(engine.info["version"], expected)
+
     def test_explicit_boolean_only(self):
         from serve.server import StrataEngine
         for value in (False, None, 1, "true"):

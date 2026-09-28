@@ -113,6 +113,10 @@ class StrataEngine:
                 break
         if self.max_context <= 0:
             raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
+        # A locally built executable may share a directory with a different release's BUILD.json.
+        # Newer engines report their own version; keep the manifest as a fallback for older ones.
+        if self.info.get("engine"):
+            self.info["version"] = self.info["engine"]
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
         threading.Thread(target=self._pump, daemon=True).start()
