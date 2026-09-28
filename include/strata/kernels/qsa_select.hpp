@@ -8,8 +8,12 @@
 //   qsa_block_scores : FP32; relu per indexer head, summed; block n_bid (the incomplete tail) scores the `dead` key
 //                      and gets +1e9 when it has cells - which is exactly what the per-token path reads there,
 //                      because pooled[n_bid] holds `dead` at that time (in a chunk it may already hold a block
-//                      completed later, so it is not read).  A 4-lane group per key block reads the key once for
-//                      all queries and sums each score in the order one warp per (query, block) did.
+//                      completed later, so it is not read).  Each score sums in the order one warp per
+//                      (query, block) did.  Decode windows (< 12 queries): an 8-lane group per key block reads the
+//                      key once for all queries.  Batches: a per-thread GEMM form, a lane's 2 queries x 4 key
+//                      blocks over all heads, the tree on a stack of partial sums, the queries read by the whole
+//                      warp at once; one persistent block an SM with an equal share of the (key tile, query chunk)
+//                      units.
 //   qsa_block_topk   : one 1024-thread block per query; a 4-pass radix select over the query's n_bid + 1 blocks,
 //                      each weighted by its cell count, then the cells emitted in ascending order with ties to the
 //                      lowest index - the same selection as topk_kernel, over a quarter of the elements.

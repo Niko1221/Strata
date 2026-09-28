@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
+#include <type_traits>
 
 namespace strata::kernels {
 namespace {
@@ -16,6 +17,12 @@ constexpr int SCORE_WARPS = 8;
 constexpr int SCORE_KB = 2;                                // key blocks per 8-lane group
 constexpr int SCORE_TILE = SCORE_WARPS * 4 * SCORE_KB;     // key blocks per thread block and round
 constexpr int SCORE_QC = 16;                               // queries staged in shared memory at a time (32 KB)
+constexpr int BATCH_T = 256, BATCH_W = BATCH_T / 32;      // batch_scores_kernel: one block an SM
+constexpr int BATCH_QT = 2, BATCH_BT = 4;                  // a lane: 2 queries x 4 key blocks, all heads
+constexpr int BATCH_TILE = 32 * BATCH_BT;                  // key blocks in shared memory (64 KB)
+constexpr int BATCH_QC = BATCH_W * BATCH_QT;               // queries a unit (a warp's slots: 32 KB)
+constexpr int QD = IDX_HEADS * IDX_DIM;                    // a query's floats
+constexpr int kBatchMinQueries = 12;                       // fewer (decode windows): block_scores_kernel
 constexpr int TOPK_T = 1024, TOPK_W = TOPK_T / 32;
 constexpr int TOPK_ROWS = 32;                              // rows of TOPK_T blocks held in registers
 constexpr int TOPK_MAX_ROWS = 64;                          // 65536 blocks: 262144 cells
@@ -25,6 +32,12 @@ __device__ __forceinline__ uint32_t order_key(float s) {
     if (!(v == v)) return 0u;
     const uint32_t b = __float_as_uint(v);
     return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+
+// One leaf of a score (dims 4l..4l+3 of a head): k.x*q.x + k.y*q.y + k.z*q.z + k.w*q.w as the original warp-per-pair
+// kernel compiled it (qsa_select_parity keeps it)
+__device__ __forceinline__ float dot4(float4 k, float4 q) {
+    return __fmaf_rn(k.w, q.w, __fmaf_rn(k.z, q.z, __fmaf_rn(k.x, q.x, __fmul_rn(k.y, q.y))));
 }
 
 // One query's scores for the group's SCORE_KB key blocks.  Lane j of the 8-lane group holds each key's dims 4l..4l+3
@@ -49,7 +62,7 @@ __device__ __forceinline__ void group_scores(const float4 (&k)[SCORE_KB][4], con
             for (int i = 0; i < 4; ++i) {
                 float4 k4 = k[kb][i];
                 if (TAIL && kb == tail_kb) k4 = *reinterpret_cast<const float4*>(dead + 4 * (j + 8 * i));
-                d[i] = k4.x * q4[i].x + k4.y * q4[i].y + k4.z * q4[i].z + k4.w * q4[i].w;
+                d[i] = dot4(k4, q4[i]);
             }
             float c = (d[0] + d[2]) + (d[1] + d[3]);
             c += __shfl_xor_sync(FULL, c, 4);
@@ -113,6 +126,174 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_kernel(const fl
                         if (bg + kb > last) break;
                         o[bg + kb] = kb == tail_kb && n_kv % R != 0 ? score[kb] + 1e9f : score[kb];
                     }
+                }
+            }
+        }
+    }
+}
+
+__host__ __device__ constexpr int rev5(int i) {
+    return ((i & 1) << 4) | ((i & 2) << 2) | (i & 4) | ((i & 8) >> 2) | ((i & 16) >> 4);
+}
+__host__ __device__ constexpr int popc5(int i) {
+    return (i & 1) + ((i >> 1) & 1) + ((i >> 2) & 1) + ((i >> 3) & 1) + ((i >> 4) & 1);
+}
+// key rows in shared memory, 16-byte chunk c of row r at c ^ (r & 7): a quarter warp's rows on distinct bank quads
+__device__ __forceinline__ int key_at(int r, int c) { return r * IDX_DIM + 4 * (c ^ (r & 7)); }
+__device__ __forceinline__ void cp_async16(void* s, const void* g) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"((unsigned) __cvta_generic_to_shared(s)), "l"(g));
+}
+
+// The same scores for batches of queries, in a per-thread GEMM form.  Lane l of a warp scores key blocks l + 32 j
+// (j < BATCH_BT) of the tile against the warp's BATCH_QT queries, all heads: a dot4 per leaf (dims 4l..4l+3), the 32
+// leaves summed on a stack in the tree of the warp form's butterfly (bit-reversed order: leaves l and l + 16 first),
+// so each score is bit for bit the warp form's.  The warp reads its queries' values all at once, a shared-memory
+// broadcast at about half the cost of distinct reads.  Persistent and balanced: block g takes units
+// [g U / G, (g + 1) U / G) of the U = tiles x chunks of BATCH_QC queries, tile-major.  The tile's keys are loaded
+// between barriers when the tile changes; each warp stages its queries into a slot of its own, the next unit's even
+// leaves once this unit is done with them, then the odd ones, so the copies run while it computes.  A query's tail
+// block scores the `dead` key in the warp form.
+__global__ void __launch_bounds__(BATCH_T, 1) batch_scores_kernel(const float* __restrict__ pooled,
+                                                                  const float* __restrict__ dead,
+                                                                  const float* __restrict__ q_idx,
+                                                                  const int32_t* __restrict__ steps, int nq,
+                                                                  int64_t max_blocks, float* __restrict__ out) {
+    extern __shared__ __align__(16) float smem[];
+    __shared__ int s_top;
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    float* ks = smem;                                          // BATCH_TILE x IDX_DIM
+    float* qs = smem + BATCH_TILE * IDX_DIM + warp * BATCH_QT * QD;
+    {
+        int top = -1;                                          // the batch's last block
+        for (int i = t; i < nq; i += BATCH_T) {
+            const int n_bid = steps[(int64_t) i * kStepCount + kStepNBid];
+            top = max(top, (int64_t) n_bid < max_blocks - 1 ? n_bid : (int) (max_blocks - 1));
+        }
+        top = __reduce_max_sync(FULL, top);
+        if (t == 0) s_top = -1;
+        __syncthreads();
+        if (lane == 0) atomicMax(&s_top, top);
+        __syncthreads();
+    }
+    const int top = s_top;
+    if (top < 0) return;
+    const int n_chunks = (nq + BATCH_QC - 1) / BATCH_QC, units = (top / BATCH_TILE + 1) * n_chunks;
+    const int u1 = (int) ((int64_t) (blockIdx.x + 1) * units / gridDim.x);
+    // leaves of parity `half` of queries q0, q0 + 1 into the warp's slot, one cp.async group
+    auto stage = [&](int q0, int half) {
+#pragma unroll
+        for (int e = lane; e < BATCH_QT * IDX_HEADS * 16; e += 32) {
+            const int a = e / (IDX_HEADS * 16), off = (e / 16) % IDX_HEADS * IDX_DIM + 4 * (2 * (e % 16) + half);
+            if (q0 + a < nq) cp_async16(qs + a * QD + off, q_idx + (int64_t) (q0 + a) * QD + off);
+        }
+        asm volatile("cp.async.commit_group;\n" ::);
+    };
+    int have = -1;                                             // the first query of the slot's rows
+    for (int u = (int) ((int64_t) blockIdx.x * units / gridDim.x); u < u1;) {
+        const int b0 = u / n_chunks * BATCH_TILE, ue = min(u1, (u / n_chunks + 1) * n_chunks);
+        __syncthreads();                                       // every warp is done with the previous tile
+        for (int e = t; e < BATCH_TILE * 32; e += BATCH_T) {
+            const int r = e >> 5, c = e & 31;
+            cp_async16(ks + key_at(r, c), pooled + (int64_t) min(b0 + r, top) * IDX_DIM + 4 * c);
+        }
+        asm volatile("cp.async.commit_group;\n" ::);
+        asm volatile("cp.async.wait_group 0;\n" ::);
+        __syncthreads();
+        for (; u < ue; ++u) {
+            const int q0 = u % n_chunks * BATCH_QC + warp * BATCH_QT;
+            int n_bid[BATCH_QT], n_kv[BATCH_QT], wlast = -1;
+#pragma unroll
+            for (int a = 0; a < BATCH_QT; ++a) {
+                const bool in = q0 + a < nq;
+                n_bid[a] = in ? steps[(int64_t) (q0 + a) * kStepCount + kStepNBid] : -1;
+                n_kv[a] = in ? steps[(int64_t) (q0 + a) * kStepCount + kStepNKv] : 0;
+                wlast = max(wlast, n_bid[a]);
+            }
+            if (wlast < b0) continue;                          // the warp's queries end before the tile
+            if (have != q0) {
+                // a skipped unit's prefetch may still be landing in the slot: copies to one address are unordered
+                asm volatile("cp.async.wait_group 0;\n" ::);
+                __syncwarp();
+                stage(q0, 0);
+                stage(q0, 1);
+                have = q0;
+            }
+            const int q0n = u + 1 < u1 ? (u + 1) % n_chunks * BATCH_QC + warp * BATCH_QT : -1;
+            const bool ahead = q0n >= 0 && q0n != q0;
+            asm volatile("cp.async.wait_group 1;\n" ::);       // the even leaves
+            __syncwarp();
+            float stk[BATCH_QT][IDX_HEADS][BATCH_BT][6];
+            auto leaves = [&](auto first) {
+#pragma unroll
+                for (int ii = 0; ii < 16; ++ii) {
+                    const int i = decltype(first)::value + ii, l = rev5(i), depth = popc5(i);
+                    float4 kf[BATCH_BT], qf[BATCH_QT][IDX_HEADS];
+#pragma unroll
+                    for (int j = 0; j < BATCH_BT; ++j)
+                        kf[j] = *reinterpret_cast<const float4*>(ks + key_at(lane + 32 * j, l));
+#pragma unroll
+                    for (int a = 0; a < BATCH_QT; ++a)
+#pragma unroll
+                        for (int h = 0; h < IDX_HEADS; ++h)
+                            qf[a][h] = *reinterpret_cast<const float4*>(qs + a * QD + h * IDX_DIM + 4 * l);
+#pragma unroll
+                    for (int a = 0; a < BATCH_QT; ++a)
+#pragma unroll
+                        for (int h = 0; h < IDX_HEADS; ++h)
+#pragma unroll
+                            for (int j = 0; j < BATCH_BT; ++j) {
+                                float* s = stk[a][h][j];
+                                s[depth] = dot4(kf[j], qf[a][h]);
+#pragma unroll
+                                for (int lv = 0; lv < 5; ++lv) {   // complete subtrees combine
+                                    if (((i + 1) >> lv) & 1) break;
+                                    s[depth - lv - 1] = s[depth - lv - 1] + s[depth - lv];
+                                }
+                            }
+                }
+            };
+            leaves(std::integral_constant<int, 0>());           // rev5(0..15): the even leaves
+            __syncwarp();
+            if (ahead) {
+                stage(q0n, 0);
+                asm volatile("cp.async.wait_group 1;\n" ::);   // this unit's odd leaves
+            } else {
+                asm volatile("cp.async.wait_group 0;\n" ::);
+            }
+            __syncwarp();
+            leaves(std::integral_constant<int, 16>());
+            __syncwarp();
+            if (ahead) {
+                stage(q0n, 1);
+                have = q0n;
+            }
+#pragma unroll
+            for (int a = 0; a < BATCH_QT; ++a) {
+                const int qi = q0 + a;
+                const int64_t last = (int64_t) n_bid[a] < max_blocks - 1 ? n_bid[a] : max_blocks - 1;
+#pragma unroll
+                for (int j = 0; j < BATCH_BT; ++j) {
+                    float score = 0.0f;
+#pragma unroll
+                    for (int h = 0; h < IDX_HEADS; ++h) {
+                        const float d = stk[a][h][j][0];
+                        score += d > 0.0f ? d : 0.0f;
+                    }
+                    const int b = b0 + lane + 32 * j;
+                    if (qi < nq && b <= last && b != n_bid[a]) out[(int64_t) qi * max_blocks + b] = score;
+                }
+                if (qi < nq && n_bid[a] >= b0 && n_bid[a] < b0 + BATCH_TILE && (int64_t) n_bid[a] <= max_blocks - 1) {
+                    const float4 k4 = *reinterpret_cast<const float4*>(dead + 4 * lane);
+                    float score = 0.0f;
+#pragma unroll
+                    for (int h = 0; h < IDX_HEADS; ++h) {
+                        float d = dot4(k4, *reinterpret_cast<const float4*>(q_idx + (int64_t) qi * QD + h * IDX_DIM +
+                                                                            4 * lane));
+#pragma unroll
+                        for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(FULL, d, o);
+                        score += d > 0.0f ? d : 0.0f;
+                    }
+                    if (lane == 0) out[(int64_t) qi * max_blocks + n_bid[a]] = n_kv[a] % R != 0 ? score + 1e9f : score;
                 }
             }
         }
@@ -335,9 +516,25 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         std::exit(1);
     }
     const int64_t covered = grid_blocks < max_blocks ? grid_blocks : max_blocks;
-    const unsigned grid = (unsigned) ((covered + SCORE_TILE - 1) / SCORE_TILE);
-    block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
-                                                                              max_blocks, scores);
+    if (nq >= kBatchMinQueries) {
+        // one block an SM (the prompt path's GPU), each with the same share of the units
+        constexpr int smem = (BATCH_TILE * IDX_DIM + BATCH_QC * QD) * (int) sizeof(float);
+        static int sms = 0;
+        if (sms == 0) {
+            int dev = 0;
+            cudaGetDevice(&dev);
+            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+            cudaFuncSetAttribute(batch_scores_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        }
+        const int64_t units = ((covered + BATCH_TILE - 1) / BATCH_TILE) * ((nq + BATCH_QC - 1) / BATCH_QC);
+        const unsigned grid = (unsigned) (units < sms ? units : sms);
+        batch_scores_kernel<<<grid, BATCH_T, smem, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
+                                                                            max_blocks, scores);
+    } else {
+        const unsigned grid = (unsigned) ((covered + SCORE_TILE - 1) / SCORE_TILE);
+        block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
+                                                                                  max_blocks, scores);
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
@@ -345,7 +542,8 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream) {
     if (nq <= 0) return;
-    if (s.idx_block != R || cap < qsa_selection_width(kTopkMaxCells, s) || max_blocks > (int64_t) TOPK_MAX_ROWS * TOPK_T) {
+    if (s.idx_block != R || cap < qsa_selection_width(kTopkMaxCells, s) ||
+        max_blocks > (int64_t) TOPK_MAX_ROWS * TOPK_T) {
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }

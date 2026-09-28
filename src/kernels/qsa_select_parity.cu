@@ -1,6 +1,6 @@
 // src/kernels/qsa_select_parity.cu - the QSA block scores and top-k (qsa_select.cu) against the kernels they
 // replaced, kept here as the reference: scores bitwise, selections identical, for decode windows (1-8 queries,
-// the captured graph's fixed grid) and the prompt path's batches (256 queries), from the identity case to 200K
+// the captured graph's fixed grid) and the prompt path's batches (up to 256 queries), from the identity case to 200K
 // cells, with exact score ties, zero scores and every tail length.  --bench times both.
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_select.hpp"
@@ -259,7 +259,8 @@ int compare(Data& d, int64_t pos0, int64_t nq, int64_t grid_blocks, cudaStream_t
     check(cudaMemcpy(ib.data(), d.ids_new, ib.size() * 4, cudaMemcpyDeviceToHost), "down");
     int bad = 0;
     for (int64_t i = 0; i < nq; ++i) {
-        const int64_t n_bid = st[(size_t) (i * kStepCount + kStepNBid)], width = st[(size_t) (i * kStepCount + kStepWidth)];
+        const int64_t n_bid = st[(size_t) (i * kStepCount + kStepNBid)];
+        const int64_t width = st[(size_t) (i * kStepCount + kStepWidth)];
         const int64_t last = std::min(n_bid, d.max_blocks - 1);
         for (int64_t k = 0; k <= last; ++k) {
             const size_t o = (size_t) (i * d.max_blocks + k);
@@ -297,10 +298,13 @@ int selftest(Data& d, cudaStream_t s) {
             bad += compare(d, p, nq, qsa_score_grid_blocks, s, "decode");
             ++cases;
         }
-    // prompt batches: 256 queries, the grid covering the batch's last block
-    const int64_t pos_pre[] = {0, 1900, 16384, 65536 - 100, 131072 - 256, 199936 - 1};
-    for (int64_t p : pos_pre) {
-        const int64_t nq = 256, last = p + nq - 1;
+    // prompt batches: 256 queries and a sub-chunk's last, shorter batch (11 go to the decode windows' kernel), the grid
+    // covering the batch's last block
+    const int64_t pos_pre[][2] = {{0, 256},          {1900, 256},        {16384, 256}, {65536 - 100, 256},
+                                  {131072 - 256, 256}, {199936 - 1, 256}, {5000, 12},   {70001, 37},
+                                  {131072 - 100, 100}, {199936 - 255, 255}, {9000, 11}};
+    for (const auto& pq : pos_pre) {
+        const int64_t p = pq[0], nq = pq[1], last = p + nq - 1;
         bad += compare(d, p, nq, (last + 1) / 4 + 1, s, "prompt");
         ++cases;
     }
@@ -341,7 +345,9 @@ void bench(Data& d, cudaStream_t s) {
                        {"decode 4 q, 16K cells", 16384, 4, false},
                        {"decode 4 q, 64K cells", 65536, 4, false},    {"decode 4 q, 131K cells", 131072, 4, false},
                        {"decode 1 q, 131K cells", 131072, 1, false},  {"prompt 256 q at 16K", 16384 - 256, 256, true},
-                       {"prompt 256 q at 64K", 65536 - 256, 256, true}, {"prompt 256 q at 131K", 131072 - 256, 256, true}};
+                       {"prompt 256 q at 64K", 65536 - 256, 256, true},
+                       {"prompt 256 q at 131K", 131072 - 256, 256, true},
+                       {"prompt 16 q at 131K", 131072 - 16, 16, true},  {"prompt 64 q at 131K", 131072 - 64, 64, true}};
     for (const Case& c : cs) {
         steps_from(d, c.pos, c.nq);
         const int64_t grid = c.prompt ? (c.pos + c.nq) / 4 + 1 : qsa_score_grid_blocks;
@@ -352,7 +358,9 @@ void bench(Data& d, cudaStream_t s) {
         const float ns = time_ms(s, reps, [&] {
             qsa_block_scores(d.pooled, d.dead, d.q, d.steps, c.nq, d.max_blocks, d.s, d.sc_new, s, grid);
         });
-        const float rt = time_ms(s, reps, [&] { ref::topk(d.sc_ref, d.steps, c.nq, d.max_blocks, d.cap, d.ids_ref, s); });
+        const float rt = time_ms(s, reps, [&] {
+            ref::topk(d.sc_ref, d.steps, c.nq, d.max_blocks, d.cap, d.ids_ref, s);
+        });
         const float nt = time_ms(s, reps, [&] {
             qsa_block_topk(d.sc_new, d.steps, c.nq, d.max_blocks, d.cap, d.s, d.ids_new, s);
         });
