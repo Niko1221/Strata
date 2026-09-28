@@ -1167,8 +1167,8 @@ def main() -> int:
             + (" (the one with the most VRAM)" if a.gpu is None else "") + " - choose another with --gpu N:")
         for x in gpus():
             say(f"         {x['index']}: {x['name']}, {x['vram_gb']:.0f} GB")
-    if int(gpu["arch"]) < 80:
-        fail("this GPU is older than the RTX 30 series (compute capability 8.0 is required)")
+    if int(gpu["arch"]) < 70:
+        fail("this GPU is older than Volta (compute capability 7.0 is required)")
     if driver_major(gpu) < MIN_DRIVER:
         fail(f"the NVIDIA driver is too old ({gpu['driver']}; {MIN_DRIVER} or newer is needed)",
              "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
@@ -1292,7 +1292,10 @@ def main() -> int:
                 ok(f"model files found in {models_dir}")
                 break
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
-    need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
+    resumed_bytes = sum(max((p.stat().st_size for p in (s, Path(str(s) + ".part")) if p.exists()), default=0)
+                        for s in shards)
+    remaining_download_gb = max(0.0, MODELS[model]["download_gb"] - resumed_bytes / 1e9)
+    need = (0 if a.gguf_dir or have_model else remaining_download_gb) + 8 + \
         (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")

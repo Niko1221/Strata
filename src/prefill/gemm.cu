@@ -18,6 +18,44 @@ void ck(cublasStatus_t s, const char* what) {
     }
 }
 
+__device__ __forceinline__ float bf16_to_float(uint16_t value) {
+    return __uint_as_float(static_cast<uint32_t>(value) << 16);
+}
+
+__global__ void bf16_gemm_fallback(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w,
+                                   float* __restrict__ y, int t_count, int n_count, int k_count, int ldy,
+                                   float beta) {
+    constexpr int tile_size = 16;
+    __shared__ float x_tile[tile_size][tile_size];
+    __shared__ float w_tile[tile_size][tile_size];
+    const int t = blockIdx.y * tile_size + threadIdx.y;
+    const int n = blockIdx.x * tile_size + threadIdx.x;
+    float sum = 0.0f;
+    for (int k0 = 0; k0 < k_count; k0 += tile_size) {
+        const int xk = k0 + threadIdx.x;
+        const int wk = k0 + threadIdx.y;
+        x_tile[threadIdx.y][threadIdx.x] =
+            t < t_count && xk < k_count ? bf16_to_float(x[(size_t) t * k_count + xk]) : 0.0f;
+        w_tile[threadIdx.y][threadIdx.x] =
+            n < n_count && wk < k_count ? bf16_to_float(w[(size_t) n * k_count + wk]) : 0.0f;
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < tile_size; ++k) sum = fmaf(x_tile[threadIdx.y][k], w_tile[threadIdx.x][k], sum);
+        __syncthreads();
+    }
+    if (t < t_count && n < n_count) {
+        float* out = y + (size_t) t * ldy + n;
+        *out = beta == 0.0f ? sum : fmaf(beta, *out, sum);
+    }
+}
+
+bool device_has_native_bf16() {
+    int ordinal = 0;
+    cudaDeviceProp properties{};
+    return cudaGetDevice(&ordinal) == cudaSuccess &&
+           cudaGetDeviceProperties(&properties, ordinal) == cudaSuccess && properties.major >= 8;
+}
+
 }  // namespace
 
 Gemm::~Gemm() {
@@ -39,6 +77,7 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
     workspace_ = workspace;
     cublasSetWorkspace(h, workspace_, ws_bytes);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
+    native_bf16_ = device_has_native_bf16();
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
     return true;
@@ -62,6 +101,7 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     if (cudaMalloc(&workspace_, ws) != cudaSuccess) { err = "prefill gemm: workspace"; return false; }
     cublasSetWorkspace(h, workspace_, ws);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
+    native_bf16_ = device_has_native_bf16();
     if (scratch_elems > 0 && cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2) != cudaSuccess) {
         err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB";
         return false;
@@ -75,6 +115,18 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
+    if (!native_bf16_) {
+        const dim3 threads(16, 16);
+        const dim3 blocks((unsigned) ((N + 15) / 16), (unsigned) ((T + 15) / 16));
+        bf16_gemm_fallback<<<blocks, threads, 0, (cudaStream_t) stream_>>>(
+            X, W, Y, (int) T, (int) N, (int) K, (int) ldy, beta);
+        const cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            std::fprintf(stderr, "prefill gemm: Volta BF16 fallback: %s\n", cudaGetErrorString(error));
+            std::exit(1);
+        }
+        return;
+    }
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,

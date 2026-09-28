@@ -28,9 +28,8 @@ struct DeviceInfo {
     int multi_processor_count = 0;
 };
 
-// Throws when there is no CUDA device.  The engine targets sm_120 specifically and must say so rather than
-// run slowly on something else: `CMakeLists.txt` already refuses to COMPILE for another architecture, and
-// this is the matching check at run time (a binary can be carried to a different machine).
+// Throws when there is no supported CUDA device.  CMake applies the same compute-capability 7.0 floor at
+// build time and omits optional kernels that require newer GPU instructions.
 DeviceInfo device_info(int ordinal = 0);
 
 class CudaError : public std::runtime_error {

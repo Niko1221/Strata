@@ -4,9 +4,8 @@
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
 # claim something the tree does not have, which is worse than an absent target.
 #
-# CUDA targets arrive in Phase 2 and this build REJECTS any architecture other than 120: the engine is
-# written against sm_120 (RTX 5000 / Blackwell) and silently building for an older arch would produce a
-# binary that runs and is wrong about its own performance, which is the worst of both outcomes.
+# CUDA builds require compute capability 7.0 or newer.  Optional kernels with newer ISA requirements are
+# selected below so a binary never contains instructions its target GPU cannot execute.
 cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.20 LANGUAGES CXX)
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
@@ -51,18 +50,31 @@ if(STRATA_ENABLE_CUDA)
   endif()
   foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
     string(REGEX REPLACE "-.*$" "" _base "${_a}")     # 120-real / 120-virtual are still 120
-    # Plan v0.3 P6: developed and measured on sm_120 (RTX 50); the kernels need sm_80 or newer (tf32 mma in
-    # the attention scorer, bf16 math), so RTX 30 (86) and RTX 40 (89) build too.  Older cards are refused.
+    # Most kernels use portable FP32 arithmetic and support Volta.  The optional native QSA score kernel below
+    # uses Ampere-only TF32 MMA instructions and is omitted when building for an older architecture.
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    if(_base LESS 80)
+    if(_base LESS 70)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 8.0 or newer (RTX 30 / 40 / 50 series), but "
+        "Strata needs an NVIDIA GPU of compute capability 7.0 or newer, but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.")
     endif()
   endforeach()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
+  set(STRATA_BUILD_NATIVE_QSA_SCORE ON)
+  foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    string(REGEX REPLACE "-.*$" "" _base "${_a}")
+    if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major" OR _base LESS 80)
+      set(STRATA_BUILD_NATIVE_QSA_SCORE OFF)
+    endif()
+  endforeach()
+  if(STRATA_BUILD_NATIVE_QSA_SCORE)
+    set(STRATA_NATIVE_QSA_SCORE_SOURCE src/kernels/cuda/native_qsa_score.cu)
+  else()
+    set(STRATA_NATIVE_QSA_SCORE_SOURCE)
+    message(STATUS "Strata: omitting Ampere-only native QSA score kernel")
+  endif()
 endif()
 
 # Warnings live on an INTERFACE target the project's own code links, NOT in add_compile_options: applied
@@ -112,8 +124,8 @@ add_executable(strata-plan src/plan/plan_main.cpp)
 target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- strata_core (CUDA, Phase 2) ------------------------------------------
-# Only built when CUDA is on, so the Phase 1 targets keep working on a machine with no toolkit.  The arch
-# guard above has already refused anything but sm_120 by the time this runs.
+# Only built when CUDA is on, so the Phase 1 targets keep working on a machine with no toolkit.  The
+# architecture guard and optional-source selection above have completed by the time this runs.
 if(STRATA_ENABLE_CUDA)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
@@ -181,7 +193,7 @@ if(STRATA_ENABLE_CUDA)
                           src/kernels/cuda/native_ple_postops.cu
                           src/kernels/cuda/native_flash_attn.cu
                           src/kernels/cuda/native_qsa_indexer.cu
-                          src/kernels/cuda/native_qsa_score.cu
+                          ${STRATA_NATIVE_QSA_SCORE_SOURCE}
                           src/kernels/cuda/ple.cu
                           src/kernels/cuda/kv_q8.cu
                           src/kernels/cuda/kv_stream.cu
@@ -213,13 +225,17 @@ if(STRATA_ENABLE_CUDA)
     src/kernels/cuda/native_ple_postops.cu
     src/kernels/cuda/native_flash_attn.cu
     src/kernels/cuda/native_qsa_indexer.cu
-    src/kernels/cuda/native_qsa_score.cu
+    ${STRATA_NATIVE_QSA_SCORE_SOURCE}
     PROPERTIES COMPILE_OPTIONS "--use_fast_math")
 
   set(STRATA_ORACLE_SOURCE_DIR "" CACHE PATH "Pinned llama.cpp source for independent CUDA parity tests")
   set(STRATA_ORACLE_BUILD_DIR "" CACHE PATH "Matching existing shared llama.cpp build")
   if(STRATA_ORACLE_SOURCE_DIR AND STRATA_ORACLE_BUILD_DIR)
-    foreach(parity IN ITEMS native_mmvq native_bf16 native_shared native_gr_norm native_moe native_gdn native_gr_postops native_router native_gdn_preprocess native_gdn_pipeline native_qsa native_rope native_ple_postops native_flash_attn native_qsa_indexer native_qsa_score)
+    set(_strata_parities native_mmvq native_bf16 native_shared native_gr_norm native_moe native_gdn native_gr_postops native_router native_gdn_preprocess native_gdn_pipeline native_qsa native_rope native_ple_postops native_flash_attn native_qsa_indexer)
+    if(STRATA_BUILD_NATIVE_QSA_SCORE)
+      list(APPEND _strata_parities native_qsa_score)
+    endif()
+    foreach(parity IN LISTS _strata_parities)
     add_executable(${parity}_parity bench/micro/${parity}_parity.cpp)
     target_include_directories(${parity}_parity PRIVATE
       "${STRATA_ORACLE_SOURCE_DIR}/ggml/include" ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

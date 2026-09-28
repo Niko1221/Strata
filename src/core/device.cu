@@ -30,7 +30,7 @@ DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
-        throw CudaError("no CUDA device is present; Strata targets sm_120 (RTX 5000 series)", -1);
+        throw CudaError("no CUDA device is present; Strata requires compute capability 7.0 or newer", -1);
     }
     if (ordinal < 0 || ordinal >= count) {
         throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
@@ -56,13 +56,12 @@ DeviceInfo device_info(int ordinal) {
     check(cudaDriverGetVersion(&d.driver_version), "cudaDriverGetVersion");
     check(cudaRuntimeGetVersion(&d.runtime_version), "cudaRuntimeGetVersion");
 
-    // The engine is written against sm_120.  Compiling for it is enforced by CMake; RUNNING on something else
-    // is caught here, because a binary can be carried to a machine with an older card and would otherwise
-    // silently take whatever path the driver chose.
-    if (d.cc_major != 12) {
+    // The portable kernel path supports Volta and newer.  CMake omits optional kernels whose ISA requires a
+    // newer architecture, but reject older devices here before they can execute unsupported code.
+    if (d.cc_major < 7) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
                             "." + std::to_string(d.cc_minor) +
-                            "; Strata targets sm_120 (RTX 5000 series / Blackwell) only",
+                            "; Strata requires compute capability 7.0 or newer",
                         -1);
     }
     return d;

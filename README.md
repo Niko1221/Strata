@@ -1,4 +1,19 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata-V100</h1>
+
+> **Tesla V100 fork.** This fork keeps Strata compatible with NVIDIA Volta (`sm_70`) and is validated on a
+> Tesla V100-PCIE-16GB, Ryzen 5 3600, 48 GB DDR4-3200, and CUDA 12.8. The installed Qwen3.8-Flash-Next Q2_0
+> configuration provides the model's full **262,144-token context**, Q4_0 KV cache, and MTP speculative decoding.
+> The bundled web chat and live performance monitor run at `http://100.80.155.43:8088/` over this machine's
+> Tailscale network. API access is protected by the key stored locally in `.strata-service.env`.
+> Hardware calibration selected a 0.28 PCIe share and 0.70 MTP draft floor, measuring **45.5 output tokens/s**.
+
+| V100 benchmark | 1K prompt | 8K prompt | 32K prompt | 128K prompt | 256K prompt |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Prompt processing | 291.0 tok/s | 457.4 tok/s | **464.6 tok/s** | 324.6 tok/s | 259.3 tok/s |
+| Output generation | 33.6 tok/s | 41.2 tok/s | 42.5 tok/s | **44.0 tok/s** | 40.3 tok/s |
+
+These are uncached API requests (`reused=0`) against engine 0.1.20; the 256K row used 256,073 input tokens.
+[Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
 one NVIDIA card (12-24 GB) + 64 GB of RAM · Windows or Linux · one click to install</p>
@@ -79,10 +94,11 @@ It needs an explicit packing conversion and is not an installer menu option.
 
 ## Install
 
-**You need:** an NVIDIA RTX 30, 40 or 50 card with 12 GB of VRAM or more, enough RAM for the size you pick (above),
-~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux. The only thing you
-install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
-App). Everything else - Python, the engine, the model - is set up for you.
+**You need:** an NVIDIA GPU with compute capability 7.0 or newer and 12 GB of VRAM or more, enough RAM for the size
+you pick (above), ~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux.
+RTX 30/40/50 cards use the ready-made engine; Volta cards such as the Tesla V100 are compiled locally with CUDA
+12.x. The only thing you install yourself is a current **NVIDIA driver**
+([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). Everything else is set up for you.
 
 **Windows**
 

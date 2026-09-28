@@ -12,6 +12,27 @@ New here? Start with the [README](../README.md) - it has everything you need to 
 
 ## Speed (measured)
 
+### Tesla V100 fork benchmark
+
+The Strata-V100 measurements use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5 3600
+(6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20. Runtime settings are a 262,144-token context,
+Q4_0 KV cache, automatic prefill, five CPU pool workers, a calibrated 0.28 PCIe fraction, and MTP speculative
+decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft floor 0.70). Each row is a separate, uncached
+OpenAI-compatible chat-completion request with a unique-prefix repeated-text prompt and 64 generated tokens.
+Prompt and decode timings come from the server's `/metrics` endpoint rather than client wall-clock estimates.
+
+| Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed | Expert-cache hit rate | Total request |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1K | 1,031 | 3.54 s | 291.0 tok/s | 33.6 tok/s | 81.7% | 5.4 s |
+| 8K | 7,431 | 16.25 s | 457.4 tok/s | 41.2 tok/s | 90.1% | 17.8 s |
+| 32K | 29,512 | 63.52 s | **464.6 tok/s** | 42.5 tok/s | 92.8% | 65.0 s |
+| 128K | 117,833 | 363.06 s | 324.6 tok/s | **44.0 tok/s** | 94.4% | 364.5 s |
+| Full context | 256,073 | 987.69 s | 259.3 tok/s | 40.3 tok/s | 96.2% | 989.4 s |
+
+The separate hardware calibrator generated 256 tokens while tuning and measured **45.5 tok/s** at the selected
+0.28 PCIe share and 0.70 draft floor. The table above deliberately includes prompt processing, uses uncached
+prefixes (`reused=0` for every row), and reaches within 6,071 tokens of the configured 262,144-token limit.
+
 RTX 5070 **12 GB**, Ryzen 5 7600 (6 cores), 64 GB DDR5-5200, Windows, engine 0.1.14 with the settings setup writes
 (`--prefill auto`, 8-bit KV above 4K, KV streaming from 64K). One code-agent prompt per length, 256 generated tokens,
 MTP speculative decoding on. "262K" is the model's full context window (a 259,943-token prompt). The IQ2_XS row was
@@ -148,7 +169,7 @@ You need **only an NVIDIA driver** (version 580 or newer; update it with the NVI
 
 | | |
 | --- | --- |
-| GPU | NVIDIA **RTX 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070; RTX 30/40 are untested. |
+| GPU | NVIDIA compute capability **7.0 or newer**, **12 GB VRAM or more** (8 GB runs, slowly). RTX 30/40/50 use the ready-made engine. Volta cards such as the 16 GB Tesla V100 compile locally with CUDA 12.x; Ampere-only optional kernels are disabled and prompt GEMM uses a portable FP32 fallback. |
 | RAM | **64 GB** recommended (see the table above). |
 | CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. |
 | Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. An NVMe SSD is strongly recommended. |
@@ -163,6 +184,7 @@ Python 3.12 if you have none (for your user account, no admin), a private Python
 (from pip, ~0.4 GB), the ready-made Strata engine for RTX 30/40/50, the model and the MTP draft layer. If no
 ready-made engine fits your PC, it offers to install the build tools (Visual Studio Build Tools + CUDA Toolkit on
 Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GPU (asks first; 20-40 minutes once).
+CUDA 12.x is required when targeting Volta because CUDA 13 no longer emits sm_70 code.
 
 ---
 
