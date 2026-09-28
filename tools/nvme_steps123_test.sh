@@ -1,0 +1,131 @@
+#!/bin/bash
+# tools/nvme_steps123_test.sh - end-to-end test of the automatic NVMe cold tier (design doc Steps 1-3).
+#   Step 1: every DONE cascades the consumed session to --kv-nvme DIR synchronously and idempotently
+#           (a growing conversation stays ONE file: the previous dump is superseded).
+#   Step 2: after a process restart, a request whose prompt starts with a stored session is PROMOTED
+#           automatically (no client call): "nvme promote: resumed L tokens" + RESUME L + a fast prompt read.
+#   Step 3: --kv-nvme-max caps the store; the least recently stored snapshots are evicted.
+set -u
+cd /local/strata
+E=build/strata
+OUT=/tmp/nvme-s123
+STORE=$OUT/store
+rm -rf "$OUT"; mkdir -p "$OUT"
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+
+ARGS="--serve --pack packs/iq3_xxs
+ --native models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf
+ --ple-gguf models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
+ --expert-profile data/expert-profile.bin --expert-cache auto --prefill 2048
+ --spec 4 --spec-min-p 0.5 --mtp mtp/rt --max-context 131072 --kv int8
+ --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0"
+ARGS=$(echo "$ARGS" | tr '\n' ' ')
+
+# six distinct ~3900-token chat prompts + three short tails, via the pack's tokenizer
+.venv/bin/python - "$OUT" <<'PYEOF'
+import json, sys
+sys.path.insert(0, "tools")
+import strata_tokenizer as ST
+tp = "packs/iq3_xxs/tokenizer"
+vocab = json.load(open(tp + "/vocab.json"))
+tokens = [None] * len(vocab)
+for t, i in vocab.items(): tokens[i] = t
+tok = ST.Tokenizer(tokens, open(tp + "/merges.txt").read().split("\n"),
+                   json.load(open(tp + "/token_type.json")))
+filler = ("Describe the storm, the ships, the lamp room, the keeper's routine, the logbook, the rocks, "
+          "the fog bell, the supply boat, and the winter isolation in vivid detail. ") * 200
+for i, subj in enumerate(["a lighthouse keeper", "a clockmaker", "a beekeeper",
+                          "a cartographer", "a bridge engineer", "a tea farmer"], 1):
+    ids = tok.encode(f"<|im_start|>user\nWrite a long story about {subj}. " + filler,
+                     parse_special=True)[:3900] + tok.encode("<|im_end|>\n<|im_start|>assistant\n", parse_special=True)
+    open(f"{sys.argv[1]}/p{i}.txt", "w").write(",".join(map(str, ids)))
+for i, t in enumerate(["<|im_end|>\n<|im_start|>user\nWhat happened next? Continue the story.\n<|im_start|>assistant\n",
+                       "<|im_end|>\n<|im_start|>user\nAnd the winter? Continue.\n<|im_start|>assistant\n",
+                       "<|im_end|>\n<|im_start|>user\nFinish the tale.\n<|im_start|>assistant\n"], 1):
+    open(f"{sys.argv[1]}/t{i}.txt", "w").write(",".join(map(str, tok.encode(t, parse_special=True))))
+print("prompts written", file=sys.stderr)
+PYEOF
+
+P1=$(cat "$OUT/p1.txt"); T1=$(cat "$OUT/t1.txt"); T2=$(cat "$OUT/t2.txt"); T3=$(cat "$OUT/t3.txt")
+
+wait_done() { # $1 outfile, $2 how many DONE lines
+  for _ in $(seq 1 300); do
+    local n; n=$(grep -c '^DONE' "$1" 2>/dev/null); n=${n:-0}
+    [ "$n" -ge "$2" ] && return 0
+    sleep 1
+  done
+  echo "TIMEOUT waiting for DONE #$2 in $1"; return 1
+}
+snap_ids() { # $1 snapshot file: prints L, writes the comma ids to $OUT/full.txt
+  .venv/bin/python -c 'import struct,sys; f=open(sys.argv[1],"rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(104); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[2]+"/full.txt","w").write(",".join(map(str,ids))); print(L)' "$1" "$OUT"
+}
+fsize() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+echo "== process 1: Step 1 (automatic cascade + supersede, same process) =="
+FIFO=$OUT/in; mkfifo "$FIFO"
+$E $ARGS --kv-nvme $STORE < "$FIFO" > "$OUT/proc1.out" 2> "$OUT/proc1.err" &
+EPID=$!
+exec 3> "$FIFO"
+echo "GEN 200 $P1" >&3
+wait_done "$OUT/proc1.out" 1 || { kill $EPID; exit 1; }
+S1=$(fsize "$STORE"/kv-*.bin)
+L1=$(snap_ids "$STORE"/kv-*.bin | tail -1)
+FULL1=$(cat "$OUT/full.txt")
+echo "snapshot after r1: L=$L1 size=$S1"
+echo "GEN 50 $FULL1,$T1" >&3
+wait_done "$OUT/proc1.out" 2 || { kill $EPID; exit 1; }
+L2=$(snap_ids "$STORE"/kv-*.bin | tail -1)
+FULL2=$(cat "$OUT/full.txt")
+S2=$(fsize "$STORE"/kv-*.bin)
+echo "GEN 50 $FULL2,$T2" >&3
+wait_done "$OUT/proc1.out" 3 || { kill $EPID; exit 1; }
+L3=$(snap_ids "$STORE"/kv-*.bin | tail -1)
+FULL3=$(cat "$OUT/full.txt")
+S3=$(fsize "$STORE"/kv-*.bin)
+echo "QUIT" >&3
+exec 3>&-
+wait $EPID
+N1=$(ls "$STORE"/kv-*.bin 2>/dev/null | wc -l)
+echo "files after process 1: $N1 (want 1); L=$L1->$L2->$L3 sizes=$S1->$S2->$S3 (want growing)"
+grep -E "NVMe KV store|kv-nvme dump failed" "$OUT/proc1.err" | head -3
+
+echo "== process 2: Step 2 (promote after restart, no client call) =="
+P2=$(cat "$OUT/p2.txt"); P3=$(cat "$OUT/p3.txt")
+{ echo "GEN 50 $FULL3,$T3"; sleep 3; echo "GEN 50 $P2"; sleep 3; echo "GEN 50 $P3"; sleep 3; echo "QUIT"; } | \
+  timeout 900 $E $ARGS --kv-nvme $STORE > "$OUT/proc2.out" 2> "$OUT/proc2.err"
+echo "proc2 rc=$?"
+grep -E "NVMe KV store|nvme promote" "$OUT/proc2.err" | head -4
+grep "^RESUME" "$OUT/proc2.out" | head -3
+PROM_MS=$(grep -oE "reused \+ [0-9]+ read in [0-9]+ ms" "$OUT/proc2.err" | head -1)
+echo "promoted request read: $PROM_MS"
+
+echo "== process 3: Step 3 (byte cap evicts the oldest) =="
+P4=$(cat "$OUT/p4.txt"); P5=$(cat "$OUT/p5.txt"); P6=$(cat "$OUT/p6.txt")
+{ echo "GEN 50 $P4"; sleep 3; echo "GEN 50 $P5"; sleep 3; echo "GEN 50 $P6"; sleep 3; echo "QUIT"; } | \
+  timeout 900 $E $ARGS --kv-nvme $STORE --kv-nvme-max 1 > "$OUT/proc3.out" 2> "$OUT/proc3.err"
+echo "proc3 rc=$?"
+N3=$(ls "$STORE"/kv-*.bin 2>/dev/null | wc -l)
+echo "files after the capped process: $N3"
+{ echo "GEN 1 $P6"; sleep 3; echo "QUIT"; } | \
+  timeout 900 $E $ARGS --kv-nvme $STORE > "$OUT/proc4.out" 2> "$OUT/proc4.err"
+grep "NVMe KV store" "$OUT/proc4.err" | head -1
+
+echo "== VERDICT =="
+FAIL=0
+[ "$N1" = "1" ] || { echo "FAIL step1: expected 1 file after process 1, got $N1"; FAIL=1; }
+if [ -n "$S1" ] && [ -n "$S3" ] && [ "$S3" -gt "$S1" ]; then echo "PASS step1 supersede: one growing file ($S1 -> $S3 bytes)"
+else echo "FAIL step1 supersede: sizes r1=$S1 r3=$S3"; FAIL=1; fi
+grep -q "nvme promote: resumed" "$OUT/proc2.err" || { echo "FAIL step2: no promote happened"; FAIL=1; }
+RES=$(grep -o "^RESUME [0-9]*" "$OUT/proc2.out" | head -1)
+[ "$RES" = "RESUME $L3" ] || { echo "FAIL step2: first resume '$RES' != snapshot L $L3"; FAIL=1; }
+FR=$(echo "$PROM_MS" | sed -E 's/.*reused \+ ([0-9]+) read.*/\1/')
+if [ -n "$FR" ] && [ "$FR" -lt 100 ]; then echo "PASS step2 ttft: only $FR fresh tokens read"; else echo "FAIL step2 ttft: fresh read = '$FR'"; FAIL=1; fi
+if [ "$N3" -lt 7 ]; then echo "PASS step3 cap: $N3 files remain (evicted)"; else echo "FAIL step3: cap did not evict ($N3 files)"; FAIL=1; fi
+GB=$(grep "NVMe KV store" "$OUT/proc4.err" | grep -oE "[0-9.]+ GiB" | head -1 | cut -d' ' -f1)
+if [ -n "$GB" ] && .venv/bin/python -c "import sys; sys.exit(0 if float('$GB') <= 1.05 else 1)"; then
+  echo "PASS step3 cap bytes: $GB GiB <= cap"
+else
+  echo "FAIL step3 cap bytes: '$GB' GiB"; FAIL=1
+fi
+if grep -h "^ERR" "$OUT"/proc*.out >/dev/null 2>&1; then echo "FAIL: engine printed ERR"; FAIL=1; fi
+[ "$FAIL" = "0" ] && echo "ALL PASS" || echo "SOME FAILURES"
