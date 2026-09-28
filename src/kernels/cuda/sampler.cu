@@ -109,7 +109,9 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     // the counts - and therefore every sampled value - are exactly what the per-candidate scan produced.
     extern __shared__ unsigned int penal_bits[];
     const int bits_words = (int) ((n_vocab + 31) / 32);
-    const bool use_bits = hrow != nullptr && bits_words > 0;
+    // The gate needs a NON-EMPTY WINDOW (`hlen > 0`): the launch sizes the shared bitmap only when penalties
+    // are on, so a caller handing over a history buffer with `penalty_last_n == 0` must not touch it.
+    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
     if (use_bits) {
         for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
         __syncthreads();
@@ -188,10 +190,12 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
         hrow += history_len - hlen;          // the window is the TAIL
     }
 
-    // the membership bitmap, as in `sampler_greedy_kernel` - see the cost note there
+    // the membership bitmap, as in `sampler_greedy_kernel` - see the cost note there.  The gate needs an
+    // EMPTY WINDOW too: the launch sizes the bitmap only when penalties are on, so a caller that hands over
+    // a stale history buffer with `penalty_last_n == 0` must not touch it.
     extern __shared__ unsigned int penal_bits[];
     const int bits_words = (int) ((n_vocab + 31) / 32);
-    const bool use_bits = hrow != nullptr && bits_words > 0;
+    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
     if (use_bits) {
         for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
         __syncthreads();
