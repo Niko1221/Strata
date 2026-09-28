@@ -123,7 +123,7 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
 
 /// Read a snapshot back into `ss` (and the drafter's state), and say WHICH KIND of failure happened if it did.
 ///
-/// THE FAILURE CONTRACT (collision C7, docs/nvme-kv-cache-design.md §4.6).  The return type is the SHARED CORE's
+/// THE FAILURE CONTRACT (collision C7, docs/nvme-kv-cache-design.md §5).  The return type is the SHARED CORE's
 /// `ConversationRestore`, not a `bool` and not a second enum: the RAM tier and the disk tier report a failed
 /// restore with one vocabulary, so one serve-loop rule can cover both.  What the two values mean HERE:
 ///

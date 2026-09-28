@@ -162,6 +162,65 @@ On a failed promote we currently `kvstore.drop()` + `resume = 0` + `session_zero
 recovery needs its own proof that the CUDA context remains usable". Our fallback is only defensible if
 we can prove it.
 
+**Settled in step 5: their rule, because our fallback never ran.**  The claim that needed proving could not be
+proved, and the claim that was being relied on turned out to be false.  What a failed promote actually did:
+`resume = 0` -> `session_zero` (`generate.cpp:3025-3026`) -> `qsa_state_zero` (`layer.cpp:657`) -> `kv_stream_reset`
+(`layer.cpp:676`) -> `check("reset")` (`kv_stream.cu:199-202`) -> **`std::exit(1)`**, because `nvme_restore`
+handled a copy failure without consuming the CUDA error, and `cudaGetLastError()` hands that error to the next
+caller.  The process died inside the fallback's own first step, printing the *restore's* error under the label
+"reset".  That is neither our documented recovery nor their fatal rule: it is an unintended exit at an unrelated
+point with a misattributed diagnosis, and `pinned.cu:170-183` is this tree having already paid for the same trap
+once.  The fallback only looked like it worked because every recorded test corrupts a **file** - a refusal, which
+never reaches the transfer pass - and none injects a failing **copy**.
+
+**The contract, in one enum both tiers use** (`strata::core::ConversationRestore`, which `nvme_restore` and
+`KvNvmeStore::restore` now return instead of a `bool`), written out in `docs/nvme-kv-cache-design.md` §5:
+
+| class | what it covers | consequence | operator sees |
+|---|---|---|---|
+| `invalid` | every refusal **before the apply pass**: magic, format version, geometry, header sizes, truncation, the layout walk, the payload digest, a live array too small, a null target buffer | **recoverable** - drop the entry, `resume = 0`, full re-read | `nvme promote refused (<reason>); reading the prompt instead`, then `RESUME 0` |
+| `transfer_failed` | a `cudaMemcpy` in the apply pass or in the spare-row re-publish, or either `cudaDeviceSynchronize` | **fatal** - `ERR …` + exit 1; the snapshot is left on disk | `nvme promote FAILED (transfer): <segment, bytes>` + `not attempting a clean reset` |
+| stale-format store | a directory of snapshots this build cannot read, skipped at scan | **recoverable**, before any transfer, with an operator action | `N snapshot(s) of format version 2 in DIR: … re-dump them with the binary that wrote them; to stop the skip, remove them and let the store rebuild` |
+
+Why the middle row is fatal and the outer two are not, as evidence rather than preference:
+
+- **The recoverable rows are provably untouched.**  `kv_nvme_host_test` asserts each pre-apply refusal makes zero
+  `cudaMemcpy` calls and zero CUDA calls of any kind, leaves every session buffer at a poison sentinel, hands the
+  caller no ids/imgs, and leaves no CUDA error pending.  The clean path has nothing to undo.
+- **The fatal row is half-applied by construction.**  The apply pass is a loop; the fixture injects a failure at a
+  chosen copy and reports what landed - fail the second device copy and the GDN state is the snapshot's while the
+  PLE history is not; fail the last one and every segment landed while `pooled[L / idx_block]` still holds the
+  stale value and `dead` holds the value it must become, i.e. a session that looks restored and is one invariant
+  short.  The shared core's own fixture asserts the same shape for its restore
+  (`conversation_validation_test.cpp:167-169`), so this is not a difference between the tiers - it is the same
+  exposure, named.
+- **The stale-store row is not swept into the fatal rule.**  A v2 store is skipped at scan: `open()` succeeds, 0
+  entries become promotable, 0 bytes count against the cap, the files stay on disk, and the request re-prefills -
+  asserted against the same three files at version 3, which do promote.  113 GB of v2 snapshots is either a corpus
+  to re-dump with the binary that wrote it or a store to delete and let refill; what it must not be is ambiguous.
+- **The one proof this tier can produce today** is its own final `cudaDeviceSynchronize()`: a success there means
+  the device answered after the last write.  That is why `KvNvmeStore::restore`'s stale-index case (the file
+  applied cleanly but no longer matches its entry) is `invalid` while a mid-apply failure is not.
+
+**What a future clean reset must prove before it may exist** (their sentence, made concrete; design doc §5.4):
+on device, that a real failed host-to-device `cudaMemcpy` leaves a **non-sticky** context error; that the captured
+graphs - captured once, before the serve loop (`session.cpp:164`, `graph.cpp:106`) - survive replay after one; and
+that the pinned arena and the streamed page table are back inside the residency contract.  The mechanism would be
+a **device-usability probe** (consume the error, sync, a bounded write-and-read-back through a scratch device
+buffer) run before the tier reports `transfer_failed`.  **Not implemented, and unvalidated on this machine**: the
+GPU holds a live ~24 GB engine and the host fixture's copies are `memcpy`.  An unvalidated guard in front of an
+unvalidated recovery is worse than a clean exit.
+
+**Why stopping is recovery, not defeat.**  Under `serve/server.py` the engine runs behind a supervisor that
+notices a dead engine and starts it again on the next request (`serve/server.py:686-695`).  A new process is a new
+CUDA context, a new pinned arena and new captured graphs - precisely the state the in-process reset could not
+prove it reached.  The fatal rule is recovery by the only route that is actually proven here.
+
+**Fixed on the way, because it is the same trap**: every CUDA failure path in the tier now consumes the error it
+handled (`kv_nvme.cpp`, `consume_cuda_error`), the dump side included.  That does not make a transfer failure
+recoverable - a sticky context error comes straight back from the next call - it makes the REPORT true, and it is
+the floor below which no clean reset is worth discussing.
+
 ### C8 - two copies of the state hash
 
 We refactored `STATE_HASH` into `state_hash_line()` so `STRATA_NVME_HASH` can print it immediately
@@ -305,6 +364,8 @@ They ask: *"how #52 would consume the snapshot without unbounded promotion stagi
 4. Add the missing fixtures (C2, C3, C8): non-block-aligned turn boundary, distinct `idx_dead`,
    `block_pos` at the boundary, one shared state-hash formula.
 5. Reconcile the failure contract (C7): prove the clean-reset fallback or adopt their fatal rule.
+   **Done in step 5 - and the proof came out the other way: the fallback never ran, so their fatal rule is
+   adopted for transfer failures, with the pre-apply refusals and a stale-format store kept recoverable.**
 
 ## Where step 2 stands, and what step 3 inherits
 
@@ -408,6 +469,61 @@ version they now derive from the header (the scripts' recorded results are the v
 session continues bit-exactly from a boundary snapshot rather than merely restoring; what `kv_stream_reset` does to
 the streamed layers' slots after a restore; and whether the existing v2 snapshots in `/local/strata/kvstore` are
 re-dumped acceptably by a v3-writing binary.
+
+## Where step 5 stands
+
+| commit | what it settled |
+|---|---|
+| `51620f1` | **C7 part 1** - `nvme_restore` / `KvNvmeStore::restore` return the shared core's `ConversationRestore` instead of a `bool`; the apply pass now opens with a `cudaDeviceSynchronize()` (as `conversation_snapshot.cpp` does); every CUDA failure path consumes the error it handled and names the segment that failed; `kv_nvme_host_test` 113 -> 247 checks, with the CUDA last-error state modelled and copy / sync failures injected at a chosen call number |
+| `ddfa219` | **C7 part 2** - the serve loop branches on the class: `transfer_failed` is `ERR …` + exit 1 (no drop, no re-prefill), `invalid` keeps drop + `resume = 0` + full re-read; the startup `--nvme-restore` message names which class it was; the stale-store scan message states both operator actions |
+| (this commit) | the contract written into `docs/nvme-kv-cache-design.md` §5 (new section; Test record / limitations / prior art renumbered to §6 / §7 / §8) and into the C7 section above |
+
+**The result of this step is a negative one, and it is stated that way on purpose**: the clean-reset fallback the
+design document had been describing since §3 has never run.  Every failing restore aborted inside the fallback's
+own first step - `session_zero` -> `qsa_state_zero` -> `kv_stream_reset` (`layer.cpp:676`) -> `check("reset")`
+(`kv_stream.cu:199-202`) -> `std::exit(1)` - with the restore's error printed under the label "reset".  Nobody
+noticed because no test had ever injected a failing copy: every recorded corruption test corrupts a **file**, and
+a file refusal never reaches the transfer pass.
+
+**What the fixture now proves rather than argues** (`src/platform/kv_nvme_host_test.cpp`, 249 checks: 18 refusals,
+6 injected transfer failures):
+
+- 9 pre-apply refusals - `invalid`, **zero `cudaMemcpy` calls and zero CUDA calls of any kind**, every session
+  buffer still at the poison sentinel, no ids/imgs handed to the caller, no CUDA error left pending;
+- 6 transfer failures - `transfer_failed`, no error left pending, and the session shown to be half-applied: fail
+  the 2nd device copy and the GDN state is the snapshot's while the PLE history is not; fail the 5th and layer 0
+  landed while layer 1 did not; fail the 12th (the last spare-row re-publish) and every segment landed while
+  `pooled[L / idx_block]` still holds the snapshot's stale value and `dead` holds the value it must become;
+- the two syncs - a failure of the one that opens the apply pass writes nothing, a failure of the one that closes
+  it leaves every write unconfirmed;
+- the store reports the same classes, and its own stale-index case is asserted to be the recoverable one with the
+  evidence spelled out (12 copies, 2 syncs, the new snapshot's last token in the PLE window);
+- a failed dump leaves no entry, no partial file, and the session byte-identical - the dump side needs no failure
+  contract because it only reads;
+- a store of version-2 files: `open()` succeeds, 0 entries, 0 bytes against the cap, the operator is told the
+  version found and both options, the files stay on disk, and the request that promotes from those same files at
+  version 3 gets nothing.
+
+**Mutation-tested** (each built, run, reverted; tree clean): dropping `consume_cuda_error()` -> "left a CUDA error
+pending (invalid argument) for the next caller to misread"; dropping the pre-apply sync -> the pre-apply case
+reports the post-apply message; classifying a transfer failure as `invalid` (today's behaviour) -> "the first copy
+failing is a transfer failure".
+
+**What ran here** (no model, no GPU; the engine's 23.9 GiB context untouched throughout):
+
+| check | result |
+|---|---|
+| `bash /tmp/converge-build.sh` | BUILD_OK after every commit |
+| `ctest -R 'conversation\|kv_nvme'` | 5/5 pass: `kv_nvme_host_test` 249 checks, `conversation_cache_test` 35, `conversation_memory_test` 23, `conversation_validation_test` 780, `conversation_transfer_test` 1020 |
+| `python -m unittest discover -s serve` | 23 tests OK |
+| three mutations of the tier | each caught, listed above |
+
+**Still unverified, and now sharper than before.**  The GPU oracles (`tools/nvme_p0_test.sh`,
+`tools/nvme_steps123_test.sh`) have never been run against the v3 header or the new hash field set - and the P0
+corruption negative control now has a class to check: a corrupt file must report `nvme promote refused`, not
+`FAILED (transfer)`.  What `kv_stream_reset` does to a real page table after a restore is still unobserved.  And
+the one question this step could not answer at all - what a real failed host-to-device `cudaMemcpy` does to the
+CUDA context - is the precondition for ever adding the clean reset §5.4 describes.
 
 ## Hard constraints for this branch
 
