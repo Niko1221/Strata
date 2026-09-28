@@ -132,6 +132,25 @@ inline int64_t qsa_selection_width(int64_t n_kv, const QsaShapes& s) {
     return n_kv < w ? n_kv : w;
 }
 
+/// THE ROWS OF `idx_pooled` A PREFIX OF `n_kv` CELLS OWNS: the completed block rows [0, n_kv/idx_block) PLUS the
+/// SPARE row at `n_kv / idx_block`.  One formula, stated here because three places need the same number
+/// (docs/nvme-kv-cache-convergence.md C4 and C8): the shared core's snapshot sizing
+/// (`conversation_snapshot.cpp: layout`), the NVMe envelope's pooled segment (`kv_nvme.cpp:
+/// snapshot_pooled_rows`), and the STRATA_STATE_HASH fingerprint's pooled span (`generate.cpp: state_hash_line`).
+///
+/// The spare row is not padding.  The writers keep `pooled[n_bid] == dead` at every block completion
+/// (qsa.cu:213, native_qsa_indexer.cu:93), and two of the three scorers read row `n_bid` straight out of the pool
+/// (qsa.cu:260, native_qsa_score.cu:74), so a count that stopped at the completed rows would both miss a byte the
+/// next token scores and leave the hash blind to the row a restore has to re-publish (C3).
+///
+/// The row at `n_bid + 1` is deliberately NOT included: the writer touches it when a block completes, so a stale
+/// value there is overwritten before any reader can reach it (every pooled reader gates on `n_bid`).  The
+/// ALLOCATION is one row wider still - `max_cells / idx_block + 2` (`layer.cpp: kv_plan`) - so this count always
+/// fits the array a live engine owns.
+inline constexpr int64_t qsa_pooled_rows(int64_t n_kv, const QsaShapes& s) {
+    return n_kv > 0 ? n_kv / s.idx_block + 1 : 0;
+}
+
 /// THE PER-TOKEN VALUES EVERY QSA KERNEL NEEDS, IN DEVICE MEMORY.
 ///
 /// This exists so the QSA layer can be a CUDA graph.  A graph bakes kernel ARGUMENTS in at capture time, so any

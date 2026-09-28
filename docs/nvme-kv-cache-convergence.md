@@ -168,6 +168,29 @@ after a restore (that is our bit-exactness oracle). They patch the inline versio
 `tools/nvme_p0_test.sh` compares the dumper's DONE hash with the post-restore hash, so both tiers must
 share one formula or their evidence and ours stop being comparable.
 
+**Settled in step 4: their field set, in our one function.**  `state_hash_line()` is the only copy in this tree and
+both call sites (the DONE line, the `STRATA_NVME_HASH` line) already go through it; what changed is that it now
+hashes what their `main()` hashes:
+
+| field | before (ours) | now (theirs) |
+|---|---|---|
+| `dead` | not hashed | `idx_dead` per QSA layer, printed as `dead=%016llx` |
+| pooled span | `L / idx_block` rows | `qsa_pooled_rows(L)` = `L / idx_block + 1` rows |
+| stale clamp | `ss.qsa_states[0].max_cells` | `ss.max_cells` |
+| PLE | `z.ple` bytes even with no history | `z.ple` only when `ss.ple_hist` exists |
+| fp16 KV | read the int8 array names (null in fp16 mode) | the fp16 pools at `head_dim * 2`, no scale arrays |
+| `STATE_HASH_GDN` | divided by `n_gdn_layers()` unguarded | guarded on `n_gdn_layers() > 0` |
+
+**The pooled span, decided: `[0, L / idx_block + 1)`.**  The row at `L / idx_block` is the one C3 re-publishes, and
+the fingerprint exists to compare a dumped session with a restored one; a span that stopped at the completed rows
+could not see the difference between a restore that re-publishes the spare row and one that leaves it stale, which
+makes it a weak oracle for the very fix C8 is being used to prove.  It is also the row the file carries (C4), so
+the DONE-time live array and the restored array now hold the same set of rows.  The span is not a second formula:
+`state_hash_line`, `kv_nvme.cpp: snapshot_pooled_rows` and the shared core's `conversation_snapshot.cpp: layout`
+all read `strata::kernels::qsa_pooled_rows`, and `kv_nvme_host_test` asserts that count, that the file's pooled
+segment is exactly that many rows, and that the fingerprint's span is one row wider than the completed blocks (the
+row at `L / idx_block + 1` is outside it, as C4 decided).
+
 ### C9 - they forbid what our file format currently does
 
 Their boundary says the disk adapter must **not** serialize C++ structs, pointers or native vector
