@@ -208,7 +208,13 @@ __global__ void doorbell_ring_kernel(uint32_t* seq) {
 
 __global__ void doorbell_wait_kernel(const volatile uint32_t* flag, const volatile uint32_t* seq) {
     const uint32_t want = *seq;
+#if __CUDA_ARCH__ >= 700
     while (*flag != want) __nanosleep(100);
+#else
+    // Pascal port: __nanosleep landed with Volta (sm_70); a fenced bare spin is the pre-sm_70
+    // equivalent here - one thread, doorbell-waiting on host-published memory.
+    while (*flag != want) __threadfence();
+#endif
     __threadfence_system();
 }
 

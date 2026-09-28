@@ -183,12 +183,12 @@ bool ple_prefetch_enabled();
 // P2.S4 asks for `madvise(MADV_RANDOM)` on the mapping, and on Linux that is exactly right: a token gathers
 // 16 rows scattered over 28.8 GB, so read-ahead is pure waste and would evict useful pages.
 //
-// THERE IS NO LINUX, SO THERE IS NO MADV_RANDOM HERE.  Windows has no equivalent of the advice - the closest
-// is `FILE_FLAG_RANDOM_ACCESS` at CreateFile time, which suppresses the cache-manager's read-ahead for the
-// whole handle, and `PrefetchVirtualMemory` for the positive case.  `GgufFile` opens with neither, so this
-// build gets the DEFAULT sequential read-ahead on a random access pattern.  Saying so is the point: a
-// comment claiming MADV_RANDOM here would be a comment about code that does not run.  On Linux the advice
-// belongs in `GgufFile::open`, which this module does not own.
+// LINUX: `GgufFile::open` (artifact/gguf_reader.hpp) issues `madvise(MADV_RANDOM)` on the mapping since the
+// Pascal port.  WINDOWS has no equivalent of the advice - the closest is `FILE_FLAG_RANDOM_ACCESS` at
+// CreateFile time, which suppresses the cache-manager's read-ahead for the whole handle, and
+// `PrefetchVirtualMemory` for the positive case.  `GgufFile` opens with neither, so the Windows build gets
+// the DEFAULT sequential read-ahead on a random access pattern.  Saying so is the point: a comment claiming
+// MADV_RANDOM here would be a comment about code that does not run.
 // ------------------------------------------------------------------------------------------------------
 
 }  // namespace strata::kernels

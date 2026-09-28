@@ -387,6 +387,9 @@ private:
         size_ = (uint64_t)st.st_size;
         void* p = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0);
         if (p == MAP_FAILED) throw std::runtime_error("mmap failed");
+#ifdef MADV_RANDOM
+        madvise(p, size_, MADV_RANDOM);  // random gather, not sequential: see kernels/ngram.hpp
+#endif
         base_ = (const uint8_t*)p;
 #endif
         parse();

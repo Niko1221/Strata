@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace strata::prefill {
 
@@ -44,6 +45,14 @@ public:
     void* stream() const { return stream_; }
 
 private:
+    // Pre-Ampere (Pascal sm_61) fallback state: cuBLAS has no BF16 GEMM below sm_80, so `bf16()`
+    // converts operands to FP32 (a lossless 16-bit shift per element) and runs the FP32 GEMM.  The
+    // converted weight is cached per device pointer (weights are resident and their pointers stable).
+    struct F32Entry { float* buf = nullptr; int64_t elems = 0; };
+    std::unordered_map<const void*, F32Entry> w32_cache_;
+    float* x32_ = nullptr;
+    int64_t x32_elems_ = 0;
+
     void* handle_ = nullptr;
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;
