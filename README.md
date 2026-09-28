@@ -122,6 +122,30 @@ the same way - nothing big is downloaded again.
 
 **Linux:** run `./setup.sh` - same questions, same result.
 
+**Docker (Linux):** the same idea, in a container.
+
+1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+   and a driver **580 or newer** (CUDA 13.0).
+2. Build (this compiles the engine into the image, so the container never compiles):
+   `docker build -t strata .`
+   `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
+   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
+   set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
+   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
+
+   The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
+   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
+   Only the model files, the prepared pack, the MTP layer and the install config live in the
+   `strata-data` volume; the engine is part of the image. Switching between models already on the
+   volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
+   `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
+   api_key), since those are recorded in its config.
+   Don't set a memory limit on the container: Strata loads 32-62 GB into RAM.
+   The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
+   to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
+   healthy once the model is loaded.
+
 ## Using it
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
