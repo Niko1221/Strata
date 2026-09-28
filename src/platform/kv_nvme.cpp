@@ -112,9 +112,14 @@ int64_t file_mtime(const std::string& path) {
 
 }  // namespace
 
-bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
-               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-               const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err) {
+bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
+                  const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
+                  const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, NvmeRunning running,
+                  std::string& err) {
+    // L is the SNAPSHOT length: for a turn-boundary snapshot the running state comes from the caller's blobs
+    // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
+    // the generation that followed), and the per-token scratch (block_pos) rides along harmlessly.
+    const bool at_boundary = running.gdn != nullptr;
     const Sizes z = sizes_of(g);
     const int64_t L = (int64_t) ids.size();
     if (L < 1) { err = "nvme_dump: empty session"; return false; }
@@ -146,8 +151,15 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
         if (bytes && cudaMemcpy(tmp.data(), dptr, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
         return wr(f, tmp.data(), bytes);
     };
-    if (!dump_dev(ss.gdn_state, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
-    if (ss.ple_hist && !dump_dev(ss.ple_hist, z.ple)) { err = "nvme_dump: ple"; std::fclose(f); return false; }
+    if (at_boundary) {
+        if (!wr(f, running.gdn, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
+    } else if (!dump_dev(ss.gdn_state, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
+    if (ss.ple_hist) {
+        const bool have_blob = running.ple != nullptr;
+        if (!(have_blob ? wr(f, running.ple, z.ple) : dump_dev(ss.ple_hist, z.ple))) {
+            err = "nvme_dump: ple"; std::fclose(f); return false;
+        }
+    }
 
     const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
     const int64_t pooled_rows = std::min<int64_t>(L / z.idx_block + 2, ss.qsa_states[0].idx_pooled_rows);
@@ -160,7 +172,10 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
             if (!wr(f, ka.p, bytes)) { err = "nvme_dump: kv"; std::fclose(f); return false; }
         }
         if (!dump_dev(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4)) { err = "nvme_dump: pooled"; std::fclose(f); return false; }
-        if (!dump_dev(st.idx_tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
+        if (at_boundary) {
+            // the tail AT L: the checkpoint's per-layer tail blob (the state as of the boundary)
+            if (!wr(f, running.tails + (size_t) i * z.tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
+        } else if (!dump_dev(st.idx_tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
         if (!dump_dev(st.idx_dead, z.dead)) { err = "nvme_dump: dead"; std::fclose(f); return false; }
         if (!dump_dev(st.idx_block_pos, 4)) { err = "nvme_dump: block_pos"; std::fclose(f); return false; }
     }
@@ -191,6 +206,12 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
 #endif
     std::fclose(f);
     return true;
+}  // nvme_dump_at
+
+bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
+               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
+               const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err) {
+    return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, NvmeRunning{}, err);
 }
 
 bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
@@ -357,22 +378,27 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
 
 bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                        const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-                       const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err) {
-    if (ids.empty()) { err = "kv-nvme: empty session"; return false; }
+                       const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec,
+                       const std::vector<int32_t>* at_ids, NvmeRunning running, std::string& err) {
+    // the KEY is the matchable prefix (the turn boundary) when one is given - that is what the next request
+    // replays; the full consumed state includes the model's hidden reasoning tokens, which a chat client
+    // re-sending history will never reproduce
+    const std::vector<int32_t>& key = at_ids ? *at_ids : ids;
+    if (key.empty()) { err = "kv-nvme: empty session"; return false; }
     // exact match: this state is already stored - refresh its recency and skip the write (imgs too: same pad-token
     // ids with different pictures are a different session)
     for (NvmeEntry& e : entries_)
-        if (e.L == (int64_t) ids.size() && e.cvec == cvec && e.imgs.size() == imgs.size() &&
-            std::equal(ids.begin(), ids.end(), e.ids.begin()) && std::equal(imgs.begin(), imgs.end(), e.imgs.begin())) {
+        if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == imgs.size() &&
+            std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(imgs.begin(), imgs.end(), e.imgs.begin())) {
             e.mtime = (int64_t) ::time(nullptr);
             return true;
         }
-    // Supersede: only THIS process's previous dump, and only when it is a strict prefix of the new ids (the same
+    // Supersede: only THIS process's previous dump, and only when it is a strict prefix of the new key (the same
     // conversation grown).  A general "drop any stored prefix" would be WRONG: a branched conversation shares the
     // prefix without extending it, and its entry is the only cache its own continuations can match - so the cap,
     // not supersession, bounds cross-restart accumulation (review P2-2, deferred with this rationale).
-    if (!last_ids_.empty() && last_ids_.size() < ids.size() &&
-        std::equal(last_ids_.begin(), last_ids_.end(), ids.begin())) {
+    if (!last_ids_.empty() && last_ids_.size() < key.size() &&
+        std::equal(last_ids_.begin(), last_ids_.end(), key.begin())) {
         for (size_t i = 0; i < entries_.size(); ++i)
             if (entries_[i].path == last_path_) {
                 std::error_code ec;
@@ -387,7 +413,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     char name[64];
     std::snprintf(name, sizeof name, "kv-%ld-%ld.bin", pid(), seq_++);
     const std::string path = dir_ + "/" + name;
-    if (!nvme_dump(path.c_str(), ss, mtp_state, g, ids, imgs, cvec, err)) {
+    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, imgs, cvec, running, err)) {
         std::error_code ec;
         fs::remove(path, ec);   // a failed dump must not leave a partial file for the next scan to admit
         return false;
@@ -395,13 +421,13 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     std::error_code ec;
     NvmeEntry e;
     e.path = path;
-    e.ids = ids;
-    e.L = (int64_t) ids.size();
+    e.ids = key;
+    e.L = (int64_t) key.size();
     e.cvec = cvec;
     e.bytes = (uint64_t) fs::file_size(path, ec);
     e.mtime = (int64_t) ::time(nullptr);
     total_ += e.bytes;
-    last_ids_ = ids;
+    last_ids_ = key;
     last_path_ = path;
     entries_.push_back(std::move(e));
     enforce_cap();
