@@ -33,6 +33,7 @@ namespace strata::kernels {
 /// Opt in to pinned CUDA BF16/F32 MMVF for the PLE value projection only (default false).
 /// Configure before session capture; captured graphs retain their selected projection kernels.
 void ple_set_native_bf16(bool enabled);
+bool ple_native_bf16();
 
 /// Opt in to pinned CUDA postprojection norms, gate, convolution and residual
 /// arithmetic (default false). Set before capture; existing graphs keep their

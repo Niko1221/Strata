@@ -160,12 +160,22 @@ __global__ void scale_rows_kernel(float* __restrict__ out, const float* __restri
 }
 }  // namespace
 
-void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
-                         const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
-                         int64_t n_ff, void* stream) {
-    if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
-        throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
+void shared_expert_gate_rows(float* out, float* g, int64_t n_embd, int n_tok, void* stream) {
     cudaStream_t cs = (cudaStream_t) stream;
+    native_scalar_sigmoid_kernel<<<1, (unsigned) n_tok, 0, cs>>>(g);
+    scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+        out, g, (int) n_embd);
+}
+
+void shared_expert_multi(int n_tok, const float* x, const NativeSharedWeights& nw, const uint16_t* gate_inp_bf16,
+                         float* gate, float* up, float* g, float* out, int64_t n_embd, int64_t n_ff, void* stream,
+                         void* gate_stream) {
+    if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream ||
+        !gate_stream || !native_bf16)
+        throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights and gate, scratch and "
+                                    "streams");
+    cudaStream_t cs = (cudaStream_t) stream;
+    bf16_gemv_fp32_mmvf_multi(x, gate_inp_bf16, g, n_embd, 1, n_tok, gate_stream);
     native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
     native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
     native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
@@ -173,15 +183,6 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
     native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
     native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
-    if (native_bf16) {
-        bf16_gemv_fp32_mmvf_multi(x, gate_inp_bf16, g, n_embd, 1, n_tok, stream);
-        native_scalar_sigmoid_kernel<<<1, (unsigned) n_tok, 0, cs>>>(g);
-    } else {
-        for (int t = 0; t < n_tok; ++t)
-            scalar_gate_kernel<<<1, 256, 0, cs>>>(x_bf16 + (size_t) t * n_embd, gate_inp_bf16, g + t, (int) n_embd);
-    }
-    scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
-        out, g, (int) n_embd);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("shared_expert_multi: ") + cudaGetErrorString(e));
 }
@@ -295,11 +296,11 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // round trip.  256 threads is the reduction's width, not the problem's size.
     if (use_native) {
         bf16_gemv_fp32_mmvf(x_f32, gate_inp_bf16, g, n_embd, 1, stream);
-        native_scalar_sigmoid_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(g);
+        shared_expert_gate_rows(out, g, n_embd, 1, stream);
     } else {
         scalar_gate_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(x_bf16, gate_inp_bf16, g, (int) n_embd);
+        scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
     }
-    scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
 
     if (stream == nullptr) {
         const cudaError_t e = cudaDeviceSynchronize();

@@ -447,6 +447,10 @@ bool layer_verify_compatible(std::string& why) {
     else if (!g_fast_attn || native_flash_attn_short) why = "the split-K decode attention is off";
     else if (!g_fast_select) why = "the block top-k selection is off";
     else if (!strata::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
+    else if (!strata::kernels::native_qsa_enabled() || !strata::kernels::native_rope_enabled())
+        why = "the native QSA norms or RoPE are off";
+    else if (!strata::kernels::native_moe_combine_enabled()) why = "the native MoE combine is off";
+    else if (!strata::kernels::shared_expert_native_bf16()) why = "the shared expert's native gate is off";
     else return true;
     return false;
 }

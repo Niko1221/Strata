@@ -15,6 +15,7 @@
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_router.hpp"
@@ -25,7 +26,6 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/rope.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/kernels/shared_expert.hpp"
@@ -102,8 +102,11 @@ Verifier::~Verifier() {
     if (shs_) cudaStreamDestroy(shs_);
     if (g2s_) cudaStreamDestroy(g2s_);
     if (cps_) cudaStreamDestroy(cps_);
+    if (kst_) cudaStreamDestroy(kst_);
+    if (sgs_) cudaStreamDestroy(sgs_);
     for (cudaEvent_t e : {join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_, g2fork_,
-                          g2join_[0], g2join_[1], cpfork_, cpjoin_[0], cpjoin_[1], efork_, rdone_})
+                          g2join_[0], g2join_[1], cpfork_, cpjoin_[0], cpjoin_[1], efork_, rdone_, kjoin_, iproj_,
+                          sgjoin_})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
@@ -138,6 +141,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
         g.ssm_d_conv != 4) {
         err = "verify: geometry differs from the artifact's";
+        return false;
+    }
+    if (ss.ple.ready() && (!strata::kernels::ple_native_postops_enabled() || !strata::kernels::ple_native_bf16() ||
+                           (ss.ple.w.key_bf16 == nullptr && ss.ple.w.key_native_data == nullptr))) {
+        err = "verify: the PLE block needs the native postops and value and a BF16 or native key";
         return false;
     }
     const WeightRef* wo = wt.find("output.weight");
@@ -211,7 +219,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sink_.start2 = h_plan_ + plan_ptr_off_ + 4 * cap;
         sink_.cap = cap;
         sink_.publish = &Verifier::publish_plan;
-        sink_.host_rows_only = strata::kernels::native_moe_combine_enabled();   // the gather-combine (post)
+        sink_.host_rows_only = true;                      // the gather-combine (post) reads the GPUs' from VRAM
         sink_.fetch = &Verifier::fetch_dma;
         sink_.ctx = this;
     }
@@ -249,7 +257,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         pids_ = b.take<int32_t>(T * K);
         pmixed_ = b.take<float>(T * N); gate_ema_ = b.take<float>((uint64_t) g.n_layers * HC * N);
         pbias_ = b.take<float>((uint64_t) (g.n_layers * g.n_expert));
-        shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
+        shared_ = b.take<float>(T * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         list2_ = b.take<int32_t>(2 * (uint64_t) list2_stride_);
         ring_count_ = b.take<unsigned>(2);
@@ -262,10 +270,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
             strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
         head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
-        sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
+        sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
         hist_snap_ = b.take<float>(T * HS);
+        const uint64_t PD = (uint64_t) strata::kernels::NG_HC_DIM;
+        ple_key_ = b.take<float>(T * PD); ple_val_ = b.take<float>(T * N); ple_nkey_ = b.take<float>(T * PD);
+        ple_norm_ = b.take<float>(T * PD); ple_gated_ = b.take<float>(T * PD); ple_gate_ = b.take<float>(T * HC);
     };
     Bump count;
     carve(count);
@@ -306,6 +317,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         cudaStreamCreateWithFlags(&shs_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&g2s_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&cps_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&kst_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&kjoin_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&iproj_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&sgs_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&sgjoin_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&cpfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&cpjoin_[0], cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&cpjoin_[1], cudaEventDisableTiming) != cudaSuccess ||
@@ -446,7 +462,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }
 
     // the shared expert: in a window of one token group on a branch of its own forked after the FFN read (`efork_`),
-    // beside the router and the routed experts (joined before the combine); in a split window inline
+    // beside the router and the routed experts (joined before the combine); in a split window inline.  It ends with
+    // its down projection: the combine applies its scalar gate, whose logits come from a branch of their own.
     const bool beside = G == 1;
     auto shared = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -462,27 +479,26 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
         nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
         nsw.q8_1 = xq_;                                   // the main stream's next use is the next layer's mixer
-        cudaStream_t ws = cs;
+        cudaStream_t ws = cs, gs = cs;
         if (beside) {
-            if (cudaStreamWaitEvent(shs_, efork_, 0) != cudaSuccess) {
+            if (cudaStreamWaitEvent(shs_, efork_, 0) != cudaSuccess ||
+                cudaStreamWaitEvent(sgs_, efork_, 0) != cudaSuccess) {
                 err = "verify: the shared expert's branch could not fork";
                 return false;
             }
             ws = shs_;
+            gs = sgs_;
         }
-        if (!shared_expert_native_bf16())                 // the scalar gate's BF16 input (the native gate reads x)
-            for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, ws);
         try {
-            shared_expert_multi(n, mixed_ + tb * N, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
-                                sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N,
-                                N, g.n_ff, ws);
+            shared_expert_multi(n, mixed_ + tb * N, nsw, (const uint16_t*) wgi->data, sh_gate_ + (size_t) tb * g.n_ff,
+                                sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N, N, g.n_ff, ws, gs);
         } catch (const std::exception& e) {
             err = std::string("verify shared expert: ") + e.what();
             return false;
         }
         if (beside) {
             stamp(l, kLayerStamps, shs_);
-            if (cudaEventRecord(shjoin_, shs_) != cudaSuccess) {
+            if (cudaEventRecord(shjoin_, shs_) != cudaSuccess || cudaEventRecord(sgjoin_, sgs_) != cudaSuccess) {
                 err = "verify: the shared expert's branch could not join";
                 return false;
             }
@@ -505,25 +521,46 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
         }
         bool pending = l > 0;   // the previous layer's FFN write, folded into this layer's first read
+        // the projections of the group's tokens: 2+ tokens are quantized with the interleaved copy the multi-token
+        // kernels read
+        auto quant = [&](const float* x, int64_t n_in) {
+            if (n >= 2) native_quantize_q8_1_il(x, xq_, xil_, (int) n_in, n, cs);
+            else native_quantize_q8_1(x, xq_, (int) n_in, n, cs);
+        };
+        auto mm = [&](int type, const void* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
+            if (n >= 2) native_mmvq_il(type, w, xq_, xil_, y, (int) n_in, (int) n_out, n, ps);
+            else native_mmvq(type, w, xq_, y, (int) n_in, (int) n_out, n, ps);
+        };
+        auto proj = [&](const WeightRef* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
+            mm(w->native_type, w->native_data, y, n_in, n_out, ps);
+        };
         if (l == 1 && ple_on) {
             if (grp == 0) {                                // the host reads the rows while layer 0 runs
                 wait_flag_ge(m_pleflag_, 1, cs);
                 copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
             }
-            float* normalized = (float*) ((uint8_t*) ss.ple.scratch + ple_block_scratch_bytes());
-            for (int t = tb; t < te; ++t) {
-                gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
-                PleOut po;
-                po.normalized = normalized;
-                po.result = Rt(t);
-                try {
-                    ple_block(ple_ + t * N, Rt(t), ss.ple.hist, ss.ple.w, po, ss.ple.scratch, cs);
-                    ple_history_advance(ss.ple.hist, normalized, cs);
-                } catch (const std::exception& e) {
-                    err = std::string("verify PLE: ") + e.what();
-                    return false;
+            for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+            // the PLE block: the group's projections with each weight read once, then the rest of the block over its
+            // tokens in order, which leaves the history after each of them for the commit
+            const PleWeights& pw = ss.ple.w;
+            const float* emb = ple_ + tb * N;
+            float* key = ple_key_ + (size_t) tb * NG_HC_DIM;
+            float* norm = ple_norm_ + (size_t) tb * NG_HC_DIM;
+            try {
+                if (pw.key_bf16 != nullptr) {
+                    bf16_gemv_fp32_mmvf_multi(emb, pw.key_bf16, key, N, NG_HC_DIM, n, cs);
+                } else {
+                    quant(emb, N);
+                    mm(pw.key_native_type, pw.key_native_data, key, N, NG_HC_DIM, cs);
                 }
-                copy_from_mapped(hist_snap_ + (size_t) t * HS, ss.ple.hist, HS, cs);
+                bf16_gemv_fp32_mmvf_multi(emb, pw.value_bf16, ple_val_ + tb * N, N, N, n, cs);
+                const NativePleTokensBuffers pb{ple_nkey_ + (size_t) tb * NG_HC_DIM, norm, ple_gate_ + tb * HC,
+                                                ple_gated_ + (size_t) tb * NG_HC_DIM, norm, Rt(tb)};
+                native_ple_postops_tokens(key, Rt(tb), ple_val_ + tb * N, ss.ple.hist, pw, pb, n, cs,
+                                          hist_snap_ + (size_t) tb * HS);
+            } catch (const std::exception& e) {
+                err = std::string("verify PLE: ") + e.what();
+                return false;
             }
             pending = false;
         }
@@ -545,16 +582,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         gr_read_group(0, pending, inj2_, inj_, nullptr, nullptr, nullptr);
         stamp(l, 1, cs);
         float* xm = mixed_ + tb * N;
-        // the mixer's projections: a group of 2+ tokens is quantized with the interleaved copy the multi-token kernels
-        // read
-        auto quant = [&](const float* x, int64_t n_in) {
-            if (n >= 2) native_quantize_q8_1_il(x, xq_, xil_, (int) n_in, n, cs);
-            else native_quantize_q8_1(x, xq_, (int) n_in, n, cs);
-        };
-        auto proj = [&](const WeightRef* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
-            if (n >= 2) native_mmvq_il(w->native_type, w->native_data, xq_, xil_, y, (int) n_in, (int) n_out, n, ps);
-            else native_mmvq(w->native_type, w->native_data, xq_, y, (int) n_in, (int) n_out, n, ps);
-        };
         try {
             if (!is_qsa_layer(g, l)) {
                 // ======================= GDN =======================
@@ -606,55 +633,51 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
-                auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos,
-                                     cudaStream_t ns) {
-                    if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, ns);
-                    else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, ns);
-                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, ns);
-                    else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, ns);
+                // the rms norm and rope of the group's heads in one launch: rows of `cols` read at in + r * stride,
+                // token t's positions at pos_ + t * NH
+                auto norm_rope = [&](const float* in, int stride, float* out, const WeightRef* norm, int heads,
+                                     int cols, cudaStream_t ns) {
+                    native_qsa_norm_rope_tokens(in, stride, (const float*) norm->data, out, cols, n * heads, EPS,
+                                                (int) s.n_rot, (float) qsa_freq_base(), pos_ + tb * NH, heads, (int) NH,
+                                                ns);
                 };
-                // the same for the n tokens' heads in one launch each: token t's positions at pos + t * NH
-                const bool batched = native_qsa_enabled() && native_rope_enabled();
-                auto norm_rope_tokens = [&](float* data, const WeightRef* norm, int heads, int cols, const int32_t* pos,
-                                            cudaStream_t ns) {
-                    native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, n * heads, EPS, ns);
-                    native_rope_apply_tokens(data, data, n * heads, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, heads,
-                                             (int) NH, ns);
-                };
-                // two branches beside the keys and values, joined before the attention: the indexer (its keys appended,
-                // the queries' block scores and top-k), and the queries
+                // three branches beside the values, joined before the attention: the indexer (its key and query
+                // projections in one launch, the keys appended, the queries' block scores and top-k), the keys and the
+                // queries.  A grid is dispatched whole before a later kernel's blocks, so the keys' and values'
+                // projections go ahead of the queries' grid, and that grid waits for the indexer's projections: the
+                // append is dispatched ahead of it, and the indexer's last kernels end about when the queries' do.
                 if (!fork(side_, bfork_)) return false;
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wik->data, idx_raw + tb * ID, N, ID, n, side_);
-                if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, side_);
+                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wik->data, idx_raw + tb * ID, N, ID, n, side_,
+                                          (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID);
+                if (!mark(side_, iproj_)) return false;
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 native_qsa_indexer_append_multi(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, (int) kStepCount, n,
                                                 0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                                (float) qsa_freq_base(), side_);
-                bf16_gemv_fp32_mmvf_multi(xm, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, N, IQ * ID, n, side_);
-                if (batched) norm_rope_tokens(qidx_ + tb * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + tb * NH, side_);
-                else for (int t = tb; t < te; ++t) norm_rope(qidx_ + t * IQ * ID, wiqn, (int) IQ, (int) ID, pos_ + t * NH, side_);
+                                                (float) qsa_freq_base(), side_,
+                                                grp == 0 ? tail_snap_ + (size_t) qi * TS : nullptr);
+                norm_rope(qidx_ + tb * IQ * ID, (int) ID, qidx_ + tb * IQ * ID, wiqn, (int) IQ, (int) ID, side_);
                 qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
                                  s, scores_ + (size_t) tb * max_blocks_, side_, qsa_score_grid_blocks);
                 qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                sel_ + (size_t) tb * cap_, side_);
                 if (!mark(side_, bjoin_)) return false;
                 quant(xm, N);
-                if (!fork(shs_, pfork_)) return false;
-                proj(wq, qfull_ + tb * NH * 2 * HD, N, NH * 2 * HD, shs_);
-                // the query halves of every token's heads (rows of 2 * HD: query, then gate)
-                if (cudaMemcpy2DAsync(qcur_ + tb * NH * HD, (size_t) HD * 4, qfull_ + tb * NH * 2 * HD, (size_t) HD * 2 * 4,
-                                      (size_t) HD * 4, (size_t) (n * NH), cudaMemcpyDeviceToDevice, shs_) != cudaSuccess) {
-                    err = "verify: the q/gate split failed";
+                if (cudaEventRecord(pfork_, cs) != cudaSuccess || cudaStreamWaitEvent(kst_, pfork_, 0) != cudaSuccess ||
+                    cudaStreamWaitEvent(shs_, pfork_, 0) != cudaSuccess ||
+                    cudaStreamWaitEvent(shs_, iproj_, 0) != cudaSuccess) {
+                    err = "verify: a branch could not fork";
                     return false;
                 }
-                if (batched) norm_rope_tokens(qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD, pos_ + tb * NH, shs_);
-                else for (int t = tb; t < te; ++t) norm_rope(qcur_ + t * NH * HD, wqn, (int) NH, (int) HD, pos_ + t * NH, shs_);
-                if (!mark(shs_, pjoin_)) return false;
-                proj(wk, kcur_ + tb * NKV * HD, N, NKV * HD, cs);
+                proj(wk, kcur_ + tb * NKV * HD, N, NKV * HD, kst_);
+                norm_rope(kcur_ + tb * NKV * HD, (int) HD, kcur_ + tb * NKV * HD, wkn, (int) NKV, (int) HD, kst_);
+                if (!mark(kst_, kjoin_)) return false;
                 proj(wv, vcur_ + tb * NKV * HD, N, NKV * HD, cs);
-                if (batched) norm_rope_tokens(kcur_ + tb * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + tb * NH, cs);
-                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH, cs);
+                proj(wq, qfull_ + tb * NH * 2 * HD, N, NH * 2 * HD, shs_);
+                // the query halves of every token's heads (rows of 2 * HD: query, then gate)
+                norm_rope(qfull_ + tb * NH * 2 * HD, (int) (2 * HD), qcur_ + tb * NH * HD, wqn, (int) NH, (int) HD,
+                          shs_);
+                if (!mark(shs_, pjoin_) || !wait(kjoin_)) return false;
                 if (st.kv_int8)
                     kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_ + tb * kStepCount,
                                        (int) kStepCount, kcur_ + tb * NKV * HD, vcur_ + tb * NKV * HD, n, s, cs);
@@ -669,12 +692,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
                 qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
                                       s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
-                if (native_qsa_enabled())
-                    native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
-                                          (int) (n * NH), (int) HD, cs);
-                else
-                    for (int t = tb; t < te; ++t)
-                        qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD, cs);
+                native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
+                                      (int) (n * NH), (int) HD, cs);
                 quant(attn32_ + tb * NH * HD, NH * HD);
                 proj(wo, bo_ + tb * N, NH * HD, N, cs);
             }
@@ -874,31 +893,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 9, cs);
         if (gpu2_ && !wait(g2join_[grp])) return false;        // the second GPU's, in `hit_out`
         stamp(l, 10, cs);
-        if (beside && cudaStreamWaitEvent(cs, shjoin_, 0) != cudaSuccess) {
+        if (beside && (cudaStreamWaitEvent(cs, shjoin_, 0) != cudaSuccess ||
+                       cudaStreamWaitEvent(cs, sgjoin_, 0) != cudaSuccess)) {
             err = "verify: the shared expert's branch could not join";
             return false;
         }
-        if (native_moe_combine_enabled()) {
-            // only the CPU's rows cross PCIe here; the GPUs' come from `hit_out` (the pool leaves their rows unwritten)
-            const int32_t* list2 = gpu2_ ? list2_ + grp * list2_stride_ : nullptr;
-            try {
-                native_moe_gather_combine(hit_out, m_ymiss_ + (size_t) tb * K * N, vram.dst, vram.counts + 1, pcie.dst,
-                                          pcie.counts != nullptr ? pcie.counts + 1 : nullptr,
-                                          list2 != nullptr ? list2 + 4 : nullptr, list2, w_ + tb * K, shared_ + tb * N,
-                                          bo_ + tb * N, N, K, n, cs);
-            } catch (const std::exception& e) {
-                err = "verify layer " + std::to_string(l) + " combine: " + e.what();
-                return false;
-            }
-        } else {
-            copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
-            moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, vram.dst, vram.counts + 1, cap, N, cs);
-            if (pcie_share_) moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, pcie.dst, pcie.counts + 1, cap, N, cs);
-            for (int t = tb; t < te; ++t) {
-                MoEBuffers mb = ss.moe;
-                mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
-                if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
-            }
+        // only the CPU's rows cross PCIe here; the GPUs' come from `hit_out` (the pool leaves their rows unwritten)
+        const int32_t* list2 = gpu2_ ? list2_ + grp * list2_stride_ : nullptr;
+        try {
+            native_moe_gather_combine(hit_out, m_ymiss_ + (size_t) tb * K * N, vram.dst, vram.counts + 1, pcie.dst,
+                                      pcie.counts != nullptr ? pcie.counts + 1 : nullptr,
+                                      list2 != nullptr ? list2 + 4 : nullptr, list2, w_ + tb * K, shared_ + tb * N,
+                                      sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
+        } catch (const std::exception& e) {
+            err = "verify layer " + std::to_string(l) + " combine: " + e.what();
+            return false;
         }
         stamp(l, 11, cs);
         if (branches(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {

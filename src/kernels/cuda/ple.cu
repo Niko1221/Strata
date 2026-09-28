@@ -197,6 +197,7 @@ void ck(cudaError_t e, const char* what) {
 }  // namespace
 
 void ple_set_native_bf16(bool enabled) { native_bf16 = enabled; }
+bool ple_native_bf16() { return native_bf16; }
 void ple_set_native_postops(bool enabled) { native_postops = enabled; }
 bool ple_native_postops_enabled() { return native_postops; }
 

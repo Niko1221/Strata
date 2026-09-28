@@ -13,11 +13,13 @@
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
+#include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/prefill/kernels.hpp"
 
@@ -81,7 +83,8 @@ int bitwise_diff(const std::vector<float>& a, const std::vector<float>& b, const
 }
 
 // ---- the MoE combine: copy all rows + add the hits + one combine per token  vs  the second GPU's rows taken into VRAM
-// (fetch_listed_rows) and native_moe_gather_combine
+// (fetch_listed_rows) and native_moe_gather_combine; from rep 2 on the shared rows gated by shared_expert_gate_rows vs
+// the gather-combine gating them
 int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
     const int64_t N = 2560, K = 10;
     int bad = 0;
@@ -94,6 +97,11 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             for (auto& v : host) v = edgy(rng);
             for (auto& v : w) v = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
             for (auto& v : shared) v = edgy(rng);
+            std::vector<float> glog((size_t) n_tok);   // the gates' logits: sigmoid near 1, near 0 (denormal products)
+            for (auto& v : glog)
+                v = rng() % 4 == 0 ? std::uniform_real_distribution<float>(-100.0f, -80.0f)(rng)
+                                   : std::uniform_real_distribution<float>(-8.0f, 8.0f)(rng);
+            const bool gated = rep >= 2;
             // the GPU's entries, in a random order and a random share (none, some, all); from rep 4 on the second GPU
             // takes some of the rest
             std::vector<int32_t> dst, raw;
@@ -120,12 +128,16 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
 
             float *d_hit = dev<float>(hit.size()), *d_parts = dev<float>(hit.size()), *d_w = dev<float>(w.size()),
                   *d_sh = dev<float>(shared.size()), *d_out_old = dev<float>(shared.size()),
-                  *d_out_new = dev<float>(shared.size());
+                  *d_out_new = dev<float>(shared.size()), *d_shg = dev<float>(shared.size()),
+                  *d_g = dev<float>(glog.size()), *d_glog = dev<float>(glog.size());
             int32_t *d_dst = dev<int32_t>(std::max<size_t>(1, dst.size()) + 64), *d_count = dev<int32_t>(3),
                     *d_list = dev<int32_t>((size_t) (4 + rows));
             up(d_hit, hit);
             up(d_w, w);
             up(d_sh, shared);
+            up(d_shg, shared);
+            up(d_g, glog);
+            up(d_glog, glog);
             if (!dst.empty()) up(d_dst, dst);
             // the new path takes them as two lists (the window's VRAM share and the pool's PCIe share), split at random
             const int32_t split = rep % 2 == 0 ? count : (int32_t) (rng() % (dst.size() + 1));
@@ -144,9 +156,10 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             std::memcpy(h_map, host_zeroed.data(), host.size() * sizeof(float));
             strata::kernels::copy_from_mapped(d_parts, m_map, rows * N, s);
             strata::kernels::moe_hit_add(d_parts, d_hit, d_dst, d_count, rows, N, s);
+            if (gated) strata::kernels::shared_expert_gate_rows(d_shg, d_g, N, n_tok, s);
             for (int t = 0; t < n_tok; ++t)
-                strata::kernels::native_moe_combine(d_parts + t * K * N, d_w + t * K, d_sh + t * N, d_out_old + t * N,
-                                                    N, K, s);
+                strata::kernels::native_moe_combine(d_parts + t * K * N, d_w + t * K, (gated ? d_shg : d_sh) + t * N,
+                                                    d_out_old + t * N, N, K, s);
             check(cudaStreamSynchronize(s), "old path");
             // new
             std::memcpy(h_map, host_poison.data(), host.size() * sizeof(float));
@@ -156,7 +169,7 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             strata::kernels::native_moe_gather_combine(d_hit, m_map, d_dst, d_count + 1,
                                                        rep % 2 == 0 ? nullptr : d_dst + split, d_count + 2,
                                                        second ? d_list + 4 : nullptr, second ? d_list : nullptr, d_w,
-                                                       d_sh, d_out_new, N, K, n_tok, s);
+                                                       d_sh, gated ? d_glog : nullptr, d_out_new, N, K, n_tok, s);
             check(cudaStreamSynchronize(s), "new path");
             int b = bitwise_diff(down(d_out_old, shared.size()), down(d_out_new, shared.size()), "gather_combine");
             if (second) {
@@ -174,13 +187,15 @@ int test_gather_combine(std::mt19937& rng, cudaStream_t s) {
             cudaFreeHost(h_map);
             cudaFreeHost(h_list);
             for (void* p : {(void*) d_hit, (void*) d_parts, (void*) d_w, (void*) d_sh, (void*) d_out_old,
-                            (void*) d_out_new, (void*) d_dst, (void*) d_count, (void*) d_list})
+                            (void*) d_out_new, (void*) d_shg, (void*) d_g, (void*) d_glog, (void*) d_dst,
+                            (void*) d_count, (void*) d_list})
                 cudaFree(p);
         }
     }
     std::printf("gather_combine: %s\n",
                 bad ? "MISMATCH"
-                    : "bitwise equal (n_tok 1-4, 8; 8 plans each, one or two lists, the second GPU's rows fetched)");
+                    : "bitwise equal (n_tok 1-4, 8; 8 plans each, one or two lists, the second GPU's rows fetched, "
+                      "the shared rows gated)");
     return bad;
 }
 
@@ -257,40 +272,52 @@ int test_hit_plan(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
-// ---- BF16 x FP32 MMVF: one call per row  vs  bf16_gemv_fp32_mmvf_multi (the router, indexer and gate shapes)
+// ---- BF16 x FP32 MMVF: one call per row  vs  bf16_gemv_fp32_mmvf_multi (the router, indexer and gate shapes), and
+// with a second matrix of 125 rows in the same launch (the indexer's keys and queries; partial groups of 4 rows)
 int test_mmvf_multi(std::mt19937& rng, cudaStream_t s) {
-    int bad = 0;
-    for (int64_t n_out : {512, 128, 1}) {
-        const int64_t n_in = 2560;
-        std::vector<uint16_t> w((size_t) (n_in * n_out));
+    auto bf16_matrix = [&](int64_t n) {
+        std::vector<uint16_t> w((size_t) n);
         for (auto& v : w) {
             const float f = edgy(rng);
             uint32_t b;
             std::memcpy(&b, &f, 4);
             v = (uint16_t) (b >> 16);
         }
-        uint16_t* d_w = dev<uint16_t>(w.size());
-        up(d_w, w);
+        uint16_t* d = dev<uint16_t>(w.size());
+        up(d, w);
+        return d;
+    };
+    int bad = 0;
+    const int64_t n_in = 2560, n_out2 = 125;
+    uint16_t* d_w2 = bf16_matrix(n_in * n_out2);
+    for (int64_t n_out : {512, 130, 1}) {
+        uint16_t* d_w = bf16_matrix(n_in * n_out);
         for (int n_tok = 1; n_tok <= 8; ++n_tok) {
             std::vector<float> x((size_t) (n_tok * n_in));
             for (auto& v : x) v = edgy(rng);
-            float *d_x = dev<float>(x.size()), *d_a = dev<float>((size_t) (n_tok * n_out)),
-                  *d_b = dev<float>((size_t) (n_tok * n_out));
+            const size_t ny = (size_t) (n_tok * n_out), ny2 = (size_t) (n_tok * n_out2);
+            float *d_x = dev<float>(x.size()), *d_a = dev<float>(ny), *d_b = dev<float>(ny), *d_c = dev<float>(ny),
+                  *d_a2 = dev<float>(ny2), *d_c2 = dev<float>(ny2);
             up(d_x, x);
-            for (int t = 0; t < n_tok; ++t)
+            for (int t = 0; t < n_tok; ++t) {
                 strata::kernels::bf16_gemv_fp32_mmvf(d_x + t * n_in, d_w, d_a + t * n_out, n_in, n_out, s);
+                strata::kernels::bf16_gemv_fp32_mmvf(d_x + t * n_in, d_w2, d_a2 + t * n_out2, n_in, n_out2, s);
+            }
             strata::kernels::bf16_gemv_fp32_mmvf_multi(d_x, d_w, d_b, n_in, n_out, n_tok, s);
+            strata::kernels::bf16_gemv_fp32_mmvf_multi(d_x, d_w, d_c, n_in, n_out, n_tok, s, d_w2, d_c2, n_out2);
             check(cudaStreamSynchronize(s), "mmvf");
-            const int b = bitwise_diff(down(d_a, (size_t) (n_tok * n_out)), down(d_b, (size_t) (n_tok * n_out)), "mmvf_multi");
+            const int b = bitwise_diff(down(d_a, ny), down(d_b, ny), "mmvf_multi") +
+                          bitwise_diff(down(d_a, ny), down(d_c, ny), "mmvf_multi, two matrices") +
+                          bitwise_diff(down(d_a2, ny2), down(d_c2, ny2), "mmvf_multi, the second matrix");
             if (b) std::fprintf(stderr, "mmvf_multi: n_out %lld n_tok %d: %d differ\n", (long long) n_out, n_tok, b);
             bad += b;
-            cudaFree(d_x);
-            cudaFree(d_a);
-            cudaFree(d_b);
+            for (float* p : {d_x, d_a, d_b, d_c, d_a2, d_c2}) cudaFree(p);
         }
         cudaFree(d_w);
     }
-    std::printf("mmvf_multi: %s\n", bad ? "MISMATCH" : "bitwise equal (n_out 512, 128, 1; 1-8 rows)");
+    cudaFree(d_w2);
+    std::printf("mmvf_multi: %s\n",
+                bad ? "MISMATCH" : "bitwise equal (n_out 512, 130, 1; 1-8 rows; with a second matrix)");
     return bad;
 }
 
@@ -765,6 +792,60 @@ int test_rope_tokens(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// ---- the QSA heads' norm and RoPE: native_qsa_rms_norm_weighted + native_rope_apply_tokens  vs
+// native_qsa_norm_rope_tokens, in place and from rows of twice the width (the queries' halves)
+int test_norm_rope(std::mt19937& rng, cudaStream_t s) {
+    const int NH = 24;
+    int bad = 0;
+    for (int heads : {2, 4, 24}) {
+        for (int head_dim : {128, 256}) {
+            std::vector<float> gamma((size_t) head_dim);
+            for (auto& g : gamma) g = 0.5f + std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+            float* d_gamma = dev<float>(gamma.size());
+            up(d_gamma, gamma);
+            for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+                const int rows = n_tok * heads;
+                std::vector<float> x((size_t) rows * 2 * head_dim);   // rows of 2 * head_dim: the first half is read
+                for (auto& v : x) v = std::normal_distribution<float>(0.0f, 3.0f)(rng);
+                std::vector<float> half((size_t) rows * head_dim);
+                for (int r = 0; r < rows; ++r)
+                    std::copy(x.begin() + (size_t) r * 2 * head_dim, x.begin() + (size_t) r * 2 * head_dim + head_dim,
+                              half.begin() + (size_t) r * head_dim);
+                std::vector<int32_t> pos((size_t) n_tok * NH);
+                const int p0 = (int) (rng() % 200000);
+                for (int t = 0; t < n_tok; ++t)
+                    for (int h = 0; h < NH; ++h) pos[(size_t) t * NH + h] = p0 + t;
+                float *d_a = dev<float>(half.size()), *d_b = dev<float>(half.size()), *d_x = dev<float>(x.size()),
+                      *d_c = dev<float>(half.size());
+                int32_t* d_pos = dev<int32_t>(pos.size());
+                up(d_a, half);
+                up(d_b, half);
+                up(d_x, x);
+                up(d_pos, pos);
+                strata::kernels::native_qsa_rms_norm_weighted(d_a, d_gamma, d_a, head_dim, rows, 1e-6f, s);
+                strata::kernels::native_rope_apply_tokens(d_a, d_a, rows, head_dim, 64, 5000000.0f, d_pos, heads, NH,
+                                                          s);
+                strata::kernels::native_qsa_norm_rope_tokens(d_b, head_dim, d_gamma, d_b, head_dim, rows, 1e-6f, 64,
+                                                             5000000.0f, d_pos, heads, NH, s);
+                strata::kernels::native_qsa_norm_rope_tokens(d_x, 2 * head_dim, d_gamma, d_c, head_dim, rows, 1e-6f, 64,
+                                                             5000000.0f, d_pos, heads, NH, s);
+                check(cudaStreamSynchronize(s), "norm_rope");
+                const int b = bitwise_diff(down(d_a, half.size()), down(d_b, half.size()), "norm_rope") +
+                              bitwise_diff(down(d_a, half.size()), down(d_c, half.size()), "norm_rope, strided");
+                if (b)
+                    std::fprintf(stderr, "norm_rope: %d heads of %d, n_tok %d: %d differ\n", heads, head_dim, n_tok, b);
+                bad += b;
+                for (float* p : {d_a, d_b, d_x, d_c}) cudaFree(p);
+                cudaFree(d_pos);
+            }
+            cudaFree(d_gamma);
+        }
+    }
+    std::printf("norm_rope_tokens: %s\n", bad ? "MISMATCH" : "bitwise equal (2, 4, 24 heads of 128, 256; 1-8 tokens; "
+                                                           "in place and strided)");
+    return bad;
+}
+
 // ---- the int8 KV append: kv_append_q8_step per token  vs  kv_append_q8_steps
 int test_kv_append(std::mt19937& rng, cudaStream_t s) {
     const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
@@ -867,9 +948,15 @@ int test_indexer_append(std::mt19937& rng, cudaStream_t s) {
                 for (int t = 0; t < n_tok; ++t)
                     strata::kernels::native_qsa_indexer_append(d_raw + (size_t) t * D, d_pos + t, 0, d_gamma, 1e-6f, ib0, sh,
                                                                max_cells, 5000000.0f, s);
+                float* d_snap = dev<float>(tail.size());
                 strata::kernels::native_qsa_indexer_append_multi(d_raw, d_pos, 1, n_tok, 0, d_gamma, 1e-6f, ib1, sh,
-                                                                 max_cells, 5000000.0f, s);
+                                                                 max_cells, 5000000.0f, s, d_snap);
                 check(cudaStreamSynchronize(s), "indexer");
+                if (down(d_snap, tail.size()) != tail) {
+                    std::fprintf(stderr, "indexer: n_tok %d start %d: the tail snapshot differs\n", n_tok, start);
+                    ++bad;
+                }
+                cudaFree(d_snap);
                 const size_t sizes[3] = {tail.size(), dead.size(), pooled.size()};
                 const char* names[3] = {"tail", "dead", "pooled"};
                 for (int o = 0; o < 3; ++o) {
@@ -891,7 +978,8 @@ int test_indexer_append(std::mt19937& rng, cudaStream_t s) {
         }
     }
     cudaFree(d_gamma);
-    std::printf("indexer_append_multi: %s\n", bad ? "MISMATCH" : "bitwise equal (1-8 tokens, 8 starts, rejected cells)");
+    std::printf("indexer_append_multi: %s\n",
+                bad ? "MISMATCH" : "bitwise equal (1-8 tokens, 8 starts, rejected cells), the tail snapshot the tail");
     return bad;
 }
 
@@ -923,8 +1011,9 @@ int test_ple_tokens(std::mt19937& rng, cudaStream_t s) {
         for (auto& x : hist) x = nd(rng);
         float *d_key = dev<float>(key.size()), *d_hidden = dev<float>(hidden.size()), *d_value = dev<float>(value.size());
         up(d_key, key); up(d_hidden, hidden); up(d_value, value);
-        // per token: the decode path's calls
-        float *h0 = dev<float>(hist.size()), *r0 = dev<float>(hidden.size());
+        // per token: the decode path's calls, the history after each token kept
+        float *h0 = dev<float>(hist.size()), *r0 = dev<float>(hidden.size()),
+              *s0 = dev<float>((size_t) n_tok * hist.size());
         float *k1 = dev<float>(D), *q1 = dev<float>(D), *g1 = dev<float>(H), *gd1 = dev<float>(D), *c1 = dev<float>(D);
         up(h0, hist);
         for (int t = 0; t < n_tok; ++t) {
@@ -932,22 +1021,30 @@ int test_ple_tokens(std::mt19937& rng, cudaStream_t s) {
             strata::kernels::native_ple_postops(d_key + (size_t) t * D, d_hidden + (size_t) t * D,
                                                 d_value + (size_t) t * N, h0, w, b, s);
             strata::kernels::ple_history_advance(h0, q1, s);
+            check(cudaMemcpyAsync(s0 + (size_t) t * hist.size(), h0, hist.size() * 4, cudaMemcpyDeviceToDevice, s),
+                  "ple snapshot");
         }
         // the chunk at once
         float *h2 = dev<float>(hist.size()), *r2 = dev<float>(hidden.size()), *k2 = dev<float>(key.size()),
-              *q2 = dev<float>(key.size()), *g2 = dev<float>((size_t) n_tok * H), *gd2 = dev<float>(key.size());
+              *q2 = dev<float>(key.size()), *g2 = dev<float>((size_t) n_tok * H), *gd2 = dev<float>(key.size()),
+              *s2 = dev<float>((size_t) n_tok * hist.size());
         up(h2, hist);
-        strata::kernels::native_ple_postops_tokens(d_key, d_hidden, d_value, h2, w, {k2, q2, g2, gd2, q2, r2}, n_tok, s);
+        strata::kernels::native_ple_postops_tokens(d_key, d_hidden, d_value, h2, w, {k2, q2, g2, gd2, q2, r2}, n_tok, s,
+                                                   s2);
         check(cudaStreamSynchronize(s), "ple tokens");
         const int br = bitwise_diff(down(r0, hidden.size()), down(r2, hidden.size()), "result");
         const int bh = bitwise_diff(down(h0, hist.size()), down(h2, hist.size()), "history");
-        if (br || bh) std::fprintf(stderr, "ple tokens: n_tok %d: result or history differ\n", n_tok);
-        bad += br + bh;
-        for (float* p : {d_key, d_hidden, d_value, h0, r0, k1, q1, g1, gd1, c1, h2, r2, k2, q2, g2, gd2}) cudaFree(p);
+        const int bs = bitwise_diff(down(s0, (size_t) n_tok * hist.size()), down(s2, (size_t) n_tok * hist.size()),
+                                    "histories");
+        if (br || bh || bs) std::fprintf(stderr, "ple tokens: n_tok %d: results or histories differ\n", n_tok);
+        bad += br + bh + bs;
+        for (float* p : {d_key, d_hidden, d_value, h0, r0, s0, k1, q1, g1, gd1, c1, h2, r2, k2, q2, g2, gd2, s2})
+            cudaFree(p);
     }
     for (float* p : {d_nk, d_nq, d_nc}) cudaFree(p);
     cudaFree(d_taps);
-    std::printf("ple_postops_tokens: %s\n", bad ? "MISMATCH" : "bitwise equal (1-23 tokens, results and history)");
+    std::printf("ple_postops_tokens: %s\n",
+                bad ? "MISMATCH" : "bitwise equal (1-23 tokens, results, history, the history after each token)");
     return bad;
 }
 
@@ -1130,6 +1227,7 @@ int main(int argc, char** argv) {
     bad += test_router_rows(rng, s);
     bad += test_gr_read(rng, s);
     bad += test_rope_tokens(rng, s);
+    bad += test_norm_rope(rng, s);
     bad += test_kv_append(rng, s);
     bad += test_indexer_append(rng, s);
     bad += test_ple_tokens(rng, s);

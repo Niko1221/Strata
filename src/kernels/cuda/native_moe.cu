@@ -44,14 +44,29 @@ __global__ void combine(const float* __restrict__ parts, const float* __restrict
     output[col] = sum;
 }
 constexpr int kMaxK = 15;
+// A shared expert's row times its scalar gate, in shared_expert_gate_rows' instructions (shared_expert.cu builds
+// without fast math: nothing flushes to zero): sigmoid(logit) as __fdividef(1, 1 + __expf(-logit)), then the product.
+// The explicit rounding keeps ptxas from fusing the product into the sum after it.
+__device__ __forceinline__ float gated_shared(float row, float logit) {
+    float e, d, g, y;
+    const float one = 1.0f;
+    asm("mul.rn.f32 %0, %1, 0fBFB8AA3B;" : "=f"(e) : "f"(logit));
+    asm("ex2.approx.f32 %0, %1;" : "=f"(d) : "f"(e));
+    asm("add.rn.f32 %0, %1, %2;" : "=f"(e) : "f"(d), "f"(one));
+    asm("div.approx.f32 %0, %1, %2;" : "=f"(g) : "f"(one), "f"(e));
+    asm("mul.rn.f32 %0, %1, %2;" : "=f"(y) : "f"(row), "f"(g));
+    return y;
+}
 // One block row per token.  The rows a GPU computed are marked from the plan's entries first; each column then
-// loads its k values (the host's over PCIe, all in flight at once) and sums them as `combine` does.
+// loads its k values (the host's over PCIe, all in flight at once) and sums them as `combine` does, then adds the
+// shared expert's row, times its gate when `shared_gate` holds the gates' logits.
 __global__ void gather_combine(const float* __restrict__ gpu_rows, const float* host_rows,
                                const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
                                const int32_t* __restrict__ dst2, const int32_t* __restrict__ count2,
                                const int32_t* __restrict__ dst3, const int32_t* __restrict__ count3,
                                const float* __restrict__ weights, const float* __restrict__ shared,
-                               float* __restrict__ output, int64_t n_embd, int k) {
+                               const float* __restrict__ shared_gate, float* __restrict__ output, int64_t n_embd,
+                               int k) {
     __shared__ unsigned on_gpu, as_is;   // bit j: row t*k + j is in gpu_rows, a hit / a row taken as it is
     const int t = blockIdx.y;
     if (threadIdx.x == 0) on_gpu = as_is = 0u;
@@ -86,7 +101,10 @@ __global__ void gather_combine(const float* __restrict__ gpu_rows, const float* 
         if (j >= k) break;
         sum += v[j] * w[j];
     }
-    if (shared) sum += shared[int64_t(t) * n_embd + col];
+    if (shared) {
+        const float s = shared[int64_t(t) * n_embd + col];
+        sum += shared_gate ? gated_shared(s, shared_gate[t]) : s;
+    }
     output[int64_t(t) * n_embd + col] = sum;
 }
 bool valid_span(const void* p, size_t bytes) {
@@ -119,17 +137,18 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
 }
 void native_moe_gather_combine(const float* gpu_rows, const float* host_rows, const int32_t* dst,
                                const int32_t* count, const int32_t* dst2, const int32_t* count2, const int32_t* dst3,
-                               const int32_t* count3, const float* weights, const float* shared, float* output,
-                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
+                               const int32_t* count3, const float* weights, const float* shared,
+                               const float* shared_gate, float* output, int64_t n_embd, int64_t k, int n_tok,
+                               void* stream) {
     if (!stream || n_embd <= 0 || n_embd > std::numeric_limits<int>::max() || k < 1 || k > kMaxK || n_tok < 1 ||
         !gpu_rows || !host_rows || !dst || !count || (dst2 != nullptr && count2 == nullptr) ||
-        (dst3 != nullptr && count3 == nullptr) || !weights || !output)
+        (dst3 != nullptr && count3 == nullptr) || !weights || !output || (shared_gate != nullptr && !shared))
         throw std::invalid_argument("native MoE gather-combine requires a stream, positive width, 1..15 experts "
                                     "and its buffers");
     const dim3 grid(unsigned((n_embd + 255) / 256), unsigned(n_tok));
     gather_combine<<<grid, 256, 0, static_cast<cudaStream_t>(stream)>>>(gpu_rows, host_rows, dst, count, dst2, count2,
-                                                                         dst3, count3, weights, shared, output, n_embd,
-                                                                         int(k));
+                                                                         dst3, count3, weights, shared, shared_gate,
+                                                                         output, n_embd, int(k));
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

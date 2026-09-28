@@ -64,15 +64,25 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
     if (t == 0) y[blockIdx.x] = acc;
 }
 
-// `bf16_f32_mmvf_kernel` for up to kMultiT activation rows (mmvf_multi_row)
-constexpr int kMultiT = kMmvfMaxRows;
+// `bf16_f32_mmvf_kernel` for up to kMultiT activation rows, kRows weight rows a block (mmvf_multi_rows); the blocks
+// past n_out's take the rows of a second matrix of the same input
+constexpr int kMultiT = kMmvfMaxRows, kRows = 4;
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
-                                           float* __restrict__ y, int n_in, int n_out, int n_tok) {
-    float acc[kMultiT];
-    mmvf_multi_row<BLOCK_SIZE>(x, w + (size_t) blockIdx.x * n_in, n_in, n_tok, acc);
+                                           float* __restrict__ y, int n_in, int n_out, int n_tok,
+                                           const uint16_t* __restrict__ w2, float* __restrict__ y2, int n_out2) {
+    const int blocks1 = (n_out + kRows - 1) / kRows;
+    const bool first = (int) blockIdx.x < blocks1;
+    const int row0 = (first ? (int) blockIdx.x : (int) blockIdx.x - blocks1) * kRows, n = first ? n_out : n_out2;
+    const int rows = min(kRows, n - row0);
+    float acc[kRows][kMultiT];
+    mmvf_multi_rows<BLOCK_SIZE, kRows>(x, (first ? w : w2) + (size_t) row0 * n_in, n_in, n_tok, rows, acc);
     if (threadIdx.x == 0)
-        for (int k = 0; k < n_tok; ++k) y[(size_t) k * n_out + blockIdx.x] = acc[k];
+#pragma unroll
+        for (int r = 0; r < kRows; ++r)
+#pragma unroll
+            for (int k = 0; k < kMultiT; ++k)
+                if (r < rows && k < n_tok) (first ? y : y2)[(size_t) k * n + row0 + r] = acc[r][k];
 }
 
 int mmvf_block_size(int64_t n_in) {
@@ -121,20 +131,26 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
 
 
 void bf16_gemv_fp32_mmvf_multi(const float* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out, int n_tok,
-                               void* stream) {
+                               void* stream, const uint16_t* w2, float* y2, int64_t n_out2) {
     if (n_tok < 1 || n_tok > kMultiT)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: 1..8 activation rows");
     if (n_in <= 0 || (n_in & 1) != 0 || n_in > std::numeric_limits<int>::max() ||
-        n_out <= 0 || n_out > std::numeric_limits<int>::max())
+        n_out <= 0 || n_out2 < 0 || n_out + n_out2 > std::numeric_limits<int>::max())
         throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: require positive even n_in and positive n_out <= INT_MAX");
-    if (x == nullptr || w == nullptr || y == nullptr ||
+    if (x == nullptr || w == nullptr || y == nullptr || (n_out2 > 0 && (w2 == nullptr || y2 == nullptr)) ||
         (reinterpret_cast<uintptr_t>(x) & 7u) != 0 ||
-        (reinterpret_cast<uintptr_t>(w) & 3u) != 0 ||
-        (reinterpret_cast<uintptr_t>(y) & 3u) != 0)
+        (reinterpret_cast<uintptr_t>(w) & 3u) != 0 || (reinterpret_cast<uintptr_t>(w2) & 3u) != 0 ||
+        (reinterpret_cast<uintptr_t>(y) & 3u) != 0 || (reinterpret_cast<uintptr_t>(y2) & 3u) != 0)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: null or misaligned pointer");
+    if (n_tok == 1 && n_out2 == 0) {   // the same sums: a row a block streams the weights faster
+        bf16_gemv_fp32_mmvf(x, w, y, n_in, n_out, stream);
+        return;
+    }
     const cudaStream_t st = (cudaStream_t) stream;
+    const unsigned blocks = (unsigned) ((n_out + kRows - 1) / kRows + (n_out2 + kRows - 1) / kRows);
 #define STRATA_MMVF_CASE(N) case N: \
-    bf16_f32_mmvf_multi_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in, (int) n_out, n_tok); break
+    bf16_f32_mmvf_multi_kernel<N><<<blocks, N, 0, st>>>(x, w, y, (int) n_in, (int) n_out, n_tok, w2, y2, (int) n_out2); \
+    break
     switch (mmvf_block_size(n_in)) {
         STRATA_MMVF_CASE(32);
         STRATA_MMVF_CASE(64);

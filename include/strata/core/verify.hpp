@@ -25,7 +25,8 @@
 // the CPU (`pool_takes_q8k` layers) and q8_1 rows for the GPUs, so neither quantizes it.
 //
 // Requires the default native decode configuration (native projections, fused GR, fused GDN, fast attention and
-// selection, native indexer) and a profile-filled VRAM expert tier.
+// selection, native indexer, QSA norms, RoPE, combine, shared expert gate and PLE block) and a profile-filled VRAM
+// expert tier.
 #pragma once
 
 #include "strata/core/expert_source.hpp"
@@ -241,6 +242,10 @@ private:
     cudaEvent_t g2fork_ = nullptr, g2join_[2] = {};
     cudaStream_t cps_ = nullptr;                                  // the wait for the CPU's rows, per token group
     cudaEvent_t cpfork_ = nullptr, cpjoin_[2] = {};
+    cudaStream_t kst_ = nullptr;                                  // the QSA mixer's keys
+    cudaEvent_t kjoin_ = nullptr, iproj_ = nullptr;               // and the end of its indexer's projections
+    cudaStream_t sgs_ = nullptr;                                  // the shared expert's scalar gate
+    cudaEvent_t sgjoin_ = nullptr;
     cudaEvent_t efork_ = nullptr, rdone_ = nullptr;               // the FFN read's end, the router's
     cudaEvent_t done_ = nullptr;                                  // after the last window's graph
 
@@ -258,7 +263,7 @@ private:
     float *qidx_ = nullptr, *scores_ = nullptr, *attn_ = nullptr, *attn32_ = nullptr, *attn_scratch_ = nullptr;
     float* tail_snap_ = nullptr;                              // per QSA layer
     int32_t* sel_ = nullptr;
-    float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
+    float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     unsigned* ring_count_ = nullptr;                          // verify_router's block counters: the layer's, the prediction's
     float* plogits_ = nullptr;                                    // the predictions' logits, by layer parity
@@ -278,9 +283,11 @@ private:
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
-    uint16_t* sh_bf16_ = nullptr;
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
+    // the PLE block's projections (keys T * NG_HC_DIM, values T * n_embd) and the rest of the block's rows
+    float *ple_key_ = nullptr, *ple_val_ = nullptr, *ple_nkey_ = nullptr, *ple_norm_ = nullptr, *ple_gated_ = nullptr;
+    float* ple_gate_ = nullptr;
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
 
     // --window-profile: stamps [window size][layer, then one row for the window][stage]: a layer's main-stream stages,

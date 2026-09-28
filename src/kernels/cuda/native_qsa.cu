@@ -23,6 +23,7 @@
 // SOFTWARE.
 
 #include "strata/kernels/native_qsa.hpp"
+#include "strata/kernels/mrope.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cmath>
@@ -65,6 +66,47 @@ __global__ void norm(const float* input, const float* __restrict__ gamma, float*
     const float scale = rsqrtf(mean + epsilon);
     for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
         output[col] = scale * input[col] * gamma[col];
+}
+// `norm<256>`, then native_rope.cu's `apply` on its output, one block a row of at most 256 columns: the normalized
+// row waits in shared memory.  Row r is read at input + r * in_stride.
+__global__ void norm_rope(const float* input, int in_stride, const float* __restrict__ gamma, float* output,
+                          int n_cols, float epsilon, int n_rot, float theta_scale, const int* __restrict__ positions,
+                          const int32_t* __restrict__ mtab, int heads, int pos_stride) {
+    constexpr int BlockSize = 256;
+    const int tid = threadIdx.x, row = blockIdx.x;
+    input += std::size_t(row) * in_stride;
+    output += std::size_t(row) * n_cols;
+    float partial = 0.0f;
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize) {
+        const float x = input[col];
+        partial += x * x;
+    }
+    __shared__ float sums[32];
+    __shared__ float values[BlockSize];
+    partial = warp_sum(partial);
+    const int lane = tid % 32;
+    if (lane == 0) sums[tid / 32] = partial;
+    __syncthreads();
+    partial = lane < BlockSize / 32 ? sums[lane] : 0.0f;
+    partial = warp_sum(partial);
+    const float mean = partial / n_cols;
+    const float scale = rsqrtf(mean + epsilon);
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
+        values[col] = scale * input[col] * gamma[col];
+    __syncthreads();   // every read of input precedes this: output may be input
+    const int pair = tid;
+    if (pair >= n_cols / 2) return;
+    if (pair >= n_rot / 2) {
+        output[2 * pair] = values[2 * pair];
+        output[2 * pair + 1] = values[2 * pair + 1];
+        return;
+    }
+    const int position = positions[(row / heads) * pos_stride + row % heads];
+    const float theta = mrope_pos(mtab, position, pair) * powf(theta_scale, float(pair));
+    const float c = cosf(theta), s = sinf(theta);
+    const float a = values[pair], b = values[pair + n_rot / 2];
+    output[pair] = a * c - b * s;
+    output[pair + n_rot / 2] = a * s + b * c;
 }
 __global__ void gate(const float* attn, const float* __restrict__ q_full, float* output,
                      int n_head, int head_dim) {
@@ -115,6 +157,27 @@ void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float*
         norm<256><<<unsigned(n_rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols, epsilon);
     else
         norm<1024><<<unsigned(n_rows), 1024, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols, epsilon);
+    check_launch();
+}
+void native_qsa_norm_rope_tokens(const float* input, int in_stride, const float* gamma, float* output, int n_cols,
+                                 int n_rows, float epsilon, int n_rot, float freq_base, const int* positions, int heads,
+                                 int pos_stride, void* stream) {
+    const auto count = elements(n_cols, n_rows);
+    if ((n_cols != 128 && n_cols != 256) || n_rot != 64 || in_stride < n_cols || heads < 1 || pos_stride < heads ||
+        !std::isfinite(epsilon) || epsilon < 0.0f || !std::isfinite(freq_base) || freq_base <= 1.0f || !positions)
+        throw std::invalid_argument("native QSA norm-rope requires 128 or 256 columns, 64 rotated, valid strides, "
+                                    "epsilon and base");
+    const std::size_t in_bytes = (std::size_t(n_rows - 1) * in_stride + n_cols) * 4;
+    if (!stream || !valid(input, in_bytes) || !valid(gamma, std::size_t(n_cols) * 4) || !valid(output, count * 4) ||
+        (input != output && overlap(input, in_bytes, output, count * 4)) ||
+        (input == output && in_stride != n_cols) || overlap(output, count * 4, gamma, std::size_t(n_cols) * 4))
+        throw std::invalid_argument("native QSA norm-rope requires a stream, aligned spans, and disjoint buffers or an "
+                                    "exact input/output alias");
+    // pinned host-side float powf, as native_rope_apply_tokens
+    const float theta_scale = powf(freq_base, -2.0f / n_rot);
+    norm_rope<<<unsigned(n_rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+        input, in_stride, gamma, output, n_cols, epsilon, n_rot, theta_scale, positions, mrope_table(), heads,
+        pos_stride);
     check_launch();
 }
 void native_qsa_gate_apply(const float* attn, const float* q_full, float* output,

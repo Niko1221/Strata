@@ -97,11 +97,17 @@ __device__ void append_one(const float* __restrict__ raw, const int pos,
     }
     __syncthreads();   // values and partials are reused by the next call
 }
+// With `tail_snap`, the tail as it was is copied there first.
 __global__ void append(const float* __restrict__ raw, const int32_t* __restrict__ pos_dev, int pos_stride,
                        int n_tok, int pos_base, const float* __restrict__ gamma, float epsilon,
                        float* __restrict__ tail, float* __restrict__ dead,
                        float* __restrict__ pooled, int32_t* __restrict__ block_pos,
-                       int max_cells, float theta_scale, const int32_t* __restrict__ mtab) {
+                       int max_cells, float theta_scale, const int32_t* __restrict__ mtab,
+                       float* __restrict__ tail_snap) {
+    if (tail_snap != nullptr) {
+        for (int i = threadIdx.x; i < (R - 1) * D; i += blockDim.x) tail_snap[i] = tail[i];
+        __syncthreads();
+    }
     for (int t = 0; t < n_tok; ++t) {
         append_one(raw + std::size_t(t) * D, pos_dev[std::size_t(t) * pos_stride], pos_base, gamma, epsilon, tail,
                    dead, pooled, block_pos, max_cells, theta_scale, mtab);
@@ -131,7 +137,7 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
 void native_qsa_indexer_append_multi(const float* raw, const int32_t* relative_pos_device, int pos_stride,
                                      int n_tok, int32_t pos_base, const float* gamma, float epsilon,
                                      const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
-                                     float freq_base, void* stream) {
+                                     float freq_base, void* stream, float* tail_snap) {
     if (n_tok < 1 || pos_stride < 0 || (n_tok > 1 && pos_stride < 1))
         throw std::invalid_argument("native QSA indexer: n_tok >= 1 appends with a positive position stride");
     if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT ||
@@ -145,9 +151,15 @@ void native_qsa_indexer_append_multi(const float* raw, const int32_t* relative_p
     for (const auto& span : spans) validate(span);
     for (int i = 0; i < 7; ++i) for (int j = i + 1; j < 7; ++j)
         if (overlaps(spans[i], spans[j])) throw std::invalid_argument("native QSA indexer buffers overlap");
+    if (tail_snap != nullptr) {
+        const Span snap{tail_snap, (R - 1) * D * 4};
+        validate(snap);
+        for (const auto& span : spans)
+            if (overlaps(snap, span)) throw std::invalid_argument("native QSA indexer: the tail snapshot overlaps");
+    }
     const float theta_scale = powf(freq_base, -2.0f / ROT);
     append<<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_stride,n_tok,pos_base,gamma,
-        epsilon,b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,mrope_table());
+        epsilon,b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,mrope_table(),tail_snap);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

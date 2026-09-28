@@ -69,13 +69,19 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
                    int64_t n_embd, int64_t n_ff, int tpr, void* stream, const float* x_f32 = nullptr,
                    const NativeSharedWeights* native = nullptr);
 
-/// Plan v0.3 P6: the shared expert for `n_tok` <= 8 tokens (a verify window) with all three projections native:
-/// multi-column MMVQ, so the weights are read once; every token is bitwise `shared_expert` on that token.
-/// `x` (n_tok, n_embd) f32, `x_bf16` the same rounded (only read when the native BF16 gate is off), `gate`/`up`
-/// (n_tok, n_ff) scratch, `g` n_tok floats, `out` (n_tok, n_embd).  `nw.q8_1` must hold n_tok columns of n_embd.
-void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
-                         const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
-                         int64_t n_ff, void* stream);
+/// The native scalar gate applied: `g` (n_tok logits) becomes sigmoid(g), and each token's row of `out` (n_tok,
+/// n_embd) is multiplied by it.
+void shared_expert_gate_rows(float* out, float* g, int64_t n_embd, int n_tok, void* stream);
+
+/// Plan v0.3 P6: the shared expert for `n_tok` <= 8 tokens (a verify window) with all three projections and the gate
+/// native: multi-column MMVQ, so the weights are read once.  `x` (n_tok, n_embd) f32, `gate`/`up` (n_tok, n_ff)
+/// scratch; `out` (n_tok, n_embd) receives the down projection's rows and `g` the scalar gate's n_tok logits,
+/// computed on `gate_stream` (may be `stream`), so that the chain ends with the down projection:
+/// `shared_expert_gate_rows` on them, or `native_moe_gather_combine` applying them, gives every token bitwise
+/// `shared_expert` on that token.  `nw.q8_1` must hold n_tok columns of n_embd.
+void shared_expert_multi(int n_tok, const float* x, const NativeSharedWeights& nw, const uint16_t* gate_inp_bf16,
+                         float* gate, float* up, float* g, float* out, int64_t n_embd, int64_t n_ff, void* stream,
+                         void* gate_stream);
 
 /// The MoE block's final combination, `ref/moe.py::moe` L156:
 ///

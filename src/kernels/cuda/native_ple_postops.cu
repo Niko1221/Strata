@@ -110,13 +110,22 @@ __global__ void conv_residual_tokens_kernel(const float* history, const float* n
     const float activation = sum / (1.0f + expf(-sum));
     result[i] = __fadd_rn(hidden[i], __fadd_rn(gated[i], activation));
 }
-// The history after the chunk: its last nine normalized rows, older rows moved up when the chunk is shorter.
-__global__ void history_tokens_kernel(float* history, const float* normalized, int n_tok) {
+// The history after the chunk: its last nine normalized rows, older rows moved up when the chunk is shorter; with
+// `snaps`, the history after each of its tokens too.
+__global__ void history_tokens_kernel(float* history, const float* normalized, int n_tok, float* snaps) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= D) return;
     float old[HISTORY];
 #pragma unroll
     for (int r = 0; r < HISTORY; ++r) old[r] = history[c * HISTORY + r];
+    if (snaps != nullptr)
+        for (int t = 1; t <= n_tok; ++t)
+#pragma unroll
+            for (int r = 0; r < HISTORY; ++r) {
+                const int j = t - HISTORY + r;
+                snaps[size_t(t - 1) * HISTORY * D + c * HISTORY + r] =
+                    j >= 0 ? normalized[size_t(j) * D + c] : old[r + t];
+            }
 #pragma unroll
     for (int r = 0; r < HISTORY; ++r) {
         const int j = n_tok - HISTORY + r;
@@ -170,7 +179,8 @@ void native_ple_postops(const float* projected_key, const float* hidden,
 }
 
 void native_ple_postops_tokens(const float* projected_key, const float* hidden, const float* value, float* history,
-                               const PleWeights& w, const NativePleTokensBuffers& b, int n_tok, void* stream) {
+                               const PleWeights& w, const NativePleTokensBuffers& b, int n_tok, void* stream,
+                               float* snaps) {
     if (!stream || n_tok < 1) throw std::invalid_argument("native PLE postops: tokens need a stream and n_tok >= 1");
     const size_t rows = size_t(n_tok) * D * 4;
     const Span inputs[] = {{projected_key,rows,4}, {hidden,rows,4}, {value,size_t(n_tok)*N*4,4},
@@ -188,6 +198,14 @@ void native_ple_postops_tokens(const float* projected_key, const float* hidden, 
             if (!(i == 1 && j == 4 && b.query == b.normalized) && overlaps(outputs[i], outputs[j]))
                 throw std::invalid_argument("native PLE postops writable spans overlap");
     }
+    if (snaps != nullptr) {
+        const Span s{snaps, size_t(n_tok) * HISTORY * D * 4, 4};
+        validate(s);
+        for (const auto& span : inputs)
+            if (overlaps(s, span)) throw std::invalid_argument("native PLE postops: the snapshots overlap an input");
+        for (const auto& span : outputs)
+            if (overlaps(s, span)) throw std::invalid_argument("native PLE postops: the snapshots overlap an output");
+    }
     const int R = H * n_tok;
     const unsigned blocks = unsigned((size_t(n_tok) * D + 255) / 256);
     auto st = static_cast<cudaStream_t>(stream);
@@ -198,7 +216,7 @@ void native_ple_postops_tokens(const float* projected_key, const float* hidden, 
     launch_check();
     native_gr_rms_norm_weighted_repeat(b.gated,w.norm_conv,b.normalized,N,R,H,NG_RMS_EPS,stream);
     conv_residual_tokens_kernel<<<blocks,256,0,st>>>(history,b.normalized,w.conv1d_f16,hidden,b.gated,b.result,n_tok);
-    history_tokens_kernel<<<D/256,256,0,st>>>(history,b.normalized,n_tok);
+    history_tokens_kernel<<<D/256,256,0,st>>>(history,b.normalized,n_tok,snaps);
     launch_check();
 }
 } // namespace strata::kernels
