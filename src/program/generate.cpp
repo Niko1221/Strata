@@ -2226,12 +2226,17 @@ int main(int argc, char** argv) {
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
             else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
-            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
+            for (const auto& [i, slot] : pending) {
+                host_res[(size_t) i] = slot;
+                xcache.assign_slot(slot, (int64_t) (i / g.n_expert), (int64_t) (i % g.n_expert));
+            }
             pending.clear();
             if (d_res != nullptr)
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
         };
-        // the VRAM tier follows the conversation (the same rule as the speculative loop below)
+        static int64_t total_swaps = 0;
+        const std::vector<int32_t> initial_res = host_res;
+        // the VRAM tier follows the conversation (trickle continuous adaptation)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
             struct Swap { float gain; int32_t layer, in, out; };
@@ -2243,7 +2248,7 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) { if (u[e] >= 1.5f) cand.emplace_back(u[e], e); }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
@@ -2252,7 +2257,7 @@ int main(int argc, char** argv) {
                 std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
                                   [](auto& a, auto& b) { return a.first < b.first; });
                 for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + 1.5f) break;
+                    if (cand[i].first < vict[i].first + 1.0f) break;
                     swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
                 }
             }
@@ -2267,10 +2272,19 @@ int main(int argc, char** argv) {
                                     cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess)
                     return false;
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
+                xcache.evict_slot(slot);
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+                ++total_swaps;
+                std::fprintf(stderr,
+                    "[strata adapt #%lld] Layer %d: swap-in hot expert %d (usage %.1f) -> evicts cold expert %d (usage %.1f, gain +%.1f)\n",
+                    (long long) total_swaps, s.layer, s.in,
+                    (double) (s.gain + drive.d.usage[(size_t) s.layer * g.n_expert + s.out]),
+                    s.out, (double) drive.d.usage[(size_t) s.layer * g.n_expert + s.out],
+                    (double) s.gain);
+                std::fflush(stderr);
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
-            for (float& v : drive.d.usage) v *= 0.7f;
+            for (float& v : drive.d.usage) v *= 0.985f;
             return true;
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
@@ -2415,6 +2429,13 @@ int main(int argc, char** argv) {
                 if (d_res != nullptr)
                     cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
                 std::printf("OK %lld %lld\n", (long long) xcache.slots(), (long long) filled);
+                std::fflush(stdout);
+                continue;
+            }
+            if (line == "ADAPT") {
+                adapt();
+                apply_pending(true);
+                std::printf("OK\n");
                 std::fflush(stdout);
                 continue;
             }

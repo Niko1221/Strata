@@ -299,6 +299,17 @@ class StrataEngine:
             print(f"[strata] grow error: {e}", flush=True)
         return None
 
+    def adapt(self) -> bool:
+        """Trigger one round of MoE cache adaptation (swap hot experts into VRAM)."""
+        try:
+            self.proc.stdin.write("ADAPT\n")
+            self.proc.stdin.flush()
+            line = self.lines.get(timeout=5)
+            return bool(line and line.startswith("OK"))
+        except Exception as e:
+            print(f"[strata] adapt error: {e}", flush=True)
+            return False
+
     def close(self):
         try:
             self.proc.stdin.write("QUIT\n")
@@ -735,6 +746,8 @@ class Service:
                     gen.close()                         # STOP+drain to THIS request's DONE while still holding the
                     #                                     fifo, so a stop-token break can't leave the shared engine
                     #                                     queue mid-drain for the next request to read as its own DONE
+                    if hasattr(self.engine, "adapt"):
+                        self.engine.adapt()
         except GeneratorExit:                           # the client disconnected mid-stream
             finish = "disconnect"
             raise
