@@ -62,7 +62,8 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
     n_ff_ = n_ff;
     cap_ = (int64_t) max_t * k;
     DeviceScope scope(dev_, main_);
-    const size_t xb = (size_t) max_t * (size_t) n_embd * sizeof(float), ob = (size_t) cap_ * (size_t) n_embd * sizeof(float);
+    const size_t xb = (size_t) max_t * (size_t) (n_embd / 32) * 36;   // q8_1 rows
+    const size_t ob = (size_t) cap_ * (size_t) n_embd * sizeof(float);
     const size_t pb = PlanLayout(cap_).bytes;
     const unsigned pm = cudaHostAllocPortable | cudaHostAllocMapped;
     const char* step = nullptr;
@@ -77,7 +78,7 @@ bool SecondGpu::init(int device, int main_device, int64_t n_embd, int64_t n_ff, 
     run("pinned staging", cudaHostAlloc((void**) &h_plan_, pb, pm));
     run("mapped staging", cudaHostGetDevicePointer((void**) &m_x_, h_x_, 0));
     run("mapped staging", cudaHostGetDevicePointer((void**) &m_plan_, h_plan_, 0));
-    run("device buffers", cudaMalloc((void**) &d_xq_, (size_t) max_t * (size_t) (n_embd / 32) * 36));
+    run("device buffers", cudaMalloc((void**) &d_xq_, xb));
     run("device buffers", cudaMalloc((void**) &d_plan_, pb));
     run("device buffers", cudaMalloc((void**) &d_scratch_, strata::kernels::native_expert_scratch_bytes(cap_, n_ff)));
     run("device buffers", cudaMalloc((void**) &d_rows_, ob));
@@ -150,11 +151,11 @@ bool SecondGpu::graph_for(int gu_type, int d_type, int groups, int part, bool pr
     }
     try {
         if (prep) {
-            // a kernel copies the plan (a copy node costs ~15 us on this link); the grouped kernels read the group
-            // count from it and skip the groups past it
+            // kernels copy the plan and the activations (a copy node costs ~15 us on this link); the grouped kernels
+            // read the group count from the plan and skip the groups past it
             strata::kernels::copy_i32_from_mapped((int32_t*) d_plan_, (const int32_t*) m_plan_, (int64_t) P.bytes / 4,
                                                   s_);
-            strata::kernels::quantize_q8_1_rows(m_x_, max_t_, n_embd_, d_xq_, s_);
+            strata::kernels::copy_from_mapped((float*) d_xq_, (const float*) m_x_, max_t_ * (n_embd_ / 32) * 9, s_);
         }
         strata::kernels::native_expert_grouped(L, p64 + part * cap_, pi + P.starts[part], pi + part, pi + P.dst,
                                                pi + P.tok, groups, cap_, d_xq_, d_scratch_, d_rows_, s_);
@@ -180,9 +181,9 @@ bool SecondGpu::graph_for(int gu_type, int d_type, int groups, int part, bool pr
     return true;
 }
 
-bool SecondGpu::submit(int64_t layer, const float* x, int n_tok, int64_t k, const int32_t* slots, const int32_t* starts,
-                       const int32_t* entries, int n_groups, float* out, uint32_t* flag, uint32_t ring,
-                       std::string& err) {
+bool SecondGpu::submit(int64_t layer, const uint8_t* x, int n_tok, int64_t k, const int32_t* slots,
+                       const int32_t* starts, const int32_t* entries, int n_groups, float* out, uint32_t* flag,
+                       uint32_t ring, std::string& err) {
     const int n = starts[n_groups];
     if (n_groups <= 0 || n > cap_ || n_tok > max_t_) { err = "second GPU: a layer's share is out of range"; return false; }
     cudaError_t q;
@@ -217,7 +218,7 @@ bool SecondGpu::submit(int64_t layer, const float* x, int n_tok, int64_t k, cons
     p64[2 * cap_] = (unsigned long long) out;
     p64[2 * cap_ + 1] = ng[1] == 0 ? (unsigned long long) flag : 0;   // the last launch raises it
     p64[2 * cap_ + 2] = ng[1] > 0 ? (unsigned long long) flag : 0;
-    std::memcpy(h_x_, x, (size_t) n_tok * (size_t) n_embd_ * sizeof(float));
+    std::memcpy(h_x_, x, (size_t) n_tok * (size_t) (n_embd_ / 32) * 36);
     const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) layer];
     DeviceScope scope(dev_, main_);
     cudaGraphExec_t own = nullptr, pre = nullptr;

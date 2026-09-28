@@ -409,12 +409,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     const bool skip_gpu_rows = d.plan != nullptr && d.plan->host_rows_only;
     const auto c1 = std::chrono::steady_clock::now();
+    // the gate/up activations: the window's router wrote them as Q8_K rows when the layer takes those
+    const uint8_t* xk = native && d.plan != nullptr ? d.plan->xk : nullptr;
+    auto nact = [&](int64_t t) -> const void* {
+        return xk != nullptr ? xk + (size_t) t * (size_t) d.plan->xk_stride
+                             : d.nact_multi.data() + (size_t) t * kNativeActBytes;
+    };
     if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
-    else if (native)
+    else if (native && xk == nullptr)
         for (int64_t t = 0; t < n_tok; ++t)
             native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * H, d.nact_multi.data() + (size_t) t * kNativeActBytes);
-    else
+    else if (!native)
         for (int64_t t = 0; t < n_tok; ++t) act_quant_q8_1(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
     const auto c2 = std::chrono::steady_clock::now();
     int njobs = 0;
@@ -455,27 +461,26 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
             ExpertJobMulti& jb = d.jobs_multi[(size_t) jo];
             jb.act[jb.nt] = &d.act_multi[(size_t) t];
-            jb.nact[jb.nt] = native ? d.nact_multi.data() + (size_t) t * kNativeActBytes : nullptr;
+            jb.nact[jb.nt] = native ? nact(t) : nullptr;
             jb.out[jb.nt] = row;
             ++jb.nt;
             ++d.multi_entries;
         }
     const auto c3 = std::chrono::steady_clock::now();
     // the second GPU's share goes out once the CPU's workers have started on theirs: its launch takes the host
-    // tens of microseconds.  It writes its rows into `out` itself.
+    // tens of microseconds.  It takes the q8_1 rows the window's router wrote, and writes its rows into `out` itself.
     struct Submit2 {
         ExpertDispatch* d;
-        const float* x;
         int n_tok, n_groups;
         int64_t k;
         const int32_t *slots, *starts, *entries;
         float* out;
         bool ok;
-    } s2{&d, x_f, (int) n_tok, n2g, k, g2_slot, g2_start, g2_ent, out, true};
+    } s2{&d, (int) n_tok, n2g, k, g2_slot, g2_start, g2_ent, out, true};
     void (*submit2)(void*) = [](void* p) {
         Submit2& s = *(Submit2*) p;
         GpuPlanSink& S = *s.d->plan;
-        s.ok = s.d->gpu2->submit(s.d->layers, s.x, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.out,
+        s.ok = s.d->gpu2->submit(s.d->layers, S.x1, s.n_tok, s.k, s.slots, s.starts, s.entries, s.n_groups, s.out,
                                  S.gpu2_flag, S.ring, s.d->gpu2_err);
         if (s.ok) S.gpu2_ring = S.ring;
     };

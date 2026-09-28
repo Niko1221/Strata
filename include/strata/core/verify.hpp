@@ -20,7 +20,9 @@
 // EXPERTS.  The main GPU computes the routed experts its VRAM tier holds, decided in the graph from a snapshot of the
 // residency table that the pool reads too (`residency`), so neither waits for the other; its shared expert runs on a
 // branch of its own beside them.  The pool computes the rest on the CPU and the second GPU, and with a PCIe share
-// publishes the missed experts the GPU reads over PCIe.
+// publishes the missed experts the GPU reads over PCIe.  With the native router and a native pack the router kernel
+// writes their input in the forms they take: ggml's Q8_K rows for the CPU (`pool_takes_q8k` layers) and q8_1 rows for
+// the GPUs, so neither quantizes it.
 //
 // Requires the default native decode configuration (native projections, fused GR, fused GDN, fast attention and
 // selection, native indexer) and a profile-filled VRAM expert tier.
@@ -200,6 +202,13 @@ private:
     bool pcie_share_ = true;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    // the FFN input as the router kernel writes it (quant_router_): Q8_K rows `xk_stride_` bytes apart for the layers
+    // the pool takes them (xk_layer_), q8_1 rows for the second GPU
+    bool quant_router_ = false;
+    std::vector<uint8_t> xk_layer_;
+    int64_t xk_stride_ = 0;
+    uint8_t* h_xk_ = nullptr;    uint8_t* m_xk_ = nullptr;      // T rows
+    uint8_t* h_xq1_ = nullptr;   uint8_t* m_xq1_ = nullptr;     // T rows of n_embd / 32 blocks
     // the second GPU's share (set_gpu2), per token group: the flag it raises (64 bytes apart) and its entries,
     // [n, pad x3, entries] (mapped; `list2_` their device copies, which the combine reads)
     bool gpu2_ = false;

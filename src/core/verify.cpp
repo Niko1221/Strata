@@ -108,7 +108,7 @@ Verifier::~Verifier() {
     if (stamps_) cudaFree(stamps_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_, h_rows_, h_res_, h_flag2_,
-                     h_list2_};
+                     h_list2_, h_xk_, h_xq1_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -160,6 +160,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // ---- mapped staging (portable where the second GPU writes: its rows and flags)
     const unsigned portable = cudaHostAllocMapped | cudaHostAllocPortable;
     list2_stride_ = (4 + (int64_t) (T * K) + 3) & ~3ll;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    quant_router_ = strata::kernels::native_router_enabled() && lay.native;
+    xk_layer_.assign((size_t) g.n_layers, 0);
+    for (int64_t l = 0; quant_router_ && l < g.n_layers; ++l)
+        xk_layer_[(size_t) l] = pool_takes_q8k(lay.fmt[(size_t) l]);
+    xk_stride_ = ((int64_t) (N / 256) * 292 + 15) & ~15ll;
     bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(T * strata::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
               mapped(T * NH * 4, (void**) &h_pos_, (void**) &m_pos_) &&
@@ -176,6 +182,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_, portable) &&
               mapped(128, (void**) &h_flag2_, (void**) &m_flag2_, portable) &&
               mapped((size_t) (2 * list2_stride_) * 4, (void**) &h_list2_, (void**) &m_list2_) &&
+              mapped(T * (uint64_t) xk_stride_, (void**) &h_xk_, (void**) &m_xk_) &&
+              mapped(T * (N / 32) * 36, (void**) &h_xq1_, (void**) &m_xq1_) &&
               mapped(2 * T * K * 4, (void**) &h_pids_, (void**) &m_pids_) &&
               mapped(2 * T * K * 4, (void**) &h_pw_, (void**) &m_pw_) &&
               mapped(64, (void**) &h_pseq_, (void**) &m_pseq_) &&
@@ -354,6 +362,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             gpu_stamp(stamps_ + ((size_t) T * (size_t) (g.n_layers + 1) + (size_t) row) * kStamps + i, st);
     };
     stamp(g.n_layers, 0, cs);
+    if (gpu2_ && !quant_router_) {
+        err = "verify: the second GPU takes the native router's q8_1 rows (a native pack)";
+        return false;
+    }
     // the layer's short branches: `fork` starts stream `to` from the main stream's work so far, `mark` records what
     // `from` has queued, `wait` makes the main stream wait for a mark
     auto fork = [&](cudaStream_t to, cudaEvent_t ev) {
@@ -672,14 +684,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                       wn1 != nullptr ? (const float*) wn1->data : nullptr,
                       wn1 != nullptr ? gate_ema_ + (size_t) (l + 1) * HC * N : nullptr);
         stamp(l, 3, cs);
-        // the routed experts' activations beside the router (joined before the experts)
-        if (!fork(side_, bfork_)) return false;
-        if (strata::kernels::cpu::expert_layout().native)
-            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, side_);
-        else
-            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N,
-                                 side_);
-        if (!mark(side_, bjoin_)) return false;
+        // the routed experts' activations: from the router kernel, else beside it (joined before the experts)
+        if (!quant_router_) {
+            if (!fork(side_, bfork_)) return false;
+            if (strata::kernels::cpu::expert_layout().native)
+                quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, side_);
+            else
+                quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32),
+                                     (int64_t) n * N, side_);
+            if (!mark(side_, bjoin_)) return false;
+        }
         // the router, the doorbell and the main GPU's routed experts - the ones its VRAM tier holds, decided here from
         // the residency snapshot the pool reads too (it leaves their rows to the GPU)
         if (l == 0 && grp == 0 && cudaStreamWaitEvent(cs, res_ready_, 0) != cudaSuccess) {
@@ -693,7 +707,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             VerifyRouterArgs ra;
             ra.x = xm; ra.w = (const uint16_t*) wr->data; ra.logits = logits_ + tb * NE;
             ra.ids = ids_ + tb * K; ra.weights = w_ + tb * K;
-            ra.x_out = m_x_ + tb * N; ra.ids_out = m_ids_ + tb * K; ra.w_out = m_w_ + tb * K; ra.seq = m_seq_;
+            ra.x_out = xk_layer_[(size_t) l] ? nullptr : m_x_ + tb * N;
+            ra.ids_out = m_ids_ + tb * K; ra.w_out = m_w_ + tb * K; ra.seq = m_seq_;
+            if (quant_router_) {   // the q8_1 rows for both GPUs' experts, the Q8_K rows for the CPU's
+                ra.xq1 = nat_xq_ + (size_t) tb * (N / 32) * 36;
+                ra.xq1_out = gpu2_ ? m_xq1_ + (size_t) tb * (N / 32) * 36 : nullptr;
+                ra.xk_out = xk_layer_[(size_t) l] ? m_xk_ + (size_t) tb * (size_t) xk_stride_ : nullptr;
+                ra.xk_stride = (int) xk_stride_;
+            }
             ra.ring = (uint32_t) (l * G + grp + 1);   // the rings so far (the host waits for this one)
             ra.res = res_ + (size_t) l * NE; ra.slot_ptr = slot_ptr_; ra.plan = hit_plan;
             ra.cap = (int) (MT * K); ra.ptr_off = (int) plan_ptr_off_;
@@ -763,7 +784,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             err = "verify: the prediction branch could not join";
             return false;
         }
-        if (!wait(bjoin_)) return false;
+        if (!quant_router_ && !wait(bjoin_)) return false;
         stamp(l, 5, cs);
         return beside || shared(l, grp);
     };
@@ -1134,6 +1155,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        sink_.xk = xk_layer_[(size_t) l] ? h_xk_ + (size_t) tb * (size_t) xk_stride_ : nullptr;
+        sink_.xk_stride = xk_stride_;
+        sink_.x1 = h_xq1_ + (size_t) tb * (size_t) (g.n_embd / 32) * 36;
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);

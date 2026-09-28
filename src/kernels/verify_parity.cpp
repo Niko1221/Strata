@@ -6,8 +6,10 @@
 // prompt path's batched PLE and GDN arithmetic is held to the same standard; its attention kernel, which sums in
 // another order, is checked against the decode kernel within a tolerance.
 #include "strata/kernels/bf16_gemv.hpp"
+#include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -443,6 +445,103 @@ int test_verify_router(std::mt19937& rng, cudaStream_t s) {
                 bad ? "MISMATCH"
                     : "bitwise the gemv, top 10, doorbell and hit plan (1-8 tokens, 4 routings each), and with a bias "
                       "the logits plus it and its update");
+    return bad;
+}
+
+// ---- the router kernel's forms of its input: the q8_1 rows  vs  quantize_q8_1_rows, the Q8_K rows  vs  ggml's
+// quantize_row_q8_K (the CPU pool's native_quant_act), the floats  vs  the input
+int test_router_rows(std::mt19937& rng, cudaStream_t s) {
+    const int N = 2560, NE = 512, FF = 640;
+    const size_t row1 = N / 32 * 36, stride = 2928;
+    strata::kernels::cpu::NativeFmt f;
+    std::string ferr;
+    if (!strata::kernels::cpu::native_fmt(18, 20, N, FF, f, ferr) || f.act_bytes != (size_t) (N / 256 * 292)) {
+        std::fprintf(stderr, "router_rows: %s\n", ferr.empty() ? "IQ3_XXS's activation is not Q8_K" : ferr.c_str());
+        return 1;
+    }
+    std::vector<uint16_t> w((size_t) NE * N);
+    std::normal_distribution<float> nd(0.0f, 0.05f);
+    for (auto& v : w) {
+        const float x = nd(rng);
+        uint32_t b;
+        std::memcpy(&b, &x, 4);
+        v = (uint16_t) (b >> 16);
+    }
+    uint16_t* d_w = dev<uint16_t>(w.size());
+    up(d_w, w);
+    float *d_x = dev<float>((size_t) 8 * N), *d_logits = dev<float>((size_t) 8 * NE), *d_wts = dev<float>(80);
+    int32_t* d_ids = dev<int32_t>(80);
+    unsigned* d_counter = dev<unsigned>(1);
+    check(cudaMemset(d_counter, 0, 4), "memset");
+    uint8_t *d_q1 = dev<uint8_t>(8 * row1), *d_ref = dev<uint8_t>(8 * row1);
+    uint8_t *h_q1 = nullptr, *m_q1 = nullptr, *h_xk = nullptr, *m_xk = nullptr;
+    float *h_x = nullptr, *m_x = nullptr;
+    uint32_t *h_seq = nullptr, *m_seq = nullptr;
+    check(cudaHostAlloc((void**) &h_q1, 8 * row1, cudaHostAllocMapped), "cudaHostAlloc");
+    check(cudaHostAlloc((void**) &h_xk, 8 * stride, cudaHostAllocMapped), "cudaHostAlloc");
+    check(cudaHostAlloc((void**) &h_x, (size_t) 8 * N * 4, cudaHostAllocMapped), "cudaHostAlloc");
+    check(cudaHostAlloc((void**) &h_seq, 64, cudaHostAllocMapped), "cudaHostAlloc");
+    check(cudaHostGetDevicePointer((void**) &m_q1, h_q1, 0), "mapped");
+    check(cudaHostGetDevicePointer((void**) &m_xk, h_xk, 0), "mapped");
+    check(cudaHostGetDevicePointer((void**) &m_x, h_x, 0), "mapped");
+    check(cudaHostGetDevicePointer((void**) &m_seq, h_seq, 0), "mapped");
+    int bad = 0;
+    for (int n_tok = 1; n_tok <= 8; ++n_tok) {
+        for (int rep = 0; rep < 4; ++rep) {
+            std::vector<float> x((size_t) n_tok * N);
+            for (auto& v : x) v = rng() % 32 == 0 ? edgy(rng) : std::normal_distribution<float>(0.0f, 1.0f)(rng);
+            if (rep == 1) std::fill(x.begin(), x.begin() + 256, 0.0f);   // a zero block (and eight q8_1 ones)
+            if (rep == 2) {   // the largest magnitude twice, in two warps and in one: the first one counts
+                x[7] = 5e4f;
+                x[40] = -5e4f;
+                x[256 + 3] = -6e4f;
+                x[256 + 20] = 6e4f;
+            }
+            up(d_x, x);
+            std::memset(h_q1, 0xcd, 8 * row1);
+            std::memset(h_xk, 0xcd, 8 * stride);
+            std::memset(h_x, 0xcd, (size_t) 8 * N * 4);
+            strata::kernels::VerifyRouterArgs a;
+            a.x = d_x; a.w = d_w; a.logits = d_logits; a.ids = d_ids; a.weights = d_wts;
+            a.xq1 = d_q1; a.xq1_out = m_q1;
+            a.xk_out = rep == 3 ? nullptr : m_xk; a.xk_stride = (int) stride;
+            a.x_out = rep == 3 ? m_x : nullptr;   // a layer the pool takes as floats
+            a.seq = m_seq; a.ring = 1; a.counter = d_counter; a.n_tok = n_tok; a.n_embd = N; a.n_expert = NE;
+            strata::kernels::verify_router(a, s);
+            strata::kernels::quantize_q8_1_rows(d_x, n_tok, N, d_ref, s);
+            check(cudaStreamSynchronize(s), "router rows");
+            int b = 0;
+            const std::vector<uint8_t> ref = down(d_ref, (size_t) n_tok * row1);
+            if (down(d_q1, ref.size()) != ref || std::memcmp(h_q1, ref.data(), ref.size()) != 0) {
+                std::fprintf(stderr, "router_rows: n_tok %d rep %d: the q8_1 rows differ\n", n_tok, rep);
+                ++b;
+            }
+            for (int t = 0; t < n_tok && rep != 3; ++t) {
+                std::vector<uint8_t> want(strata::kernels::cpu::kNativeActBytes, 0);
+                strata::kernels::cpu::native_quant_act(f, x.data() + (size_t) t * N, want.data());
+                const uint8_t* got = h_xk + (size_t) t * stride;
+                for (size_t i = 0; i < f.act_bytes; ++i)
+                    if (got[i] != want[i]) {
+                        std::fprintf(stderr, "router_rows: n_tok %d rep %d token %d: Q8_K byte %zu (block %zu) %02x "
+                                             "vs ggml's %02x\n", n_tok, rep, t, i, i / 292, got[i], want[i]);
+                        ++b;
+                        break;
+                    }
+            }
+            if (rep == 3 && std::memcmp(h_x, x.data(), x.size() * 4) != 0) {
+                std::fprintf(stderr, "router_rows: n_tok %d: the float copy differs\n", n_tok);
+                ++b;
+            }
+            bad += b;
+        }
+    }
+    for (void* q : {(void*) h_q1, (void*) h_xk, (void*) h_x, (void*) h_seq}) cudaFreeHost(q);
+    for (void* q : {(void*) d_w, (void*) d_x, (void*) d_logits, (void*) d_wts, (void*) d_ids, (void*) d_counter,
+                    (void*) d_q1, (void*) d_ref})
+        cudaFree(q);
+    std::printf("router_rows: %s\n", bad ? "MISMATCH"
+                                         : "the q8_1 rows bitwise quantize_q8_1_rows', the Q8_K rows ggml's, the float "
+                                           "copy the input (1-8 tokens, denormals, zero blocks, tied maxima)");
     return bad;
 }
 
@@ -1028,6 +1127,7 @@ int main(int argc, char** argv) {
     bad += test_mmvf_multi(rng, s);
     bad += test_router_multi(rng, s);
     bad += test_verify_router(rng, s);
+    bad += test_router_rows(rng, s);
     bad += test_gr_read(rng, s);
     bad += test_rope_tokens(rng, s);
     bad += test_kv_append(rng, s);

@@ -3,7 +3,7 @@
 // It holds experts the first GPU's cache does not (the profile's next ranks, then the conversation's, through its
 // own AdaptiveTier) and computes them for each layer of a verify window while the CPU pool computes the misses.
 // It never spins on host memory: per layer the host launches captured graphs once the CPU pool's workers have
-// started (copy the plan in, quantize the activations, the grouped experts, their rows out), and the last one writes
+// started (copy the plan and the activations in, the grouped experts, their rows out), and the last one writes
 // the rows into the window's own rows in mapped host memory and raises a flag there, which the first GPU waits for;
 // so it keeps its latency on a GPU that also drives a display (a graph spinning there stalls whenever the desktop
 // draws).  The rows cross PCIe in 16-byte stores: written one float at a time they took ~0.2 ms a layer and slowed the
@@ -53,10 +53,11 @@ public:
     }
 
     /// One layer's share: group g is the expert in slot `slots[g]`, serving the routed entries
-    /// `entries[starts[g] .. starts[g+1])` (entry i = token i/k).  `x` holds the window's n_tok activations.  Entry
-    /// i's row goes to row i of `out` (n_embd floats, mapped host memory), and then `*flag` (mapped) is set to `ring`.
-    /// Waits for the last share's graphs first (the plan and staging are theirs until then).
-    bool submit(int64_t layer, const float* x, int n_tok, int64_t k, const int32_t* slots, const int32_t* starts,
+    /// `entries[starts[g] .. starts[g+1])` (entry i = token i/k).  `x` holds the window's n_tok activations as q8_1
+    /// rows (n_embd / 32 blocks each).  Entry i's row goes to row i of `out` (n_embd floats, mapped host memory), and
+    /// then `*flag` (mapped) is set to `ring`.  Waits for the last share's graphs first (the plan and staging are
+    /// theirs until then).
+    bool submit(int64_t layer, const uint8_t* x, int n_tok, int64_t k, const int32_t* slots, const int32_t* starts,
                 const int32_t* entries, int n_groups, float* out, uint32_t* flag, uint32_t ring, std::string& err);
     /// False, with the reason, when its work so far failed; does not wait.
     bool healthy(std::string& err) const;
@@ -74,14 +75,14 @@ private:
     ExpertCache cache_;
     cudaStream_t s_ = nullptr;
     cudaEvent_t ev_ = nullptr;
-    // pinned staging (portable, mapped): the activations and the plan
-    float *h_x_ = nullptr, *m_x_ = nullptr;
+    // pinned staging (portable, mapped): the activations (q8_1 rows) and the plan
+    uint8_t *h_x_ = nullptr, *m_x_ = nullptr;
     uint8_t *h_plan_ = nullptr, *m_plan_ = nullptr;
     uint8_t *d_xq_ = nullptr, *d_plan_ = nullptr, *d_scratch_ = nullptr;
     float* d_rows_ = nullptr;        // the rows, then copied out in full transactions
     unsigned* d_count_ = nullptr;    // the rows-out kernel's block counter
     // part 0: the experts in its cache, launched at once; part 1: the prefetched ones, after their copies.  `prep`: the
-    // graph copies the plan and quantizes the activations (the first launch of a layer)
+    // graph copies the plan and the activations in (the first launch of a layer)
     struct Graph { int gu, d, groups, part; bool prep; cudaGraphExec_t exec; };
     std::vector<Graph> graphs_;
     // prefetch slots, their copy stream, and the event of the last copies
