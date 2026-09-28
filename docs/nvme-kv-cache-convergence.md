@@ -145,19 +145,20 @@ the per-layer KV / pooled / tail / dead / `block_pos` segments, the drafter arra
 **The four ways it breaks the boundary their core draws.**  Their rule (C9) is that a disk adapter must not
 serialize C++ structs, pointers or native vector layouts, and must define a versioned envelope.
 
-1. **A raw C++ struct is copied into the envelope.**  `src/platform/kv_nvme.cpp:176` writes `&h, sizeof h`;
-   `:288` and `:412` read it back the same way.  There is no field-by-field encode/decode, so the file is a
-   picture of one compiler's struct rather than a described record.
+1. **A raw C++ struct is copied into the envelope.**  `nvme_dump_at` writes `&h, sizeof h`
+   (`src/platform/kv_nvme.cpp:200`); `nvme_restore` (`:313`) and `KvNvmeStore::open` (`:438`) read it back the
+   same way.  There is no field-by-field encode/decode, so the file is a picture of one compiler's struct rather
+   than a described record.
 2. **The ABI is implicit.**  The file states no offsets, widths, endianness or padding; they come from the
    translation unit that wrote it.  Every field is fixed-width, so on the toolchains we build with the struct
    happens to be padding-free - but nothing checks that, and a reordered or widened field would silently
    re-map every segment after it.  Worse, the payload digest deliberately covers only
-   `[sizeof(NvmeHeader), at)` (`src/platform/kv_nvme.cpp:362-363`), so the one thing that can move the whole
-   layout is the one thing the integrity footer cannot see.
-3. **There is no versioned envelope.**  `version` is compared for exact equality with `2` (`:289`, `:412`);
+   `[sizeof(NvmeHeader), at)` (`:386-388`), so the one thing that can move the whole layout is the one thing the
+   integrity footer cannot see.
+3. **There is no versioned envelope.**  `version` is compared for exact equality with `2` (`:314`, `:438`);
    there is no segment table, no per-segment size or offset, and no older-reader rule.  The restore
    **re-derives** every segment length from the live engine (`sizes_of()`, `qsa_real_shapes()`,
-   `idx_pooled_rows`, `max_cells`) and then compares the walk's end with the file size (`:344-356`).  That is
+   `idx_pooled_rows`, `max_cells`) and then compares the walk's end with the file size (`:369-382`).  That is
    why a sizing change surfaces as *"layout mismatch ... idx_pooled_rows / PLE / drafter ring changed?"*
    instead of as a version negotiation: the format cannot describe itself.
 4. **Its geometry tag is a derived projection, not the shared core's geometry key.**  The eight fields are
@@ -182,7 +183,7 @@ serialize C++ structs, pointers or native vector layouts, and must define a vers
 - the **turn-boundary key stated as a format property** (C1): the ids, the images and the running state all
   describe position `L`, and the envelope says so.
 
-Step 2 moved no field, no offset and no sizing formula.  `src/platform/kv_nvme.cpp:31-33` is what proves the one
+Step 2 moved no field, no offset and no sizing formula.  `src/platform/kv_nvme.cpp:36-39` is what proves the one
 record type that changed *name* (`std::pair<int64_t, uint64_t>` -> `ConversationImageKey`) did not change
 layout.
 
@@ -210,6 +211,53 @@ They ask: *"how #52 would consume the snapshot without unbounded promotion stagi
 4. Add the missing fixtures (C2, C3, C8): non-block-aligned turn boundary, distinct `idx_dead`,
    `block_pos` at the boundary, one shared state-hash formula.
 5. Reconcile the failure contract (C7): prove the clean-reset fallback or adopt their fatal rule.
+
+## Where step 2 stands, and what step 3 inherits
+
+Step 2 is `114300f` plus the corrections that finish it:
+
+| commit | what it settled |
+|---|---|
+| `114300f` | the core is imported; `ImgKey` / `ConvCheckpoint` / `ConvStateSizes` are aliases of the shared types; `checkpoint_save` / `checkpoint_restore` / `conv_state_sizes` are wrappers over it; the turn-boundary hand-off is one `ConversationCheckpoint*` instead of three raw pointers; the RAM policy stays dormant |
+| `cbced52` | "Where step 2 leaves NvmeHeader" above - the section `kv_nvme.hpp` already pointed at |
+| `6585361` | a turn-boundary snapshot wrote the **live** image list instead of the boundary's |
+| `49d0b7d` | `NvmeEntry::imgs` was never filled, so every image comparison in the tier compared against nothing |
+| `2b54acd` | the core's diagnostic string was discarded at all four wrappers, and `sizes_of` discarded its `bool` with it |
+| `41f8777` | the image-record `static_assert` pinned the record's size, not its layout |
+| `740b29d` | the `block_pos` envelope comment named a field shape that does not exist |
+
+**Why the two image bugs were fixed here instead of left to C1.**  They are C1's subject matter, not C1's open
+decision.  C1's rule is already written down - *a spill re-keys at the turn boundary; it does not copy the parked
+image* - and the image list is part of the key rather than a format choice: the resume match compares the next
+request's pictures below `e.L` against what the entry holds, so a snapshot whose pictures describe a longer
+prefix than its ids do is unreachable, full stop.  Neither fix moves a field, an offset or a sizing formula, and
+`114300f` is what made the first one a one-line change: the boundary arrives as one `ConversationCheckpoint`, and
+that checkpoint already carries the filtered list.  Leaving them would have put step 3 on top of a cold tier that
+silently does nothing for every conversation containing a picture.
+
+**Open items step 3 owns - do not lose these:**
+
+- **C1's fixture, not C1's rule.**  Nothing in this tree proves turn-boundary keying end to end, and both image
+  bugs above survived because of that.  The fixture step 4 must add: a boundary that is **not** `idx_block`-
+  aligned, an image whose `start` is **at or past** the boundary (the exact shape that hid both), and a second
+  request that re-sends the prompt without the model's reasoning tokens - asserting a **promote**, not merely a
+  successful dump.  Until it exists the image path of the tier is untested: `tools/nvme_p0_test.sh`,
+  `tools/nvme_steps123_test.sh` and `tools/needle_bench.py` are all text-only, and all three need the GPU this
+  branch may not take.
+- **C1's remaining policy**: whether `nvme_dump_at` is also the spill primitive for a *RAM-tier* eviction (their
+  `ConversationCache` evicts on a byte budget; our dump is driven by DONE), and what spilling a parked rather
+  than a live session costs.
+- **C4, C5, C6** - one pooled-row formula, whose `dead` / `block_pos` the envelope owns, and where the drafter
+  ring is restored.  These are the format decisions the `NvmeHeader` section is the input to.
+- **C7, C8, C9, C10, C11** are untouched by step 2.
+- **The RAM policy stays imported dormant, on purpose.**  `ConversationCache`, `conversation_prefix`,
+  `SavedConversation`, `conversation_checkpoint_validate`, `conversation_snapshot_*`, `conversation_kv_*`,
+  `conversation_available_memory` and `conversation_memory_admit` are compiled or present and called by nothing
+  outside the core - the only non-core mention in the tree is a comment.  Only
+  `conversation_state_sizes` and `conversation_checkpoint_{save,restore}` are live on our side, and both are
+  called from `generate.cpp` and `kv_nvme.cpp`.  `src/core/conversation_memory.cpp` was deliberately not
+  imported, so `conversation_memory.hpp` is a declaration with no definition behind it.  Wiring the rest in is a
+  step-3 decision, not a step-2 leftover.
 
 ## Hard constraints for this branch
 
