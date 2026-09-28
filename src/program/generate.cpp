@@ -3714,9 +3714,15 @@ int main(int argc, char** argv) {
             bool r_cvec = false;
             int64_t rL = 0;
             std::string rerr;
-            if (strata::platform::nvme_restore(o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs,
-                                               r_cvec, rL, rerr) != strata::core::ConversationRestore::restored) {
-                std::fprintf(stderr, "strata serve: nvme_restore failed: %s\n", rerr.c_str());
+            const strata::core::ConversationRestore got = strata::platform::nvme_restore(
+                o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs, r_cvec, rL, rerr);
+            if (got != strata::core::ConversationRestore::restored) {
+                // At startup both classes are fatal for the same reason in reverse: the operator asked for THIS
+                // file, and there is no live session to fall back to.  The message still names which one it was,
+                // because the two have different fixes - one is the file, the other is the machine.
+                std::fprintf(stderr, "strata serve: nvme_restore failed (%s): %s\n",
+                             got == strata::core::ConversationRestore::transfer_failed ? "transfer" : "refused",
+                             rerr.c_str());
                 return 1;
             }
             // C6: no refill here.  `nvme_restore` refilled the drafter's ring as part of applying the snapshot it
@@ -3968,12 +3974,37 @@ int main(int argc, char** argv) {
                     strata::platform::kv_nvme_match(kvstore.entries(), ids, req_imgs, cvec_cached, resume);
                 if (best != nullptr) {
                     std::string nerr;
-                    const strata::core::ConversationRestore rstored =
+                    const strata::core::ConversationRestore got =
                         kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
-                    if (rstored != strata::core::ConversationRestore::restored) {
-                        // a snapshot that will not restore is not worth keeping; and a half-applied one must not be
-                        // trusted: fall back to the clean path (session_zero + full read), never a mixed state
-                        std::fprintf(stderr, "strata serve: nvme promote failed (%s); reading the prompt instead\n",
+                    if (got == strata::core::ConversationRestore::transfer_failed) {
+                        // **FATAL, BY THE CONTRACT** (docs/nvme-kv-cache-design.md §4.6).  A CUDA copy or sync
+                        // failure happens AT OR AFTER the first write, and the apply pass is a loop: the session is
+                        // half-applied by construction (`kv_nvme_host_test` shows it - fail the second device copy
+                        // and the GDN state is the snapshot's while the PLE history is not), and nothing has yet
+                        // shown the CUDA context still answers.  The clean path below is exactly the recovery the
+                        // shared core's boundary says needs "its own proof that the CUDA context remains usable",
+                        // and this tier does not have that proof, so it does not attempt it.  This is also what the
+                        // RAM tier already does with a failed checkpoint restore (`ERR …` + `return 1`, a few lines
+                        // below), and what `serve/server.py:686-695` turns into a real recovery: the next request
+                        // restarts the engine, and a NEW PROCESS is a new CUDA context, a new pinned arena and new
+                        // graphs - the state an in-process reset could not prove it reached.
+                        // The snapshot is NOT dropped: a transfer failure says nothing about the file.
+                        std::fprintf(stderr, "strata serve: nvme promote FAILED (transfer): %s\n", nerr.c_str());
+                        std::fprintf(stderr, "strata serve: the snapshot is half-applied and nothing proves the CUDA "
+                                             "context still answers - not attempting a clean reset. The snapshot is "
+                                             "left on disk; stopping this engine.\n");
+                        std::printf("ERR restoring a stored conversation snapshot failed: %s\n", nerr.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    if (got != strata::core::ConversationRestore::restored) {
+                        // RECOVERABLE.  The tier refused BEFORE it wrote anything - `kv_nvme_host_test` asserts each
+                        // of these paths makes zero CUDA calls and leaves every session buffer at its sentinel - so
+                        // the clean path (session_zero + full read) has nothing to undo, and a snapshot the tier
+                        // will not read is not worth keeping.  The one exception is the store's own stale-index
+                        // case, which is recoverable for the opposite reason: the restore applied everything and its
+                        // final sync succeeded, which IS the proof a clean reset needs (kv_nvme.cpp).
+                        std::fprintf(stderr, "strata serve: nvme promote refused (%s); reading the prompt instead\n",
                                      nerr.c_str());
                         kvstore.drop(*best);
                         resume = 0;
