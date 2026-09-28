@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "strata/core/conversation_cache.hpp"  // ConversationImageKey, ConversationCheckpoint
 #include "strata/core/layer.hpp"   // QsaState
 #include "strata/core/session.hpp" // SessionState
 #include "strata/core/weights.hpp" // ModelGeometry
@@ -23,6 +24,12 @@
 namespace strata::platform {
 
 /// On-disk header.  Carries the geometry + format tag so a restore refuses (never converts) a mismatch.
+///
+/// THIS IS A RAW C++ STRUCT COPIED INTO THE ENVELOPE, which is exactly what the shared core's boundary forbids for
+/// a disk adapter (no C++ structs, no native layout, an implicit ABI).  It stays that way in this step on purpose
+/// - the format is not changed here.  See docs/nvme-kv-cache-convergence.md ("Where step 2 leaves NvmeHeader")
+/// for the full list of violations and for the shared core's own key (`SavedConversation::geometry`), which is
+/// what this tag has to become in step 3.  No second geometry key is introduced here.
 struct NvmeHeader {
     uint32_t magic = 0x5E564D45;   // "^VME"
     uint32_t version = 2;          // v2 adds `mtp_host` (the drafter arrays written)
@@ -30,7 +37,10 @@ struct NvmeHeader {
     int64_t n_imgs = 0;
     int32_t cvec = 0;
     int32_t kv_format = 0;         // strata::kernels::KvFormat (kKvF16 / kKvInt8 / kKvQ4)
-    // geometry tag (restore must match the live engine exactly)
+    // geometry tag (restore must match the live engine exactly): a DERIVED PROJECTION of the model geometry -
+    // n_qsa / n_gdn come from `n_layers` + `qsa_interval`, `idx_dim` is `idx_key_dim`, and page_size / idx_block
+    // are `qsa_real_shapes()` granules rather than geometry at all.  The shared core keys on all 18 geometry
+    // fields instead; reconciling the two is step 3, not step 2.
     int64_t n_qsa = 0, n_gdn = 0, n_head_kv = 0, head_dim = 0, idx_dim = 0, page_size = 0, idx_block = 0,
             max_cells = 0;
     int64_t mtp_host = 0;          // how many drafter host-KV arrays the file holds (0 if the drafter is resident)
@@ -39,23 +49,27 @@ struct NvmeHeader {
 /// Dump the live session's full state to `path`.  The caller has synchronized the device (the checkpoint_save
 /// contract).  Requires streamed KV (kv_mode != 0): the host copy is the source of truth.  The file is fsynced.
 ///
-/// `at` (with `at_ids`) takes the snapshot at an EARLIER position T = at_ids.size() <= L - the chat-turn boundary.
-/// The running state then comes from the caller's saved blobs (a ConvCheckpoint's gdn/ple/tails, which are the
-/// state AT T), the KV cells / pooled rows / dead key are truncated to T (their contents below T are untouched by
-/// the generation that followed), and the drafter copy covers [0, min(T, max_cells)).  This is the snapshot the
+/// `at` takes the snapshot at an EARLIER position T = at->ids.size() <= L - the chat-turn boundary - and `ids` is
+/// then that boundary (the key the next request replays).
+/// The running state then comes from the checkpoint's blobs (a ConversationCheckpoint's gdn/ple/tails, which are
+/// the state AT T), the KV cells / pooled rows / dead key are truncated to T (their contents below T are untouched
+/// by the generation that followed), and the drafter copy covers [0, min(T, max_cells)).  This is the snapshot the
 /// NEXT REQUEST can match: a chat client re-sends the prompt but not the model's hidden reasoning tokens, so a
 /// full-L snapshot (which includes them) can never full-prefix-match the next turn.
-struct NvmeRunning { const uint8_t* gdn = nullptr; const uint8_t* ple = nullptr; const uint8_t* tails = nullptr; };
+/// `at` is the SHARED core's checkpoint type (docs/nvme-kv-cache-convergence.md step 2): its `ids` are the
+/// boundary, and its blobs are validated against `conversation_state_sizes` before a byte of them is written.
+/// Its `dead` / `block_pos` blobs are deliberately NOT written: the file still carries the LIVE device arrays,
+/// which is what our v2 envelope has always held.  Which of the two the disk format owns is collision C5 - step 3.
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-                  const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, NvmeRunning running,
-                  std::string& err);
+                  const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
+                  const strata::core::ConversationCheckpoint* at, std::string& err);
 
 /// The full consumed state at DONE (the Step 0 spike's dump; the automatic store uses nvme_dump_at at the
 /// turn boundary - see the comment above).
 bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-               const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err);
+               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err);
 
 /// Read a snapshot back into `ss` (and the drafter's state).  Atomic: the whole file is read and validated
 /// before anything is applied, so a truncated snapshot fails without touching the session.  On success
@@ -63,14 +77,14 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
 /// `starts_with` resume path takes over.
 bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
-                  std::vector<std::pair<int64_t, uint64_t>>& imgs, bool& cvec, int64_t& L, std::string& err);
+                  std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err);
 
 /// One stored session: its snapshot file and the token prefix it was keyed by (read at scan time, so the
 /// resume match never trusts a filename).
 struct NvmeEntry {
     std::string path;
     std::vector<int32_t> ids;                                ///< the consumed tokens (the key)
-    std::vector<std::pair<int64_t, uint64_t>> imgs;          ///< the images among them
+    std::vector<strata::core::ConversationImageKey> imgs;    ///< the images among them
     int64_t L = 0;                                           ///< ids.size(), kept for the match loops
     bool cvec = false;                                       ///< the control-vector state it was read with
     int64_t mtime = 0;                                       ///< seconds, for the LRU cap
@@ -87,12 +101,12 @@ public:
     void set_cap_bytes(int64_t bytes) { cap_ = bytes; }      ///< 0 = unlimited (the default)
     /// Dumps the live session.  Idempotent: an exact match is skipped (its recency is refreshed); the previous
     /// dump of the same growing conversation is superseded (its file deleted) so a conversation stays one file.
-    /// `at_ids` + `running` take the snapshot at a turn boundary (see nvme_dump_at); without them the snapshot
-    /// is the full consumed state at DONE.
+    /// `at` takes the snapshot at a turn boundary (see nvme_dump_at): its `ids` are the key and its blobs are the
+    /// running state there.  Without it the snapshot is the full consumed state at DONE.
     bool dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-              const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec,
-              const std::vector<int32_t>* at_ids = nullptr, NvmeRunning running = {}, std::string& err = dummy_err());
+              const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
+              const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err());
     /// Reads `e` back into the live arena (see nvme_restore).  The caller then sets `live` from `e`.
     bool restore(const NvmeEntry& e, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
                  const strata::core::ModelGeometry& g, std::string& err);
