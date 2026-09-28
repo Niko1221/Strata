@@ -3705,19 +3705,11 @@ int main(int argc, char** argv) {
             }
             // Steps 1-3, the NVMe cold tier: the longest stored session whose tokens (and pictures) start this
             // prompt.  Promoting reads the snapshot into the live arena, so from here on it IS the live session -
-            // automatic, no client call: the key is the prompt the server reads anyway.
+            // automatic, no client call: the key is the prompt the server reads anyway.  The MATCH is the tier's
+            // own function (kv_nvme.hpp), so the host fixture asserts the rule this loop applies.
             if (have_kvstore) {
-                const strata::platform::NvmeEntry* best = nullptr;
-                for (const strata::platform::NvmeEntry& e : kvstore.entries()) {
-                    const int64_t EL = e.L;
-                    if (e.cvec != cvec_cached || EL <= resume || EL < 1 || EL > n - 1) continue;
-                    bool m = true;
-                    for (int64_t i = 0; i < EL; ++i)
-                        if ((int32_t) ids[(size_t) i] != e.ids[(size_t) i]) { m = false; break; }
-                    if (!m) continue;
-                    if (!(imgs_below(req_imgs, EL) == e.imgs)) continue;
-                    if (best == nullptr || EL > best->L) best = &e;   // the LONGEST prefix wins, not the last scanned
-                }
+                const strata::platform::NvmeEntry* best =
+                    strata::platform::kv_nvme_match(kvstore.entries(), ids, req_imgs, cvec_cached, resume);
                 if (best != nullptr) {
                     std::string nerr;
                     if (!kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr)) {

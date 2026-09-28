@@ -11,6 +11,7 @@
 // in the serve loop's resume selection, and an LRU byte cap.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -143,6 +144,41 @@ struct NvmeEntry {
 
 /// The NVMe cold tier: a directory of whole-session snapshots with automatic dump (on DONE, synchronous,
 /// idempotent), promote (the serve loop matches entries by exact token prefix) and an LRU byte cap.
+/// THE RESUME MATCH, stated once (the serve loop's promote rule and the host fixture's oracle).
+///
+/// An entry is a candidate when: it was stored with this control-vector state; it is LONGER than what the session
+/// already holds (`resume`) and SHORTER than the request - the last prompt token always starts the next verify
+/// window, so an entry as long as the request cannot be resumed from; its ids start the request; and the request's
+/// pictures BELOW the entry's length are exactly the entry's pictures.  The longest such entry wins, not the last
+/// one scanned.
+///
+/// The image rule is the same filter `checkpoint_at` uses when it keys a checkpoint, and it is what makes a
+/// turn-boundary snapshot reachable: a snapshot that stored a picture at or past its own `L` matches no request,
+/// because no request can present a picture its token prefix does not contain.
+///
+/// Templated on the token type as the shared core's `conversation_prefix` is, because the serve loop's prompt is
+/// `int64_t` and a snapshot's ids are `int32_t`.  It lives here rather than inline in the serve loop so that the
+/// promote decision - not just the file a promote reads - is testable without a GPU
+/// (`src/platform/kv_nvme_host_test.cpp`).
+template <class Token>
+inline const NvmeEntry* kv_nvme_match(const std::vector<NvmeEntry>& entries, const std::vector<Token>& ids,
+                                      const std::vector<strata::core::ConversationImageKey>& req_imgs, bool cvec,
+                                      int64_t resume) {
+    const int64_t n = (int64_t) ids.size();
+    const NvmeEntry* best = nullptr;
+    for (const NvmeEntry& e : entries) {
+        const int64_t EL = e.L;
+        if (e.cvec != cvec || EL <= resume || EL < 1 || EL > n - 1) continue;
+        if (EL > (int64_t) e.ids.size() ||
+            !std::equal(e.ids.begin(), e.ids.begin() + EL, ids.begin())) continue;
+        std::vector<strata::core::ConversationImageKey> below;   // the request's pictures below the ENTRY's length
+        for (const strata::core::ConversationImageKey& k : req_imgs) if (k.start < EL) below.push_back(k);
+        if (!(below == e.imgs)) continue;
+        if (best == nullptr || EL > best->L) best = &e;   // the LONGEST prefix wins, not the last scanned
+    }
+    return best;
+}
+
 class KvNvmeStore {
 public:
     /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry/format tag
