@@ -103,7 +103,7 @@ Pack a model once (seconds: the tokenizer and the float tensors; the experts are
 
 and start it with `--pack packs/<name> --native <dir>/<model>-00001-of-0000N.gguf` plus the usual flags (`--spec`,
 `--mtp`, `--prefill`, ...). The other shards, and the one holding the n-gram table, are found by name.
-UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 992-1130 tok/s, generation 58-65 tok/s.
+UD-Q4_K_XL on an RTX 3090 with 160 GB of RAM: prompts 1004-1134 tok/s, generation 63-73 tok/s.
 
 ### A second GPU
 
@@ -111,8 +111,8 @@ With `--second-gpu N`, CUDA device N (the engine runs on `--main-gpu`, default 0
 each layer while the CPU computes the rest, copies each next layer's likeliest missing experts to itself while the RAM
 is idle, and computes the prompt's experts the first GPU lacks; it may be the card that drives the display. Build for
 both GPUs' architectures (`-DCMAKE_CUDA_ARCHITECTURES="86;120"`). On an RTX 3090 plus an RTX 5070 Ti (12.6 GB of its
-VRAM), 16K-131K prompts: UD-Q4_K_XL 1852-2075 tok/s instead of 992-1130, generation 94-112 tok/s instead of 58-65;
-IQ3_XXS 1986-2190 instead of 1516-1699, generation 115-147 instead of 97-111. When the card has no free VRAM, the
+VRAM), 16K-131K prompts: UD-Q4_K_XL 1856-2121 tok/s instead of 1004-1134, generation 94-112 tok/s instead of 63-73;
+IQ3_XXS 2028-2256 instead of 1548-1744, generation 115-147 instead of 107-121. When the card has no free VRAM, the
 engine runs on the main GPU alone.
 
 ## Before you start
