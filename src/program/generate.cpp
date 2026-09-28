@@ -2388,6 +2388,36 @@ int main(int argc, char** argv) {
                 ~BusyScope() { strata::core::progress().busy.store(false); strata::core::progress_at("idle"); }
             } busy_scope;
             stop_req.store(false);   // a STOP that arrived between requests is stale
+            if (line.rfind("RESIZE ", 0) == 0) {
+                long long keep = std::strtoll(line.c_str() + 7, nullptr, 10);
+                std::string rerr;
+                int64_t freed = xcache.shrink((int64_t) keep, rerr);
+                const auto& res_tab = xcache.residency_table();
+                std::memcpy(host_res.data(), res_tab.data(), host_res.size() * sizeof(int32_t));
+                if (d_res != nullptr)
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                std::printf("OK %lld %lld\n", (long long) xcache.slots(), (long long) freed);
+                std::fflush(stdout);
+                continue;
+            }
+            if (line.rfind("GROW ", 0) == 0) {
+                long long target = std::strtoll(line.c_str() + 5, nullptr, 10);
+                std::string gerr;
+                auto bfn = [](int32_t l, int32_t e, void* user) -> const uint8_t* {
+                    return ((strata::core::ExpertSource*) user)->blob(l, e);
+                };
+                auto sfn = [](int32_t l, void* /*user*/) -> int64_t {
+                    return (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(l);
+                };
+                int64_t filled = xcache.grow((int64_t) target, profile, bfn, srcp, sfn, nullptr, gerr);
+                const auto& res_tab = xcache.residency_table();
+                std::memcpy(host_res.data(), res_tab.data(), host_res.size() * sizeof(int32_t));
+                if (d_res != nullptr)
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                std::printf("OK %lld %lld\n", (long long) xcache.slots(), (long long) filled);
+                std::fflush(stdout);
+                continue;
+            }
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");

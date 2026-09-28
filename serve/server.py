@@ -273,6 +273,32 @@ class StrataEngine:
                         self._parse_done(line)
                         break
 
+    def resize(self, keep_bytes: int) -> tuple[int, int] | None:
+        """Shrink expert cache to `keep_bytes` so GPU vision has free VRAM."""
+        try:
+            self.proc.stdin.write(f"RESIZE {int(keep_bytes)}\n")
+            self.proc.stdin.flush()
+            line = self.lines.get(timeout=5)
+            if line and line.startswith("OK "):
+                parts = line.split()
+                return int(parts[1]), int(parts[2])
+        except Exception as e:
+            print(f"[strata] resize error: {e}", flush=True)
+        return None
+
+    def grow(self, target_bytes: int = 10_000_000_000) -> tuple[int, int] | None:
+        """Expand expert cache back to `target_bytes` (up to max reserved VRAM)."""
+        try:
+            self.proc.stdin.write(f"GROW {int(target_bytes)}\n")
+            self.proc.stdin.flush()
+            line = self.lines.get(timeout=10)
+            if line and line.startswith("OK "):
+                parts = line.split()
+                return int(parts[1]), int(parts[2])
+        except Exception as e:
+            print(f"[strata] grow error: {e}", flush=True)
+        return None
+
     def close(self):
         try:
             self.proc.stdin.write("QUIT\n")
@@ -283,26 +309,36 @@ class StrataEngine:
 
 
 class Vision:
-    """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
+    """The image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
     def __init__(self, cfg: dict, log=None, env: dict | None = None):
-        args = [cfg["exe"], "--mmproj", cfg["mmproj"], "--model", cfg["model"]]
+        self.cfg = cfg
+        self.log = log
+        self.env = env
+        self.args = [cfg["exe"], "--mmproj", cfg["mmproj"], "--model", cfg["model"]]
         if cfg.get("gpu"):
-            args.append("--gpu")
+            self.args.append("--gpu")
         if cfg.get("threads"):
-            args += ["--threads", str(cfg["threads"])]
+            self.args += ["--threads", str(cfg["threads"])]
         if cfg.get("max_tokens"):
-            args += ["--max-tokens", str(cfg["max_tokens"])]
+            self.args += ["--max-tokens", str(cfg["max_tokens"])]
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
-        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log or subprocess.DEVNULL,
-                                     text=True, encoding="utf-8", bufsize=1, env=env)
-        line = self.proc.stdout.readline()
-        if not line.startswith("READY"):
-            raise RuntimeError("the vision encoder did not start: " + line.strip())
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
+        self.proc = None
+        if not cfg.get("gpu"):
+            self.proc = subprocess.Popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=log or subprocess.DEVNULL,
+                                         text=True, encoding="utf-8", bufsize=1, env=env)
+            line = self.proc.stdout.readline()
+            if not line.startswith("READY"):
+                self.proc.kill()
+                raise RuntimeError("the vision encoder did not start: " + line.strip())
+            print(f"[strata] vision encoder is ready ({line.strip()})", flush=True)
+        else:
+            print("[strata] vision encoder configured (dynamic GPU on-demand)", flush=True)
 
     @staticmethod
     def load(source: str) -> bytes:
@@ -345,19 +381,53 @@ class Vision:
         im.save(out, format="PNG")
         return out.getvalue()
 
-    def encode(self, source: str) -> tuple[Path, int]:
+    def encode(self, source: str, engine=None) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens)."""
         data = self.normalize(self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
             if key in self.cache:
                 return self.cache[key]
+            is_gpu = bool(self.cfg.get("gpu"))
+            if is_gpu and engine is not None and hasattr(engine, "resize"):
+                engine.resize(5_400_000_000)
+
+            proc = self.proc
+            should_close = False
+            if proc is None:
+                # On-demand spawn for GPU vision
+                proc = subprocess.Popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=self.log or subprocess.DEVNULL,
+                                        text=True, encoding="utf-8", bufsize=1, env=self.env)
+                ready_line = proc.stdout.readline()
+                if not ready_line.startswith("READY"):
+                    proc.kill()
+                    if is_gpu and engine is not None and hasattr(engine, "grow"):
+                        engine.grow(10_000_000_000)
+                    raise RuntimeError("the vision encoder did not start: " + ready_line.strip())
+                should_close = True
+
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
-            self.proc.stdin.write(f"ENC {img} {out}\n")
-            self.proc.stdin.flush()
-            line = self.proc.stdout.readline().strip()
-            img.unlink(missing_ok=True)
+            try:
+                proc.stdin.write(f"ENC {img} {out}\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline().strip()
+            finally:
+                img.unlink(missing_ok=True)
+                if should_close:
+                    try:
+                        proc.stdin.write("QUIT\n")
+                        proc.stdin.flush()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                if is_gpu and engine is not None and hasattr(engine, "grow"):
+                    engine.grow(10_000_000_000)
+
             if not line.startswith("OK"):
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
@@ -368,12 +438,17 @@ class Vision:
             return self.cache[key]
 
     def close(self):
-        try:
-            self.proc.stdin.write("QUIT\n")
-            self.proc.stdin.flush()
-            self.proc.wait(timeout=10)
-        except Exception:
-            self.proc.kill()
+        if self.proc:
+            try:
+                self.proc.stdin.write("QUIT\n")
+                self.proc.stdin.flush()
+                self.proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+        shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def child_env(cfg: dict) -> dict:
@@ -539,7 +614,7 @@ class Service:
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
             with self.fifo:
-                encoded = [self.vision.encode(src) for src in images]
+                encoded = [self.vision.encode(src, engine=self.engine) for src in images]
             out, k = [], 0
             for t in ids:                               # one <|image_pad|> per image -> one per image token
                 if t == pad and k < len(encoded):
@@ -1234,6 +1309,8 @@ def main() -> int:
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
+    ap.add_argument("--no-vision", action="store_true",
+                    help="disable vision even if the config has a vision block")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -1266,13 +1343,13 @@ def main() -> int:
         if sampling_defaults:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
-        if cfg.get("vision"):
-            print("loading the vision encoder ...", flush=True)
-            vision = Vision(cfg["vision"], log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=env)
         print("loading the model (the first start takes a minute or two) ...", flush=True)
         engine = StrataEngine(cfg["exe"], cfg["args"], cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
         warn_tight_ram(engine.info.get("arena_mib"))
+        if cfg.get("vision") and not a.no_vision:
+            print("configuring the vision encoder ...", flush=True)
+            vision = Vision(cfg["vision"], log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
+                            env=env)
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's

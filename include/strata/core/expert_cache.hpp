@@ -24,10 +24,19 @@
 //
 // The order of work is `Memory/R4-design-note.md` §7: slots and residency first, then the split, then the
 // kernel. This is that first step, and the step it unblocks is the one that can be measured.
+//
+// **ELASTIC CACHE (R4.3).**  When a vision encoder loads onto the GPU it needs ~850 MB of VRAM.  Rather than
+// keeping the cache permanently smaller, the cache is allocated through CUDA Virtual Memory Management
+// (cuMemAddressReserve / cuMemMap / cuMemUnmap, CUDA 10.2+).  The virtual address range is reserved for the
+// MAXIMUM capacity; physical pages are mapped for as many slots as fit.  `shrink(n)` unmaps the tail, freeing
+// physical VRAM for vision.  `grow(n, profile, arena)` maps new pages and refills from the profile.  Because
+// the virtual addresses are STABLE, captured CUDA graphs survive resize without recapture.
+// On GPUs without VMM support (CC < 6.0), the cache falls back to plain cudaMalloc and is not elastic.
 #pragma once
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::core {
@@ -135,6 +144,49 @@ public:
     /// Slots filled so far, for the startup report.
     int64_t fills() const { return fills_; }
 
+    // ---- R4.3: ELASTIC CACHE (CUDA VMM) ----
+
+    /// True if the cache was allocated with CUDA VMM and can be resized without invalidating virtual addresses.
+    bool elastic() const { return vmm_; }
+
+    /// The maximum number of slots the virtual address range was reserved for.  Only meaningful when elastic().
+    int64_t max_slots() const { return max_slots_; }
+
+    /// The total bytes of the full virtual address reservation (max capacity).
+    int64_t max_bytes() const { return max_bytes_; }
+
+    /// Shrink the cache: unmap the tail slots whose byte range exceeds `keep_bytes`, mark them not-resident,
+    /// and free the physical VRAM.  The GPU stream MUST be synchronised before calling this.
+    /// Returns the number of bytes actually freed.  Non-elastic caches return 0.
+    int64_t shrink(int64_t keep_bytes, std::string& err);
+
+    /// Grow the cache: map physical pages to extend the arena up to `new_bytes` (clamped to max_bytes),
+    /// then refill the new slots from the profile.  `profile` is the ranked (layer, expert) list,
+    /// `blob_fn` returns the host blob for a given (layer, expert), `blob_size_fn` returns the blob size
+    /// (0 = uniform blob_).  The GPU stream MUST be synchronised before calling this.
+    /// Returns the number of new slots filled.
+    using BlobFn = const uint8_t* (*)(int32_t layer, int32_t expert, void* user);
+    using BlobSizeFn = int64_t (*)(int32_t layer, void* user);
+    int64_t grow(int64_t new_bytes, const std::vector<std::pair<int32_t, int32_t>>& profile,
+                 BlobFn blob_fn, void* blob_user, BlobSizeFn size_fn, void* size_user, std::string& err);
+
+    /// Query the VMM allocation granularity (2 MiB on most GPUs).  0 if VMM is not available.
+    static size_t vmm_granularity();
+
+    /// Check whether the current GPU supports CUDA VMM.
+    static bool vmm_supported();
+
+    // ---- OPTION B: DYNAMIC ADAPTIVE SWAPPING ----
+
+    /// Evicts whatever expert is currently occupying `slot`, marking it kNotResident.
+    void evict_slot(int32_t slot);
+
+    /// Assigns `slot` to `(layer, expert)` in the residency table.
+    void assign_slot(int32_t slot, int64_t layer, int64_t expert);
+
+    /// Const access to the residency table [n_layers * n_expert].
+    const std::vector<int32_t>& residency_table() const { return residency_; }
+
 private:
     uint8_t* base_ = nullptr;
     std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
@@ -150,6 +202,21 @@ private:
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
+
+    // ---- R4.3: VMM state ----
+    bool vmm_ = false;                    ///< true if allocated through cuMem* VMM APIs
+    int64_t max_slots_ = 0;               ///< total slots the VA reservation can hold
+    int64_t max_bytes_ = 0;               ///< total bytes of the VA reservation
+    int64_t mapped_bytes_ = 0;            ///< bytes currently backed by physical memory
+
+    // VMM opaque handles (stored as uint64_t to avoid cuda.h in the header)
+    uint64_t vmm_va_ = 0;                 ///< CUdeviceptr of the reserved VA range
+    uint64_t vmm_va_size_ = 0;            ///< size of the VA reservation
+    struct VmmChunk { uint64_t handle; uint64_t offset; uint64_t size; };
+    std::vector<VmmChunk> vmm_chunks_;    ///< physical allocations, in order of mapping offset
+
+    bool open_vmm(int64_t total_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
+    void close_vmm();
 };
 
 }  // namespace strata::core
