@@ -274,6 +274,11 @@ if(STRATA_ENABLE_CUDA)
   target_include_directories(strata_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   target_link_libraries(strata_prefill PUBLIC strata_engine CUDA::cublas CUDA::cudart)
 
+  add_executable(prefill_gemm_parity tests/prefill_gemm_parity.cpp)
+  target_include_directories(prefill_gemm_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+  target_link_libraries(prefill_gemm_parity PRIVATE strata_prefill CUDA::cudart)
+  add_test(NAME prefill_gemm_parity COMMAND prefill_gemm_parity)
+
   add_executable(strata src/program/generate.cpp)
   target_include_directories(strata PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec CUDA::cudart)

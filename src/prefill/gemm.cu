@@ -40,7 +40,7 @@ __global__ void bf16_gemm_fallback(const uint16_t* __restrict__ x, const uint16_
             n < n_count && wk < k_count ? bf16_to_float(w[(size_t) n * k_count + wk]) : 0.0f;
         __syncthreads();
 #pragma unroll
-        for (int k = 0; k < tile_size; ++k) sum = fmaf(x_tile[threadIdx.y][k], w_tile[threadIdx.x][k], sum);
+        for (int k = 0; k < tile_size; ++k) sum = fmaf(x_tile[threadIdx.y][k], w_tile[k][threadIdx.x], sum);
         __syncthreads();
     }
     if (t < t_count && n < n_count) {
