@@ -770,6 +770,14 @@ bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss,
 /// The STRATA_STATE_HASH fingerprint of a session over the positions it holds ([0, L)), plus the stale tail past
 /// them.  Used at DONE and, under STRATA_NVME_HASH, straight after an NVMe restore: equality of the two lines is
 /// the bit-exactness proof for the dump/restore pair (docs/nvme-kv-cache-design.md §11 Step 0).
+///
+/// THE ONE FORMULA (collision C8).  This function is the ONLY copy of the fingerprint in this tree, and both
+/// call sites - the DONE line and the post-restore `STRATA_NVME_HASH` line - go through it, so the two tiers'
+/// evidence stays comparable.  Its field set is the one issue #57's `main()` prints: `dead` hashed per QSA layer
+/// and printed, the pooled span from `qsa_pooled_rows` (the completed rows PLUS the spare row at `L / idx_block`,
+/// which is the row C3 re-publishes - a fingerprint that could not see it would be a weak oracle for that fix),
+/// the stale-cell clamp on `ss.max_cells` rather than on one layer's, and no PLE bytes hashed when the session
+/// has no PLE history.
 static std::string state_hash_line(const strata::core::SessionState& ss, const strata::core::MtpDrafter& mtp,
                                    const strata::core::ModelGeometry& g, int64_t L) {
     // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
@@ -798,7 +806,7 @@ static std::string state_hash_line(const strata::core::SessionState& ss, const s
     };
     const ConvStateSizes z = conv_state_sizes(g);
     uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
-    if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
+    if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr && g.n_gdn_layers() > 0) {   // per GDN layer: which one differs first
         const size_t per = z.gdn / (size_t) g.n_gdn_layers();
         std::string s;
         char b[8];
@@ -808,8 +816,10 @@ static std::string state_hash_line(const strata::core::SessionState& ss, const s
         }
         std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
     }
-    uint64_t h_ple = hash_dev(ss.ple_hist, z.ple, 1469598103934665603ull);
-    uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+    // a session with no PLE history has no history to fingerprint: hashing `z.ple` bytes from a null pointer
+    // would fold a failed copy into the line as a run of zeros that looks like a value
+    uint64_t h_ple = hash_dev(ss.ple_hist, ss.ple_hist ? z.ple : 0, 1469598103934665603ull);
+    uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail, h_dead = h_tail;
     const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
     // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
     auto kv_arrays = [&](const strata::core::QsaState& st) {
@@ -822,18 +832,26 @@ static std::string state_hash_line(const strata::core::SessionState& ss, const s
             const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
             a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
                  {h ? st.host.k_scale : st.k_scale, scb}};
-        } else {
+        } else if (st.kv_int8) {   // C8: INT8 K/V is its own layout, distinct from the fp16 pools below
             a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
                  {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
+        } else {
+            a = {{h ? st.host.k_pool : st.k_pool, qs.head_dim * 2},
+                 {h ? st.host.v_pool : st.v_pool, qs.head_dim * 2}};
         }
         return a;
     };
+    // `ss.max_cells`, not `ss.qsa_states[0].max_cells`: the clamp is on the SESSION's extent, and a state array
+    // narrower than the session is a layout question this debug line is not there to answer.
     const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
-                                               ss.qsa_states[0].max_cells);
+                                               ss.max_cells);
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         const strata::core::QsaState& st = ss.qsa_states[i];
         h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
-        h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
+        h_dead = hash_dev(st.idx_dead, z.dead, h_dead);
+        // the SAME row count the envelope writes and the restore re-publishes (C4): [0, L/idx_block + 1), so the
+        // spare row a turn-boundary snapshot holds stale - the one C3 re-publishes - is inside the fingerprint
+        h_pool = hash_dev(st.idx_pooled, (size_t) strata::kernels::qsa_pooled_rows(L, qs) * qs.idx_dim * 4, h_pool);
         // KV streaming: the host copy is the identity layout and holds every cell
         for (const auto& [pool, w] : kv_arrays(st)) {
             h_kv = hash_cells(pool, w, 0, L, h_kv);
@@ -848,10 +866,10 @@ static std::string state_hash_line(const strata::core::SessionState& ss, const s
     char buf[512];
     std::snprintf(buf, sizeof buf,
                   "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
-                  "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
+                  "kv=%016llx mtp=%016llx stale=%016llx dead=%016llx ple_prev=%d,%d\n", (long long) L,
                   (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
                   (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
-                  (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+                  (unsigned long long) h_stale, (unsigned long long) h_dead, ss.ple_prev[0], ss.ple_prev[1]);
     return buf;
 }
 

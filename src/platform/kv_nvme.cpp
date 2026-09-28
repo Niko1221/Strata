@@ -44,31 +44,22 @@ namespace fs = std::filesystem;
 
 /// The byte counts the envelope is laid out with.  The running-state ones come from the SHARED CORE
 /// (`strata::core::conversation_state_sizes`) - this file no longer carries a second copy of those formulas
-/// (docs/nvme-kv-cache-convergence.md step 2).  `page_size` / `idx_block` are the granules the segment walk
-/// needs, read from the same `qsa_real_shapes()` the shared core reads.
+/// (docs/nvme-kv-cache-convergence.md step 2).  `shapes` carries the granules the segment walk needs
+/// (`page_size` / `idx_block`), read from the same `qsa_real_shapes()` the shared core reads.
 struct Sizes {
-    int64_t page_size = 0, idx_block = 0;
+    strata::kernels::QsaShapes shapes;            // page_size / idx_block: the segment walk's granules
     strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
 };
 
-/// THE POOLED-ROW COUNT, stated once and used by both the dump and the restore (collision C4, settled on the
-/// SHARED CORE's formula - `conversation_snapshot.cpp:45`): the completed block rows [0, L/idx_block) plus the
-/// SPARE row at L/idx_block.  The spare row is not padding - qsa.cu:213 and native_qsa_indexer.cu:93 keep
-/// `pooled[n_bid]` equal to `dead`, and qsa.cu:260 and native_qsa_score.cu:74 read row n_bid straight out of the
-/// pool, so a snapshot that stopped at the completed rows would leave the block in progress scored with a stale
-/// key.  Our old `L / idx_block + 2` wrote one row MORE than that: what the live array happens to hold at dump
-/// time, and unreachable at resume, because every pooled reader gates on n_bid (qsa.cu:253 `b > n_bid`,
-/// qsa_select.cu:33 - which reads `dead` for `b == n_bid`, so its highest pooled read is n_bid - 1,
-/// native_qsa_score.cu:74 `row <= full`).  The writer does touch row n_bid+1 when a block completes
-/// (qsa.cu:213 seeds it with `dead`), so a stale value left there by a shorter snapshot is overwritten before
-/// anything can read it.
-///
-/// A live array too small for the snapshot REFUSES, as their `conversation_kv_validate` does
-/// (`conversation_snapshot.cpp:72`); our old `min(..., idx_pooled_rows)` clamp wrote a SHORT segment that the
-/// restore then reported as layout drift.
+/// THE POOLED-ROW COUNT the envelope writes (collision C4).  The FORMULA is not here: it is
+/// `strata::kernels::qsa_pooled_rows`, the one the shared core's snapshot sizing and the STRATA_STATE_HASH
+/// fingerprint also use, so the file's pooled segment and the fingerprint's pooled span cannot drift apart
+/// (collision C8).  What this function adds is the tier's own rule: a live array too small for the snapshot
+/// REFUSES, as their `conversation_kv_validate` does (`conversation_snapshot.cpp:72`); our old
+/// `min(..., idx_pooled_rows)` clamp wrote a SHORT segment that the restore then reported as layout drift.
 bool snapshot_pooled_rows(int64_t L, const Sizes& z, const strata::core::QsaState& st, int64_t& rows,
                           std::string& err) {
-    rows = L / z.idx_block + 1;
+    rows = strata::kernels::qsa_pooled_rows(L, z.shapes);
     if (rows > st.idx_pooled_rows) {
         err = "pooled rows: a " + std::to_string(L) + "-token prefix needs " + std::to_string(rows) +
               " indexer pooled rows, this engine's array holds " + std::to_string(st.idx_pooled_rows) +
@@ -79,9 +70,7 @@ bool snapshot_pooled_rows(int64_t L, const Sizes& z, const strata::core::QsaStat
 }
 
 bool sizes_of(const strata::core::ModelGeometry& g, Sizes& z, std::string& err) {
-    const strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    z.page_size = s.page_size;
-    z.idx_block = s.idx_block;
+    z.shapes = strata::kernels::qsa_real_shapes();
     // The shared core can REFUSE to size a geometry (a non-positive field, an overflow in the byte product).  It
     // says so with a string naming which one, and that string used to be dropped on the floor here: a refused
     // sizing left every count at zero, and the envelope was then laid out and walked with zero-length segments.
@@ -113,7 +102,7 @@ void refill_drafter_ring(strata::core::QsaState& st, const strata::core::ModelGe
     s.head_dim = g.head_dim;
     s.idx_n_head = g.idx_q_heads;
     s.idx_dim = g.idx_key_dim;
-    const int64_t b1 = (std::min<int64_t>(L, st.max_cells) + z.page_size - 1) / z.page_size;
+    const int64_t b1 = (std::min<int64_t>(L, st.max_cells) + z.shapes.page_size - 1) / z.shapes.page_size;
     const int64_t b0 = std::max<int64_t>(0, b1 - st.n_slots);
     strata::kernels::kv_ring_restore(strata::core::qsa_attn_pools(st), st.host, strata::core::qsa_kv_format(st),
                                      b0, b1, st.n_slots, s, nullptr);
@@ -254,7 +243,7 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     h.cvec = cvec ? 1 : 0;
     h.kv_format = strata::core::qsa_kv_format(ss.qsa_states[0]);
     h.geometry = strata::core::conversation_geometry_key(g);   // the shared core's key, not a projection of it
-    h.page_size = z.page_size; h.idx_block = z.idx_block; h.max_cells = ss.qsa_states[0].max_cells;
+    h.page_size = z.shapes.page_size; h.idx_block = z.shapes.idx_block; h.max_cells = ss.qsa_states[0].max_cells;
     if (!wr(f, &h, sizeof h)) { err = "nvme_dump: header"; std::fclose(f); return false; }
     HashWr hw{f};
     if (!hw.wr(ids.data(), ids.size() * sizeof(int32_t))) { err = "nvme_dump: ids"; std::fclose(f); return false; }
@@ -280,7 +269,7 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         }
     }
 
-    const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
+    const int64_t n_pages = (L + z.shapes.page_size - 1) / z.shapes.page_size;
     int64_t pooled_rows = 0;
     if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) {
         err = "nvme_dump: " + err;
@@ -292,7 +281,7 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         for (int a = 0; a < kv_array_count(st); ++a) {
             KvArr ka = kv_host_arrays(st, g.head_dim, a);
             if (!ka.p) { err = "nvme_dump: null host KV array"; std::fclose(f); return false; }
-            const size_t bytes = (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w;
+            const size_t bytes = (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w;
             if (!hw.wr(ka.p, bytes)) { err = "nvme_dump: kv"; std::fclose(f); return false; }
         }
         if (!dump_dev(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4)) { err = "nvme_dump: pooled"; std::fclose(f); return false; }
@@ -318,12 +307,12 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     // MTP drafter host KV copy (ring): cells [0, min(L, max_cells)); the header records how many arrays went out
     {
         const int64_t mL = std::min<int64_t>(L, mtp_state.max_cells);
-        const int64_t mp = (mL + z.page_size - 1) / z.page_size;
+        const int64_t mp = (mL + z.shapes.page_size - 1) / z.shapes.page_size;
         int64_t wrote = 0;
         for (int a = 0; a < kv_array_count(mtp_state); ++a) {
             KvArr ka = kv_host_arrays(mtp_state, g.head_dim, a);
             if (!ka.p) continue;
-            const size_t bytes = (size_t) mp * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w;
+            const size_t bytes = (size_t) mp * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w;
             if (!hw.wr(ka.p, bytes)) { err = "nvme_dump: mtp kv"; std::fclose(f); return false; }
             ++wrote;
         }
@@ -391,7 +380,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         return false;
     }
     if (h.geometry != strata::core::conversation_geometry_key(g) ||
-        h.page_size != z.page_size || h.idx_block != z.idx_block ||
+        h.page_size != z.shapes.page_size || h.idx_block != z.shapes.idx_block ||
         h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
         h.max_cells > ss.qsa_states[0].max_cells) {
         err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return false;
@@ -416,7 +405,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     };
     seg(ss.gdn_state, z.state.gdn, true);
     if (ss.ple_hist) seg(ss.ple_hist, z.state.ple, true);
-    const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
+    const int64_t n_pages = (L + z.shapes.page_size - 1) / z.shapes.page_size;
     int64_t pooled_rows = 0;
     if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) { err = "nvme_restore: " + err; return false; }
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
@@ -424,7 +413,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         for (int a = 0; a < kv_array_count(st); ++a) {
             KvArr ka = kv_host_arrays(st, g.head_dim, a);
             if (!ka.p) { err = "nvme_restore: null host KV array"; return false; }
-            seg(ka.p, (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w, false);
+            seg(ka.p, (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false);
         }
         seg(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4, true);
         seg(st.idx_tail, z.state.tail, true);
@@ -434,11 +423,11 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     int64_t mtp_arrays = 0;
     {
         const int64_t mL = std::min<int64_t>(L, mtp_state.max_cells);
-        const int64_t mp = (mL + z.page_size - 1) / z.page_size;
+        const int64_t mp = (mL + z.shapes.page_size - 1) / z.shapes.page_size;
         for (int a = 0; a < kv_array_count(mtp_state); ++a) {
             KvArr ka = kv_host_arrays(mtp_state, g.head_dim, a);
             if (!ka.p) continue;
-            seg(ka.p, (size_t) mp * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w, false);
+            seg(ka.p, (size_t) mp * (size_t) g.n_head_kv * (size_t) z.shapes.page_size * (size_t) ka.w, false);
             ++mtp_arrays;
         }
     }
@@ -495,7 +484,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         // does (it reads `dead` instead) is NOT enough: the invariant `pooled[n_bid] == dead`, which the writers
         // maintain at every block completion (qsa.cu:213, native_qsa_indexer.cu:93), has to be restored too.
         // For a full-L dump the row already equals `dead`, so this is a no-op there.
-        const int64_t row = L / z.idx_block;   // < idx_pooled_rows: snapshot_pooled_rows checked it
+        const int64_t row = L / z.shapes.idx_block;   // < idx_pooled_rows: snapshot_pooled_rows checked it
         if (cudaMemcpy(ss.qsa_states[i].idx_pooled + (size_t) row * g.idx_key_dim,
                        ss.qsa_states[i].idx_dead, z.state.dead, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "nvme_restore: pooled spare row";
