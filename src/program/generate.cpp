@@ -232,7 +232,7 @@ struct Options {
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
     /// the VRAM tier in place of the least-routed resident ones (decayed counts).  0 = static residency.
-    int adapt_every = 4;
+    int adapt_every = 1;
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
@@ -244,7 +244,7 @@ struct Options {
     bool serve = false;
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
-    int adapt_swaps = 96;
+    int adapt_swaps = 1;
     /// --serve: how many conversation checkpoints to keep between requests (0 = every request reads its whole
     /// prompt again, the v0.1.2 behaviour).  One is the GDN recurrence of the 36 layers, the QSA indexer tails and
     /// the PLE history (~118 MB of host RAM); the KV cache itself is positional and stays where it is.
@@ -2189,7 +2189,13 @@ int main(int argc, char** argv) {
             c.imgs = imgs_below(req_imgs, L);
             if (cudaDeviceSynchronize() != cudaSuccess || !checkpoint_save(c, ss, g)) return false;
             checks.push_back(std::move(c));
-            while ((int) checks.size() > o.prompt_cache) checks.erase(checks.begin());   // the oldest goes first
+            while ((int) checks.size() > o.prompt_cache) {
+                if (checks.size() > 2 && checks[0].ids.size() <= checks[1].ids.size()) {
+                    checks.erase(checks.begin() + 1);
+                } else {
+                    checks.erase(checks.begin());
+                }
+            }
             return true;
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
@@ -2436,6 +2442,18 @@ int main(int argc, char** argv) {
                 adapt();
                 apply_pending(true);
                 std::printf("OK\n");
+                std::fflush(stdout);
+                continue;
+            }
+            if (line == "STATS") {
+                const int64_t total_look = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
+                int64_t drift = 0;
+                for (size_t i = 0; i < host_res.size(); ++i) {
+                    if (host_res[i] >= 0 && initial_res[i] < 0) ++drift;
+                }
+                std::printf("OK %lld %lld %lld %lld\n",
+                            (long long) drive.d.cache_hits, (long long) total_look,
+                            (long long) total_swaps, (long long) drift);
                 std::fflush(stdout);
                 continue;
             }
@@ -2747,16 +2765,26 @@ int main(int argc, char** argv) {
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);
-            // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
-            // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
-            // chat renders the same history - but not always the same header or the thinking of this reply - so that
-            // checkpoint is the one it reuses.
-            int64_t turn_at = -1;
-            if (o.prompt_cache > 0 && o.turn_token >= 0)
-                for (int64_t i = n - 1; i > resume; --i)
-                    if (ids[(size_t) i] == o.turn_token) { turn_at = i; break; }
+            // The prompt is read in turns when it has turn boundaries past `resume`:
+            // checkpointing each turn boundary allows branching conversations and subagents
+            // to instantly reuse the shared system prompt and common history prefixes.
+            std::vector<int64_t> cuts;
+            if (reread_to > read_from) cuts.push_back(reread_to);
+            std::vector<int64_t> turns;
+            if (o.prompt_cache > 0 && o.turn_token >= 0) {
+                for (int64_t i = read_from + 1; i < n - 1; ++i) {
+                    if (ids[(size_t) i] == o.turn_token) {
+                        cuts.push_back(i);
+                        turns.push_back(i);
+                    }
+                }
+            }
+            cuts.push_back(n - 1);
+            std::sort(cuts.begin(), cuts.end());
+            cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+
             int64_t at = read_from;
-            for (const int64_t to : {reread_to, turn_at, n - 1}) {
+            for (const int64_t to : cuts) {
                 if (to <= at) continue;
                 const bool win = windows_ok(at, to);
                 if (win && !refill(err)) {
@@ -2782,7 +2810,8 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if (to == turn_at && !checkpoint_at(to)) {
+                const bool is_turn = std::find(turns.begin(), turns.end(), to) != turns.end();
+                if (is_turn && !checkpoint_at(to)) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
@@ -2814,6 +2843,8 @@ int main(int argc, char** argv) {
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
+            const int64_t decode_hits0 = drive.d.cache_hits;
+            const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             if (cancelled) finish = "cancel";
             while (!cancelled && produced_n < max_new) {
                 int T = S_mtp;
@@ -2993,9 +3024,16 @@ int main(int argc, char** argv) {
                              (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
                              (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
             }
-            // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused>
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld\n", (long long) produced_n, (long long) n, prompt_ms,
-                        decode_ms, finish, (long long) draft_accepted, (long long) draft_offered, (long long) resume);
+            const int64_t req_hits = drive.d.cache_hits - decode_hits0;
+            const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
+            int64_t req_drift = 0;
+            for (size_t i = 0; i < host_res.size(); ++i) {
+                if (host_res[i] >= 0 && initial_res[i] < 0) ++req_drift;
+            }
+            // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused> <req_hits> <req_look> <total_swaps> <drift>
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld\n", (long long) produced_n, (long long) n, prompt_ms,
+                        decode_ms, finish, (long long) draft_accepted, (long long) draft_offered, (long long) resume,
+                        (long long) req_hits, (long long) req_look, (long long) total_swaps, (long long) req_drift);
             std::fflush(stdout);
             const int64_t fresh = n - resume;
             std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %lld read in %.0f ms (%.1f tok/s), "
@@ -3004,6 +3042,20 @@ int main(int argc, char** argv) {
                          prompt_ms > 0 ? 1000.0 * fresh / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
+            if (req_look > 0) {
+                std::fprintf(stderr, "strata serve: decode expert cache hit rate: %.1f%% (%lld / %lld hits)\n",
+                             100.0 * (double) req_hits / (double) req_look,
+                             (long long) req_hits, (long long) req_look);
+            }
+            if (total_swaps > 0) {
+                int64_t drift = 0;
+                for (size_t i = 0; i < host_res.size(); ++i) {
+                    if (host_res[i] >= 0 && initial_res[i] < 0) ++drift;
+                }
+                std::fprintf(stderr, "strata adapt: %lld swaps total, active drift: %lld slots (%.1f%% of cache)\n",
+                             (long long) total_swaps, (long long) drift,
+                             100.0 * (double) drift / (double) std::max<int64_t>(1, xcache.slots()));
+            }
             if (g.n_qsa_layers() > 0 && ss.qsa_states[0].kv_mode == 1) {
                 // KV streaming, cumulative over the process: blocks the selections named vs blocks read from RAM
                 uint64_t miss = 0, look = 0;

@@ -106,6 +106,8 @@
           </div>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>Expert cache hit rate</span><span class="muted" id="hit-rate-text">&ndash;</span></div>
+          <div class="st-progress" data-tone="info"><div class="st-progress__bar" id="hit-rate-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
@@ -116,8 +118,8 @@
           <div class="table-wrap">
             <table class="st-table">
               <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num">Tok/s</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="7" class="muted">No requests yet</td></tr></tbody>
+                <th class="num">Tok/s</th><th class="num">Hit rate</th><th class="num">Duration</th></tr></thead>
+              <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
             </table>
           </div>
         </div>

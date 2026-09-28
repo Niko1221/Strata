@@ -218,8 +218,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests) {
   spark("sp-speed", h.tok_s);
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%", st.gpu_name || "");
   spark("sp-gpu", h.gpu_util, 100);
-  setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "");
+  const hitPct = eng.cache_hit_pct != null ? eng.cache_hit_pct : (last && last.cache_hit_pct != null ? last.cache_hit_pct : null);
+  let vramSub = eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "";
+  if (hitPct != null) vramSub += ` · ${fmt(hitPct, 1)}% hits`;
+  setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB", vramSub);
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C", "");
   spark("sp-temp", h.gpu_temp, 90);
@@ -254,6 +256,23 @@ function renderMonitor(live, hw, st, eng, h, last, requests) {
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
+  if (hitPct != null) {
+    let sub = `${fmt(hitPct, 1)}%`;
+    if (eng.recent_hits != null && eng.recent_lookups != null && eng.recent_lookups > 0) {
+      sub += ` (${fmt(eng.recent_hits)} / ${fmt(eng.recent_lookups)})`;
+    } else if (eng.cache_hits != null && eng.cache_lookups != null && eng.cache_lookups > 0) {
+      sub += ` (${fmt(eng.cache_hits)} / ${fmt(eng.cache_lookups)})`;
+    }
+    if (eng.cumulative_hit_pct != null && eng.recent_hit_pct != null && eng.cumulative_hit_pct !== eng.recent_hit_pct) {
+      sub += ` · all-time ${fmt(eng.cumulative_hit_pct, 1)}%`;
+    }
+    if (eng.total_swaps) sub += ` · ${fmt(eng.total_swaps)} swaps`;
+    $("hit-rate-text").textContent = sub;
+    $("hit-rate-bar").style.width = `${Math.min(100, Math.max(0, hitPct))}%`;
+  } else {
+    $("hit-rate-text").textContent = "–";
+    $("hit-rate-bar").style.width = "0%";
+  }
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
@@ -264,7 +283,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="7" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
@@ -272,8 +291,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests) {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
+      const hitStr = r.cache_hit_pct != null ? `${fmt(r.cache_hit_pct, 1)}%` : "–";
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+        <td class="num">${hitStr}</td>
         <td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
@@ -300,6 +321,7 @@ function renderAbout(eng, hw, st) {
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    ["Expert cache hit rate", eng.cache_hit_pct != null ? `${fmt(eng.cache_hit_pct, 1)}%${eng.total_swaps ? ` (${eng.total_swaps} adaptive swaps, drift: ${eng.drift || 0})` : ""}` : (eng.expert_slots ? "elastic VMM active" : null)],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],

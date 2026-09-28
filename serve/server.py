@@ -167,6 +167,12 @@ class StrataEngine:
                      "decode_ms": float(f[4]), "finish": f[5]}
         if len(f) >= 9:                                   # the conversation cache's fields (engine 0.1.3+)
             self.last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
+        if len(f) >= 11:
+            req_hits, req_look = int(f[9]), int(f[10])
+            hit_pct = round(100.0 * req_hits / max(1, req_look), 1) if req_look > 0 else 0.0
+            self.last.update(cache_hits=req_hits, cache_lookups=req_look, cache_hit_pct=hit_pct)
+        if len(f) >= 13:
+            self.last.update(total_swaps=int(f[11]), drift=int(f[12]))
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -300,15 +306,30 @@ class StrataEngine:
         return None
 
     def adapt(self) -> bool:
-        """Trigger one round of MoE cache adaptation (swap hot experts into VRAM)."""
+        """Trigger adaptive expert swapping based on accumulated routing frequencies (Option B)."""
         try:
             self.proc.stdin.write("ADAPT\n")
             self.proc.stdin.flush()
             line = self.lines.get(timeout=5)
-            return bool(line and line.startswith("OK"))
-        except Exception as e:
-            print(f"[strata] adapt error: {e}", flush=True)
+            return line == "OK"
+        except Exception:
             return False
+
+    def stats(self) -> dict | None:
+        """Query cumulative cache hits, lookups, swaps and drift from the engine."""
+        try:
+            self.proc.stdin.write("STATS\n")
+            self.proc.stdin.flush()
+            line = self.lines.get(timeout=3)
+            if line and line.startswith("OK "):
+                parts = line.split()
+                hits, look, swaps, drift = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                hit_pct = round(100.0 * hits / max(1, look), 1) if look > 0 else 0.0
+                return {"cache_hits": hits, "cache_lookups": look, "cache_hit_pct": hit_pct,
+                        "total_swaps": swaps, "drift": drift}
+        except Exception:
+            pass
+        return None
 
     def close(self):
         try:
@@ -529,6 +550,10 @@ class Service:
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
         self.history = collections.deque(maxlen=30)     # the last finished requests, newest last (GET /metrics)
         self.status_lock = threading.Lock()
+        self.cumulative_hits = 0
+        self.cumulative_lookups = 0
+        self.total_swaps = 0
+        self.drift = 0
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
 
@@ -602,7 +627,21 @@ class Service:
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+        cum_hit_pct = round(100.0 * self.cumulative_hits / max(1, self.cumulative_lookups), 1) if self.cumulative_lookups > 0 else None
+        recent_hits = sum(r.get("cache_hits", 0) for r in hist if r.get("cache_hits") is not None)
+        recent_look = sum(r.get("cache_lookups", 0) for r in hist if r.get("cache_lookups") is not None)
+        recent_hit_pct = round(100.0 * recent_hits / max(1, recent_look), 1) if recent_look > 0 else None
+        last_req = hist[-1] if hist else {}
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
+                  "cache_hit_pct": recent_hit_pct if recent_hit_pct is not None else cum_hit_pct,
+                  "recent_hit_pct": recent_hit_pct,
+                  "recent_hits": recent_hits,
+                  "recent_lookups": recent_look,
+                  "cumulative_hit_pct": cum_hit_pct,
+                  "cache_hits": self.cumulative_hits,
+                  "cache_lookups": self.cumulative_lookups,
+                  "total_swaps": self.total_swaps or last_req.get("total_swaps", 0),
+                  "drift": self.drift or last_req.get("drift", 0),
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         return {"engine": engine, "live": live, "requests": hist[::-1], "hardware": tel["now"], "hardware_static":
@@ -759,6 +798,13 @@ class Service:
                     last = dict(getattr(self.engine, "last", {}) or {})
                     started = self.status.get("started", time.time())
                     loaded = str((getattr(self.engine, "info", {}) or {}).get("cvec", 0)) not in ("0", "", "None")
+                    req_hit_pct = last.get("cache_hit_pct")
+                    if last.get("cache_lookups"):
+                        self.cumulative_hits += last.get("cache_hits", 0)
+                        self.cumulative_lookups += last.get("cache_lookups", 0)
+                    if last.get("total_swaps") is not None:
+                        self.total_swaps = last.get("total_swaps", 0)
+                        self.drift = last.get("drift", 0)
                     self.history.append({
                         "projection": (sampling or {}).get("experimental_speed_projection") is not False
                         if loaded else None,
@@ -766,13 +812,19 @@ class Service:
                         "prompt_tokens": len(ids), "reused": last.get("reused"), "output_tokens": n,
                         "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                         "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
-                        if n and last.get("generated") and last.get("decode_ms") else None})
+                        if n and last.get("generated") and last.get("decode_ms") else None,
+                        "cache_hits": last.get("cache_hits"),
+                        "cache_lookups": last.get("cache_lookups"),
+                        "cache_hit_pct": req_hit_pct,
+                        "total_swaps": last.get("total_swaps"),
+                        "drift": last.get("drift")})
                     now = time.time()
                     el = now - self.status.get("started", now)
                     ft = self.status.get("first_token")
                     rate = n / max(1e-6, now - ft) if ft else 0.0
+                    cache_note = f", expert cache {req_hit_pct:.1f}% hit" if req_hit_pct is not None else ""
                     print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
-                          f"({finish}, cancel={cancel.is_set()})", flush=True)
+                          f"({finish}, cancel={cancel.is_set()}){cache_note}", flush=True)
                     if os.environ.get("STRATA_DEBUG") and raw_ids:
                         print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                 self.status["busy"] = False
@@ -1019,6 +1071,63 @@ def make_handler(svc: Service):
             if path == "/metrics":
                 if self._authorized():
                     self._json(200, svc.metrics())
+                return
+            if path == "/api/stats":
+                m = svc.metrics()
+                eng = m.get("engine", {})
+                hw = m.get("hardware", {})
+                live = m.get("live", {})
+                reqs = m.get("requests", [])
+                hist = []
+                for r in reqs[:10]:
+                    p_s = round(r.get("prompt_ms", 0) / 1000, 2) if r.get("prompt_ms") else 0
+                    p_spd = round(r.get("prompt_tokens", 0) / max(0.001, p_s), 1) if p_s > 0 else 0
+                    d_s = round(r.get("decode_ms", 0) / 1000, 2) if r.get("decode_ms") else 0
+                    hist.append({
+                        "prompt_tokens": r.get("prompt_tokens", 0),
+                        "prefill_s": p_s,
+                        "prefill_speed": p_spd,
+                        "gen_tokens": r.get("output_tokens", 0),
+                        "gen_s": d_s,
+                        "gen_speed": r.get("decode_tok_s", 0) or 0,
+                        "total_s": r.get("duration_s", 0),
+                        "finish": r.get("finish", "stop"),
+                        "cache_hit_pct": r.get("cache_hit_pct"),
+                    })
+                stats_res = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "strata": {
+                        "busy": live.get("state") != "idle",
+                        "phase": live.get("phase") or live.get("state"),
+                        "tokens_per_s": live.get("tok_s", 0) or 0,
+                        "prompt_tokens": live.get("prompt_tokens", 0) or 0,
+                        "generated": live.get("generated", 0) or 0,
+                        "elapsed_s": live.get("elapsed_s", 0) or 0,
+                    },
+                    "gpu": {
+                        "util": hw.get("gpu_util", 0) or 0,
+                        "mem_used_mb": round((hw.get("gpu_mem_used", 0) or 0) / (1024 * 1024)),
+                        "mem_total_mb": round((hw.get("gpu_mem_total", 10737418240) or 10737418240) / (1024 * 1024)),
+                        "mem_percent": round(100.0 * (hw.get("gpu_mem_used", 0) or 0) / max(1, hw.get("gpu_mem_total", 10737418240) or 10737418240), 1),
+                        "temp_c": hw.get("gpu_temp", 0) or 0,
+                        "power_w": hw.get("gpu_power", 0) or 0,
+                        "cache_hit_rate": f"{eng.get('cache_hit_pct')}%" if eng.get('cache_hit_pct') is not None else "--%",
+                    },
+                    "cpu": {
+                        "util": hw.get("cpu", 0) or 0,
+                        "ram_used_gb": round((hw.get("ram_used", 0) or 0) / (1024 * 1024 * 1024), 1),
+                        "ram_total_gb": round((hw.get("ram_total", 68625690624) or 68625690624) / (1024 * 1024 * 1024), 0),
+                        "ram_percent": round(100.0 * (hw.get("ram_used", 0) or 0) / max(1, hw.get("ram_total", 68625690624) or 68625690624), 1),
+                    },
+                    "nvme": {
+                        "m_drive": {"load_pct": 0, "read_mb": round(hw.get("disk_read_mb", 0) or 0, 1), "write_mb": round(hw.get("disk_write_mb", 0) or 0, 1)},
+                        "c_drive": {"load_pct": 0, "read_mb": 0, "write_mb": 0},
+                    },
+                    "expert_cache_hit_pct": eng.get("cache_hit_pct"),
+                    "expert_slots": eng.get("expert_slots"),
+                    "history": hist,
+                }
+                self._json(200, stats_res)
                 return
             if path == "/settings":
                 if self._authorized():
