@@ -2,8 +2,11 @@
 // `jrich/feat/conversation-cache-shared-core@3657b8f`; docs/nvme-kv-cache-convergence.md step 2).
 //
 // Imported as the capture/restore primitive.  Our NVMe tier does NOT go through it yet: `nvme_dump_at` /
-// `nvme_restore` still lay out their own envelope (whole-file buffer, `L / idx_block + 2` pooled rows, their own
-// geometry tag).  Step 3 moves the disk adapter onto these layouts.
+// `nvme_restore` still lay out their own envelope (whole-file buffer, their own segment walk).  Step 3 moved the
+// two format decisions they own onto this core's answers - the pooled-row count is `L / idx_block + 1` here and in
+// the adapter (`kv_nvme.cpp: snapshot_pooled_rows`), and the geometry tag IS `conversation_geometry_key` - while
+// the envelope itself (the segment table, reading straight into the pinned pools) is still the adapter's, which is
+// also why the drafter-ring refill lives in the adapter rather than in `conversation_kv_restore` (C6).
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"

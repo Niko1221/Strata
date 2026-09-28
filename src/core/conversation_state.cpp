@@ -3,13 +3,13 @@
 //
 // THE ONE THING OUR NVME TIER READS HERE is `conversation_state_sizes`: it is now the only source of the
 // gdn/ple/tail/dead/block_pos byte counts (generate.cpp's `conv_state_sizes` and kv_nvme.cpp's segment walk both
-// go through it).  The pooled-row count is NOT here - it lives in `conversation_snapshot.cpp`, and our disk
-// adapter still uses its own `L / idx_block + 2` (collision C4, settled in step 3).
+// go through it).  The pooled-row count is NOT here - it lives in `conversation_snapshot.cpp`, and the disk
+// adapter now uses that same formula (collision C4, settled in step 3: `L / idx_block + 1`).
 // THE ONE GEOMETRY IDENTITY (docs/nvme-kv-cache-convergence.md, C9 and step 3): `conversation_geometry_key` was
-// an internal helper of this translation unit in their import, and is now declared in
-// `conversation_snapshot.hpp` because the NVMe disk adapter keys its files on this same array instead of carrying
-// a second, derived tag.  Its 18 fields and their order are unchanged - the only edit to this imported file is
-// that the function left the anonymous namespace and gained the `conversation_` prefix its neighbours have.
+// an internal helper of this translation unit in their import, and is now declared in `conversation_snapshot.hpp`
+// because the NVMe disk adapter keys its files on this same array instead of carrying a second, derived tag.
+// Its 18 fields and their order are unchanged - the only edit to this imported file is that the function left the
+// anonymous namespace and gained the `conversation_` prefix its neighbours have (see below, where it is defined).
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 
@@ -107,7 +107,8 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
 // helper inside this translation unit's anonymous namespace; it is now the function `conversation_snapshot.hpp`
 // advertises, because the NVMe disk adapter keys its files on this same array instead of carrying a second,
 // derived tag.  Its 18 fields and their order are theirs, verbatim - the only edit to this imported file is that
-// the function left the anonymous namespace and gained the `conversation_` prefix its neighbours already have.
+// the function left the anonymous namespace and gained the `conversation_` prefix its neighbours already have,
+// which is what lets the RAM tier and the disk tier refuse the same mismatch with one key.
 std::array<int64_t, 18> conversation_geometry_key(const ModelGeometry& g) {
     return {g.n_embd, g.n_layers, g.qsa_interval, g.ssm_state_size, g.ssm_k_heads,
             g.ssm_v_heads, g.ssm_d_conv, g.ssm_conv_channels, g.ssm_value_dim,
