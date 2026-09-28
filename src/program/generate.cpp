@@ -4093,8 +4093,10 @@ int main(int argc, char** argv) {
                     if (at == nullptr || c.ids.size() > at->ids.size()) at = &c;
                 std::string derr;
                 bool dumped;
-                // the boundary and its running state are ONE shared checkpoint now: `at->ids` is the key the next
-                // request replays, `at->gdn/ple/tails` are the state there
+                // the boundary and its state are ONE shared checkpoint now: `at->ids` is the key the next
+                // request replays, `at->imgs` the pictures below it, `at->gdn/ple/tails` the running state there.
+                // `live_imgs` covers the whole consumed conversation (it is what the full-state dump needs), so the
+                // store takes the boundary's own list from the checkpoint whenever a boundary is given.
                 if (at != nullptr && !at->ids.empty())
                     dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
                 else
