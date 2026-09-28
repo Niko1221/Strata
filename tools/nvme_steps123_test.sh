@@ -57,7 +57,9 @@ wait_done() { # $1 outfile, $2 how many DONE lines
   echo "TIMEOUT waiting for DONE #$2 in $1"; return 1
 }
 snap_ids() { # $1 snapshot file: prints L, writes the comma ids to $OUT/full.txt
-  .venv/bin/python -c 'import struct,sys; f=open(sys.argv[1],"rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(104); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[2]+"/full.txt","w").write(",".join(map(str,ids))); print(L)' "$1" "$OUT"
+  # HDR = sizeof(NvmeHeader), pinned by a static_assert in include/strata/platform/kv_nvme.hpp
+  HDR=208
+  .venv/bin/python -c 'import struct,sys; f=open(sys.argv[1],"rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(int(sys.argv[3])); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[2]+"/full.txt","w").write(",".join(map(str,ids))); print(L)' "$1" "$OUT" "$HDR"
 }
 fsize() { stat -c %s "$1" 2>/dev/null || echo 0; }
 

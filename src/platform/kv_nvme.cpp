@@ -253,9 +253,8 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     h.n_imgs = (int64_t) imgs.size();
     h.cvec = cvec ? 1 : 0;
     h.kv_format = strata::core::qsa_kv_format(ss.qsa_states[0]);
-    h.n_qsa = g.n_qsa_layers(); h.n_gdn = g.n_gdn_layers(); h.n_head_kv = g.n_head_kv; h.head_dim = g.head_dim;
-    h.idx_dim = g.idx_key_dim; h.page_size = z.page_size; h.idx_block = z.idx_block;
-    h.max_cells = ss.qsa_states[0].max_cells;
+    h.geometry = strata::core::conversation_geometry_key(g);   // the shared core's key, not a projection of it
+    h.page_size = z.page_size; h.idx_block = z.idx_block; h.max_cells = ss.qsa_states[0].max_cells;
     if (!wr(f, &h, sizeof h)) { err = "nvme_dump: header"; std::fclose(f); return false; }
     HashWr hw{f};
     if (!hw.wr(ids.data(), ids.size() * sizeof(int32_t))) { err = "nvme_dump: ids"; std::fclose(f); return false; }
@@ -391,9 +390,9 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
               " - refusing (an older snapshot is re-dumped by the engine that wrote it; nothing converts it)";
         return false;
     }
-    if (h.n_qsa != g.n_qsa_layers() || h.n_gdn != g.n_gdn_layers() || h.n_head_kv != g.n_head_kv ||
-        h.head_dim != g.head_dim || h.idx_dim != g.idx_key_dim || h.page_size != z.page_size ||
-        h.idx_block != z.idx_block || h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
+    if (h.geometry != strata::core::conversation_geometry_key(g) ||
+        h.page_size != z.page_size || h.idx_block != z.idx_block ||
+        h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
         h.max_cells > ss.qsa_states[0].max_cells) {
         err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return false;
     }
@@ -525,9 +524,8 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
                     continue;
                 }
                 const uint64_t fb = (uint64_t) de.file_size(ec);
-                // the full geometry tag (restore checks it again): another format/shape is left on disk, never converted
-                if (h.kv_format != fmt_ || h.n_qsa != g.n_qsa_layers() || h.n_gdn != g.n_gdn_layers() ||
-                    h.n_head_kv != g.n_head_kv || h.head_dim != g.head_dim || h.idx_dim != g.idx_key_dim ||
+                // the full geometry key (restore checks it again): another format/shape is left on disk, never converted
+                if (h.kv_format != fmt_ || h.geometry != strata::core::conversation_geometry_key(g) ||
                     h.page_size != shp.page_size || h.idx_block != shp.idx_block ||
                     h.L < 1 || h.n_imgs < 0 ||
                     fb < sizeof(NvmeHeader) + (uint64_t) h.L * 4 +

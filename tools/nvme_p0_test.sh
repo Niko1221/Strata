@@ -64,7 +64,9 @@ NA=$(grep -c '^T ' "$OUT/A.out")
 if [ ! -f "$OUT/snap.bin" ] || [ "$NA" -lt 8 ]; then echo "FAIL: A generated only $NA tokens"; exit 1; fi
 ls -la "$OUT/snap.bin"
 # the authoritative token history is the SNAPSHOT's ids (stdout T lines are not the consumed sequence)
-.venv/bin/python -c 'import struct,sys; f=open(sys.argv[1]+"/snap.bin","rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(104); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[1]+"/full_ids.txt","w").write(",".join(map(str,ids))); print("snapshot L:",L,file=sys.stderr)' "$OUT"
+# HDR = sizeof(NvmeHeader), pinned by a static_assert in include/strata/platform/kv_nvme.hpp (v3: 208 bytes)
+HDR=208
+.venv/bin/python -c 'import struct,sys; f=open(sys.argv[1]+"/snap.bin","rb"); f.seek(8); L=struct.unpack("<q",f.read(8))[0]; f.seek(int(sys.argv[3])); ids=struct.unpack(f"<{L}i",f.read(4*L)); open(sys.argv[1]+"/full_ids.txt","w").write(",".join(map(str,ids))); print("snapshot L:",L,file=sys.stderr)' "$OUT" "$HDR"
 FULL=$(cat "$OUT/full_ids.txt")
 LD=$(awk -F, '{print NF}' "$OUT/full_ids.txt")
 PROMPT_AB="$FULL,$TAIL"
@@ -81,7 +83,7 @@ T_C=$(awk "/^RESUME /{r++} r==2 && /^T /{print \$2}" "$OUT/C.out" | paste -sd, -
 grep -E "RESUME|nvme_restore" "$OUT/B.out" "$OUT/B.err" 2>/dev/null | head -4
 
 echo "== B': negative control (corrupted GDN in the snapshot) =="
-OFF=$((104 + LD*4 + 1000))            # header(104, v2) + ids(LD*4) + 1000 bytes into the GDN region
+OFF=$((HDR + LD*4 + 1000))            # header(208, v3) + ids(LD*4) + 1000 bytes into the GDN region
 cp "$OUT/snap.bin" "$OUT/snap-corrupt.bin"
 printf '\377' | dd of="$OUT/snap-corrupt.bin" bs=1 seek=$OFF conv=notrunc status=none
 run Bc "$PROMPT_AB" "--nvme-restore $OUT/snap-corrupt.bin"

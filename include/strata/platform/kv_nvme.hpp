@@ -11,12 +11,14 @@
 // in the serve loop's resume selection, and an LRU byte cap.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "strata/core/conversation_cache.hpp"  // ConversationImageKey, ConversationCheckpoint
+#include "strata/core/conversation_cache.hpp"    // ConversationImageKey, ConversationCheckpoint
+#include "strata/core/conversation_snapshot.hpp"  // conversation_geometry_key: the ONE geometry identity
 #include "strata/core/layer.hpp"   // QsaState
 #include "strata/core/session.hpp" // SessionState
 #include "strata/core/weights.hpp" // ModelGeometry
@@ -27,9 +29,11 @@ namespace strata::platform {
 ///
 /// THIS IS A RAW C++ STRUCT COPIED INTO THE ENVELOPE, which is exactly what the shared core's boundary forbids for
 /// a disk adapter (no C++ structs, no native layout, an implicit ABI).  It stays that way in this step on purpose
-/// - the format is not changed here.  See docs/nvme-kv-cache-convergence.md ("Where step 2 leaves NvmeHeader")
-/// for the full list of violations and for the shared core's own key (`SavedConversation::geometry`), which is
-/// what this tag has to become in step 3.  No second geometry key is introduced here.
+/// - the segment table and the field-by-field encode are C9's remaining work.  What step 3 DID settle is the key:
+/// the tag below IS the shared core's `conversation_geometry_key`, so the two tiers refuse the same mismatch, and
+/// the static_asserts under it pin the layout the file depends on (every field fixed-width, the struct
+/// padding-free) because the integrity footer cannot see the header that describes the layout.
+/// See docs/nvme-kv-cache-convergence.md ("Where step 2 leaves NvmeHeader").
 struct NvmeHeader {
     uint32_t magic = 0x5E564D45;   // "^VME"
     // v3: the running-state `dead` / `block_pos` segments hold the TURN-BOUNDARY checkpoint's copies, not the
@@ -42,14 +46,30 @@ struct NvmeHeader {
     int64_t n_imgs = 0;
     int32_t cvec = 0;
     int32_t kv_format = 0;         // strata::kernels::KvFormat (kKvF16 / kKvInt8 / kKvQ4)
-    // geometry tag (restore must match the live engine exactly): a DERIVED PROJECTION of the model geometry -
-    // n_qsa / n_gdn come from `n_layers` + `qsa_interval`, `idx_dim` is `idx_key_dim`, and page_size / idx_block
-    // are `qsa_real_shapes()` granules rather than geometry at all.  The shared core keys on all 18 geometry
-    // fields instead; reconciling the two is step 3, not step 2.
-    int64_t n_qsa = 0, n_gdn = 0, n_head_kv = 0, head_dim = 0, idx_dim = 0, page_size = 0, idx_block = 0,
-            max_cells = 0;
+    // ONE geometry identity (collision C9 / step 3): the SHARED CORE's 18-field key, verbatim and in its order -
+    // `strata::core::conversation_geometry_key(g)`, the same array `SavedConversation::geometry` holds.  The old
+    // tag was a DERIVED PROJECTION of it (n_qsa / n_gdn from n_layers + qsa_interval, idx_dim from idx_key_dim),
+    // so the two tiers keyed the same conversation differently and could refuse different mismatches.  The three
+    // fields after it are NOT part of that key and are not model identity: they are the runtime shapes the segment
+    // walk cannot re-derive from a model, recorded so a reader VALIDATES them instead of re-deriving them from a
+    // live engine (a v2 restore did re-derive them, which is why a sizing change surfaced as "layout mismatch").
+    std::array<int64_t, 18> geometry{};
+    int64_t page_size = 0, idx_block = 0, max_cells = 0;
     int64_t mtp_host = 0;          // how many drafter host-KV arrays the file holds (0 if the drafter is resident)
 };
+
+// The file IS this struct's bytes, so the layout is the format.  Every field is fixed-width and the struct is
+// padding-free at 208 bytes, which is what lets the ids start at a fixed offset; a field added, widened or
+// REORDERED fails the build rather than silently re-mapping every segment after it.  The integrity footer covers
+// only the payload, so the header - the one thing that can move the whole layout - has to be pinned here.
+static_assert(sizeof(NvmeHeader) == 208 && alignof(NvmeHeader) == 8,
+              "the NVMe envelope's 208-byte header moved: the ids no longer start where a reader expects");
+static_assert(offsetof(NvmeHeader, L) == 8 && offsetof(NvmeHeader, geometry) == 32 &&
+                  offsetof(NvmeHeader, page_size) == 176 && offsetof(NvmeHeader, mtp_host) == 200,
+              "the NVMe header gained padding or reordered a field: the file is no longer a described record");
+static_assert(sizeof(strata::core::conversation_geometry_key(strata::core::ModelGeometry{})) ==
+                  sizeof(NvmeHeader{}.geometry),
+              "the shared core's geometry key and the envelope's copy of it must be the same 18 int64 fields");
 
 /// Dump the live session's full state to `path`.  The caller has synchronized the device (the checkpoint_save
 /// contract).  Requires streamed KV (kv_mode != 0): the host copy is the source of truth.  The file is fsynced.

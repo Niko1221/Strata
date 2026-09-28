@@ -203,6 +203,17 @@ serialize C++ structs, pointers or native vector layouts, and must define a vers
    answer different questions: ours asks *can this engine read this file*, theirs asks *is this the same
    conversation object in this process*.  Step 3 must not stack a third key on top of the two.
 
+   **Settled: one key, theirs, with the runtime shapes recorded beside it.**  `NvmeHeader::geometry` IS
+   `strata::core::conversation_geometry_key(g)` - the same 18 fields in the same order, compared as one array - so
+   the derived projection is gone and the two tiers refuse the same mismatch.  `page_size`, `idx_block` and
+   `max_cells` stay in the header as SEPARATE fields: they are not model identity and their key does not contain
+   them, but a disk reader must VALIDATE them rather than re-derive them from a live engine (re-deriving is what
+   turned a sizing change into "layout mismatch").  To make it one key rather than two, `conversation_geometry_key`
+   left the anonymous namespace of `conversation_state.cpp` and is declared in `conversation_snapshot.hpp` - the
+   only edit to that imported file, and its 18 fields and their order are unchanged.  `NvmeHeader` is now 208
+   bytes, pinned by `static_assert`s on its size and on the offsets of `L`, `geometry`, `page_size` and `mtp_host`,
+   because the integrity footer cannot see the header that describes the layout.  Format version 3.
+
 **What step 3 must turn it into.**
 
 - a **segment table**: an explicit byte offset and length per segment, written as fixed-width integers at fixed
