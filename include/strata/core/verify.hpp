@@ -19,10 +19,10 @@
 //
 // EXPERTS.  The main GPU computes the routed experts its VRAM tier holds, decided in the graph from a snapshot of the
 // residency table that the pool reads too (`residency`), so neither waits for the other; its shared expert runs on a
-// branch of its own beside them.  The pool computes the rest on the CPU and the second GPU, and with a PCIe share
-// publishes the missed experts the GPU reads over PCIe.  With the native router and a native pack the router kernel
-// writes their input in the forms they take: ggml's Q8_K rows for the CPU (`pool_takes_q8k` layers) and q8_1 rows for
-// the GPUs, so neither quantizes it.
+// branch of its own, forked before the router, and the wait for the CPU's rows on another.  The pool computes the rest
+// on the CPU and the second GPU, and with a PCIe share publishes the missed experts the GPU reads over PCIe.  With the
+// native router and a native pack the router kernel writes their input in the forms they take: ggml's Q8_K rows for
+// the CPU (`pool_takes_q8k` layers) and q8_1 rows for the GPUs, so neither quantizes it.
 //
 // Requires the default native decode configuration (native projections, fused GR, fused GDN, fast attention and
 // selection, native indexer) and a profile-filled VRAM expert tier.
@@ -232,13 +232,16 @@ private:
     // activations (beside the router), then the prediction; on shs_ the GDN gate projection or the QSA queries (the
     // mixer), then the shared expert
     cudaStream_t side_ = nullptr;
-    cudaEvent_t fork_ = nullptr, join_ = nullptr;                 // the prediction's
+    cudaEvent_t join_ = nullptr;                                  // the prediction's
     cudaEvent_t bfork_ = nullptr, bjoin_ = nullptr;               // side_'s others
     cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;               // shs_'s projections
     cudaStream_t shs_ = nullptr;                                  // the shared expert's branch (and the snapshot's copy)
     cudaEvent_t shfork_ = nullptr, shjoin_ = nullptr, res_ready_ = nullptr;
     cudaStream_t g2s_ = nullptr;                                  // the second GPU's rows, per token group
     cudaEvent_t g2fork_ = nullptr, g2join_[2] = {};
+    cudaStream_t cps_ = nullptr;                                  // the wait for the CPU's rows, per token group
+    cudaEvent_t cpfork_ = nullptr, cpjoin_[2] = {};
+    cudaEvent_t efork_ = nullptr, rdone_ = nullptr;               // the FFN read's end, the router's
     cudaEvent_t done_ = nullptr;                                  // after the last window's graph
 
     // device

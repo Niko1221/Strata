@@ -101,8 +101,9 @@ Verifier::~Verifier() {
     if (side_) cudaStreamDestroy(side_);
     if (shs_) cudaStreamDestroy(shs_);
     if (g2s_) cudaStreamDestroy(g2s_);
-    for (cudaEvent_t e : {fork_, join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_, g2fork_,
-                          g2join_[0], g2join_[1]})
+    if (cps_) cudaStreamDestroy(cps_);
+    for (cudaEvent_t e : {join_, bfork_, bjoin_, pfork_, pjoin_, shfork_, shjoin_, res_ready_, done_, g2fork_,
+                          g2join_[0], g2join_[1], cpfork_, cpjoin_[0], cpjoin_[1], efork_, rdone_})
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
@@ -304,10 +305,15 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&shs_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&g2s_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&cps_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&cpfork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&cpjoin_[0], cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&cpjoin_[1], cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&efork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&rdone_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&g2fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&g2join_[0], cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&g2join_[1], cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&join_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&bfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&bjoin_, cudaEventDisableTiming) != cudaSuccess ||
@@ -420,8 +426,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }
 
     // set_predict: this layer's FFN read also estimates the next layer's FFN input (that layer's read of this state,
-    // its gates their running average over the windows), and on a side branch forked after the doorbell the next
-    // layer's router runs on it with that layer's logit bias.  When learning, the FFN read of a layer the previous one
+    // its gates their running average over the windows), and on a side branch forked after the read the next layer's
+    // router runs on it with that layer's logit bias.  When learning, the FFN read of a layer the previous one
     // predicts keeps its gates' average, and the layer corrects its bias by its own logits on that branch.
     auto predicts = [&](int64_t l) {
         return predict_ != nullptr && G == 1 && l + 1 < g.n_layers && native_router_enabled();
@@ -439,8 +445,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
     }
 
-    // the shared expert: in a window of one token group on a branch of its own that forks at the doorbell, beside the
-    // routed experts (joined before the combine); in a split window inline
+    // the shared expert: in a window of one token group on a branch of its own forked after the FFN read (`efork_`),
+    // beside the router and the routed experts (joined before the combine); in a split window inline
     const bool beside = G == 1;
     auto shared = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -458,7 +464,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         nsw.q8_1 = xq_;                                   // the main stream's next use is the next layer's mixer
         cudaStream_t ws = cs;
         if (beside) {
-            if (cudaEventRecord(shfork_, cs) != cudaSuccess || cudaStreamWaitEvent(shs_, shfork_, 0) != cudaSuccess) {
+            if (cudaStreamWaitEvent(shs_, efork_, 0) != cudaSuccess) {
                 err = "verify: the shared expert's branch could not fork";
                 return false;
             }
@@ -694,6 +700,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                      (int64_t) n * N, side_);
             if (!mark(side_, bjoin_)) return false;
         }
+        // the branches that need only the FFN read fork here; they are recorded after the router, whose blocks are
+        // then dispatched first, and run beside its routing, the ring and the hit plan
+        if (beside && cudaEventRecord(efork_, cs) != cudaSuccess) {
+            err = "verify: the FFN read's branches could not fork";
+            return false;
+        }
         // the router, the doorbell and the main GPU's routed experts - the ones its VRAM tier holds, decided here from
         // the residency snapshot the pool reads too (it leaves their rows to the GPU)
         if (l == 0 && grp == 0 && cudaStreamWaitEvent(cs, res_ready_, 0) != cudaSuccess) {
@@ -737,8 +749,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             MT * K, plan_ptr_off_, cs);
         }
         stamp(l, 4, cs);
-        // after the doorbell: the second GPU's rows of this token group, taken into VRAM once their flag rises; the
-        // shared expert's branch; and the next layer's prediction
+        // after the doorbell: the second GPU's rows of this token group, taken into VRAM once their flag rises, and
+        // the wait for the CPU's rows, each on a branch beside the routed experts; then the branches forked after the
+        // FFN read: the shared expert, and the next layer's prediction
         if (gpu2_) {
             if (!fork(g2s_, g2fork_)) return false;
             wait_flag_ge(m_flag2_ + (size_t) grp * 16, (uint32_t) (l * G + grp + 1), g2s_);
@@ -747,9 +760,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, kLayerStamps + 1, g2s_);
             if (!mark(g2s_, g2join_[grp])) return false;
         }
+        if (!fork(cps_, cpfork_)) return false;
+        wait_flag_ge(m_flag_, (uint32_t) (l * G + grp + 1), cps_);   // the CPU's share is in the mapped rows
+        if (!mark(cps_, cpjoin_[grp])) return false;
+        if (beside && cudaEventRecord(rdone_, cs) != cudaSuccess) {
+            err = "verify: the router's end could not be marked";
+            return false;
+        }
         if (beside && !shared(l, grp)) return false;
-        if (branches(l) &&
-            (cudaEventRecord(fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, fork_, 0) != cudaSuccess)) {
+        if (branches(l) && cudaStreamWaitEvent(side_, efork_, 0) != cudaSuccess) {
             err = "verify: the prediction branch could not fork";
             return false;
         }
@@ -771,7 +790,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
-        if (corrects(l)) {   // after the prediction, from the one the previous layer made
+        if (corrects(l)) {   // after the prediction and the router, from the prediction the previous layer made
+            if (cudaStreamWaitEvent(side_, rdone_, 0) != cudaSuccess) {
+                err = "verify: the prediction's bias could not wait for the router";
+                return false;
+            }
             try {
                 verify_router_bias_update(logits_ + tb * NE, plogits_ + (size_t) (l & 1) * MT * NE, n,
                                           pbias_ + (size_t) l * NE, side_);
@@ -847,7 +870,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 7, cs);
         }
         stamp(l, 8, cs);
-        wait_flag_ge(m_flag_, ring, cs);                       // the CPU's share is in the mapped rows
+        if (!wait(cpjoin_[grp])) return false;                 // the CPU's share is in the mapped rows
         stamp(l, 9, cs);
         if (gpu2_ && !wait(g2join_[grp])) return false;        // the second GPU's, in `hit_out`
         stamp(l, 10, cs);
