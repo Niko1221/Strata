@@ -154,7 +154,11 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
                   const strata::core::ConversationCheckpoint* at, std::string& err) {
     // L is the SNAPSHOT length: for a turn-boundary snapshot the running state comes from the checkpoint's blobs
     // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
-    // the generation that followed), and the per-token scratch (block_pos) rides along harmlessly.
+    // the generation that followed).  `block_pos` is NOT truncated and is not "per-token": it is one int32 per
+    // QSA layer of device-internal scratch - the pooling kernel writes the completed block's first-cell position
+    // into it and the rotation reads it back on the device (qsa.hpp:199-204) - so the live value is rewritten
+    // before anything can read a stale one.  conversation_state_sizes sizes it at sizeof(int32_t), the same 4
+    // bytes this file hardcoded before, so the segment did not move; whose copy the envelope owns is C5.
     const bool at_boundary = at != nullptr;
     Sizes z;
     if (!sizes_of(g, z, err)) return false;   // never lay the envelope out with zeroed byte counts
