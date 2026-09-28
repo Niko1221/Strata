@@ -428,6 +428,28 @@ it needs, prefer read-only tools, and don't add servers you don't trust. The too
 page itself (a request with another site's Origin or without a JSON content type is refused); if Strata is reachable
 from other devices, set an API key.
 
+**Context extension (rope scaling, engine 0.1.18).** The model trains 262,144 positions of rotary base
+1e7; the context past that stays coherent by rescaling the rotation angles, with llama.cpp's types and
+flag names. `linear` is Position Interpolation (every angle shrunk by the factor); `yarn` keeps the
+high-frequency angles and interpolates the low-frequency ones, with the magnitude correction that keeps
+the attention temperature where training put it. Scaled contexts also need proportionally more VRAM/RAM
+for the KV cache and the rope tables (~13 KB and ~0.26 KB per token).
+
+- setup: `START-HERE.bat --setup --context 393216` asks nothing extra - it picks the factor for you
+  (`--rope-scale` overrides; 393K wants 1.5, 524K wants 2). Contexts past 262,144 refuse to start without
+  `--rope-scaling`.
+- engine: `--rope-scaling none|linear|yarn`, `--rope-scale F`, and the raw ggml knobs `--rope-freq-base`,
+  `--rope-freq-scale`, `--yarn-orig-ctx` (default 262,144), `--yarn-ext-factor`, `--yarn-attn-factor`,
+  `--yarn-beta-fast` (32), `--yarn-beta-slow` (1). The model file's `rope.scaling.*` keys, when a
+  fine-tune ships them, are the defaults the flags override.
+
+The scaling is fixed for the whole run - the engine stores keys in its cache after rotating them, so one
+cache must never mix two scalings, and there is no per-request form. Within the trained 262,144 a scaled
+run is a different (very slightly perturbed) model: `yarn`'s magnitude correction applies everywhere, not
+only past the trained end. Needle recall past the trained end passes (262k and 512k prompt probes at
+linear 2 and yarn 2, mid-depth, `tools/needle_bench.py`); pictures read the same scaled table (their
+(t, h, w) positions feed it), which is expected to compose but unmeasured - the recall runs are text.
+
 ---
 
 ## Images (vision)
@@ -557,6 +579,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `the engine stopped unexpectedly (exit code ...)` | The engine process ended mid-answer - usually out of RAM (Linux ends the biggest program: `sudo dmesg \| grep -i -E 'killed process\|out of memory'`). The next request starts it again by itself. If it repeats: close other programs or pick a smaller size. The server also warns at start when the model's experts leave less than ~6 GB of RAM for everything else. |
 | Slow output, disk light busy | Not enough free RAM: close other programs, or choose Q2_0 / IQ2_XS. |
 | `prompt ... exceeds the context` | The request is longer than the context you chose: run setup again with a bigger `--context`. |
+| `past the model's trained 262144` (setup) / the engine refuses a context over 262,144 | A context past the trained one needs rope scaling (engine 0.1.18+): pass `--rope-scaling linear` or `yarn`, or let setup pick it (`START-HERE.bat --setup --context 393216`). |
 | Slower than the tables | The monitor plugged into the GPU and other GPU programs take VRAM from the expert cache; RAM running below its rated speed (enable EXPO/XMP in the BIOS) slows the CPU half. |
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
