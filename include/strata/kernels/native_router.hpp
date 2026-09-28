@@ -38,6 +38,10 @@ struct VerifyRouterArgs {
     int cap = 0, ptr_off = 0;
     unsigned* counter = nullptr;                       // device, zero before the first launch (each launch leaves it so)
     int n_tok = 0, n_embd = 0, n_expert = 0;           // 1..8 tokens, 512 experts, n_embd a multiple of 512
+    const float* bias = nullptr;                       // (n_expert) added to the logits, or null
 };
 void verify_router(const VerifyRouterArgs& a, void* stream);
+// A prediction's bias: bias[e] = fmaf(1/8 / n_tok, sum over the n_tok tokens of (logits[t][e] - predicted[t][e]),
+// bias[e]), where predicted holds the logits a verify_router with this bias computed for the same tokens (512 experts).
+void verify_router_bias_update(const float* logits, const float* predicted, int n_tok, float* bias, void* stream);
 }

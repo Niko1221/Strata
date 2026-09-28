@@ -324,7 +324,7 @@ int test_verify_router(std::mt19937& rng, cudaStream_t s) {
         check(cudaHostGetDevicePointer((void**) &m_w[p], h_w[p], 0), "mapped");
         check(cudaHostGetDevicePointer((void**) &m_seq[p], h_seq[p], 0), "mapped");
     }
-    float* d_x = dev<float>((size_t) 8 * N);
+    float *d_x = dev<float>((size_t) 8 * N), *d_bias = dev<float>((size_t) NE);
     int bad = 0;
     for (int n_tok = 1; n_tok <= 8; ++n_tok) {
         for (int rep = 0; rep < 4; ++rep) {
@@ -373,6 +373,26 @@ int test_verify_router(std::mt19937& rng, cudaStream_t s) {
                 std::fprintf(stderr, "verify_router: n_tok %d rep %d: the hit plans differ\n", n_tok, rep);
                 ++b;
             }
+            // with a bias the logits are the plain ones plus it; the update then corrects it by the plain ones
+            std::vector<float> bias((size_t) NE);
+            for (auto& v : bias) v = std::normal_distribution<float>(0.0f, 0.5f)(rng);
+            up(d_bias, bias);
+            a.bias = d_bias;
+            strata::kernels::verify_router(a, s);
+            strata::kernels::verify_router_bias_update(d_logits[0], d_logits[1], n_tok, d_bias, s);
+            check(cudaStreamSynchronize(s), "router bias");
+            const std::vector<float> plain = down(d_logits[0], (size_t) n_tok * NE);
+            std::vector<float> want((size_t) n_tok * NE), fixed((size_t) NE);
+            for (int t = 0; t < n_tok; ++t)
+                for (int e = 0; e < NE; ++e)
+                    want[(size_t) (t * NE + e)] = plain[(size_t) (t * NE + e)] + bias[(size_t) e];
+            for (int e = 0; e < NE; ++e) {
+                float dsum = 0.0f;
+                for (int t = 0; t < n_tok; ++t) dsum += plain[(size_t) (t * NE + e)] - want[(size_t) (t * NE + e)];
+                fixed[(size_t) e] = std::fmaf(0.125f / (float) n_tok, dsum, bias[(size_t) e]);
+            }
+            b += bitwise_diff(want, down(d_logits[1], (size_t) n_tok * NE), "biased logits");
+            b += bitwise_diff(fixed, down(d_bias, (size_t) NE), "corrected bias");
             if (b) std::fprintf(stderr, "verify_router: n_tok %d rep %d: %d mismatches\n", n_tok, rep, b);
             bad += b;
         }
@@ -381,9 +401,12 @@ int test_verify_router(std::mt19937& rng, cudaStream_t s) {
         for (void* q : {(void*) d_logits[p], (void*) d_wts[p], (void*) d_ids[p], (void*) d_plan[p]}) cudaFree(q);
         for (void* q : {(void*) h_x[p], (void*) h_ids[p], (void*) h_w[p], (void*) h_seq[p]}) cudaFreeHost(q);
     }
-    for (void* q : {(void*) d_w, (void*) d_sp, (void*) d_res, (void*) d_counter, (void*) d_x}) cudaFree(q);
-    std::printf("verify_router: %s\n", bad ? "MISMATCH"
-                                           : "bitwise the gemv, top 10, doorbell and hit plan (1-8 tokens, 4 routings each)");
+    for (void* q : {(void*) d_w, (void*) d_sp, (void*) d_res, (void*) d_counter, (void*) d_x, (void*) d_bias})
+        cudaFree(q);
+    std::printf("verify_router: %s\n",
+                bad ? "MISMATCH"
+                    : "bitwise the gemv, top 10, doorbell and hit plan (1-8 tokens, 4 routings each), and with a bias "
+                      "the logits plus it and its update");
     return bad;
 }
 
@@ -437,6 +460,17 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
             float *d_bo = dev<float>(bo.size()), *d_inj = dev<float>(inj.size());
             up(d_bo, bo);
             up(d_inj, inj);
+            // path 0 also keeps the gates' running average and estimates another read (its norm weights wn2, the
+            // gates eg)
+            std::vector<float> ema0((size_t) D), wn2((size_t) D), eg((size_t) D);
+            for (auto& v : ema0) v = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+            for (auto& v : eg) v = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+            for (auto& v : wn2) v = edgy(rng);
+            float *d_ema = dev<float>((size_t) D), *d_est = dev<float>((size_t) (n_tok * N));
+            float *d_wn2 = dev<float>((size_t) D), *d_eg = dev<float>((size_t) D);
+            up(d_ema, ema0);
+            up(d_wn2, wn2);
+            up(d_eg, eg);
             std::vector<strata::kernels::FusedGrArgs> args[2];
             for (int p = 0; p < 2; ++p)
                 for (int t = 0; t < n_tok; ++t) {
@@ -447,11 +481,13 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
                     a.eps = 1e-6f;
                     a.lo = d[p][1] + t * LR; a.rs = d[p][2] + t * HC; a.inject_out = d[p][3] + t * HC;
                     a.mixed = d[p][4] + t * N;
+                    if (p == 0) { a.gate_ema = d_ema; a.est_norm = d_wn2; a.est_gates = d_eg; a.est = d_est + t * N; }
                     args[p].push_back(a);
                 }
             strata::kernels::fused_gr_read_multi(args[0].data(), n_tok, d_scratch, s);
             for (int t = 0; t < n_tok; ++t) strata::kernels::fused_gr_read_multi(&args[1][(size_t) t], 1, d_scratch, s);
             check(cudaStreamSynchronize(s), "gr read");
+            const std::vector<float> ema1 = down(d_ema, (size_t) D), est = down(d_est, (size_t) (n_tok * N));
             const char* names[5] = {"R", "lo", "rs", "inject", "mixed"};
             const size_t sizes[5] = {R.size(), (size_t) (n_tok * LR), (size_t) (n_tok * HC), (size_t) (n_tok * HC),
                                      (size_t) (n_tok * N)};
@@ -524,10 +560,23 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
                         const double sg = 1.0 / (1.0 + std::exp(-u));
                         mixed += xn[i] * sg / HC;
                         bound += (1e-4 * xa[i] + 0.25 * std::fabs(xn[i]) * du) / HC;
+                        if (n_tok == 1)
+                            near(ema1[i], ema0[i] + 0.25 * (sg - ema0[i]), 0.25 * (0.25 * du + 1e-6) + 1e-6,
+                                 "gate average", (int64_t) i);
                     }
                     near(got[4][(size_t) dd], mixed, bound + 1e-30, "mixed", dd);
                 }
+                for (int64_t dd = 0; dd < N; ++dd) {   // the other read's estimate
+                    double ref = 0.0, mag = 0.0;
+                    for (int c = 0; c < HC; ++c) {
+                        const size_t i = (size_t) (c * N + dd);
+                        ref += Rp[i] * rs[(size_t) c] * wn2[i] * eg[i] / HC;
+                        mag += Ra[i] * rs[(size_t) c] * std::fabs((double) wn2[i]) * eg[i] / HC;
+                    }
+                    near(est[(size_t) dd], ref, 1e-4 * mag + 1e-30, "estimate", dd);
+                }
             }
+            for (float* q : {d_ema, d_est, d_wn2, d_eg}) cudaFree(q);
             for (int p = 0; p < 2; ++p)
                 for (float* q : d[p]) cudaFree(q);
             cudaFree(d_bo);
@@ -536,9 +585,11 @@ int test_gr_read(std::mt19937& rng, cudaStream_t s) {
     }
     for (void* p : {(void*) d_wd, (void*) d_wu, (void*) d_wi, (void*) d_wn, (void*) d_scratch}) cudaFree(p);
     bad += off;
-    char msg[160];
+    char msg[256];
     std::snprintf(msg, sizeof msg,
-                  "each token bitwise its 1-token read (1-8 tokens, 3 variants); FP64 within bounds (largest error %.2g of its bound)",
+                  "each token bitwise its 1-token read (1-8 tokens, 3 variants, keeping the gates' average and "
+                  "estimating another read or not); FP64, the gates' average and the estimate within bounds (largest "
+                  "error %.2g of its bound)",
                   worst);
     std::printf("gr_read: %s\n", bad ? "MISMATCH" : msg);
     return bad;

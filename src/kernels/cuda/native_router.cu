@@ -143,7 +143,8 @@ __global__ void __launch_bounds__(VR_THREADS) verify_router_kernel(VerifyRouterA
         float acc[kMmvfMaxRows];
         mmvf_multi_row<VR_THREADS>(a.x, a.w + (size_t) row * a.n_embd, a.n_embd, TT, acc);
         if (t == 0)
-            for (int k = 0; k < TT; ++k) a.logits[(size_t) k * a.n_expert + row] = acc[k];
+            for (int k = 0; k < TT; ++k)
+                a.logits[(size_t) k * a.n_expert + row] = a.bias ? acc[k] + a.bias[row] : acc[k];
         __threadfence();
     }
     __syncthreads();
@@ -163,6 +164,14 @@ __global__ void __launch_bounds__(VR_THREADS) verify_router_kernel(VerifyRouterA
     }
     if (a.plan != nullptr)
         hit_plan_block(a.ids, TT * 10, 10, a.res, a.n_expert, a.slot_ptr, a.plan, a.cap, a.ptr_off);
+}
+__global__ void __launch_bounds__(512) bias_update(const float* __restrict__ logits,
+                                                   const float* __restrict__ predicted, int n_tok, float scale,
+                                                   float* __restrict__ bias) {
+    const int e = (int) threadIdx.x;
+    float d = 0.0f;
+    for (int t = 0; t < n_tok; ++t) d += logits[t * 512 + e] - predicted[t * 512 + e];
+    bias[e] = fmaf(scale, d, bias[e]);
 }
 bool valid(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
@@ -196,6 +205,14 @@ void verify_router(const VerifyRouterArgs& a, void* stream) {
         STRATA_VR(1) STRATA_VR(2) STRATA_VR(3) STRATA_VR(4) STRATA_VR(5) STRATA_VR(6) STRATA_VR(7) STRATA_VR(8)
 #undef STRATA_VR
     }
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+void verify_router_bias_update(const float* logits, const float* predicted, int n_tok, float* bias, void* stream) {
+    if (!stream || n_tok < 1 || n_tok > 8 || !logits || !predicted || !bias)
+        throw std::invalid_argument("verify_router_bias_update: 1..8 tokens and buffers");
+    bias_update<<<1, 512, 0, static_cast<cudaStream_t>(stream)>>>(logits, predicted, n_tok, 0.125f / (float) n_tok,
+                                                                   bias);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

@@ -7,6 +7,10 @@
 //          inject[c] = w_inject[c] . xn                               when w_inject is given
 //   up   : R <- R' in place (when `apply`)
 //          mixed[d] = mean_c  xn[c,d] * sigmoid(w_up[c*n_embd + d] . lo)
+//          gate_ema[c,d] += (mean over the tokens of sigmoid(w_up[c*n_embd + d] . lo) - gate_ema[c,d]) / 4
+//                                                                     when `gate_ema` is given
+//          est[d] = mean_c R'[c,d] * rs[c] * est_norm[c,d] * est_gates[c,d]   when `est_norm` is given: the mixed of
+//                   another read of R' (its norm weights) with the gates `est_gates`
 //
 // The down projection is split by input slices: 80 blocks each take a quarter of the 324 rows over a twentieth of
 // the input, so each block reads 1/20 of every token's R' instead of all of it, and the stream's rs multiplies the
@@ -36,13 +40,18 @@ struct FusedGrArgs {
     float* rs = nullptr;               ///< workspace, hc floats
     float* inject_out = nullptr;       ///< hc floats (when w_inject)
     float* mixed = nullptr;            ///< n_embd
+    float* gate_ema = nullptr;         ///< (hc, n_embd): the gates' running average over the reads, or null
+    const float* est_norm = nullptr;   ///< another read's w_norm, or null
+    const float* est_gates = nullptr;  ///< (hc, n_embd): the gates for its estimate
+    float* est = nullptr;              ///< n_embd: the estimate
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
 
 /// The read of `n_tok` tokens (1-8): `a[t]` is token t's arguments (its own R, pending write, lo, rs, inject,
-/// mixed; the four weight pointers and eps must be the same for every t).  `scratch` is `fused_gr_scratch_bytes()`,
-/// zeroed once when allocated (the kernels leave it zeroed); reads that share it must run in stream order.
+/// mixed, est; the four weight pointers, gate_ema, est_norm, est_gates and eps must be the same for every t).
+/// `scratch` is `fused_gr_scratch_bytes()`, zeroed once when allocated (the kernels leave it zeroed); reads that share
+/// it must run in stream order.
 constexpr int kFusedGrMaxT = 8;
 size_t fused_gr_scratch_bytes();
 void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream);

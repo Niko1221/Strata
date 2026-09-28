@@ -201,8 +201,9 @@ __global__ void __launch_bounds__(DTH) gr_down_split_kernel(GrMulti m, float* __
 
 // The up projection of TT tokens: each row of w_up read once, RW rows a warp at a time; the TT x RW dots of those rows
 // summed by one xor tree (xor_scatter) and every (row, token) epilogue on the lane holding its sum, its inputs fetched
-// while the dots run: R <- R' for this block's columns (when apply), mixed[d] = mean_c xn[c,d] * sigmoid(u[c,d]).
-// The lo vectors are staged split into chunk halves.
+// while the dots run: R <- R' for this block's columns (when apply), mixed[d] = mean_c xn[c,d] * sigmoid(u[c,d]), the
+// gates' running average (when gate_ema) and the other read's estimate (when est_norm).  The lo vectors are staged
+// split into chunk halves.
 template <int TT>
 __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
     constexpr int RW = TT <= 4 ? 4 : 2;
@@ -210,6 +211,9 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
     constexpr int LPV = 32 / NV;                  // lanes that end up holding each sum
     __shared__ __align__(16) float4 lo4[TT][2][LR / 8];
     __shared__ float g[TT][HC][UPM_COLS];
+    __shared__ float gs[TT][HC][UPM_COLS];        // the gates
+    __shared__ float ge[TT][HC][UPM_COLS];        // the estimate's terms
+    const bool est = m.a[0].est_norm != nullptr;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int d0 = blockIdx.x * UPM_COLS;
     for (int i = t; i < TT * LR / 4; i += THREADS) {
@@ -230,7 +234,7 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
             wb[q] = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
         }
         const int er = r0 + vq, ec = er / UPM_COLS, edd = er - ec * UPM_COLS, ei = ec * N + d0 + edd;
-        float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f;
+        float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f, en = 0.0f, eg = 0.0f;
         bool apply = false;
         if (epi) {
             const FusedGrArgs& a = m.a[vk];
@@ -239,6 +243,7 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
             rsc = a.rs[ec];
             apply = a.apply;
             if (apply) { bo = a.bo_prev[d0 + edd]; ip = a.inj_prev[ec]; }
+            if (est) { en = a.est_norm[ei]; eg = a.est_gates[ei]; }
         }
         float v[NV];
 #pragma unroll
@@ -259,7 +264,10 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
                 m.a[vk].R_out[ei] = x;
             }
             const float y = x * wn * rsc;
-            g[vk][ec][edd] = y * sigmoidf_(v[0]);
+            const float gate = sigmoidf_(v[0]);
+            g[vk][ec][edd] = y * gate;
+            gs[vk][ec][edd] = gate;
+            ge[vk][ec][edd] = x * rsc * en * eg;
         }
     }
     __syncthreads();
@@ -269,6 +277,22 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
 #pragma unroll
         for (int c = 0; c < HC; ++c) s += g[k][c][col];
         m.a[k].mixed[d0 + col] = s / (float) HC;
+    }
+    if (est)
+        for (int i = t; i < TT * UPM_COLS; i += THREADS) {
+            const int k = i / UPM_COLS, col = i - k * UPM_COLS;
+            float s = 0.0f;
+#pragma unroll
+            for (int c = 0; c < HC; ++c) s += ge[k][c][col];
+            m.a[k].est[d0 + col] = s / (float) HC;
+        }
+    if (m.a[0].gate_ema != nullptr && t < HC * UPM_COLS) {
+        const int c = t / UPM_COLS, col = t - c * UPM_COLS;
+        float s = 0.0f;
+#pragma unroll
+        for (int k = 0; k < TT; ++k) s += gs[k][c][col];
+        float* e = m.a[0].gate_ema + (size_t) c * N + d0 + col;
+        *e += 0.25f * (s / (float) TT - *e);
     }
 }
 
@@ -288,7 +312,8 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* 
         if (!x.R || !x.w_norm || !x.w_down || !x.w_up || !x.lo || !x.rs || !x.mixed || (x.w_inject && !x.inject_out) ||
             (x.apply && (!x.bo_prev || !x.inj_prev || !x.R_out || x.inj_prev == x.inject_out)) ||
             x.w_down != a[0].w_down || x.w_up != a[0].w_up || x.w_inject != a[0].w_inject ||
-            x.w_norm != a[0].w_norm || x.eps != a[0].eps) {
+            x.w_norm != a[0].w_norm || x.gate_ema != a[0].gate_ema || x.eps != a[0].eps ||
+            x.est_norm != a[0].est_norm || x.est_gates != a[0].est_gates || (x.est_norm && (!x.est_gates || !x.est))) {
             std::fprintf(stderr, "fused_gr_read_multi: invalid arguments for token %d\n", t);
             std::exit(1);
         }

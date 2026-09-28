@@ -44,8 +44,8 @@ class NativeHead;
 /// second GPU's rows, the main GPU's zeroed unless `GpuPlanSink::host_rows_only`.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
-/// Layer `layer`'s likely experts, its router applied to the previous layer's FFN input: ids and weights (n_tok, k),
-/// host memory.
+/// Layer `layer`'s likely experts, its router applied to an estimate of its FFN input (`Verifier::set_predict`): ids
+/// and weights (n_tok, k), host memory.
 using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
 /// The window's last CPU rows are in.
 using TailFn = void (*)(void* user);
@@ -116,10 +116,13 @@ public:
     /// launch, ~2 us).  Set before the first `run`; `print_profile` writes the per-stage table to stdout.
     void set_profile(bool on) { profile_ = on; }
     void print_profile() const;
-    /// Each layer's router also runs on the previous layer's FFN input, on a side branch of the graph; once the CPU's
-    /// rows of a layer are in, `fn` gets the next layer's prediction (the RAM is idle until the next ring), waited
-    /// for when it comes later (`predict_late`).  Windows of one token group.  Set before the first `run`.
-    void set_predict(PredictFn fn, void* user) { predict_ = fn; predict_user_ = user; }
+    /// Each layer's router also runs on an estimate of its FFN input from the previous layer's state, on a side branch
+    /// of the graph: the layer's FFN read of that state, its gates their running average over the windows, and the
+    /// router's logits corrected by a running average of their error.  Once the CPU's rows of a layer are in, `fn`
+    /// gets the next layer's prediction (the RAM is idle until the next ring), waited for when it comes later
+    /// (`predict_late`).  Without `learn` the averages stay at their start (gates of one half, no correction), so the
+    /// prediction depends on the window alone.  Windows of one token group.  Set before the first `run`.
+    void set_predict(PredictFn fn, void* user, bool learn) { predict_ = fn; predict_user_ = user; learn_ = learn; }
     /// `fn` runs once the window's last CPU rows are in: the RAM stays idle until the next window's first pool (the
     /// head, the commit, the drafts).  The main GPU may still run the window then: `window_done` follows its graph.
     /// Set before the first `run`.
@@ -189,6 +192,7 @@ private:
     // taken it; the counter holds the predictions published in this window
     PredictFn predict_ = nullptr;
     void* predict_user_ = nullptr;
+    bool learn_ = false;
     TailFn tail_ = nullptr;
     void* tail_user_ = nullptr;
     int32_t* h_pids_ = nullptr;  int32_t* m_pids_ = nullptr;     // 2 x T * k
@@ -222,8 +226,12 @@ private:
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     unsigned* ring_count_ = nullptr;                          // verify_router's block counters: the layer's, the prediction's
-    float *plogits_ = nullptr, *pw_ = nullptr;                    // the next layer's router (prediction)
+    float* plogits_ = nullptr;                                    // the predictions' logits, by layer parity
+    float* pw_ = nullptr;                                         // the next layer's router (prediction)
     int32_t* pids_ = nullptr;
+    float* pmixed_ = nullptr;                                     // its input: the next layer's FFN read, estimated
+    float* gate_ema_ = nullptr;                                   // [layer][hc][n_embd]: the FFN reads' gates, averaged
+    float* pbias_ = nullptr;                                      // [layer][n_expert]: the predictions' logit bias
     int32_t* plan_ = nullptr;                                     // device copies of the PCIe share's plan blocks
     int32_t* dplan_ = nullptr;                                    // the main GPU's hit plans, decided on the device
     int32_t* res_ = nullptr;                                      // the residency snapshot, copied as a window starts

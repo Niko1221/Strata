@@ -2336,7 +2336,8 @@ int main(int argc, char** argv) {
         ver.set_profile(o.window_profile);
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
-        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0)
+            ver.set_predict(&drive_predict, &drive, o.adapt_every > 0 && o.adapt_swaps > 0);
         if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
             ver.set_tail(&drive_tail, &drive);
             tier.set_after(ver.window_done());
@@ -3047,7 +3048,8 @@ int main(int argc, char** argv) {
         ver.set_host_rows(!o.window_hashes.empty());
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : o.pcie_mode == "kernel" ? 2
                           : native_pack ? 0 : 2);   // auto: DMA for the native packs, the copy kernel for Q2_0
-        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0) ver.set_predict(&drive_predict, &drive);
+        if (drive.d.gpu2 != nullptr && gpu2.prefetch_slots() > 0)
+            ver.set_predict(&drive_predict, &drive, o.adapt_every > 0 && o.adapt_swaps > 0);
         if (drive.tier2 != nullptr) {   // the update then starts at the tail, while the 3090 may still read its cache
             ver.set_tail(&drive_tail, &drive);
             tier.set_after(ver.window_done());

@@ -229,7 +229,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
         logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
-        plogits_ = b.take<float>(T * (uint64_t) g.n_expert); pw_ = b.take<float>(T * K); pids_ = b.take<int32_t>(T * K);
+        plogits_ = b.take<float>(2 * T * (uint64_t) g.n_expert); pw_ = b.take<float>(T * K);
+        pids_ = b.take<int32_t>(T * K);
+        pmixed_ = b.take<float>(T * N); gate_ema_ = b.take<float>((uint64_t) g.n_layers * HC * N);
+        pbias_ = b.take<float>((uint64_t) (g.n_layers * g.n_expert));
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         ring_count_ = b.take<unsigned>(2);
@@ -260,6 +263,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
+    {   // the gates' running averages start at a gate's middle
+        const std::vector<float> half((size_t) (g.n_layers * g.hc * g.n_embd), 0.5f);
+        if (cudaMemcpy(gate_ema_, half.data(), half.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+            err = "verify: the gates' averages could not be set";
+            return false;
+        }
+    }
     {
         std::vector<unsigned long long> sp((size_t) hits.slots);
         for (int64_t i = 0; i < hits.slots; ++i)
@@ -385,11 +395,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
     }
 
-    // set_predict: the next layer's router on this layer's FFN input, on a side branch forked after the doorbell and
-    // joined before the next layer rewrites that input
+    // set_predict: this layer's FFN read also estimates the next layer's FFN input (that layer's read of this state,
+    // its gates their running average over the windows), and on a side branch forked after the doorbell the next
+    // layer's router runs on it with that layer's logit bias.  When learning, the FFN read of a layer the previous one
+    // predicts keeps its gates' average, and the layer corrects its bias by its own logits on that branch.
     auto predicts = [&](int64_t l) {
         return predict_ != nullptr && G == 1 && l + 1 < g.n_layers && native_router_enabled();
     };
+    auto corrects = [&](int64_t l) { return learn_ && l > 0 && predicts(l - 1); };
+    auto branches = [&](int64_t l) { return predicts(l) || corrects(l); };
 
     // per-layer state indices (GDN and QSA layers are numbered separately)
     std::vector<int64_t> gdn_idx((size_t) g.n_layers, -1), qsa_idx((size_t) g.n_layers, -1);
@@ -483,7 +497,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             pending = false;
         }
-        auto gr_read_group = [&](int half, bool apply, float* inj_prev, float* inj_out) {
+        auto gr_read_group = [&](int half, bool apply, float* inj_prev, float* inj_out, float* gate_ema,
+                                 const float* est_norm, const float* est_gates) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = tb; t < te; ++t) {
                 FusedGrArgs& a = fa[t - tb];
@@ -492,11 +507,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.w_norm = (const float*) wn[half]->data; a.w_down = (const uint16_t*) wd[half]->data;
                 a.w_up = (const uint16_t*) wu[half]->data; a.w_inject = (const uint16_t*) wi[half]->data;
                 a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
-                a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
+                a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N; a.gate_ema = gate_ema;
+                a.est_norm = est_norm; a.est_gates = est_gates; a.est = pmixed_ + t * N;
             }
             fused_gr_read_multi(fa, n, grs_, cs);
         };
-        gr_read_group(0, pending, inj2_, inj_);
+        gr_read_group(0, pending, inj2_, inj_, nullptr, nullptr, nullptr);
         stamp(l, 1, cs);
         float* xm = mixed_ + tb * N;
         // the mixer's projections: a group of 2+ tokens is quantized with the interleaved copy the multi-token kernels
@@ -637,7 +653,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 2, cs);
-        gr_read_group(1, true, inj_, inj2_);
+        // the FFN read, and the next layer's estimated FFN input for the prediction (set_predict)
+        const WeightRef* wn1 = predicts(l) ? need(LayerView(wt, l + 1), "hc_ffn_norm.weight", err) : nullptr;
+        if (predicts(l) && !wn1) return false;
+        gr_read_group(1, true, inj_, inj2_, corrects(l) ? gate_ema_ + (size_t) l * HC * N : nullptr,
+                      wn1 != nullptr ? (const float*) wn1->data : nullptr,
+                      wn1 != nullptr ? gate_ema_ + (size_t) (l + 1) * HC * N : nullptr);
         stamp(l, 3, cs);
         // the routed experts' activations beside the router (joined before the experts)
         if (!fork(side_, bfork_)) return false;
@@ -685,29 +706,41 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 4, cs);
         // after the doorbell: the shared expert's branch, and the next layer's prediction
         if (beside && !shared(l, grp)) return false;
+        if (branches(l) &&
+            (cudaEventRecord(fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, fork_, 0) != cudaSuccess)) {
+            err = "verify: the prediction branch could not fork";
+            return false;
+        }
         if (predicts(l)) {
             const WeightRef* wr1 = need(LayerView(wt, l + 1), "ffn_gate_inp.weight", err);
             if (!wr1) return false;
-            if (cudaEventRecord(fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, fork_, 0) != cudaSuccess) {
-                err = "verify: the prediction branch could not fork";
-                return false;
-            }
             const size_t half = (size_t) ((l + 1) & 1) * (size_t) (MT * K);
             VerifyRouterArgs ra;
-            ra.x = xm; ra.w = (const uint16_t*) wr1->data; ra.logits = plogits_; ra.ids = pids_; ra.weights = pw_;
+            ra.x = pmixed_; ra.w = (const uint16_t*) wr1->data;
+            ra.logits = plogits_ + (size_t) ((l + 1) & 1) * MT * NE; ra.ids = pids_; ra.weights = pw_;
             ra.ids_out = m_pids_ + half; ra.w_out = m_pw_ + half; ra.seq = m_pseq_;
             ra.ring = (uint32_t) (l + 1);              // the predictions published so far
             ra.counter = ring_count_ + 1; ra.n_tok = n; ra.n_embd = (int) N; ra.n_expert = (int) NE;
+            if (learn_) ra.bias = pbias_ + (size_t) (l + 1) * NE;
             try {
                 verify_router(ra, side_);
             } catch (const std::exception& e) {
                 err = "verify layer " + std::to_string(l) + " prediction: " + e.what();
                 return false;
             }
-            if (cudaEventRecord(join_, side_) != cudaSuccess) {
-                err = "verify: the prediction branch could not join";
+        }
+        if (corrects(l)) {   // after the prediction, from the one the previous layer made
+            try {
+                verify_router_bias_update(logits_ + tb * NE, plogits_ + (size_t) (l & 1) * MT * NE, n,
+                                          pbias_ + (size_t) l * NE, side_);
+            } catch (const std::exception& e) {
+                err = "verify layer " + std::to_string(l) + " prediction bias: " + e.what();
                 return false;
             }
+        }
+        if (branches(l) && cudaEventRecord(join_, side_) != cudaSuccess) {
+            err = "verify: the prediction branch could not join";
+            return false;
         }
         if (!wait(bjoin_)) return false;
         stamp(l, 5, cs);
@@ -799,7 +832,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         }
         stamp(l, 10, cs);
-        if (predicts(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {
+        if (branches(l) && cudaStreamWaitEvent(cs, join_, 0) != cudaSuccess) {
             err = "verify: the prediction branch could not join";
             return false;
         }
