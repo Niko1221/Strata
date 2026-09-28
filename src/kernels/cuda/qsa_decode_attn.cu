@@ -316,7 +316,9 @@ __global__ void __launch_bounds__(THREADS) attn_prefill_f16_kernel(const float* 
 //   warps 0-3   score 16 cells of each tile over all 256 dims (q's limbs in registers) and run the online softmax;
 //   warps 4-7   multiply a 64-dim group of V each: the probabilities times the V scales as limbs against V through
 //               ldmatrix.trans (cells and dims permuted inside the fragments, the same way on both sides);
-//   warps 8-11  fetch by cp.async: 8-9 the K codes and scales, 10-11 V's, the pool rows two tiles ahead.
+//   warps 8-11  fetch by cp.async, 16 cells of each tile a warp: their K and V codes and scales together (with
+//               K and V in warps of their own, V's copies queued behind K's, which ran ahead), the pool rows two
+//               tiles ahead.
 // Rings in shared memory between them (K 2 slots, V 3, probabilities 2), synchronized by named barriers.
 namespace pf {
 constexpr int NT = 384;
@@ -326,7 +328,7 @@ enum : int {
     EMPTY_P = FULL_P + 2, SRED = EMPTY_P + 2
 };
 static_assert(SRED < 16, "sixteen named barriers");
-constexpr int NKB = 64 + 128, NVB = 64 + 128, NPB = 128 + 128;   // threads at the K, V and P barriers (END as P)
+constexpr int NKB = 128 + 128, NVB = 128 + 128, NPB = 128 + 128;   // threads at the K, V, P barriers (END as P)
 static_assert(KV_Q8_GROUP == 64 && HD == 256, "four 64-dim scale groups a row");
 constexpr int MAGIC = 0x4B400000;   // 1.5 * 2^23 as float bits: an int x (|x| < 2^22) added gives 1.5 * 2^23 + x
 constexpr float MAGIC_F = 12582912.0f;
@@ -448,14 +450,10 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
     }
 
     if (warp >= 8) {
-        // ======== fetch: warps 8-9 K, 10-11 V.  Warp 8 + h and 10 + h take cells 32h .. 32h+31 of each tile, a lane a
-        // cell and its row; tile i is issued, then tile i-1 signalled once its copies have landed
-        const bool is_k = warp < 10;
-        const int h = warp & 1, cl = 32 * h + lane, nb = is_k ? NKB : NVB, slots = is_k ? KS : VS;
-        const int8_t* src = is_k ? p.k_q : p.v_q;
-        const uint16_t* scl = is_k ? p.k_scale : p.v_scale;
+        // ======== fetch, K and V together: warp 8 + f takes cells 16f .. 16f+15 of each tile (lane l & 15 looks up
+        // a cell's row); tile i is issued, then tile i-1 signalled once its copies have landed
+        const int f = warp - 8, cl = 16 * f + (lane & 15);
         auto row_of = [&](int id, int pg) { return (pg * n_kv_heads + kvh) * page_size + id % page_size; };
-        // tile i's row of cell cl; tile i+1's id and page; tile i+2's id
         int row = -1, id1 = 0, pg1 = 0, id2 = 0;
         if (cl < n_ids) {
             const int id = ids[cl];
@@ -467,23 +465,28 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
         }
         if (2 * PT + cl < n_ids) id2 = ids[2 * PT + cl];
         for (int i = 0; i < n_tiles; ++i) {
-            const int s = i % slots, c0 = i * PT, n_here = min(PT, n_ids - c0);
-            if (i >= slots) bar_sync((is_k ? EMPTY_K : EMPTY_V) + s, nb);
-            uint8_t* dst = is_k ? sm.k[s] : sm.v[s];
+            const int sk = i % KS, sv = i % VS, c0 = i * PT, n_here = min(PT, n_ids - c0);
+            if (i >= KS) bar_sync(EMPTY_K + sk, NKB);
+            if (i >= VS) bar_sync(EMPTY_V + sv, NVB);
 #pragma unroll
-            for (int u = 0; u < 16; ++u) {
-                const int e = lane + 32 * u, cw = e >> 4, j = e & 15, c = 32 * h + cw;
+            for (int u = 0; u < 8; ++u) {
+                const int e = lane + 32 * u, cw = e >> 4, j = e & 15, c = 16 * f + cw;
                 const int r = __shfl_sync(0xffffffffu, row, cw);
-                if (c < n_here)
-                    cp_async16(dst + c * HD + ((j ^ (is_k ? ksw(c) : c & 7)) << 4), src + (size_t) r * HD + j * 16);
+                if (c < n_here) {
+                    cp_async16(&sm.k[sk][c * HD + ((j ^ ksw(c)) << 4)], p.k_q + (size_t) r * HD + j * 16);
+                    cp_async16(&sm.v[sv][c * HD + ((j ^ (c & 7)) << 4)], p.v_q + (size_t) r * HD + j * 16);
+                }
             }
-            uint2* sd = is_k ? &sm.ks[s][cl] : &sm.vs[s][cl];
-            if (cl < n_here) cp_async8(sd, scl + (size_t) row * (HD / KV_Q8_GROUP));
+            const bool vl = lane >= 16;                        // lanes 0-15 a cell's K scales, 16-31 its V scales
+            uint2* sd = vl ? &sm.vs[sv][cl] : &sm.ks[sk][cl];
+            if (cl < n_here)
+                cp_async8(sd, (vl ? p.v_scale : p.k_scale) + (size_t) row * (HD / KV_Q8_GROUP));
             else *sd = make_uint2(0u, 0u);   // no scale for the multiply of a missing cell's stale codes
             asm volatile("cp.async.commit_group;\n" ::);
             if (i >= 1) {
                 asm volatile("cp.async.wait_group 1;\n" ::);
-                bar_arrive((is_k ? FULL_K : FULL_V) + (i - 1) % slots, nb);
+                bar_arrive(FULL_K + (i - 1) % KS, NKB);
+                bar_arrive(FULL_V + (i - 1) % VS, NVB);
             }
             row = cl < n_ids - c0 - PT ? row_of(id1, pg1) : -1;
             id1 = id2;
@@ -491,7 +494,8 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
             id2 = c0 + 3 * PT + cl < n_ids ? ids[c0 + 3 * PT + cl] : 0;
         }
         asm volatile("cp.async.wait_group 0;\n" ::);
-        bar_arrive((is_k ? FULL_K : FULL_V) + (n_tiles - 1) % slots, nb);
+        bar_arrive(FULL_K + (n_tiles - 1) % KS, NKB);
+        bar_arrive(FULL_V + (n_tiles - 1) % VS, NVB);
     } else if (warp < 4) {
         // ======== scores: cells 16w + 4tig .. +3 of each tile in this lane's C fragments (rows gid, gid + 8)
         const int w = warp;
