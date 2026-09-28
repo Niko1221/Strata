@@ -101,9 +101,11 @@ rewrote it with the completed block's key (`qsa.cu:211`) when tokens past the bo
 the invariant `pooled[n_bid] == dead`, which the writers maintain at every completion (`qsa.cu:213`,
 `native_qsa_indexer.cu:93`), must be RESTORED, not assumed: `nvme_restore` re-publishes `dead` into row
 `L / idx_block` of every QSA layer, the same rule `conversation_checkpoint_restore` applies
-(`conversation_state.cpp:186`).  For a full-`L` dump the row already equals `dead`, so it is a no-op there.  The
-fixture (a non-block-aligned boundary with a distinct `idx_dead`) is still step 4's: this is the rule, not its
-proof.
+(`conversation_state.cpp:186`).  For a full-`L` dump the row already equals `dead`, so it is a no-op there.
+**Proved in step 4**: `kv_nvme_host_test` dumps a non-block-aligned boundary (10 tokens, `idx_block` 4) whose
+`idx_dead` differs from every pooled row, reads the STALE value back out of the file, and asserts that after a
+restore the row holds `dead` while the completed rows are untouched and the row after the spare was never written.
+Deleting the re-publish makes the fixture fail.
 
 ### C4 - pooled row count
 
@@ -187,9 +189,11 @@ could not see the difference between a restore that re-publishes the spare row a
 makes it a weak oracle for the very fix C8 is being used to prove.  It is also the row the file carries (C4), so
 the DONE-time live array and the restored array now hold the same set of rows.  The span is not a second formula:
 `state_hash_line`, `kv_nvme.cpp: snapshot_pooled_rows` and the shared core's `conversation_snapshot.cpp: layout`
-all read `strata::kernels::qsa_pooled_rows`, and `kv_nvme_host_test` asserts that count, that the file's pooled
-segment is exactly that many rows, and that the fingerprint's span is one row wider than the completed blocks (the
-row at `L / idx_block + 1` is outside it, as C4 decided).
+all read `strata::kernels::qsa_pooled_rows`.  `kv_nvme_host_test` asserts that count at the aligned and the
+non-aligned boundary, that the file's pooled segment is exactly that many rows (and NOT the `+2` layout the tier
+rejected), that the restore re-publishes the last of them, and that the row after it was never written.  What it
+does NOT assert is the fingerprint itself: `state_hash_line` lives in the program layer and needs a live session,
+so the fixture pins the one count the fingerprint spans, and the hash line stays the GPU oracle's job.
 
 ### C9 - they forbid what our file format currently does
 
@@ -334,6 +338,10 @@ silently does nothing for every conversation containing a picture.
   successful dump.  Until it exists the image path of the tier is untested: `tools/nvme_p0_test.sh`,
   `tools/nvme_steps123_test.sh` and `tools/needle_bench.py` are all text-only, and all three need the GPU this
   branch may not take.
+  **Added in step 4** (`src/platform/kv_nvme_host_test.cpp`): all three shapes, the promote asserted through
+  `kv_nvme_match` (the serve loop's own rule), and the negative control that a consumed-state snapshot is not
+  promotable by that request.  What is still unproven is the end-to-end part only a GPU run can show - that the
+  promoted session continues from those bytes with the model's real weights.
 - **C1's remaining policy**: whether `nvme_dump_at` is also the spill primitive for a *RAM-tier* eviction (their
   `ConversationCache` evicts on a byte budget; our dump is driven by DONE), and what spilling a parked rather
   than a live session costs.
@@ -351,6 +359,55 @@ silently does nothing for every conversation containing a picture.
   called from `generate.cpp` and `kv_nvme.cpp`.  `src/core/conversation_memory.cpp` was deliberately not
   imported, so `conversation_memory.hpp` is a declaration with no definition behind it.  Wiring the rest in is a
   step-3 decision, not a step-2 leftover.
+
+## Where step 4 stands
+
+| commit | what it settled |
+|---|---|
+| `41180bd` | **C8** - `state_hash_line()` now prints their field set (`dead`, the spare pooled row, `ss.max_cells`, no PLE bytes without a PLE history, the fp16 KV branch reading the fp16 pools), and the pooled-row count is one named function, `strata::kernels::qsa_pooled_rows`, read by the envelope, the fingerprint and (unchanged) the shared core |
+| `036237e` | the shell oracles read the header offset and format version from `kNvmeHeaderBytes` / `kNvmeFormatVersion` through `tools/nvme_header_layout.sh`, and refuse a snapshot of a version they do not write.  Also fixed: `nvme_p0_test.sh`'s snapshot-ids step indexed an argument that was never passed - an IndexError on every run, invisible because the script was edited and not run |
+| `8db2c35` | their CPU-only fixtures ported verbatim and passing: `conversation_cache_test`, `conversation_memory_test`, `conversation_validation_test` (which is where their `conversation_checked` overflow checks live) and its wrapped `conversation_transfer_test`.  `conversation_memory.cpp` imported for the fixture only |
+| `c34d45a` | `src/platform/kv_nvme_host_test.cpp` - the tier's own host fixture - and `kv_nvme_match`, the serve loop's promote rule moved into the tier's header so the fixture asserts the code the server runs |
+
+**The fixture step 3 owed exists now.**  A boundary that is not `idx_block`-aligned (10 tokens, `idx_block` 4), a
+picture at token 14 - inside the consumed prefix, at or past the boundary - a `dead` value no pooled row has,
+`block_pos` recorded at the boundary against a live array naming 24, and a second request that re-sends the prompt
+without the model's reasoning tokens.  It asserts a **promote** (`kv_nvme_match` returns the boundary entry and the
+snapshot restores), and it asserts the negative: the same session dumped without a boundary is keyed on the
+consumed 26 ids and that same request can never reach it.  The spare-row check is there too - after a restore,
+`pooled[L / idx_block] == dead`, the completed rows are untouched, and row `L / idx_block + 1` was never written.
+
+**How it runs with no GPU.**  The fixture links `strata_engine` - so it drives the real `nvme_dump_at` /
+`nvme_restore` / `KvNvmeStore` - and never initialises CUDA: GNU link wrapping turns `cudaMemcpy` and
+`cudaMemcpyAsync` into `memcpy`, `cudaGetLastError` into "no error" (which is what keeps `kv_stream.cu`'s `check()`
+from exiting on the no-device launch failure) and `cudaDeviceSynchronize` into a no-op; `main` sets
+`CUDA_VISIBLE_DEVICES=-1` before any CUDA call.  The same wrapping is what their `conversation_transfer_test` uses.
+It is a fixture over **the bytes and the decisions**, not over the device: it cannot show that the arrays are
+device memory, that `kv_stream_reset` refills slots, or that a promoted session generates the same tokens.
+
+**What ran here** (no model, no GPU; the engine's 23.9 GiB context untouched throughout):
+
+| check | result |
+|---|---|
+| `ctest -R 'conversation_\|kv_nvme_host_test'` | 5/5 pass: `kv_nvme_host_test` 113 checks (9 refusals), `conversation_cache_test` 35, `conversation_memory_test` 23, `conversation_validation_test` 780, `conversation_transfer_test` 1020 |
+| `bash /tmp/converge-build.sh` | BUILD_OK after every commit |
+| `python -m unittest discover -s serve` | 23 tests OK |
+| `bash -n` on the three shell files | clean; `tools/nvme_header_layout.sh` exercised against synthetic v3 and v2 snapshots (v3 read, v2 refused, a missing header refused) |
+| four mutations of the tier | each caught: dropping the spare-row re-publish, dropping the image filter, widening `qsa_pooled_rows` to `+2`, keying the dump on the consumed ids |
+
+**What was skipped, and why.**  `tools/nvme_p0_test.sh`, `tools/nvme_steps123_test.sh` and `tools/needle_bench.py`
+need the model and the GPU; they were edited, not run.  The ctest parity suite is not built in this configuration
+(`STRATA_BUILD_TESTS=OFF`, and `tests/` is absent from the published source), which is why the new fixtures got
+their own switch, `STRATA_BUILD_CONVERSATION_TESTS`.  Their `conversation_snapshot_test` (it calls `cudaMalloc`)
+and their HTTP / isolation / soak tools (they drive a running server) were not ported.
+
+**Unverified until a GPU is free.**  That the v3 envelope round-trips against a real engine - the P0
+restore-exactness gate now compares two lines that include `dead` and one more pooled row, and neither has been
+printed since step 3; that `tools/nvme_p0_test.sh` and `tools/nvme_steps123_test.sh` still pass with the offset and
+version they now derive from the header (the scripts' recorded results are the v2-format record); that a promoted
+session continues bit-exactly from a boundary snapshot rather than merely restoring; what `kv_stream_reset` does to
+the streamed layers' slots after a restore; and whether the existing v2 snapshots in `/local/strata/kvstore` are
+re-dumped acceptably by a v3-writing binary.
 
 ## Hard constraints for this branch
 

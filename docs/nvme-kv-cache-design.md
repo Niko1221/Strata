@@ -97,6 +97,12 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
 6. **Payload digest** - hashed during the write with the same hasher that feeds the file (a plain
    write inside the payload silently desynchronizes the digest from the bytes; this exact bug
    shipped briefly and was caught by the corruption test).
+7. **The spare pooled row is part of the snapshot, and a restore re-publishes it.**  A prefix of `L` cells owns
+   `L / idx_block + 1` pooled rows - the completed blocks plus the spare at `L / idx_block`, which the writers
+   keep equal to `dead` (`qsa.cu:213`).  A turn-boundary dump reads that row from a live array a longer turn has
+   already overwritten, so `nvme_restore` re-publishes `dead` into it, as the shared core's
+   `conversation_checkpoint_restore` does.  `STRATA_STATE_HASH` spans the same rows, so the DONE-vs-restore
+   comparison can actually see the difference.
 
 ## 5. Test record
 
@@ -109,6 +115,16 @@ Oracles and harnesses (all exit non-zero on failure):
   after a process restart, LRU cap eviction. ~8 min.
 - Live-server HTTP tests (`/v1/chat/completions`, streaming) - the needle test and the short
   correctness suite (driver scripts were run ad hoc; assertions listed below).
+- `kv_nvme_host_test` (ctest, `STRATA_BUILD_CONVERSATION_TESTS=ON`) - the tier's format and resume rules with no
+  CUDA context: a synthetic session whose device arrays are host buffers, CUDA linked and never initialised.
+  Asserts the turn-boundary key (10 ids, not the consumed 26), the refusal of a picture at or past `L`, the
+  promote of a boundary snapshot by a request that drops the reasoning tokens (and that a consumed-state
+  snapshot is NOT promotable by that request), `pooled[L / idx_block] == dead` after a restore with the completed
+  rows untouched and row `L / idx_block + 1` never written, `block_pos` / tails taken from the boundary
+  checkpoint, the drafter-ring window, and the version-2 / geometry / integrity / truncation / pooled-rows
+  refusals by their messages.  113 checks.  It does NOT prove the bytes are really device memory, that
+  `kv_stream_reset` refills slots (its launch is a no-op), or that a promoted session generates the same tokens -
+  those remain the GPU oracles' job.
 
 Results:
 - **P0**: restore-exactness PASS (post-restore hash == dumper's hash, deterministic across runs);
@@ -116,6 +132,10 @@ Results:
   (engine decode nondeterminism, pre-existing - reproduced on the old binary).
 - **Steps 1-3**: one growing file per conversation; promote after restart resumed 4235 tokens and
   read 13 fresh in ~350 ms; cap evicted to 0.83 GiB under 1 GB.
+- **Not re-run since the v3 header.**  Step 3 widened the header to 208 bytes and step 4 changed the state-hash
+  field set, so the two results above are the v2-format record.  Both scripts now take the offset and the version
+  from `kNvmeHeaderBytes` / `kNvmeFormatVersion` through `tools/nvme_header_layout.sh` (and refuse a snapshot of a
+  version they do not write), but neither has been run on this branch: the GPU holds a live ~24 GB engine.
 - **Live needle test** (three ~110k-token sessions, needle ~900 tokens in, rotation): all three
   needle turns promoted from NVMe (`reused 110,370/110,281/110,391 + 39/42/42 fresh read` vs
   ~110 s full prefill cold); TTFT 110 s -> **1.3-1.9 s** warm-cache / ~4 s cold-cache (the ~1.8 GB
