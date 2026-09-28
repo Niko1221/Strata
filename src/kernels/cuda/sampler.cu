@@ -1,13 +1,17 @@
-// src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in the order docs/sampling.md settles.
+// src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in llama.cpp's own order.
 //
-//     penalties -> top_k -> min_p -> top_p -> temperature -> penalties -> pick
+//     penalties -> top_k -> min_p -> top_p -> temperature -> pick
 //
-// THE ORDER IS THE WHOLE CONTENT OF THIS FILE.  `docs/sampling.md` transcribes it from llama.cpp's own chain
-// (`common/sampling.cpp` L357/360/375/381/399) and the two facts that are easy to get backwards are that
-// TEMPERATURE COMES AFTER THE TRUNCATION FILTERS and PENALTIES COME AFTER TEMPERATURE.  The intuitive order -
-// scale first, then truncate, with penalties as pre-processing - is a different distribution.  Both produce a
-// valid token, so only a comparison at the distribution level can tell them apart; the parity test does that
-// explicitly by running the wrong order and requiring it to differ.
+// THE ORDER IS THE WHOLE CONTENT OF THIS FILE, and it is llama.cpp's DEFAULT chain (issue #53).  The chain is
+// built by iterating `params.samplers` (`common/common.h`), whose default list is
+// PENALTIES, DRY, TOP_N_SIGMA, TOP_K, TYPICAL_P, TOP_P, MIN_P, XTC, TEMPERATURE - so penalties run ONCE and
+// FIRST, before the selection, and temperature scales the survivors at the very end.  The two facts that are
+// easy to get backwards are that TEMPERATURE COMES AFTER THE TRUNCATION FILTERS and that PENALTIES APPLY
+// EXACTLY ONCE: reading the switch cases of `common_sampler_init` in their textual order puts PENALTIES after
+// TEMPERATURE, and a selection that penalises plus a final stage that penalises again applies them TWICE.
+// Both mistakes produce a valid token and a different distribution, so only a comparison at the distribution
+// level can tell them apart; the parity test pins the kernel against the single-pass reference, and its #53
+// fixture pins that reference's arithmetic against the issue's independently derived numbers.
 //
 // Both kernels put ONE BLOCK per token over the vocabulary: `sampler_greedy_kernel` is the plain argmax,
 // `sampler_kernel` runs the sampled chain as `top_k` block-argmax rounds followed by the top_p / temperature /
@@ -174,7 +178,7 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
     const float* l = logits + (size_t) t * n_vocab;
 
     // Temperature is needed by BOTH stages below, so it is computed here; the chain still APPLIES it after
-    // the truncation filters - the survivors are chosen on the raw logits and only then scaled.
+    // the truncation filters - the survivors are chosen on the penalised logits and only then scaled.
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
 
     // The penalty window is the last `penalty_last_n` entries of this row's history (disabled at this
@@ -213,8 +217,10 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
     }
 
     // ---- top_k: k rounds of a block argmax over the not-yet-taken.  `sel_*` holds the kept ids and their
-    // raw logits in selection order: descending by value, ties to the lower index, which is the order the
-    // top_p cut below is defined over.
+    // PENALISED logits in selection order: descending by value, ties to the lower index, which is the order
+    // the top_p cut below is defined over.  This is the chain's ONE penalties pass (#53): llama.cpp's default
+    // chain applies its single PENALTIES stage before TOP_K, so the filters see the penalised logits and the
+    // pick below must not penalise again.
     __shared__ int sel_ids[KMAX];
     __shared__ float sel_logit[KMAX];
     __shared__ float sv[32];
@@ -283,8 +289,12 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
         if (cut < p.min_keep) cut = p.min_keep < n_minp ? p.min_keep : n_minp;
         n_keep = cut;
     }
+    // THE FINAL STAGE IS TEMPERATURE ONLY.  `sel_logit` already carries the ONE penalty pass from the
+    // selection above; applying `apply_penalties` here too was issue #53 - a second, post-temperature pass
+    // that no llama.cpp chain has (its PENALTIES stage runs once, before the filters).  In #53's two-token
+    // example it shrank the penalised token's probability from 10.50% to 2.55%.
     auto scaled = [&](int i) {
-        return apply_penalties(sel_logit[i] * inv_t, hit_count(sel_ids[i]), p);
+        return sel_logit[i] * inv_t;
     };
     float smx = scaled(0);
     for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, scaled(i));

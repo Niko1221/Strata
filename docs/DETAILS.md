@@ -303,7 +303,9 @@ engine arguments. The run config's optional `sampling` block sets the defaults f
 block at all a request without sampling keys decodes greedy. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
 penalty is set) ride the same path; they count the tokens the request has consumed, so a repetition penalty
-suppresses what the model itself just said, not the prompt alone.
+suppresses what the model itself just said, not the prompt alone. Like llama.cpp's default chain, they apply
+exactly once, before the `top_k`/`min_p`/`top_p` filters, and the temperature scaling never penalises again
+(engine 0.1.17 fixed a second, post-temperature penalty pass, issue #53).
 
 ---
 

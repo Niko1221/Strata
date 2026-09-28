@@ -153,10 +153,10 @@ float host_philox_uniform(uint64_t seed, uint64_t counter) {
     return (float) (c0 >> 8) * (1.0f / 16777216.0f);
 }
 
-// The full SAMPLED chain, host side - the kernel's `sampler_kernel` in serial form: penalties on the raw
-// logits during the top_k selection (ties to the lowest index), the min_p prefix cut, top_p's cut in double,
-// then penalties AGAIN on the temperature-scaled survivors (docs/sampling.md's after-temperature pass), and
-// one Philox draw at (seed, counter + row).
+// The full SAMPLED chain, host side - the kernel's `sampler_kernel` in serial form: penalties ONCE, on the raw
+// logits during the top_k selection (ties to the lowest index - llama.cpp's single PENALTIES stage, issue #53),
+// the min_p prefix cut, top_p's cut in double, then the temperature scaling of the survivors and one Philox
+// draw at (seed, counter + row).
 int sampled_reference(const std::vector<float>& l, const std::vector<int>& hist,
                       const strata::kernels::SamplerParams& p, int row) {
     auto penal = [&](float logit, int count) {
@@ -202,7 +202,9 @@ int sampled_reference(const std::vector<float>& l, const std::vector<int>& hist,
         n_keep = cut;
     }
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
-    auto scaled = [&](int i) { return penal(sel_logit[(size_t) i] * inv_t, count(sel_ids[(size_t) i])); };
+    // TEMPERATURE ONLY - the penalties rode once, in the selection above (issue #53: the old reference ran a
+    // second pass here, so it agreed with the kernel's old two-pass bug instead of with llama.cpp).
+    auto scaled = [&](int i) { return sel_logit[(size_t) i] * inv_t; };
     float smx = scaled(0);
     for (int i = 1; i < n_keep; ++i) smx = std::fmax(smx, scaled(i));
     double sum = 0.0;
@@ -461,9 +463,9 @@ int main(int argc, char** argv) {
     }
 
     // ---- fixture 6: PENALTIES IN THE SAMPLED CHAIN.  Fixture 4 pins the greedy (argmax) path; the sampled
-    // chain applies penalties a SECOND time - after the temperature scaling, on the survivors - so it gets its
-    // own reference (the full chain with the host Philox) and its own observability check: with the penalties
-    // on, the history row's favourite must LOSE a pick it would win penalty-free.
+    // chain carries the penalties through the selection, the cuts, the temperature scaling and the draw, so it
+    // gets its own reference (the full single-pass chain with the host Philox) and its own observability
+    // check: with the penalties on, the history row's favourite must LOSE a pick it would win penalty-free.
     {
         const int NV2 = 8, NT2 = 2;
         strata::kernels::SamplerParams p;
@@ -568,6 +570,52 @@ int main(int argc, char** argv) {
                     "penalty window clamp is observable", visible ? "yes" : "*** NO ***", want, unclamped);
         if (!visible) ++bad;
         else bad += run("penalty window: tail only", {l.begin(), l.end()}, 1, p, {want}, hist, 8);
+    }
+
+    // ---- fixture 9: THE ONE-PASS PENALTY ARITHMETIC, PINNED AGAINST ISSUE #53'S OWN NUMBERS.  The fixture is
+    // the issue's two-token example, computed independently of the `penal`/`sampled_reference` helpers above:
+    // logits [0, 0], history [0], last_n 1, repeat 1, freq 0, present 1.5, T 0.7, top_k 2 - both candidates
+    // survive every filter, so only the penalty pass and the scaling decide.  One pass puts token 0 at
+    // (0 - 1.5)/T = -2.1428... against token 1's 0, probability 0.10500059; the old two-pass chain penalised
+    // it once more after the scaling (-3.6428...) and got 0.02550967.  Token 1 draws while u is below its
+    // cumulative share, so token 0 wins iff u >= 1 - p(token 0), and the two chains' thresholds leave a ~8%
+    // band of draws where they disagree - a counter whose uniform lands inside it must pick token 0.
+    {
+        const int NV5 = 2, NT5 = 1;
+        strata::kernels::SamplerParams p;
+        p.top_k = 2; p.top_p = 1.0f; p.temperature = 0.7f; p.seed = 4; p.counter = 0;
+        p.penalty_last_n = 1; p.penalty_repeat = 1.0f; p.penalty_freq = 0.0f; p.penalty_present = 1.5f;
+
+        // each chain's token-0 logit from its own closed form, kernel-faithful down to the float reciprocal
+        // (the kernel scales by `sel_logit * (1/T)`, not `sel_logit / T`), then the two-token softmax
+        const float inv_t = 1.0f / p.temperature;
+        const double a_single = (double) ((0.0f - p.penalty_present) * inv_t);
+        const double a_double = a_single - (double) p.penalty_present;
+        auto share = [](double a) { return std::exp(a) / (std::exp(a) + 1.0); };
+        const double p_single = share(a_single), p_double = share(a_double);
+        const bool anchors = std::abs(p_single - 0.1050005850) < 1e-6 &&
+                             std::abs(p_double - 0.0255096664) < 1e-6;
+        std::printf("  %-34s %s (single-pass p = %.10f, two-pass p = %.10f)\n",
+                    "#53's probabilities", anchors ? "match" : "*** WRONG ***", p_single, p_double);
+        if (!anchors) ++bad;
+
+        const double lo = 1.0 - p_single, hi = 1.0 - p_double;
+        uint64_t found = 0;
+        bool have = false;
+        for (uint64_t c = 0; c < 0x100000ull && !have; ++c) {
+            const double u = host_philox_uniform(p.seed, c);
+            if (u > lo + 1e-9 && u < hi - 1e-9) { found = c; have = true; }
+        }
+        std::printf("  %-34s %s (counter %llu: u = %.7f in [%.7f, %.7f) -> single-pass picks 0, "
+                    "two-pass picks 1)\n", "#53's band is observable", have ? "yes" : "*** NO ***",
+                    (unsigned long long) found, have ? host_philox_uniform(p.seed, found) : 0.0, lo, hi);
+        if (!have) ++bad;
+        else {
+            const std::vector<float> l((size_t) NV5 * NT5, 0.0f);   // logits [0, 0]
+            const std::vector<int> hist = {0};                      // history [A]
+            strata::kernels::SamplerParams q = p; q.counter = found;
+            bad += run("#53: one penalty pass, then T", l, NT5, q, {0}, hist, 1);
+        }
     }
 
     // A continuous stream and individual decode calls consume the same draw counters.

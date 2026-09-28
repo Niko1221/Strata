@@ -1,10 +1,10 @@
 // include/strata/kernels/sampler.hpp - the sampler chain, host-callable (P2.S2).
 //
-//     penalties -> top_k -> min_p -> top_p -> temperature -> penalties -> pick
+//     penalties -> top_k -> min_p -> top_p -> temperature -> pick
 //
-// The ORDER is specified in docs/sampling.md, transcribed from llama.cpp's own chain.  Three facts there are
-// easy to get backwards: temperature comes AFTER the truncation filters, penalties come AFTER temperature as
-// well as before the selection, and min_p cuts BEFORE top_p (both on the pre-temperature logits).
+// The ORDER is llama.cpp's default chain (issue #53).  Three facts there are easy to get backwards: temperature
+// comes AFTER the truncation filters, penalties apply EXACTLY ONCE - before the selection, never again after
+// temperature - and min_p cuts BEFORE top_p (both on the pre-temperature logits).
 #pragma once
 
 #include <cstdint>
