@@ -315,13 +315,46 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     m.T = n_tok;
     cudaStream_t st = (cudaStream_t) stream;
     gr_norm_multi_kernel<<<n_tok, THREADS, 0, st>>>(m);
+    // Turing port: the 80 KB opt-in is pointless below sm_80 (the chunk path launches at most 40 KB, under the
+    // 48 KB default) and it FAILS there - an unchecked failure would leave a stale "invalid argument" for the
+    // cudaGetLastError below, killing a run whose launches actually succeeded.
     static bool attr = false;
     if (!attr) {
-        cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             (int) (kFusedGrMaxT * TILE * sizeof(float)));
         attr = true;
+        int dev = 0, major = 8;
+        if (cudaGetDevice(&dev) == cudaSuccess &&
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major >= 8) {
+            cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 (int) (kFusedGrMaxT * TILE * sizeof(float)));
+        }
+        cudaGetLastError();                                 // drop any error the attempt left behind
     }
-    gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
+    // Turing port: the down kernel stages n_tok*TILE floats of dynamic shared memory - 80 KB at the full 8
+    // tokens. sm_75 caps a block at 64 KB, so 5+ tokens fail to launch as "invalid argument". On pre-sm_80
+    // GPUs process the tokens in chunks of 4 (40 KB, under even the 48 KB non-opt-in limit) - the down
+    // kernel's outputs (lo, inject_out) are strictly per-token, so the chunk boundaries are safe, and the up
+    // kernel below still sees every token of the batch in one launch.
+    static int chunk = -1;
+    if (chunk < 0) {
+        int dev = 0, major = 8;
+        if (cudaGetDevice(&dev) == cudaSuccess &&
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess)
+            chunk = major >= 8 ? kFusedGrMaxT : 4;
+        else
+            chunk = kFusedGrMaxT;
+    }
+    if (chunk >= n_tok) {
+        gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
+    } else {
+        for (int c0 = 0; c0 < n_tok; c0 += chunk) {
+            const int ct = n_tok - c0 < chunk ? n_tok - c0 : chunk;
+            GrMulti c{};
+            c.xn = xn_scratch + (size_t) c0 * D;
+            c.T = ct;
+            for (int k = 0; k < ct; ++k) c.a[k] = a[c0 + k];
+            gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) ct * TILE * sizeof(float), st>>>(c);
+        }
+    }
     gr_up_multi_kernel<<<UPM_BLOCKS, THREADS, 0, st>>>(m);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {

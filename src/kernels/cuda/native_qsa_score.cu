@@ -29,9 +29,10 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int D=128, HEADS=4, R=4, ROWS=32, WARPS=2, STRIDE=36, COMBINE=68;
+struct TileC { float x[4]={0.0f,0.0f,0.0f,0.0f}; };
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 struct TileA { uint32_t x[4]; };
 struct TileB { uint32_t x[2]; };
-struct TileC { float x[4]={0.0f,0.0f,0.0f,0.0f}; };
 __device__ __forceinline__ void load_a(TileA& a,const float* p) {
     const float* src=p+(threadIdx.x%16)*STRIDE+(threadIdx.x/16)*4;
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
@@ -48,6 +49,7 @@ __device__ __forceinline__ void mma(TileC& c,const TileA& a,const TileB& b) {
         : "+f"(c.x[0]),"+f"(c.x[1]),"+f"(c.x[2]),"+f"(c.x[3])
         : "r"(a.x[0]),"r"(a.x[1]),"r"(a.x[2]),"r"(a.x[3]),"r"(b.x[0]),"r"(b.x[1]));
 }
+#endif
 __global__ __launch_bounds__(64,1) void score_kernel(
         const float* __restrict__ pooled,const float* __restrict__ query,
         const float* __restrict__ bias,const int32_t* __restrict__ step,
@@ -58,6 +60,7 @@ __global__ __launch_bounds__(64,1) void score_kernel(
     const int row0=blockIdx.x*ROWS;
     if(row0>full)return;
     const int lane=threadIdx.x,warp=threadIdx.y;
+#if __CUDA_ARCH__ >= 800
     __shared__ __align__(16) float shared[WARPS*16*STRIDE];
     float* tile=shared+warp*16*STRIDE;
     TileC c[2];
@@ -88,6 +91,41 @@ __global__ __launch_bounds__(64,1) void score_kernel(
             for(int ia=0;ia<2;++ia)mma(c[ia],a[ia][k],b);
         }
     }
+#else
+    // Portable pre-sm_80 path (Turing port): the same math without ldmatrix/tf32 mma.
+    // Lane (g,t) owns C[ia][m][n] for m in {g,g+8}, n in {2t,2t+1} - exactly the entries
+    // the store-out below reads from c[ia].x[l] - and accumulates the m16n8k8 dot products
+    // with plain fp32 FMAs (more precise than tf32, same C the mma would produce).
+    __shared__ __align__(16) float shared[WARPS*16*STRIDE];
+    __shared__ __align__(16) float sharedb[WARPS*8*STRIDE];
+    float* tile=shared+warp*16*STRIDE;
+    float* tileb=sharedb+warp*8*STRIDE;
+    TileC c[2];
+    for(int col=warp*32;col<D;col+=WARPS*32){
+#pragma unroll
+        for(int h=0;h<8;++h)tileb[h*STRIDE+lane]=h<HEADS?query[size_t(h)*D+col+lane]:0.0f;
+#pragma unroll
+        for(int ia=0;ia<2;++ia){
+            __syncwarp();
+#pragma unroll
+            for(int i=0;i<16;++i){
+                const int row=row0+ia*16+i;
+                tile[i*STRIDE+lane]=row<=full?pooled[size_t(row)*D+col+lane]:0.0f;
+            }
+            __syncwarp();
+            const int m0=lane>>2,m1=m0+8,n0=(lane&3)*2;
+#pragma unroll
+            for(int kc=0;kc<32;++kc){
+                const float a0=tile[m0*STRIDE+kc],a1=tile[m1*STRIDE+kc];
+                const float b0=tileb[n0*STRIDE+kc],b1=tileb[(n0+1)*STRIDE+kc];
+                c[ia].x[0]=fmaf(a0,b0,c[ia].x[0]);
+                c[ia].x[1]=fmaf(a0,b1,c[ia].x[1]);
+                c[ia].x[2]=fmaf(a1,b0,c[ia].x[2]);
+                c[ia].x[3]=fmaf(a1,b1,c[ia].x[3]);
+            }
+        }
+    }
+#endif
     __syncthreads();
 #pragma unroll
     for(int ia=0;ia<2;++ia){

@@ -1167,8 +1167,8 @@ def main() -> int:
             + (" (the one with the most VRAM)" if a.gpu is None else "") + " - choose another with --gpu N:")
         for x in gpus():
             say(f"         {x['index']}: {x['name']}, {x['vram_gb']:.0f} GB")
-    if int(gpu["arch"]) < 80:
-        fail("this GPU is older than the RTX 30 series (compute capability 8.0 is required)")
+    if int(gpu["arch"]) < 75:
+        fail("this GPU is older than the RTX 20 series (compute capability 7.5 is required)")
     if driver_major(gpu) < MIN_DRIVER:
         fail(f"the NVIDIA driver is too old ({gpu['driver']}; {MIN_DRIVER} or newer is needed)",
              "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
