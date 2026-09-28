@@ -618,6 +618,32 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- fixture 10: A STALE HISTORY WITH last_n = 0 IS INERT.  A caller can hand over a history buffer
+    // from a previous penalised request while this request disables the penalties - the run must equal the
+    // no-history run in both kernels, and the bitmap the launch did not size must stay untouched.
+    {
+        std::mt19937 rng(11); std::normal_distribution<float> g(0.0f, 1.0f);
+        std::vector<float> l((size_t) NV * NT);
+        for (auto& v : l) v = g(rng);
+        std::vector<int> hist((size_t) NT * 8, -1);
+        for (int t = 0; t < NT; ++t) hist[(size_t) t * 8] = 3;
+
+        strata::kernels::SamplerParams p;
+        p.top_k = 20; p.top_p = 0.95f; p.temperature = 0.8f; p.seed = 5;
+        std::vector<int> want((size_t) NT);
+        for (int t = 0; t < NT; ++t)
+            want[(size_t) t] = sampled_reference({l.begin() + (size_t) t * NV,
+                                                  l.begin() + (size_t) (t + 1) * NV}, {}, p, t);
+        bad += run("stale history, last_n=0 (sampled)", l, NT, p, want, hist, 8);
+
+        strata::kernels::SamplerParams gp = p; gp.greedy = true; gp.top_k = 0; gp.top_p = 1.0f;
+        std::vector<int> gwant((size_t) NT);
+        for (int t = 0; t < NT; ++t)
+            gwant[(size_t) t] = reference_pick({l.begin() + (size_t) t * NV,
+                                                l.begin() + (size_t) (t + 1) * NV}, gp, false);
+        bad += run("stale history, last_n=0 (greedy)", l, NT, gp, gwant, hist, 8);
+    }
+
     // A continuous stream and individual decode calls consume the same draw counters.
     {
         constexpr int count = 32, vocab = 16;
