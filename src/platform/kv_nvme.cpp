@@ -46,12 +46,37 @@ namespace fs = std::filesystem;
 /// (`strata::core::conversation_state_sizes`) - this file no longer carries a second copy of those formulas
 /// (docs/nvme-kv-cache-convergence.md step 2).  `page_size` / `idx_block` are the granules the segment walk
 /// needs, read from the same `qsa_real_shapes()` the shared core reads.
-/// The pooled-row count is NOT here: our `L / idx_block + 2` is still our own, and collision C4 (whose formula the
-/// format uses) is settled in step 3.
 struct Sizes {
     int64_t page_size = 0, idx_block = 0;
     strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
 };
+
+/// THE POOLED-ROW COUNT, stated once and used by both the dump and the restore (collision C4, settled on the
+/// SHARED CORE's formula - `conversation_snapshot.cpp:45`): the completed block rows [0, L/idx_block) plus the
+/// SPARE row at L/idx_block.  The spare row is not padding - qsa.cu:213 and native_qsa_indexer.cu:93 keep
+/// `pooled[n_bid]` equal to `dead`, and qsa.cu:260 and native_qsa_score.cu:74 read row n_bid straight out of the
+/// pool, so a snapshot that stopped at the completed rows would leave the block in progress scored with a stale
+/// key.  Our old `L / idx_block + 2` wrote one row MORE than that: what the live array happens to hold at dump
+/// time, and unreachable at resume, because every pooled reader gates on n_bid (qsa.cu:253 `b > n_bid`,
+/// qsa_select.cu:33 - which reads `dead` for `b == n_bid`, so its highest pooled read is n_bid - 1,
+/// native_qsa_score.cu:74 `row <= full`).  The writer does touch row n_bid+1 when a block completes
+/// (qsa.cu:213 seeds it with `dead`), so a stale value left there by a shorter snapshot is overwritten before
+/// anything can read it.
+///
+/// A live array too small for the snapshot REFUSES, as their `conversation_kv_validate` does
+/// (`conversation_snapshot.cpp:72`); our old `min(..., idx_pooled_rows)` clamp wrote a SHORT segment that the
+/// restore then reported as layout drift.
+bool snapshot_pooled_rows(int64_t L, const Sizes& z, const strata::core::QsaState& st, int64_t& rows,
+                          std::string& err) {
+    rows = L / z.idx_block + 1;
+    if (rows > st.idx_pooled_rows) {
+        err = "pooled rows: a " + std::to_string(L) + "-token prefix needs " + std::to_string(rows) +
+              " indexer pooled rows, this engine's array holds " + std::to_string(st.idx_pooled_rows) +
+              " - refusing";
+        return false;
+    }
+    return true;
+}
 
 bool sizes_of(const strata::core::ModelGeometry& g, Sizes& z, std::string& err) {
     const strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
@@ -230,7 +255,12 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     }
 
     const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
-    const int64_t pooled_rows = std::min<int64_t>(L / z.idx_block + 2, ss.qsa_states[0].idx_pooled_rows);
+    int64_t pooled_rows = 0;
+    if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) {
+        err = "nvme_dump: " + err;
+        std::fclose(f);
+        return false;
+    }
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         const strata::core::QsaState& st = ss.qsa_states[i];
         for (int a = 0; a < kv_array_count(st); ++a) {
@@ -361,7 +391,8 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     seg(ss.gdn_state, z.state.gdn, true);
     if (ss.ple_hist) seg(ss.ple_hist, z.state.ple, true);
     const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
-    const int64_t pooled_rows = std::min<int64_t>(L / z.idx_block + 2, ss.qsa_states[0].idx_pooled_rows);
+    int64_t pooled_rows = 0;
+    if (!snapshot_pooled_rows(L, z, ss.qsa_states[0], pooled_rows, err)) { err = "nvme_restore: " + err; return false; }
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         strata::core::QsaState& st = ss.qsa_states[i];
         for (int a = 0; a < kv_array_count(st); ++a) {

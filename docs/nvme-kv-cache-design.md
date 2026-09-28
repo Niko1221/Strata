@@ -33,8 +33,10 @@ payoff, and exact keys make branching unambiguous).
 Persisted set (the complete state a continuation needs):
 - attention KV host copy, cells `[0, L)`, every format (fp16 / int8 codes+scales / q4_0), identity
   layout `[page][kv_head][page_size][head_dim]` - a contiguous prefix per array;
-- indexer positional state per QSA layer: `idx_pooled` (rows to `L/idx_block+2`), `idx_tail`,
-  `idx_dead`; `idx_block_pos` rides along (per-token scratch, harmless);
+- indexer positional state per QSA layer: `idx_pooled` (rows `[0, L/idx_block + 1)`: the completed blocks plus
+  the spare row the kernels keep equal to `dead` - a live array too small for that is refused, not truncated),
+  `idx_tail`, `idx_dead`, `idx_block_pos` - the last three taken from the **turn-boundary checkpoint** when one
+  exists, because the live `idx_block_pos` names a block completed by tokens past the boundary (v3; see §3);
 - running state: the 36 GDN recurrences + conv history, the PLE history, and `ple_prev`;
 - the MTP drafter's host KV copy (`mtp_host` arrays recorded in the header);
 - header: ids length, image keys, cvec flag, KV format, and a geometry tag (layer counts, head

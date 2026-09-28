@@ -87,6 +87,16 @@ caught, so it needs a fixture before we claim ours is clean.
 Ours: `pooled_rows = min(L / idx_block + 2, idx_pooled_rows)`. Theirs: `upto / idx_block + 1`.
 One formula must win before either format is written down.
 
+**Settled: theirs.**  `L / idx_block + 1` is the completed block rows plus the SPARE row at `L / idx_block`, and
+the spare row is load-bearing: `qsa.cu:213` / `native_qsa_indexer.cu:93` keep `pooled[n_bid] == dead`, and
+`qsa.cu:260` and `native_qsa_score.cu:74` read row `n_bid` straight out of the pool.  Our `+ 2` wrote one row
+past that - what the live array happens to hold at dump time - which no reader can reach, because every pooled
+reader gates on `n_bid` (`qsa.cu:253`, `qsa_select.cu:33`, which reads `dead` for `b == n_bid` so its highest
+pooled read is `n_bid - 1`).  The writer does touch row `n_bid + 1` when a block completes, so a stale value
+there is overwritten before any read.  Their refuse-instead-of-clamp rule comes with the formula: a live pooled
+array too small for the snapshot is now a refusal naming both counts, not a silently short segment.  Stated once
+in `kv_nvme.cpp` (`snapshot_pooled_rows`), used by the dump and the restore alike; part of format version 3.
+
 ### C5 - where `idx_dead` / `idx_block_pos` live
 
 Ours: per-QSA-layer segments in the KV body of the file. Theirs: per-checkpoint blobs (live + every
