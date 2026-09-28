@@ -321,19 +321,40 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     // the shared-memory opt-in is a per-DEVICE setting: once per device, not once per process (a layer split
     // runs this kernel on two cards)
     static bool attr[64] = {};
+    static int chunk[64] = {};   // Turing port: tokens the down kernel may carry in one launch on this card
     int dev = 0;
     cudaGetDevice(&dev);
-    if (dev < 0 || dev >= 64 || !attr[dev]) {
+    if (dev >= 0 && dev < 64 && !attr[dev]) {
         // at most what the card allows (Turing: 64 KB - enough for windows of up to 6 tokens)
         int optin = 0;
         cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
         int want = (int) (kFusedGrMaxT * TILE * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
         cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-        cudaGetLastError();
-        if (dev >= 0 && dev < 64) attr[dev] = true;
+        cudaGetLastError();      // drop any error the attempt left behind
+        // Turing port: the down kernel stages n_tok*TILE floats of dynamic shared memory - 80 KB at the full
+        // 8 tokens.  A card whose opt-in is below that (Turing: 64 KB, so 7+ tokens fail to launch as
+        // "invalid argument") processes the tokens in slices that fit; a card that reports no opt-in gets 4
+        // tokens (40 KB, under even the 48 KB default).  The down kernel's outputs (lo, inject_out) are
+        // strictly per-token, so the chunk boundaries are safe, and the up kernel below still sees every
+        // token of the batch in one launch.
+        const int capacity = optin > 0 ? optin / (int) (TILE * sizeof(float)) : 4;
+        chunk[dev] = capacity < 1 ? 1 : (capacity > kFusedGrMaxT ? kFusedGrMaxT : capacity);
+        attr[dev] = true;
     }
-    gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
+    const int chunk_tok = (dev >= 0 && dev < 64 && chunk[dev]) ? chunk[dev] : kFusedGrMaxT;
+    if (chunk_tok >= n_tok) {
+        gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
+    } else {
+        for (int c0 = 0; c0 < n_tok; c0 += chunk_tok) {
+            const int ct = n_tok - c0 < chunk_tok ? n_tok - c0 : chunk_tok;
+            GrMulti c{};
+            c.xn = xn_scratch + (size_t) c0 * D;
+            c.T = ct;
+            for (int k = 0; k < ct; ++k) c.a[k] = a[c0 + k];
+            gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) ct * TILE * sizeof(float), st>>>(c);
+        }
+    }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
     gr_up_multi_kernel<<<UPM_BLOCKS, THREADS, 0, st>>>(m);
     const cudaError_t e = cudaGetLastError();

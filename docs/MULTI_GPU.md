@@ -96,8 +96,8 @@ into the card that owns the layer.
   capped to leave room for them.
 - On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
   allocations); the PCIe share covers those layers.
-- Every card needs compute capability 8.0 (RTX 30 or newer). A Turing card (RTX 20, sm_75) builds only with the
-  experimental `-DSTRATA_EXPERIMENTAL_SM75=ON`.
+- Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
+  Turing card runs the same kernels instead of the tensor-core prompt attention.
 
 ## Measured
 
