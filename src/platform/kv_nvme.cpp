@@ -622,8 +622,11 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
     if (skipped) std::fprintf(stderr, "strata serve: kv-nvme: %zu malformed/foreign snapshot(s) skipped in %s\n", skipped, dir.c_str());
     if (stale)
         std::fprintf(stderr, "strata serve: kv-nvme: %zu snapshot(s) of format version %u in %s: this build writes "
-                             "version %u and refuses older files (they stay on disk; re-dump them with the binary "
-                             "that wrote them)\n", stale, stale_version, dir.c_str(), NvmeHeader{}.version);
+                             "version %u and refuses older files. They stay on disk and are skipped, so nothing can "
+                             "be promoted from them and every request re-prefills - to keep them working, re-dump "
+                             "them with the binary that wrote them; to stop the skip, remove them and let the store "
+                             "rebuild\n",
+                     stale, stale_version, dir.c_str(), NvmeHeader{}.version);
     enforce_cap();
     return true;
 }

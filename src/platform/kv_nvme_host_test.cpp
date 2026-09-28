@@ -1081,8 +1081,11 @@ void fixture_stale_store(const std::string& dir) {
     ck(noise.find("format version 2") != std::string::npos, "the operator is told the version the store holds");
     ck(noise.find("this build writes version 3") != std::string::npos, "and the version this build writes");
     ck(noise.find("refuses older files") != std::string::npos, "and that they are refused, not converted");
+    ck(noise.find("every request re-prefills") != std::string::npos, "and that the consequence is a re-prefill");
     ck(noise.find("re-dump them with the binary that wrote them") != std::string::npos,
-       "and what to do about them: re-dump, do not delete and hope");
+       "and the first operator action: re-dump them with the binary that wrote them");
+    ck(noise.find("remove them and let the store rebuild") != std::string::npos,
+       "and the second: delete the store and let it rebuild. Not left ambiguous");
     int files = 0;
     for (const auto& de : fs::directory_iterator(v2dir))
         if (de.path().filename().string().rfind("kv-", 0) == 0) ++files;
