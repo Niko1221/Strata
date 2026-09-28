@@ -741,24 +741,30 @@ uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) 
 using ConvStateSizes = strata::core::ConversationStateSizes;
 
 /// The running-state byte counts, from the shared core.  It is now the ONLY place they are computed - the NVMe
-/// adapter's segment walk goes through the same function.
+/// adapter's segment walk goes through the same function.  The core reports a refused geometry as a string naming
+/// the field it rejected; that is the only way this can fail, and it is printed rather than swallowed.
 ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g) {
     ConvStateSizes z;
     std::string error;
-    strata::core::conversation_state_sizes(g, z, error);   // the geometry has already passed engine validation
+    if (!strata::core::conversation_state_sizes(g, z, error))
+        std::fprintf(stderr, "strata serve: %s\n", error.c_str());
     return z;
 }
 
 /// Copies the running state out.  The caller has synchronized the device.
 bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
-    return strata::core::conversation_checkpoint_save(c, ss, g, error);
+    if (strata::core::conversation_checkpoint_save(c, ss, g, error)) return true;
+    std::fprintf(stderr, "strata serve: %s\n", error.c_str());   // which target it refused, not just "failed"
+    return false;
 }
 
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
-    return strata::core::conversation_checkpoint_restore(c, ss, g, error);
+    if (strata::core::conversation_checkpoint_restore(c, ss, g, error)) return true;
+    std::fprintf(stderr, "strata serve: %s\n", error.c_str());
+    return false;
 }
 
 /// The STRATA_STATE_HASH fingerprint of a session over the positions it holds ([0, L)), plus the stale tail past
