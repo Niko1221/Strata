@@ -23,7 +23,7 @@ Everything strata needed already existed except the NVMe tier and the automatic 
 copy (`KvHostPools`), the clock-evicted VRAM slots (`kv_stream`), the running-state checkpoint
 (`ConvCheckpoint`), and the longest-prefix resume in the serve loop.
 
-## 2. The snapshot (v2 format, 104-byte header + payload + 8-byte digest footer)
+## 2. The snapshot (v3 format, 208-byte header + payload + 8-byte digest footer)
 
 One whole-session file per conversation turn, keyed by the **exact token prefix** (the consumed
 `ids` are stored verbatim and matched with the same `starts_with` semantics the serve loop already
@@ -39,8 +39,11 @@ Persisted set (the complete state a continuation needs):
   exists, because the live `idx_block_pos` names a block completed by tokens past the boundary (v3; see §3);
 - running state: the 36 GDN recurrences + conv history, the PLE history, and `ple_prev`;
 - the MTP drafter's host KV copy (`mtp_host` arrays recorded in the header);
-- header: ids length, image keys, cvec flag, KV format, and a geometry tag (layer counts, head
-  dims, page/idx geometry, max_cells) - a restore **refuses** any mismatch, never converts;
+- header: ids length, image keys, cvec flag, KV format, the **shared core's 18-field geometry key**
+  (`conversation_geometry_key` - the same array `SavedConversation::geometry` holds, so the RAM tier and this one
+  refuse the same mismatch) plus the three runtime shapes the segment walk needs (`page_size`, `idx_block`,
+  `max_cells`), and `mtp_host`; a restore **refuses** any mismatch, never converts, and refuses a file of another
+  format version by name before it walks a single segment;
 - footer: FNV-1a over the payload (everything after the header). The restore verifies it, so a
   flipped or truncated byte is refused ("integrity check failed"), never decoded.
 
