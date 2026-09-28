@@ -4116,14 +4116,27 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: nvme_dump: wrote %zu tokens to %s\n", live.size(),
                                  o.nvme_dump.c_str());
             }
-            // Steps 1-3, the automatic cascade: the consumed state goes to the NVMe cold tier at every DONE,
-            // synchronously (the arena is the next request's arena) and idempotently (one file per conversation).
+            // Steps 1-3, the automatic cascade: at every DONE the state goes to the NVMe cold tier, keyed at the
+            // chat-TURN BOUNDARY (the longest checkpoint: its running state is the state as of the end of the
+            // prompt, and the next request's prompt extends exactly that prefix - a chat client re-sends history
+            // without the model's hidden reasoning tokens, so a full-consumed-state snapshot could never match).
             if (have_kvstore && live_ok) {
                 cudaDeviceSynchronize();
                 std::vector<std::pair<int64_t, uint64_t>> d_imgs;
                 for (const ImgKey& im : live_imgs) d_imgs.push_back({im.start, im.hash});
+                const ConvCheckpoint* at = nullptr;
+                for (const ConvCheckpoint& c : checks)
+                    if (at == nullptr || c.ids.size() > at->ids.size()) at = &c;
                 std::string derr;
-                if (!kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, derr))
+                bool dumped;
+                if (at != nullptr && !at->ids.empty())
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, &at->ids,
+                                          strata::platform::NvmeRunning{at->gdn.data(),
+                                                                        at->ple.empty() ? nullptr : at->ple.data(),
+                                                                        at->tails.data()}, derr);
+                else
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, nullptr, {}, derr);
+                if (!dumped)
                     std::fprintf(stderr, "strata serve: kv-nvme dump failed: %s\n", derr.c_str());
             }
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;

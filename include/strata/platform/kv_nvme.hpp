@@ -38,6 +38,21 @@ struct NvmeHeader {
 
 /// Dump the live session's full state to `path`.  The caller has synchronized the device (the checkpoint_save
 /// contract).  Requires streamed KV (kv_mode != 0): the host copy is the source of truth.  The file is fsynced.
+///
+/// `at` (with `at_ids`) takes the snapshot at an EARLIER position T = at_ids.size() <= L - the chat-turn boundary.
+/// The running state then comes from the caller's saved blobs (a ConvCheckpoint's gdn/ple/tails, which are the
+/// state AT T), the KV cells / pooled rows / dead key are truncated to T (their contents below T are untouched by
+/// the generation that followed), and the drafter copy covers [0, min(T, max_cells)).  This is the snapshot the
+/// NEXT REQUEST can match: a chat client re-sends the prompt but not the model's hidden reasoning tokens, so a
+/// full-L snapshot (which includes them) can never full-prefix-match the next turn.
+struct NvmeRunning { const uint8_t* gdn = nullptr; const uint8_t* ple = nullptr; const uint8_t* tails = nullptr; };
+bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
+                  const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
+                  const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, NvmeRunning running,
+                  std::string& err);
+
+/// The full consumed state at DONE (the Step 0 spike's dump; the automatic store uses nvme_dump_at at the
+/// turn boundary - see the comment above).
 bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err);
@@ -72,9 +87,12 @@ public:
     void set_cap_bytes(int64_t bytes) { cap_ = bytes; }      ///< 0 = unlimited (the default)
     /// Dumps the live session.  Idempotent: an exact match is skipped (its recency is refreshed); the previous
     /// dump of the same growing conversation is superseded (its file deleted) so a conversation stays one file.
+    /// `at_ids` + `running` take the snapshot at a turn boundary (see nvme_dump_at); without them the snapshot
+    /// is the full consumed state at DONE.
     bool dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-              const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err);
+              const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec,
+              const std::vector<int32_t>* at_ids = nullptr, NvmeRunning running = {}, std::string& err = dummy_err());
     /// Reads `e` back into the live arena (see nvme_restore).  The caller then sets `live` from `e`.
     bool restore(const NvmeEntry& e, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
                  const strata::core::ModelGeometry& g, std::string& err);
@@ -85,6 +103,7 @@ public:
     size_t size() const { return entries_.size(); }
 
 private:
+    static std::string& dummy_err() { static std::string s; return s; }
     void enforce_cap();                                      ///< evict by oldest mtime until under the cap
     std::string dir_;
     std::vector<NvmeEntry> entries_;

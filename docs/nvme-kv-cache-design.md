@@ -274,6 +274,31 @@ informational only; the hard gates are restore-exactness + resume + the negative
 confirms the verbatim-bytes rule: recomputing KV on restore would compound the divergence instead
 of preserving the session.
 
+### Live-server needle test + the turn-boundary fix (2026-09-28, final)
+
+First HTTP end-to-end run exposed a real integration bug: a chat client re-sends history WITHOUT
+the model's hidden reasoning tokens, so a full consumed-state snapshot (which includes them)
+could never full-prefix-match the next turn - every request fell back to a full re-prefill.
+**Fix: snapshot at the chat TURN BOUNDARY** (`nvme_dump_at`): the longest ConvCheckpoint supplies
+the running state as of the end of the prompt; KV cells / pooled rows / dead key are truncated to
+that position (their contents below it are untouched by the generation that followed). The next
+request's prompt extends exactly that prefix, so the match is exact.
+
+Verified on the live server (three ~110k-token sessions, needle ~900 tokens in, one build turn
+each, then needle queries in rotation):
+- all three needle turns PROMOTED from NVMe: `reused 110,370/110,281/110,391 + 39/42/42 read`
+  (vs 110 s full prefill cold) - prefill avoided, restore from NVMe in the log;
+- TTFT 110 s -> **1.3-1.9 s** (dominated by the ~1.8 GB snapshot read; a streamed pread into the
+  pinned buffers or sparsity (Step 4) would take it under 1 s);
+- needle retrieved for sessions 1 and 3; session 2's empty reply was the reasoning budget
+  consuming `max_tokens` (verified separately), not a cache failure;
+- store accumulation: one snapshot per conversation TURN (supersede is per-process, P2-2),
+  bounded by the cap.
+
+Known follow-ups: streamed promote (drop the whole-file RAM copy), per-conversation supersession
+(needs a conversation identity the single-session engine does not have), and the pending push to
+github.com/maedoc (SSH key not registered there).
+
 ## 12. Risks / open questions
 
 - **Determinism:** KV computed via the GPU expert cache "rounds differently from the CPU"
