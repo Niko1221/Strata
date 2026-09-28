@@ -483,8 +483,25 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
             std::memcpy(a.dst, a.src, a.bytes);
         }
     }
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         strata::kernels::kv_stream_reset(ss.qsa_states[i].map, nullptr);   // refill slots from the host copy on demand
+        // C3: re-publish the SPARE pooled row, exactly as their `conversation_checkpoint_restore` does
+        // (`conversation_state.cpp:186`).  The row at `L / idx_block` is the spare for the block IN PROGRESS,
+        // and a turn-boundary snapshot's copy of it is stale by construction: tokens past the boundary completed
+        // that block and the pooling kernel rewrote the row with the completed block's key (qsa.cu:211) before the
+        // dump read it.  At resume `n_bid = n_kv / idx_block = L / idx_block` (qsa.hpp:156, layer.cpp:813), and
+        // `qsa_index_kernel` scores row `b == n_bid` straight out of the pool (qsa.cu:253, 260) as does the native
+        // scorer (native_qsa_score.cu:74 `row <= full`) - so the masking the `b == n_bid` path in qsa_select.cu:35
+        // does (it reads `dead` instead) is NOT enough: the invariant `pooled[n_bid] == dead`, which the writers
+        // maintain at every block completion (qsa.cu:213, native_qsa_indexer.cu:93), has to be restored too.
+        // For a full-L dump the row already equals `dead`, so this is a no-op there.
+        const int64_t row = L / z.idx_block;   // < idx_pooled_rows: snapshot_pooled_rows checked it
+        if (cudaMemcpy(ss.qsa_states[i].idx_pooled + (size_t) row * g.idx_key_dim,
+                       ss.qsa_states[i].idx_dead, z.state.dead, cudaMemcpyHostToDevice) != cudaSuccess) {
+            err = "nvme_restore: pooled spare row";
+            return false;
+        }
+    }
     refill_drafter_ring(mtp_state, g, z, L);   // C6: the drafter's ring, by the tier that just wrote its host copy
 
     // the PLE token window, oldest first (as checkpoint_restore leaves it)

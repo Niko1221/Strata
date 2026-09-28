@@ -82,6 +82,20 @@ completed block from tokens past `T`. Their core re-publishes `pooled[ids.size()
 restore. Probably masked by the `b == n_bid` path, but it is exactly the class of omission their audit
 caught, so it needs a fixture before we claim ours is clean.
 
+**Settled: their re-publish rule is adopted, and the "already masked" hope is false.**  The `b == n_bid` masking
+exists in ONE reader - `qsa_select.cu:35` reads `dead` instead of the pool for the block in progress, so that
+kernel's highest pooled read is `n_bid - 1`.  The other two score row `n_bid` out of the pool itself:
+`qsa_index_kernel` guards `b > n_bid` and then reads `pooled[b * idx_dim]` (`qsa.cu:253`, `:260`), and the native
+scorer gates `row <= full` (`native_qsa_score.cu:74`).  At resume `n_bid = n_kv / idx_block = L / idx_block`
+(`qsa.hpp:156`, `layer.cpp:813`) - exactly the row a boundary snapshot holds stale, because the pooling kernel
+rewrote it with the completed block's key (`qsa.cu:211`) when tokens past the boundary finished that block.  So
+the invariant `pooled[n_bid] == dead`, which the writers maintain at every completion (`qsa.cu:213`,
+`native_qsa_indexer.cu:93`), must be RESTORED, not assumed: `nvme_restore` re-publishes `dead` into row
+`L / idx_block` of every QSA layer, the same rule `conversation_checkpoint_restore` applies
+(`conversation_state.cpp:186`).  For a full-`L` dump the row already equals `dead`, so it is a no-op there.  The
+fixture (a non-block-aligned boundary with a distinct `idx_dead`) is still step 4's: this is the rule, not its
+proof.
+
 ### C4 - pooled row count
 
 Ours: `pooled_rows = min(L / idx_block + 2, idx_pooled_rows)`. Theirs: `upto / idx_block + 1`.
