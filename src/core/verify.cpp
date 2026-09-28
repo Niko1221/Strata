@@ -249,7 +249,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
         scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
-        attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
+        attn32_ = b.take<float>(T * NH * HD);
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
         logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
@@ -692,9 +692,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
                 else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
                 qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
-                                      s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
-                native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
-                                      (int) (n * NH), (int) HD, cs);
+                                      s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn32_ + tb * NH * HD,
+                                      n, cs, qfull_ + tb * NH * 2 * HD);
                 quant(attn32_ + tb * NH * HD, NH * HD);
                 proj(wo, bo_ + tb * N, NH * HD, N, cs);
             }

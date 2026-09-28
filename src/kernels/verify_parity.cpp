@@ -1048,8 +1048,8 @@ int test_ple_tokens(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
-// ---- the prompt path's attention  vs  the decode kernel (INT8 and FP16 pools; 1 to 2051 selected cells)
-int test_prefill_attn(std::mt19937& rng, cudaStream_t s) {
+// ---- the decode attention (split, merged, gated)  vs  the prompt path's kernels (INT8 and FP16 pools; 1-2051 cells)
+int test_decode_attn(std::mt19937& rng, cudaStream_t s) {
     const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
     const int HD = (int) sh.head_dim, NH = (int) sh.n_head, NKV = (int) sh.n_head_kv;
     const int cells = 4096, pages = cells / (int) sh.page_size;
@@ -1089,44 +1089,71 @@ int test_prefill_attn(std::mt19937& rng, cudaStream_t s) {
         std::copy(all.begin(), all.begin() + widths[(size_t) i], ids.begin() + (size_t) i * cap);
         steps[(size_t) i * strata::kernels::kStepCount + strata::kernels::kStepWidth] = widths[(size_t) i];
     }
-    std::vector<float> q((size_t) n_q * NH * HD);
+    std::vector<float> q((size_t) n_q * NH * HD), qf((size_t) n_q * NH * 2 * HD);   // qf: queries, then gate logits
     for (auto& x : q) x = 3.0f * std::normal_distribution<float>(0.0f, 1.0f)(rng);
+    for (auto& x : qf) x = 2.0f * std::normal_distribution<float>(0.0f, 1.0f)(rng);
     int32_t *d_ids = dev<int32_t>(ids.size()), *d_steps = dev<int32_t>(steps.size());
     float *d_q = dev<float>(q.size()), *d_a = dev<float>(q.size()), *d_b = dev<float>(q.size());
-    float* d_scratch = dev<float>((size_t) n_q * strata::kernels::qsa_decode_attn_scratch_floats(cap, sh));
-    up(d_ids, ids); up(d_steps, steps); up(d_q, q);
-    int bad = 0;
+    float *d_qf = dev<float>(qf.size()), *d_g = dev<float>(q.size()), *d_c = dev<float>(q.size());
+    const uint64_t scr = strata::kernels::qsa_decode_attn_scratch_floats(cap, sh);
+    float* d_scratch = dev<float>((size_t) n_q * scr);
+    up(d_ids, ids); up(d_steps, steps); up(d_q, q); up(d_qf, qf);
+    check(cudaDeviceSynchronize(), "attn inputs");
+    const int64_t SC = strata::kernels::kStepCount;
+    int bad = 0, gate_bad = 0;
     double worst = 0.0;
     for (int int8 = 0; int8 < 2; ++int8) {
         strata::kernels::QsaAttnPools pools;
         pools.page_table = d_table;
         if (int8) { pools.k_q = d_kq; pools.v_q = d_vq; pools.k_scale = d_ks; pools.v_scale = d_vs; }
         else { pools.k_pool = d_kh; pools.v_pool = d_vh; }
-        strata::kernels::qsa_decode_attn_batch(d_q, pools, d_ids, d_steps, cap, sh, d_scratch, d_a, n_q, s);
         strata::kernels::qsa_prefill_attn(d_q, pools, d_ids, d_steps, cap, sh, d_b, n_q, s);
-        check(cudaStreamSynchronize(s), "prefill attn");
-        const std::vector<float> a = down(d_a, q.size()), b = down(d_b, q.size());
-        for (int r = 0; r < n_q * NH; ++r) {   // relative to the largest value of the head's output row
-            double big = 0.0, diff = 0.0;
-            for (int d = 0; d < HD; ++d) {
-                big = std::max(big, (double) std::fabs(a[(size_t) r * HD + d]));
-                diff = std::max(diff, (double) std::fabs(a[(size_t) r * HD + d] - b[(size_t) r * HD + d]));
+        for (int alone = 0; alone < 2; ++alone) {   // the queries in one call, and each alone (the most splits)
+            if (alone)
+                for (int i = 0; i < n_q; ++i)
+                    strata::kernels::qsa_decode_attn_batch(d_q + (size_t) i * NH * HD, pools, d_ids + (size_t) i * cap,
+                                                           d_steps + i * SC, cap, sh, d_scratch,
+                                                           d_a + (size_t) i * NH * HD, 1, s);
+            else strata::kernels::qsa_decode_attn_batch(d_q, pools, d_ids, d_steps, cap, sh, d_scratch, d_a, n_q, s);
+            check(cudaStreamSynchronize(s), "decode attn");
+            const std::vector<float> a = down(d_a, q.size()), b = down(d_b, q.size());
+            for (int r = 0; r < n_q * NH; ++r) {   // relative to the largest value of the head's output row
+                double big = 0.0, diff = 0.0;
+                for (int d = 0; d < HD; ++d) {
+                    big = std::max(big, (double) std::fabs(a[(size_t) r * HD + d]));
+                    diff = std::max(diff, (double) std::fabs(a[(size_t) r * HD + d] - b[(size_t) r * HD + d]));
+                }
+                const double rel = diff / std::max(big, 1e-30);
+                worst = std::max(worst, rel);
+                if (!(rel <= 2e-5)) {
+                    if (bad < 5)
+                        std::fprintf(stderr, "decode attn: %s pools, %s, query %d head %d: relative difference %.3g\n",
+                                     int8 ? "INT8" : "FP16", alone ? "alone" : "batched", r / NH, r % NH, rel);
+                    ++bad;
+                }
             }
-            const double rel = diff / std::max(big, 1e-30);
-            worst = std::max(worst, rel);
-            if (!(rel <= 2e-5)) {
-                if (bad < 5) std::fprintf(stderr, "prefill attn: %s pools, query %d head %d: relative difference %.3g\n",
-                                          int8 ? "INT8" : "FP16", r / NH, r % NH, rel);
-                ++bad;
-            }
+        }
+        // the gate in the merge against native_qsa_gate_apply on the ungated output
+        strata::kernels::qsa_decode_attn_batch(d_q, pools, d_ids, d_steps, cap, sh, d_scratch, d_a, n_q, s);
+        strata::kernels::native_qsa_gate_apply(d_a, d_qf, d_c, n_q * NH, HD, s);
+        strata::kernels::qsa_decode_attn_batch(d_q, pools, d_ids, d_steps, cap, sh, d_scratch, d_g, n_q, s, d_qf);
+        check(cudaStreamSynchronize(s), "gated attn");
+        const std::vector<float> g = down(d_g, q.size()), c = down(d_c, q.size());
+        if (std::memcmp(g.data(), c.data(), g.size() * 4) != 0) {
+            std::fprintf(stderr, "decode attn: %s pools, the fused gate differs from native_qsa_gate_apply\n",
+                         int8 ? "INT8" : "FP16");
+            ++gate_bad;
         }
     }
     for (void* p : {(void*) d_table, (void*) d_kq, (void*) d_vq, (void*) d_ks, (void*) d_vs, (void*) d_kh, (void*) d_vh,
-                    (void*) d_ids, (void*) d_steps, (void*) d_q, (void*) d_a, (void*) d_b, (void*) d_scratch})
+                    (void*) d_ids, (void*) d_steps, (void*) d_q, (void*) d_a, (void*) d_b, (void*) d_qf, (void*) d_g,
+                    (void*) d_c, (void*) d_scratch})
         cudaFree(p);
-    std::printf("prefill_attn: %s (INT8 and FP16 pools, 1-2051 cells; largest relative difference %.2g)\n",
-                bad ? "OUTSIDE TOLERANCE" : "within 2e-5 of the decode kernel", worst);
-    return bad;
+    std::printf("decode_attn: %s, the gate %s (INT8 and FP16 pools, 1-2051 cells, 6 queries at once and each alone; "
+                "largest relative difference %.2g)\n",
+                bad ? "OUTSIDE TOLERANCE" : "within 2e-5 of the prompt path's kernels",
+                gate_bad ? "DIFFERS" : "bitwise native_qsa_gate_apply's", worst);
+    return bad + gate_bad;
 }
 
 // ---- the prompt path's GDN conv and recurrence over a chunk  vs  the verify window's kernels, 8 tokens at a time
@@ -1231,7 +1258,7 @@ int main(int argc, char** argv) {
     bad += test_kv_append(rng, s);
     bad += test_indexer_append(rng, s);
     bad += test_ple_tokens(rng, s);
-    bad += test_prefill_attn(rng, s);
+    bad += test_decode_attn(rng, s);
     bad += test_prefill_gdn(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");

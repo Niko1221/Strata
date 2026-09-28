@@ -5,6 +5,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -14,9 +15,10 @@ namespace {
 
 constexpr int HD = 256;          // head_dim
 constexpr int G = 12;            // query heads per KV head (24 / 2)
-constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
+constexpr int PT = 64;           // cells per tile
+constexpr int SPLIT_MAX = 20;    // a decode query's splits at most
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -29,161 +31,43 @@ __device__ __forceinline__ float warp_max(float v) {
     return v;
 }
 
-// 8 consecutive values of one cell's key or value row for KV head `kvh`, dimensions [d0, d0+8).
-template <bool INT8>
-__device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
-    if constexpr (!INT8) {
-        const uint16_t* base = (value ? p.v_pool : p.k_pool) + row * HD + d0;
-        const uint4 raw = *reinterpret_cast<const uint4*>(base);
-        const __half2* h2 = reinterpret_cast<const __half2*>(&raw);
-#pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const float2 f = __half22float2(h2[j]);
-            out[2 * j] = f.x;
-            out[2 * j + 1] = f.y;
-        }
-    } else {
-        const int8_t* codes = (value ? p.v_q : p.k_q) + row * HD + d0;
-        const uint16_t sbits = (value ? p.v_scale : p.k_scale)[row * (HD / KV_Q8_GROUP) + d0 / KV_Q8_GROUP];
-        const float sc = __half2float(__ushort_as_half(sbits));
-        const uint2 raw = *reinterpret_cast<const uint2*>(codes);
-        const int8_t* c = reinterpret_cast<const int8_t*>(&raw);
-#pragma unroll
-        for (int j = 0; j < 8; ++j) out[j] = (float) c[j] * sc;
-    }
+// The decode's partial results, per query `stride` floats: [split][head][HD] sums of p * v (p relative to the split's
+// maximum), then at `m` and `l` (offsets from `acc`) [split][head] maxima and sums of p.
+struct Partials {
+    float* acc = nullptr;
+    long long m = 0, l = 0, stride = 0;
+    int splits = 0;
+};
+// the cells of each of a query's splits: split k takes [k c, min((k + 1) c, n)), whole tiles while the cells last
+__host__ __device__ __forceinline__ int split_cells(int n, int splits) {
+    const int c = (n + splits - 1) / splits;
+    return c > PT ? c : PT;
 }
 
-template <bool INT8>
-__global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
-                                                             const int32_t* __restrict__ ids,
-                                                             const int32_t* __restrict__ step, int n_kv_heads,
-                                                             int page_size, float scale, float* __restrict__ part_acc,
-                                                             float* __restrict__ part_m, float* __restrict__ part_l,
-                                                             int n_chunks, int cap = 0, long long scratch_stride = 0) {
-    // batched form: query blockIdx.z, with its own q row, selection, step and scratch
-    q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
-    ids += (size_t) blockIdx.z * (size_t) cap;
-    step += (size_t) blockIdx.z * kStepCount;
-    part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
-    part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
-    part_l += (size_t) blockIdx.z * (size_t) scratch_stride;
-    __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads
-    __shared__ float sp[G][CHUNK];                // scores, then probabilities
-    __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
-    const int n_ids = __ldg(step + kStepWidth);
-    const int chunk = blockIdx.x, kvh = blockIdx.y;
-    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
-    const int c0 = chunk * CHUNK;
-    const int n_here = min(CHUNK, n_ids - c0);
-    const int slot = kvh * n_chunks + chunk;
-    if (n_here <= 0) {
-        if (t < G) { part_m[slot * G + t] = -FLT_MAX; part_l[slot * G + t] = 0.0f; }
-        return;
-    }
-    for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
-    if (t < CHUNK) {
-        long long r = -1;
-        if (t < n_here) {
-            const int cell = ids[c0 + t];
-            const long long page = (long long) p.page_table[cell / page_size];
-            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-        }
-        srow[t] = r;
-    }
-    __syncthreads();
-    // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
-    for (int c = warp; c < CHUNK; c += WARPS) {
-        if (c >= n_here) {
-            if (lane < G) sp[lane][c] = -FLT_MAX;
-            continue;
-        }
-        float k8[8];
-        load8<INT8>(p, false, srow[c], lane * 8, k8);
-#pragma unroll
-        for (int h = 0; h < G; ++h) {
-            const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8]);
-            const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + 4]);
-            float s = k8[0] * qa.x + k8[1] * qa.y + k8[2] * qa.z + k8[3] * qa.w +
-                      k8[4] * qb.x + k8[5] * qb.y + k8[6] * qb.z + k8[7] * qb.w;
-            s = warp_sum(s);
-            if (lane == 0) sp[h][c] = s * scale;
-        }
-    }
-    __syncthreads();
-    // per-head chunk max and exp-sum: warp w handles heads w and w+8.
-    for (int h = warp; h < G; h += WARPS) {
-        const float a = sp[h][lane], b = sp[h][lane + 32];
-        const float m = warp_max(fmaxf(a, b));
-        const float ea = (lane < n_here) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here) ? __expf(b - m) : 0.0f;
-        sp[h][lane] = ea;
-        sp[h][lane + 32] = eb;
-        const float l = warp_sum(ea + eb);
-        if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
-    }
-    __syncthreads();
-    // values: thread t owns dimension t for all 12 heads.
-    float acc[G];
-#pragma unroll
-    for (int h = 0; h < G; ++h) acc[h] = 0.0f;
-    for (int c = 0; c < n_here; ++c) {
-        float v;
-        if constexpr (!INT8) {
-            v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
-        } else {
-            const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
-            v = (float) p.v_q[srow[c] * HD + t] * sc;
-        }
-#pragma unroll
-        for (int h = 0; h < G; ++h) acc[h] = fmaf(sp[h][c], v, acc[h]);
-    }
-#pragma unroll
-    for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
-}
-
-__global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
-                                                        const float* __restrict__ part_m,
-                                                        const float* __restrict__ part_l, int n_chunks,
-                                                        float* __restrict__ attn, long long scratch_stride = 0) {
-    part_acc += (size_t) blockIdx.y * (size_t) scratch_stride;
-    part_m += (size_t) blockIdx.y * (size_t) scratch_stride;
-    part_l += (size_t) blockIdx.y * (size_t) scratch_stride;
-    attn += (size_t) blockIdx.y * (size_t) gridDim.x * HD;
-    const int h = blockIdx.x;                 // global query head
-    const int kvh = h / G, hl = h % G;
-    const int d = threadIdx.x;
-    float M = -FLT_MAX;
-    for (int c = 0; c < n_chunks; ++c) M = fmaxf(M, part_m[(kvh * n_chunks + c) * G + hl]);
-    float L = 0.0f, acc = 0.0f;
-    for (int c = 0; c < n_chunks; ++c) {
-        const int slot = kvh * n_chunks + c;
-        const float m = part_m[slot * G + hl];
-        if (m == -FLT_MAX) continue;
-        const float w = __expf(m - M);
-        L = fmaf(part_l[slot * G + hl], w, L);
-        acc = fmaf(part_acc[((size_t) slot * G + hl) * HD + d], w, acc);
-    }
-    attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
-}
-
-// ---- the prompt path, FP16 pools: a block per (KV head, query) walks all of the query's cells in tiles, online
-// softmax.  Scores: thread (cell, quarter) dots its cell's 64 dimensions of that quarter with the 12 query heads, the
-// quarters summed through shared memory.  Values: thread (dimension pair, cell parity) accumulates its two dimensions
-// of the 12 heads over every other cell; the parities are added at the end.
-constexpr int PT = 64;   // cells per tile
-
-__global__ void __launch_bounds__(THREADS) attn_prefill_f16_kernel(const float* __restrict__ q, QsaAttnPools p,
-                                                                   const int32_t* __restrict__ ids,
-                                                                   const int32_t* __restrict__ steps, int n_kv_heads,
-                                                                   int page_size, float scale, float* __restrict__ attn,
-                                                                   int cap) {
+// ---- FP16 pools: a block per (KV head, query) walks all of the query's cells in tiles, online softmax; SPLIT: a
+// block per (KV head, query, split) its split's cells, writing partials.  Scores: thread (cell, quarter) dots its
+// cell's 64 dimensions of that quarter with the 12 query heads, the quarters summed through shared memory.  Values:
+// thread (dimension pair, cell parity) accumulates its two dimensions of the 12 heads over every other cell; the
+// parities are added at the end.
+template <bool SPLIT>
+__global__ void __launch_bounds__(THREADS) attn_f16_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                           const int32_t* __restrict__ ids,
+                                                           const int32_t* __restrict__ steps, int n_kv_heads,
+                                                           int page_size, float scale, float* __restrict__ attn,
+                                                           int cap, Partials part) {
     const int kvh = blockIdx.x;
     const size_t qi = blockIdx.y;
     const size_t head0 = qi * (size_t) (n_kv_heads * G) + (size_t) kvh * G;
     q += head0 * HD;
-    attn += head0 * HD;
+    if constexpr (!SPLIT) attn += head0 * HD;
     ids += qi * (size_t) cap;
-    const int n_ids = __ldg(steps + qi * kStepCount + kStepWidth);
+    int n_ids = __ldg(steps + qi * kStepCount + kStepWidth);
+    if constexpr (SPLIT) {
+        const int c = split_cells(n_ids, part.splits), c0 = (int) blockIdx.z * c;
+        if (c0 >= n_ids) return;
+        ids += c0;
+        n_ids = min(c, n_ids - c0);
+    }
     __shared__ __align__(16) float sq[G][HD];      // 12 KB: this KV head's query heads
     __shared__ __align__(16) float spart[4][G][PT];  // 12 KB: the quarters' partial scores; the parity sums at the end
     __shared__ __align__(16) float sp[PT][G];      // probabilities, cell-major
@@ -299,7 +183,21 @@ __global__ void __launch_bounds__(THREADS) attn_prefill_f16_kernel(const float* 
         }
     }
     __syncthreads();
-    if (parity == 0) {
+    if constexpr (SPLIT) {
+        float* base = part.acc + qi * part.stride;
+        const size_t hq = (size_t) blockIdx.z * n_kv_heads * G + (size_t) kvh * G;   // the block's first head
+        if (parity == 0) {
+#pragma unroll
+            for (int h = 0; h < G; ++h) {
+                base[(hq + h) * HD + d0] = acc0[h] + odd[h * HD + d0];
+                base[(hq + h) * HD + d0 + 1] = acc1[h] + odd[h * HD + d0 + 1];
+            }
+        }
+        if (t < G) {
+            base[part.m + hq + t] = s_m[t];
+            base[part.l + hq + t] = s_l[t];
+        }
+    } else if (parity == 0) {
 #pragma unroll
         for (int h = 0; h < G; ++h) {
             const float l = s_l[h];
@@ -309,10 +207,11 @@ __global__ void __launch_bounds__(THREADS) attn_prefill_f16_kernel(const float* 
     }
 }
 
-// ---- the prompt path, INT8 pools: the codes on the tensor cores (mma m16n8k32, int8).  A block per (KV head, query),
-// its 12 query heads the rows of the 16-row fragments, 64 cells a tile.  q and the probabilities enter as 24-bit fixed
-// point, three 8-bit limbs each; the integer sums are exact, so the error is the fixed point's: q to 2^-23 of its row's
-// power-of-two bound, a probability times its V scale to 2^-23 of its tile's.  Warp-specialized, one block an SM:
+// ---- INT8 pools: the codes on the tensor cores (mma m16n8k32, int8).  A block per (KV head, query), or per (KV head,
+// query, split) with SPLIT, its 12 query heads the rows of the 16-row fragments, 64 cells a tile.  q and the
+// probabilities enter as 24-bit fixed point, three 8-bit limbs each; the integer sums are exact, so the error is the
+// fixed point's: q to 2^-23 of its row's power-of-two bound, a probability times its V scale to 2^-23 of its tile's.
+// Warp-specialized, one block an SM:
 //   warps 0-3   score 16 cells of each tile over all 256 dims (q's limbs in registers) and run the online softmax;
 //   warps 4-7   multiply a 64-dim group of V each: the probabilities times the V scales as limbs against V through
 //               ldmatrix.trans (cells and dims permuted inside the fragments, the same way on both sides);
@@ -344,6 +243,7 @@ struct __align__(16) Smem {
     float red[2][4][16];      // the score warps' tile maxima
     float lsum[4][16];
     float qmax[16], qsc[16];
+    float mfin[16];           // SPLIT: the rows' final maxima
 };
 
 // Score warp w's B fragments: column j of its n-tile n is cell 16w + 4 (j >> 1) + 2n + (j & 1), so a lane's C
@@ -407,11 +307,12 @@ __device__ __forceinline__ float scale_of(uint2 s, int g) {
 }
 }  // namespace pf
 
-__global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float* __restrict__ q, QsaAttnPools p,
-                                                                     const int32_t* __restrict__ ids,
-                                                                     const int32_t* __restrict__ steps, int n_kv_heads,
-                                                                     int page_size, float scale, float* __restrict__ attn,
-                                                                     int cap) {
+template <bool SPLIT>
+__global__ void __launch_bounds__(pf::NT, 1) attn_mma_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                             const int32_t* __restrict__ ids,
+                                                             const int32_t* __restrict__ steps, int n_kv_heads,
+                                                             int page_size, float scale, float* __restrict__ attn,
+                                                             int cap, Partials part) {
     using namespace pf;
     extern __shared__ __align__(16) uint8_t smem_raw[];
     Smem& sm = *reinterpret_cast<Smem*>(smem_raw);
@@ -419,9 +320,15 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
     const size_t qi = blockIdx.y;
     const size_t head0 = qi * (size_t) (n_kv_heads * G) + (size_t) kvh * G;
     q += head0 * HD;
-    attn += head0 * HD;
+    if constexpr (!SPLIT) attn += head0 * HD;
     ids += qi * (size_t) cap;
-    const int n_ids = __ldg(steps + qi * kStepCount + kStepWidth);
+    int n_ids = __ldg(steps + qi * kStepCount + kStepWidth);
+    if constexpr (SPLIT) {
+        const int c = split_cells(n_ids, part.splits), c0 = (int) blockIdx.z * c;
+        if (c0 >= n_ids) return;
+        ids += c0;
+        n_ids = min(c, n_ids - c0);
+    }
     const int n_tiles = (n_ids + PT - 1) / PT;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5, gid = lane >> 2, tig = lane & 3;
     const float kS = -65793.0f * MAGIC_F;
@@ -444,7 +351,7 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
         }
     }
     __syncthreads();
-    if (n_tiles == 0) {
+    if (!SPLIT && n_tiles == 0) {
         for (int i = t; i < G * HD; i += NT) attn[i] = 0.0f;
         return;
     }
@@ -623,6 +530,7 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
             lp[r] += __shfl_xor_sync(0xffffffffu, lp[r], 2);
         }
         if (tig == 0) { sm.lsum[w][gid] = lp[0]; sm.lsum[w][gid + 8] = lp[1]; }
+        if (SPLIT && w == 0 && tig == 0) { sm.mfin[gid] = m_run[0]; sm.mfin[gid + 8] = m_run[1]; }
         bar_sync(END, NPB);
     } else {
         // ======== values: dims 64g .. 64g+63 as 16-dim blocks db; n-tile (db, par) column j is dim
@@ -712,20 +620,133 @@ __global__ void __launch_bounds__(pf::NT, 1) attn_prefill_mma_kernel(const float
             if (i + VS < n_tiles) bar_arrive(EMPTY_V + s, NVB);
         }
         bar_sync(END, NPB);
+        if constexpr (SPLIT) {   // o as it is, with each row's maximum and sum
+            float* base = part.acc + qi * part.stride;
+            const size_t hq = (size_t) blockIdx.z * n_kv_heads * G + (size_t) kvh * G;   // the block's first head
 #pragma unroll
-        for (int r = 0; r < 2; ++r) {
-            const int row = gid + 8 * r;
-            if (row >= G) continue;
-            const float l = (sm.lsum[0][row] + sm.lsum[1][row]) + (sm.lsum[2][row] + sm.lsum[3][row]);
+            for (int r = 0; r < 2; ++r) {
+                const int row = gid + 8 * r;
+                if (row >= G) continue;
 #pragma unroll
-            for (int db = 0; db < 4; ++db) {   // dims 64g + 16db + 4tig + {0, 1, 2, 3}
-                float4 out = make_float4(0.f, 0.f, 0.f, 0.f);
-                if (l > 0.0f) out = make_float4(o[db][0][2 * r] / l, o[db][1][2 * r] / l, o[db][0][2 * r + 1] / l,
-                                                o[db][1][2 * r + 1] / l);
-                *reinterpret_cast<float4*>(&attn[(size_t) row * HD + 64 * g + 16 * db + 4 * tig]) = out;
+                for (int db = 0; db < 4; ++db)
+                    *reinterpret_cast<float4*>(&base[(hq + row) * HD + 64 * g + 16 * db + 4 * tig]) =
+                        make_float4(o[db][0][2 * r], o[db][1][2 * r], o[db][0][2 * r + 1], o[db][1][2 * r + 1]);
+            }
+            if (g == 0 && lane < G) {
+                base[part.m + hq + lane] = sm.mfin[lane];
+                base[part.l + hq + lane] =
+                    (sm.lsum[0][lane] + sm.lsum[1][lane]) + (sm.lsum[2][lane] + sm.lsum[3][lane]);
+            }
+        } else {
+#pragma unroll
+            for (int r = 0; r < 2; ++r) {
+                const int row = gid + 8 * r;
+                if (row >= G) continue;
+                const float l = (sm.lsum[0][row] + sm.lsum[1][row]) + (sm.lsum[2][row] + sm.lsum[3][row]);
+#pragma unroll
+                for (int db = 0; db < 4; ++db) {   // dims 64g + 16db + 4tig + {0, 1, 2, 3}
+                    float4 out = make_float4(0.f, 0.f, 0.f, 0.f);
+                    if (l > 0.0f) out = make_float4(o[db][0][2 * r] / l, o[db][1][2 * r] / l, o[db][0][2 * r + 1] / l,
+                                                    o[db][1][2 * r + 1] / l);
+                    *reinterpret_cast<float4*>(&attn[(size_t) row * HD + 64 * g + 16 * db + 4 * tig]) = out;
+                }
             }
         }
     }
+}
+
+// x * sigmoid(raw) as native_qsa_gate_apply computes it: its TU's fast-math instructions
+__device__ __forceinline__ float gated(float x, float raw) {
+    float r;
+    asm("{\n\t.reg .f32 e;\n\tmul.ftz.f32 e, %2, 0fBFB8AA3B;\n\tex2.approx.ftz.f32 e, e;\n\t"
+        "add.ftz.f32 e, e, 0f3F800000;\n\trcp.approx.ftz.f32 e, e;\n\tmul.ftz.f32 %0, %1, e;\n\t}"
+        : "=f"(r)
+        : "f"(x), "f"(raw));
+    return r;
+}
+
+// The decode's merge: a block per (head, query), 4 groups of 64 threads adding every 4th split's sums, a thread 4
+// dims.  Every thread reads all the splits' maxima and sums, so all of its loads go out at once.
+__global__ void __launch_bounds__(THREADS) attn_merge_kernel(Partials part, const int32_t* __restrict__ steps,
+                                                             const float* __restrict__ gate, float* __restrict__ attn) {
+    const int h = blockIdx.x, n_head = gridDim.x;
+    const size_t qi = blockIdx.y;
+    const int n_ids = __ldg(steps + qi * kStepCount + kStepWidth), c = split_cells(n_ids, part.splits);
+    const int n_sp = (n_ids + c - 1) / c;
+    const float* base = part.acc + qi * part.stride;
+    const int t = threadIdx.x, grp = t >> 6, d4 = 4 * (t & 63);
+    float4 o[SPLIT_MAX / 4];
+    float m[SPLIT_MAX], l[SPLIT_MAX];
+#pragma unroll
+    for (int k = 0; k < SPLIT_MAX / 4; ++k)
+        if (grp + 4 * k < n_sp)
+            o[k] = *reinterpret_cast<const float4*>(base + ((size_t) (grp + 4 * k) * n_head + h) * HD + d4);
+#pragma unroll
+    for (int k = 0; k < SPLIT_MAX; ++k)
+        if (k < n_sp) {
+            m[k] = base[part.m + k * n_head + h];
+            l[k] = base[part.l + k * n_head + h];
+        }
+    float4 raw = make_float4(0.f, 0.f, 0.f, 0.f);
+    if (gate && grp == 0) raw = *reinterpret_cast<const float4*>(gate + (qi * n_head + h) * 2 * HD + HD + d4);
+    float M = -FLT_MAX, L = 0.0f;
+#pragma unroll
+    for (int k = 0; k < SPLIT_MAX; ++k)
+        if (k < n_sp) M = fmaxf(M, m[k]);
+    float4 a = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+    for (int k = 0; k < SPLIT_MAX; ++k)
+        if (k < n_sp) {
+            const float w = __expf(m[k] - M);
+            L = fmaf(l[k], w, L);
+            if ((k & 3) == grp) {
+                const float4 x = o[k >> 2];
+                a = make_float4(fmaf(x.x, w, a.x), fmaf(x.y, w, a.y), fmaf(x.z, w, a.z), fmaf(x.w, w, a.w));
+            }
+        }
+    __shared__ float4 red[3][64];
+    if (grp > 0) red[grp - 1][t & 63] = a;
+    __syncthreads();
+    if (grp > 0) return;
+#pragma unroll
+    for (int k = 0; k < 3; ++k) {
+        const float4 b = red[k][t];
+        a = make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+    }
+    float4 r = make_float4(0.f, 0.f, 0.f, 0.f);
+    if (L > 0.0f) r = make_float4(a.x / L, a.y / L, a.z / L, a.w / L);
+    if (gate) r = make_float4(gated(r.x, raw.x), gated(r.y, raw.y), gated(r.z, raw.z), gated(r.w, raw.w));
+    *reinterpret_cast<float4*>(attn + (qi * n_head + h) * HD + d4) = r;
+}
+
+// A decode query's splits at most: SPLIT_MAX (more cost the merge and each block's setup more than they gain), whole
+// tiles.
+int64_t max_splits(int64_t cap) { return std::max<int64_t>(1, std::min<int64_t>(SPLIT_MAX, (cap + PT - 1) / PT)); }
+// n_q queries' splits: a block of the INT8 kernel takes an SM, so all queries' blocks in one wave
+int decode_splits(int64_t cap, int64_t n_q, int64_t n_kv) {
+    int dev = 0, sms = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+    return (int) std::max<int64_t>(1, std::min<int64_t>(max_splits(cap), sms / (n_kv * n_q)));
+}
+
+// the per-query scratch's layout for `splits`
+Partials partials(float* scratch, int splits, int64_t n_head, int64_t stride) {
+    Partials part;
+    part.acc = scratch;
+    part.m = (long long) splits * n_head * HD;
+    part.l = part.m + (long long) splits * n_head;
+    part.stride = stride;
+    part.splits = splits;
+    return part;
+}
+
+// the INT8 kernel's shared memory, above the default limit (once for each form)
+template <bool SPLIT>
+void allow_mma_smem() {
+    static const cudaError_t e = cudaFuncSetAttribute(
+        attn_mma_kernel<SPLIT>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sizeof(pf::Smem));
+    (void) e;
 }
 
 }  // namespace
@@ -741,11 +762,7 @@ void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* 
     }
     const float scale = 1.0f / sqrtf((float) HD);
     cudaStream_t st = (cudaStream_t) stream;
-    static bool attr = false;
-    if (int8 && !attr) {
-        cudaFuncSetAttribute(attn_prefill_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sizeof(pf::Smem));
-        attr = true;
-    }
+    if (int8) allow_mma_smem<false>();
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         const dim3 grid((unsigned) s.n_head_kv, (unsigned) nb);
@@ -753,12 +770,11 @@ void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* 
         const int32_t* ids_q = ids + (size_t) q0 * (size_t) cap;
         const int32_t* steps_q = steps + (size_t) q0 * kStepCount;
         if (int8)
-            attn_prefill_mma_kernel<<<grid, pf::NT, sizeof(pf::Smem), st>>>(q + qo, pools, ids_q, steps_q,
-                                                                           (int) s.n_head_kv, (int) s.page_size, scale,
-                                                                           attn + qo, (int) cap);
+            attn_mma_kernel<false><<<grid, pf::NT, sizeof(pf::Smem), st>>>(
+                q + qo, pools, ids_q, steps_q, (int) s.n_head_kv, (int) s.page_size, scale, attn + qo, (int) cap, {});
         else
-            attn_prefill_f16_kernel<<<grid, THREADS, 0, st>>>(q + qo, pools, ids_q, steps_q, (int) s.n_head_kv,
-                                                             (int) s.page_size, scale, attn + qo, (int) cap);
+            attn_f16_kernel<false><<<grid, THREADS, 0, st>>>(
+                q + qo, pools, ids_q, steps_q, (int) s.n_head_kv, (int) s.page_size, scale, attn + qo, (int) cap, {});
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -768,74 +784,44 @@ void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* 
 }
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream,
+                           const float* gate) {
     if (n_q <= 0) return;
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
-        !pools.page_table || n_q > 65535) {
-        std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");
-        std::exit(1);
-    }
     const bool int8 = pools.k_q != nullptr;
-    const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
-    // per query: [acc: n_chunks*n_head*HD][m: n_chunks*n_head][l: n_chunks*n_head], all offsets from one stride
-    const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
-    float* part_acc = scratch;
-    float* part_m = scratch + (size_t) n_chunks * s.n_head * HD;
-    float* part_l = part_m + (size_t) n_chunks * s.n_head;
-    const float scale = 1.0f / sqrtf((float) HD);
-    const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) n_q);
-    cudaStream_t st = (cudaStream_t) stream;
-    if (int8)
-        attn_chunk_kernel<true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                          scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    else
-        attn_chunk_kernel<false><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                           scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
-                                                                                  attn, stride);
-    const cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) {
-        std::fprintf(stderr, "qsa_decode_attn_batch: %s\n", cudaGetErrorString(e));
-        std::exit(1);
-    }
-}
-
-uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
-    const int64_t chunks = (cap + CHUNK - 1) / CHUNK;
-    return (uint64_t) chunks * (uint64_t) s.n_head * (HD + 2) + 64;
-}
-
-void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
-                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
-        !pools.page_table) {
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
+        !pools.page_table || n_q > 65535 ||
+        (int8 ? (!pools.v_q || !pools.k_scale || !pools.v_scale) : (!pools.k_pool || !pools.v_pool))) {
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const bool int8 = pools.k_q != nullptr;
-    if (int8 ? (!pools.v_q || !pools.k_scale || !pools.v_scale) : (!pools.k_pool || !pools.v_pool)) {
-        std::fprintf(stderr, "qsa_decode_attn: incomplete KV pools\n");
-        std::exit(1);
-    }
-    const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
-    float* part_acc = scratch;
-    float* part_m = scratch + (size_t) n_chunks * s.n_head * HD;
-    float* part_l = part_m + (size_t) n_chunks * s.n_head;
+    const int splits = decode_splits(cap, n_q, s.n_head_kv);
+    const Partials part = partials(scratch, splits, s.n_head, (long long) qsa_decode_attn_scratch_floats(cap, s));
     const float scale = 1.0f / sqrtf((float) HD);
-    const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv);
+    const dim3 grid((unsigned) s.n_head_kv, (unsigned) n_q, (unsigned) splits);
     cudaStream_t st = (cudaStream_t) stream;
-    if (int8)
-        attn_chunk_kernel<true><<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                          scale, part_acc, part_m, part_l, n_chunks);
-    else
-        attn_chunk_kernel<false><<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                           scale, part_acc, part_m, part_l, n_chunks);
-    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
+    if (int8) {
+        allow_mma_smem<true>();
+        attn_mma_kernel<true><<<grid, pf::NT, sizeof(pf::Smem), st>>>(
+            q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, nullptr, (int) cap, part);
+    } else {
+        attn_f16_kernel<true><<<grid, THREADS, 0, st>>>(
+            q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, nullptr, (int) cap, part);
+    }
+    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), THREADS, 0, st>>>(part, steps, gate, attn);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
+}
+
+uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
+    return (uint64_t) max_splits(cap) * (uint64_t) s.n_head * (HD + 2) + 64;
+}
+
+void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
+    qsa_decode_attn_batch(q, pools, ids, step, cap, s, scratch, attn, 1, stream);
 }
 
 }  // namespace strata::kernels

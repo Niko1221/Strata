@@ -1,17 +1,15 @@
-// include/strata/kernels/qsa_decode_attn.hpp - plan v0.3 P3/P7: split-K decode attention over the selected cells.
+// include/strata/kernels/qsa_decode_attn.hpp - the QSA attention over each query's selected cells.
 //
-// The first attention kernel runs one block per query head (24 blocks on a 48-SM part), reads each key row with one
-// thread (uncoalesced) and walks every selected cell serially for the values; at a 4K context (2,051 selected
-// cells) that costs ~0.3-0.5 ms per QSA layer.  This one reads the KV POOLS directly through the page table and the
-// selection ids (no gather copy), in chunks of CHUNK cells per block, and serves all `n_head / n_head_kv` query
-// heads that share a KV head from one read of the chunk:
+// The kernels read the KV POOLS directly through the page table and the selection ids (no gather copy) and serve
+// all `n_head / n_head_kv` query heads that share a KV head from one read of each cell: a block per (KV head, query)
+// walks the query's cells in tiles of 64 with an online softmax.  INT8 pools on the tensor cores: q and the
+// probabilities as 24-bit fixed point (three 8-bit limbs) against the int8 codes, the integer sums exact, ~2.5e-6 of
+// a head's largest output from FP64 on real prompts (FP32 kernels ~3e-6).  FP16 pools in FP32.
 //
-//     grid (ceil(cap / CHUNK), n_head_kv):  s = q.k * scale for 12 heads x CHUNK cells, chunk max m and sum l,
-//                                           acc = p . V  ->  partials
-//     grid (n_head):                        merge the chunks with the usual log-sum-exp rescale
-//
-// FP16 pools or INT8 pools (codes + fp16 scale per 64 values, `kv_q8.hpp`).  The grid is sized by the capacity;
-// the real count comes from `step[kStepWidth]` as for every other capturable QSA kernel.
+// The prompt path's queries fill the GPU by their number.  A verify window's 1-4 queries would leave most of it idle,
+// so the decode splits each query's cells among up to 20 blocks (whole tiles, all queries' blocks in one wave) whose
+// partial sums a merge adds with the usual log-sum-exp rescale.  Grids are sized by the capacity; the real count comes
+// from `step[kStepWidth]` as for every other capturable QSA kernel.
 #pragma once
 
 #include "strata/kernels/qsa.hpp"
@@ -30,22 +28,22 @@ struct QsaAttnPools {
     const int32_t* page_table = nullptr;
 };
 
-/// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
+/// Scratch floats a query with `cap` selected cells needs: its splits' partial sums, maxima and sums.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);
 
 void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream);
 
 /// Plan v0.3 P5: `n_q` queries at once, each with its own selection: q [n_q, n_head, 256], ids [n_q, cap], steps
-/// [n_q, kStepCount], attn [n_q, n_head, 256]; scratch is `n_q` times the single-query size.
+/// [n_q, kStepCount], attn [n_q, n_head, 256]; scratch is `n_q` times the single-query size.  With `gate` (the
+/// query projection's rows [n_q, n_head, 2 * 256]: a head's queries, then its gate logits), attn is the gated output,
+/// bitwise native_qsa_gate_apply's.
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream,
+                           const float* gate = nullptr);
 
-/// The prompt path's form of qsa_decode_attn_batch (no scratch): a block per (KV head, query) walks the query's
-/// cells in tiles of 64 with an online softmax, so no partial sums go through memory.  INT8 pools on the tensor
-/// cores: q and the probabilities as 24-bit fixed point (three 8-bit limbs) against the int8 codes, the integer sums
-/// exact, ~2.5e-6 of a head's largest output from FP64 on real prompts (FP32 kernels ~3e-6).  FP16 pools in FP32,
-/// the sums ordered differently from the decode kernel.
+/// The prompt path's form of qsa_decode_attn_batch (no scratch): a block per (KV head, query) walks all of the
+/// query's cells, so no partial sums go through memory.
 void qsa_prefill_attn(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                       const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
