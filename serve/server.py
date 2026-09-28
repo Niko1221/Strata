@@ -240,6 +240,26 @@ class StrataEngine:
         if len(f) >= 11:                                  # decode hit rate fields
             self.last.update(hits=int(f[9]), lookups=int(f[10]))
 
+    def llama_timings(self, prompt_tokens: int) -> dict:
+        """The request's timings in llama-server's shape (prompt_n/predicted_n/prompt_ms/predicted_ms
+        and rates), so proxies that chart per-request prefill/decode speed - llama-swap's activity
+        log, anything else that speaks the llama.cpp dialect - can read them off the usage chunk."""
+        t = {"prompt_n": prompt_tokens, "predicted_n": self.last.get("generated") or 0}
+        reused, pms, dms = self.last.get("reused"), self.last.get("prompt_ms"), self.last.get("decode_ms")
+        gen = self.last.get("generated") or 0
+        if reused is not None:
+            t["cache_n"] = reused
+        if pms is not None:
+            t["prompt_ms"] = pms
+            t["prompt_per_second"] = max(0, prompt_tokens - (reused or 0)) / (pms / 1000.0) if pms > 0 else 0.0
+        if dms is not None:
+            t["predicted_ms"] = dms
+            t["predicted_per_second"] = gen / (dms / 1000.0) if dms > 0 and gen else 0.0
+        if self.last.get("drafts_offered") is not None:
+            t["draft_n"] = self.last["drafts_offered"]
+            t["draft_n_accepted"] = self.last["drafts_accepted"]
+        return t
+
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
@@ -949,6 +969,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
                              "total_tokens": pt + x["completion_tokens"]}
+            last["timings"] = svc.engine.llama_timings(pt)
             yield last
 
 
@@ -980,7 +1001,7 @@ def openai_collect(chunks) -> dict:
         msg["strata_mcp"] = mcp
     return {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
             "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
-            "usage": last["usage"]}
+            "usage": last["usage"], "timings": last.get("timings")}
 
 
 # ------------------------------------------------------------------------------------------------ Anthropic
@@ -1041,7 +1062,8 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "tool_use" if used_tool and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
-                                    "usage": {"output_tokens": x["completion_tokens"]}}
+                                    "usage": {"output_tokens": x["completion_tokens"]},
+                                    "timings": svc.engine.llama_timings(len(ids))}
             yield "message_stop", {"type": "message_stop"}
 
 
