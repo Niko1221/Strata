@@ -415,6 +415,7 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
             if (!de.is_regular_file() || de.path().filename().string().rfind("kv-", 0) != 0) continue;
             NvmeHeader h;
             std::vector<int32_t> ids;
+            std::vector<strata::core::ConversationImageKey> imgs;
             uint64_t fbytes = 0;
             try {
                 std::ifstream f(de.path(), std::ios::binary);
@@ -431,11 +432,21 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
                 }
                 ids.assign((size_t) h.L, 0);
                 if (!f.read((char*) ids.data(), (size_t) h.L * sizeof(int32_t))) { ++skipped; continue; }
+                // the image records follow the ids, in the order nvme_dump_at wrote them.  The resume match needs
+                // them: an entry without them looks exactly like a snapshot of a conversation that had no pictures,
+                // which is the one thing its image comparison can never satisfy for a session that had one.
+                imgs.resize((size_t) h.n_imgs);
+                if (!imgs.empty() &&
+                    !f.read((char*) imgs.data(),
+                            (std::streamsize) imgs.size() * sizeof(strata::core::ConversationImageKey))) {
+                    ++skipped; continue;
+                }
                 fbytes = fb;
             } catch (...) { ++skipped; continue; }   // a corrupt store file must never take the server down
             NvmeEntry e;
             e.path = de.path().string();
             e.ids = std::move(ids);
+            e.imgs = std::move(imgs);
             e.L = h.L;
             e.cvec = h.cvec != 0;
             e.bytes = fbytes;
@@ -505,6 +516,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     e.ids = key;
     e.L = (int64_t) key.size();
     e.cvec = cvec;
+    e.imgs = stored;   // the entry must carry what the file holds, or the match loops compare against nothing
     e.bytes = (uint64_t) fs::file_size(path, ec);
     e.mtime = (int64_t) ::time(nullptr);
     total_ += e.bytes;
@@ -522,7 +534,7 @@ bool KvNvmeStore::restore(const NvmeEntry& e, strata::core::SessionState& ss, st
     std::vector<int32_t> ids;
     std::vector<strata::core::ConversationImageKey> imgs;
     if (!nvme_restore(e.path.c_str(), ss, mtp_state, g, ids, imgs, cvec, L, err)) return false;
-    if (L != e.L || cvec != e.cvec) { err = "kv-nvme: entry changed under us"; return false; }
+    if (L != e.L || cvec != e.cvec || imgs != e.imgs) { err = "kv-nvme: entry changed under us"; return false; }
     return true;
 }
 

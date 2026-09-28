@@ -82,12 +82,13 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
                   const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
                   std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err);
 
-/// One stored session: its snapshot file and the token prefix it was keyed by (read at scan time, so the
-/// resume match never trusts a filename).
+/// One stored session: its snapshot file and the token prefix AND pictures it was keyed by (both read at scan
+/// time, so the resume match never trusts a filename - and never compares a request's pictures against an entry
+/// that did not read its own).
 struct NvmeEntry {
     std::string path;
     std::vector<int32_t> ids;                                ///< the consumed tokens (the key)
-    std::vector<strata::core::ConversationImageKey> imgs;    ///< the images among them
+    std::vector<strata::core::ConversationImageKey> imgs;    ///< the images among them, below the key's length
     int64_t L = 0;                                           ///< ids.size(), kept for the match loops
     bool cvec = false;                                       ///< the control-vector state it was read with
     int64_t mtime = 0;                                       ///< seconds, for the LRU cap
