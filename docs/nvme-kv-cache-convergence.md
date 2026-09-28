@@ -107,6 +107,29 @@ checkpoint), reconstructed on restore. The disk envelope must pick one.
 Theirs: inside the core (`kv_ring_restore(...)` for `kv_mode == 2`). Ours: in the serve loop
 (`mtp.kv_restore(resume)`) plus host-array dumps recorded by `NvmeHeader::mtp_host`. Pick one home.
 
+**Settled: the disk adapter, with a collapse condition.**  `nvme_restore` refills the drafter's ring itself
+(`refill_drafter_ring`, the same `[b1 - n_slots, b1)` blocks the serve loop computed) as part of applying the
+snapshot it read, and the `--nvme-restore` spike's `mtp.kv_restore(rL)` is gone.  Why not their core: reaching it
+means routing the drafter's KV through a `ConversationKv` staging vector, which contradicts the answer we give to
+their open question (read straight into the pinned pools, bounded staging).  Why not the serve loop: the refill is
+part of the residency contract for bytes the tier just wrote, and a call-site rule is exactly what a new spill or
+restore path forgets.
+
+**Collapse condition - this is a deliberate third home, not an accident.**  B is correct *while the adapter reads
+straight into the pinned pools*.  The moment the adapter adopts `conversation_kv_restore` wholesale (C10 / the
+staging work), `refill_drafter_ring` must fold into it, because the core would then be writing those pools.
+
+What the serve loop kept: `mtp.kv_restore(resume)` still runs for the resumes that never touched the adapter - a
+RAM checkpoint (`from_live == false`) or the live session.  It cannot be deleted, and the promote path cannot be
+told apart from a live resume by `from_live` (both set it true), so a promote now sets `from_nvme` and the serve
+loop's rule is gated on it.  Editing `conversation_checkpoint_restore` to cover every resume was rejected: it
+would change the semantics of a file that is a verbatim copy of their core.
+
+Cells past the promoted `L` are left in the ring on purpose.  The ring table is static (`block -> block %
+n_slots`, `kv_stream.hpp:76-79`), so the slots a LONGER previous turn could have clobbered are exactly the blocks
+below `b1` - which is what the refill repopulates - and the drafter's attention reads only cells below the one it
+is writing (`n_kv = pos + 1`, `layer.cpp:813`), so every cell past `L` is written before anything can read it.
+
 ### C7 - failure contract
 
 On a failed promote we currently `kvstore.drop()` + `resume = 0` + `session_zero` + full re-read - a
