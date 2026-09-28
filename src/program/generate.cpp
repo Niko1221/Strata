@@ -15,6 +15,7 @@
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/conversation_snapshot.hpp"   // the shared conversation core (issue #57); see ConvCheckpoint
 #include "strata/core/expert_source.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
@@ -721,19 +722,15 @@ int argmax(const std::vector<float>& v) {
 //     back rejected drafts.
 // A checkpoint is only valid while the positional cells below it still hold ITS tokens, so the serve loop keeps
 // just the checkpoints that are prefixes of the tokens the session holds now.
-struct ImgKey {
-    int64_t start = 0;      ///< the image's first <|image_pad|> position
-    uint64_t hash = 0;      ///< its embeddings and grid: the pad tokens alone are the same for every picture
-    bool operator==(const ImgKey& o) const { return start == o.start && hash == o.hash; }
-};
-
-struct ConvCheckpoint {
-    std::vector<int32_t> ids;     ///< the tokens this state has consumed
-    std::vector<ImgKey> imgs;     ///< the images among them
-    std::vector<uint8_t> gdn, ple, tails;
-    uint64_t used = 0;            ///< last-use stamp for the retention policy (conv_cache.hpp)
-    std::vector<ConvCheckpoint> stage_parts;   ///< a layer split's later stages: their sessions' running state
-};
+// THE SHARED CORE (issue #57, docs/nvme-kv-cache-convergence.md step 2).  These are no longer local shapes:
+// `ConversationCheckpoint` is the one checkpoint type the serve loop, the RAM-cache policy and the NVMe disk
+// adapter all speak.  It carries two blobs ours did not - `dead` (the indexer's cell-0 key) and `block_pos` - so a
+// turn-boundary checkpoint describes the indexer COMPLETELY, not just its tail (collision C2).
+using ImgKey = strata::core::ConversationImageKey;   ///< an image's first position + its embedding/grid hash
+using ConvCheckpoint = strata::core::ConversationCheckpoint;
+// 0.1.21's layer split added two members to the local struct this replaces - `used` (the retention policy's
+// last-use stamp) and `stage_parts` (a split's later stages' running state).  They are ported into the shared
+// type; see the commit that follows this one in the history for the port and what the disk envelope does.
 
 uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) {
     const uint8_t* p = (const uint8_t*) data;
@@ -741,52 +738,27 @@ uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) 
     return h;
 }
 
-struct ConvStateSizes {
-    size_t gdn = 0, ple = 0, tail = 0;
-};
+using ConvStateSizes = strata::core::ConversationStateSizes;
 
+/// The running-state byte counts, from the shared core.  It is now the ONLY place they are computed - the NVMe
+/// adapter's segment walk goes through the same function.
 ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g) {
     ConvStateSizes z;
-    z.gdn = (size_t) g.n_gdn_layers() *
-            ((size_t) g.ssm_state_size * (size_t) g.ssm_v_heads * (size_t) g.ssm_state_size +
-             (size_t) g.ssm_conv_channels * (size_t) (g.ssm_d_conv - 1)) * sizeof(float);
-    z.ple = (size_t) strata::kernels::NG_HIST * (size_t) strata::kernels::NG_HC_DIM * sizeof(float);
-    z.tail = (size_t) (strata::kernels::qsa_real_shapes().idx_block - 1) * (size_t) g.idx_key_dim * sizeof(float);
+    std::string error;
+    strata::core::conversation_state_sizes(g, z, error);   // the geometry has already passed engine validation
     return z;
 }
 
 /// Copies the running state out.  The caller has synchronized the device.
 bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
-    const ConvStateSizes z = conv_state_sizes(g);
-    c.gdn.resize(z.gdn);
-    c.ple.resize(ss.ple_hist != nullptr ? z.ple : 0);
-    c.tails.resize(z.tail * (size_t) g.n_qsa_layers());
-    if (cudaMemcpy(c.gdn.data(), ss.gdn_state, z.gdn, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (!c.ple.empty() && cudaMemcpy(c.ple.data(), ss.ple_hist, z.ple, cudaMemcpyDeviceToHost) != cudaSuccess)
-        return false;
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
-        if (cudaMemcpy(c.tails.data() + (size_t) i * z.tail, ss.qsa_states[i].idx_tail, z.tail, cudaMemcpyDeviceToHost) !=
-            cudaSuccess)
-            return false;
-    return true;
+    std::string error;
+    return strata::core::conversation_checkpoint_save(c, ss, g, error);
 }
 
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
-    const ConvStateSizes z = conv_state_sizes(g);
-    if (c.gdn.size() != z.gdn || c.tails.size() != z.tail * (size_t) g.n_qsa_layers()) return false;
-    if (cudaMemcpy(ss.gdn_state, c.gdn.data(), z.gdn, cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (!c.ple.empty() && cudaMemcpy(ss.ple_hist, c.ple.data(), z.ple, cudaMemcpyHostToDevice) != cudaSuccess)
-        return false;
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
-        if (cudaMemcpy(ss.qsa_states[i].idx_tail, c.tails.data() + (size_t) i * z.tail, z.tail, cudaMemcpyHostToDevice) !=
-            cudaSuccess)
-            return false;
-    // the PLE's token window is the last two tokens, OLDEST FIRST, -1 where there is none (as session_zero leaves it)
-    const size_t L = c.ids.size();
-    ss.ple_prev[0] = L >= 2 ? c.ids[L - 2] : -1;
-    ss.ple_prev[1] = L >= 1 ? c.ids[L - 1] : -1;
-    return cudaDeviceSynchronize() == cudaSuccess;
+    std::string error;
+    return strata::core::conversation_checkpoint_restore(c, ss, g, error);
 }
 
 /// The STRATA_STATE_HASH fingerprint of a session over the positions it holds ([0, L)), plus the stale tail past
@@ -3714,7 +3686,7 @@ int main(int argc, char** argv) {
         // NVMe cold tier, Step 0 spike: load a snapshot at startup so the first request resumes from it.
         if (!o.nvme_restore.empty()) {
             std::vector<int32_t> r_ids;
-            std::vector<std::pair<int64_t, uint64_t>> r_imgs;
+            std::vector<ImgKey> r_imgs;
             bool r_cvec = false;
             int64_t rL = 0;
             std::string rerr;
@@ -3724,8 +3696,7 @@ int main(int argc, char** argv) {
             }
             mtp.kv_restore(rL);   // refill the drafter ring from its now-restored host copy
             live.swap(r_ids);
-            live_imgs.clear();
-            for (const auto& kv : r_imgs) live_imgs.push_back(ImgKey{kv.first, kv.second});
+            live_imgs.swap(r_imgs);
             live_ok = o.prompt_cache > 0;
             cvec_cached = r_cvec;
             std::fprintf(stderr, "strata serve: nvme_restore: loaded %lld tokens from %s\n", (long long) rL,
@@ -3970,9 +3941,7 @@ int main(int argc, char** argv) {
                     for (int64_t i = 0; i < EL; ++i)
                         if ((int32_t) ids[(size_t) i] != e.ids[(size_t) i]) { m = false; break; }
                     if (!m) continue;
-                    std::vector<ImgKey> eimgs;
-                    for (const auto& pr : e.imgs) eimgs.push_back(ImgKey{pr.first, pr.second});
-                    if (!(imgs_below(req_imgs, EL) == eimgs)) continue;
+                    if (!(imgs_below(req_imgs, EL) == e.imgs)) continue;
                     if (best == nullptr || EL > best->L) best = &e;   // the LONGEST prefix wins, not the last scanned
                 }
                 if (best != nullptr) {
@@ -3989,8 +3958,7 @@ int main(int argc, char** argv) {
                         resume = best->L;
                         from_live = true;
                         live = best->ids;
-                        live_imgs.clear();
-                        for (const auto& pr : best->imgs) live_imgs.push_back(ImgKey{pr.first, pr.second});
+                        live_imgs = best->imgs;
                         std::fprintf(stderr, "strata serve: nvme promote: resumed %lld tokens from %s\n",
                                      (long long) best->L, best->path.c_str());
                     }
@@ -4425,10 +4393,8 @@ int main(int argc, char** argv) {
             // NVMe cold tier, Step 0 spike: dump the consumed live state synchronously at DONE.
             if (!o.nvme_dump.empty() && live_ok) {
                 cudaDeviceSynchronize();   // the host KV pools are device-mapped: order the GPU writes first
-                std::vector<std::pair<int64_t, uint64_t>> d_imgs;
-                for (const ImgKey& im : live_imgs) d_imgs.push_back({im.start, im.hash});
                 std::string derr;
-                if (!strata::platform::nvme_dump(o.nvme_dump.c_str(), ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, derr))
+                if (!strata::platform::nvme_dump(o.nvme_dump.c_str(), ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, derr))
                     std::fprintf(stderr, "strata serve: nvme_dump failed: %s\n", derr.c_str());
                 else
                     std::fprintf(stderr, "strata serve: nvme_dump: wrote %zu tokens to %s\n", live.size(),
@@ -4440,20 +4406,17 @@ int main(int argc, char** argv) {
             // without the model's hidden reasoning tokens, so a full-consumed-state snapshot could never match).
             if (have_kvstore && live_ok) {
                 cudaDeviceSynchronize();
-                std::vector<std::pair<int64_t, uint64_t>> d_imgs;
-                for (const ImgKey& im : live_imgs) d_imgs.push_back({im.start, im.hash});
                 const ConvCheckpoint* at = nullptr;
                 for (const ConvCheckpoint& c : checks)
                     if (at == nullptr || c.ids.size() > at->ids.size()) at = &c;
                 std::string derr;
                 bool dumped;
+                // the boundary and its running state are ONE shared checkpoint now: `at->ids` is the key the next
+                // request replays, `at->gdn/ple/tails` are the state there
                 if (at != nullptr && !at->ids.empty())
-                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, &at->ids,
-                                          strata::platform::NvmeRunning{at->gdn.data(),
-                                                                        at->ple.empty() ? nullptr : at->ple.data(),
-                                                                        at->tails.data()}, derr);
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
                 else
-                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, nullptr, {}, derr);
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, nullptr, derr);
                 if (!dumped)
                     std::fprintf(stderr, "strata serve: kv-nvme dump failed: %s\n", derr.c_str());
             }

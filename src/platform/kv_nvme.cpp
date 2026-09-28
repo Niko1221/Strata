@@ -1,6 +1,7 @@
 // src/platform/kv_nvme.cpp - see include/strata/platform/kv_nvme.hpp.
 #include "strata/platform/kv_nvme.hpp"
 
+#include "strata/core/conversation_snapshot.hpp"   // conversation_state_sizes: the shared running-state byte counts
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -20,18 +21,30 @@
 
 #include "strata/kernels/kv_stream.hpp"   // KvFormat, kv_stream_reset
 #include "strata/kernels/kv_q4.hpp"       // kv_q4_bytes_per_head
-#include "strata/kernels/ngram.hpp"       // NG_HIST, NG_HC_DIM
 #include "strata/kernels/qsa.hpp"         // qsa_real_shapes
 
 namespace strata::platform {
+
+// The envelope's image segment is one 16-byte (start, hash) record per image.  The plumbing now names the shared
+// core's type instead of std::pair<int64_t, uint64_t>; the BYTES must not move in this step, and this is what
+// proves they did not (docs/nvme-kv-cache-convergence.md step 2).
+static_assert(sizeof(strata::core::ConversationImageKey) == sizeof(std::pair<int64_t, uint64_t>) &&
+              alignof(strata::core::ConversationImageKey) == alignof(std::pair<int64_t, uint64_t>),
+              "the shared image key must keep the v2 envelope's 16-byte image record");
 
 namespace {
 
 namespace fs = std::filesystem;
 
+/// The byte counts the envelope is laid out with.  The running-state ones come from the SHARED CORE
+/// (`strata::core::conversation_state_sizes`) - this file no longer carries a second copy of those formulas
+/// (docs/nvme-kv-cache-convergence.md step 2).  `page_size` / `idx_block` are the granules the segment walk
+/// needs, read from the same `qsa_real_shapes()` the shared core reads.
+/// The pooled-row count is NOT here: our `L / idx_block + 2` is still our own, and collision C4 (whose formula the
+/// format uses) is settled in step 3.
 struct Sizes {
     int64_t page_size = 0, idx_block = 0;
-    size_t gdn = 0, ple = 0, tail = 0, dead = 0;   // bytes per the relevant scope
+    strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
 };
 
 Sizes sizes_of(const strata::core::ModelGeometry& g) {
@@ -39,13 +52,8 @@ Sizes sizes_of(const strata::core::ModelGeometry& g) {
     Sizes z;
     z.page_size = s.page_size;
     z.idx_block = s.idx_block;
-    z.gdn = (size_t) g.n_gdn_layers() *
-            ((size_t) g.ssm_state_size * (size_t) g.ssm_v_heads * (size_t) g.ssm_state_size +
-             (size_t) g.ssm_conv_channels * (size_t) (g.ssm_d_conv - 1)) *
-            sizeof(float);
-    z.ple = (size_t) strata::kernels::NG_HIST * (size_t) strata::kernels::NG_HC_DIM * sizeof(float);
-    z.tail = (size_t) (s.idx_block - 1) * (size_t) g.idx_key_dim * sizeof(float);
-    z.dead = (size_t) g.idx_key_dim * sizeof(float);
+    std::string error;
+    strata::core::conversation_state_sizes(g, z.state, error);   // the geometry has already been checked by open()
     return z;
 }
 
@@ -132,17 +140,26 @@ int64_t file_mtime(const std::string& path) {
 
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-                  const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, NvmeRunning running,
-                  std::string& err) {
-    // L is the SNAPSHOT length: for a turn-boundary snapshot the running state comes from the caller's blobs
+                  const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
+                  const strata::core::ConversationCheckpoint* at, std::string& err) {
+    // L is the SNAPSHOT length: for a turn-boundary snapshot the running state comes from the checkpoint's blobs
     // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
     // the generation that followed), and the per-token scratch (block_pos) rides along harmlessly.
-    const bool at_boundary = running.gdn != nullptr;
+    const bool at_boundary = at != nullptr;
     const Sizes z = sizes_of(g);
     const int64_t L = (int64_t) ids.size();
     if (L < 1) { err = "nvme_dump: empty session"; return false; }
     if (g.n_qsa_layers() > 0 && ss.qsa_states[0].kv_mode == 0) {
         err = "nvme_dump: KV is fully resident (kv_mode 0) - run with --kv-resident (streamed) so the host copy exists";
+        return false;
+    }
+    if (at_boundary && (at->ids.size() != ids.size() ||
+                        at->gdn.size() != z.state.gdn ||
+                        at->tails.size() != z.state.tail * (size_t) g.n_qsa_layers() ||
+                        (!at->ple.empty() && at->ple.size() != z.state.ple))) {
+        // the checkpoint is the shared core's, so its blobs are checked against the shared core's byte counts
+        // rather than trusted because the caller handed over three raw pointers
+        err = "nvme_dump: turn-boundary checkpoint does not fit this engine";
         return false;
     }
     FILE* f = std::fopen(path, "wb");
@@ -159,7 +176,7 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     if (!wr(f, &h, sizeof h)) { err = "nvme_dump: header"; std::fclose(f); return false; }
     HashWr hw{f};
     if (!hw.wr(ids.data(), ids.size() * sizeof(int32_t))) { err = "nvme_dump: ids"; std::fclose(f); return false; }
-    if (!imgs.empty() && !hw.wr(imgs.data(), imgs.size() * sizeof(std::pair<int64_t, uint64_t>))) {
+    if (!imgs.empty() && !hw.wr(imgs.data(), imgs.size() * sizeof(strata::core::ConversationImageKey))) {
         err = "nvme_dump: imgs"; std::fclose(f); return false;
     }
 
@@ -171,11 +188,12 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         return hw.wr(tmp.data(), bytes);
     };
     if (at_boundary) {
-        if (!hw.wr(running.gdn, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
-    } else if (!dump_dev(ss.gdn_state, z.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
+        if (!hw.wr(at->gdn.data(), z.state.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
+    } else if (!dump_dev(ss.gdn_state, z.state.gdn)) { err = "nvme_dump: gdn"; std::fclose(f); return false; }
     if (ss.ple_hist) {
-        const bool have_blob = running.ple != nullptr;
-        if (!(have_blob ? hw.wr(running.ple, z.ple) : dump_dev(ss.ple_hist, z.ple))) {
+        // a session with no PLE history checkpoints no ple blob either: fall back to the live device array
+        const bool have_blob = at_boundary && !at->ple.empty();
+        if (!(have_blob ? hw.wr(at->ple.data(), z.state.ple) : dump_dev(ss.ple_hist, z.state.ple))) {
             err = "nvme_dump: ple"; std::fclose(f); return false;
         }
     }
@@ -193,10 +211,12 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         if (!dump_dev(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4)) { err = "nvme_dump: pooled"; std::fclose(f); return false; }
         if (at_boundary) {
             // the tail AT L: the checkpoint's per-layer tail blob (the state as of the boundary)
-            if (!hw.wr(running.tails + (size_t) i * z.tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
-        } else if (!dump_dev(st.idx_tail, z.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
-        if (!dump_dev(st.idx_dead, z.dead)) { err = "nvme_dump: dead"; std::fclose(f); return false; }
-        if (!dump_dev(st.idx_block_pos, 4)) { err = "nvme_dump: block_pos"; std::fclose(f); return false; }
+            if (!hw.wr(at->tails.data() + (size_t) i * z.state.tail, z.state.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
+        } else if (!dump_dev(st.idx_tail, z.state.tail)) { err = "nvme_dump: tail"; std::fclose(f); return false; }
+        // dead and block_pos stay LIVE-device reads: the checkpoint now carries its own copies (C2), but which of
+        // the two the disk envelope owns is collision C5, and this step does not change the format.
+        if (!dump_dev(st.idx_dead, z.state.dead)) { err = "nvme_dump: dead"; std::fclose(f); return false; }
+        if (!dump_dev(st.idx_block_pos, z.state.block_pos)) { err = "nvme_dump: block_pos"; std::fclose(f); return false; }
     }
 
     // MTP drafter host KV copy (ring): cells [0, min(L, max_cells)); the header records how many arrays went out
@@ -231,13 +251,13 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
 
 bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-               const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec, std::string& err) {
-    return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, NvmeRunning{}, err);
+               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err) {
+    return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, nullptr, err);
 }
 
 bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
-                  std::vector<std::pair<int64_t, uint64_t>>& imgs, bool& cvec, int64_t& L, std::string& err) {
+                  std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec, int64_t& L, std::string& err) {
     const Sizes z = sizes_of(g);
     FILE* f = std::fopen(path, "rb");
     if (!f) { err = std::string("nvme_restore: open ") + path; return false; }
@@ -276,13 +296,13 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     // the counts are only trusted once they fit the file (a corrupt header must not size an allocation)
     if (h.L < 1 || (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size() ||
         h.n_imgs < 0 ||
-        (size_t) h.n_imgs * sizeof(std::pair<int64_t, uint64_t>) + (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size()) {
+        (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey) + (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size()) {
         err = "nvme_restore: malformed header sizes"; return false;
     }
     L = h.L;
     const int32_t* idp = (const int32_t*) take((size_t) L * sizeof(int32_t));
-    // the imgs segment is 8-byte valued but not always 8-byte aligned (offset 104 + 4*L): memcpy, never a cast
-    const void* imgp = h.n_imgs ? take((size_t) h.n_imgs * sizeof(std::pair<int64_t, uint64_t>)) : nullptr;
+    // the imgs segment is 16-byte valued but not always 8-byte aligned (offset 104 + 4*L): memcpy, never a cast
+    const void* imgp = h.n_imgs ? take((size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey)) : nullptr;
 
     // ---- walk the rest, recording the applies; nothing is written until the walk succeeds ----
     struct Apply { void* dst; const void* src; size_t bytes; bool device; };
@@ -291,8 +311,8 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
         const uint8_t* p = take(bytes);
         if (p) applies.push_back({dst, p, bytes, device});
     };
-    seg(ss.gdn_state, z.gdn, true);
-    if (ss.ple_hist) seg(ss.ple_hist, z.ple, true);
+    seg(ss.gdn_state, z.state.gdn, true);
+    if (ss.ple_hist) seg(ss.ple_hist, z.state.ple, true);
     const int64_t n_pages = (L + z.page_size - 1) / z.page_size;
     const int64_t pooled_rows = std::min<int64_t>(L / z.idx_block + 2, ss.qsa_states[0].idx_pooled_rows);
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
@@ -303,9 +323,9 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
             seg(ka.p, (size_t) n_pages * (size_t) g.n_head_kv * (size_t) z.page_size * (size_t) ka.w, false);
         }
         seg(st.idx_pooled, (size_t) pooled_rows * g.idx_key_dim * 4, true);
-        seg(st.idx_tail, z.tail, true);
-        seg(st.idx_dead, z.dead, true);
-        seg(st.idx_block_pos, 4, true);
+        seg(st.idx_tail, z.state.tail, true);
+        seg(st.idx_dead, z.state.dead, true);
+        seg(st.idx_block_pos, z.state.block_pos, true);
     }
     int64_t mtp_arrays = 0;
     {
@@ -347,7 +367,7 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
     ids.assign(idp, idp + L);
     if (imgp) {
         imgs.resize((size_t) h.n_imgs);
-        std::memcpy(imgs.data(), imgp, (size_t) h.n_imgs * sizeof(std::pair<int64_t, uint64_t>));
+        std::memcpy(imgs.data(), imgp, (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey));
     }
     cvec = h.cvec != 0;
     for (const Apply& a : applies) {
@@ -396,8 +416,10 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
                     h.n_head_kv != g.n_head_kv || h.head_dim != g.head_dim || h.idx_dim != g.idx_key_dim ||
                     h.page_size != shp.page_size || h.idx_block != shp.idx_block ||
                     h.L < 1 || h.n_imgs < 0 ||
-                    fb < sizeof(NvmeHeader) + (uint64_t) h.L * 4 + (uint64_t) h.n_imgs * 16
-                        + sizeof(uint64_t)) { ++skipped; continue; }   // no room for the integrity footer
+                    fb < sizeof(NvmeHeader) + (uint64_t) h.L * 4 +
+                        (uint64_t) h.n_imgs * sizeof(strata::core::ConversationImageKey) + sizeof(uint64_t)) {
+                    ++skipped; continue;   // no room for the integrity footer
+                }
                 ids.assign((size_t) h.L, 0);
                 if (!f.read((char*) ids.data(), (size_t) h.L * sizeof(int32_t))) { ++skipped; continue; }
                 fbytes = fb;
@@ -420,12 +442,13 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
 
 bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                        const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-                       const std::vector<std::pair<int64_t, uint64_t>>& imgs, bool cvec,
-                       const std::vector<int32_t>* at_ids, NvmeRunning running, std::string& err) {
+                       const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
+                       const strata::core::ConversationCheckpoint* at, std::string& err) {
     // the KEY is the matchable prefix (the turn boundary) when one is given - that is what the next request
     // replays; the full consumed state includes the model's hidden reasoning tokens, which a chat client
-    // re-sending history will never reproduce
-    const std::vector<int32_t>& key = at_ids ? *at_ids : ids;
+    // re-sending history will never reproduce.  The boundary and its running state arrive as ONE shared
+    // checkpoint, so the key and the blobs cannot disagree about which point in the conversation is stored.
+    const std::vector<int32_t>& key = at ? at->ids : ids;
     if (key.empty()) { err = "kv-nvme: empty session"; return false; }
     // exact match: this state is already stored - refresh its recency and skip the write (imgs too: same pad-token
     // ids with different pictures are a different session)
@@ -455,7 +478,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     char name[64];
     std::snprintf(name, sizeof name, "kv-%ld-%ld.bin", pid(), seq_++);
     const std::string path = dir_ + "/" + name;
-    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, imgs, cvec, running, err)) {
+    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, imgs, cvec, at, err)) {
         std::error_code ec;
         fs::remove(path, ec);   // a failed dump must not leave a partial file for the next scan to admit
         return false;
@@ -481,7 +504,7 @@ bool KvNvmeStore::restore(const NvmeEntry& e, strata::core::SessionState& ss, st
     int64_t L = 0;
     bool cvec = false;
     std::vector<int32_t> ids;
-    std::vector<std::pair<int64_t, uint64_t>> imgs;
+    std::vector<strata::core::ConversationImageKey> imgs;
     if (!nvme_restore(e.path.c_str(), ss, mtp_state, g, ids, imgs, cvec, L, err)) return false;
     if (L != e.L || cvec != e.cvec) { err = "kv-nvme: entry changed under us"; return false; }
     return true;

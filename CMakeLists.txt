@@ -295,6 +295,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    # The shared conversation-snapshot core (issue #57; docs/nvme-kv-cache-convergence.md step 2).  It is the one
+    # home for the checkpoint types and the running-state byte counts that `strata generate` and the NVMe tier below
+    # both use.  `conversation_cache.hpp` is header-only (its RAM policy is imported dormant) and
+    # `conversation_checked.hpp` is internal to these two translation units.
+    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
     src/platform/kv_nvme.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
