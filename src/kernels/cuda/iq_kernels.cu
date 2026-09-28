@@ -33,43 +33,47 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
     }
 }
 
-// mmvq_kernel for NC columns from their interleaved (position-major) copy: a warp takes R rows, decodes each call's
-// weights once and keeps row_dot's lane-strided sum per (row, column), so every value is bitwise mmvq_kernel's.
+// mmvq_kernel for NC columns from their interleaved (position-major) copy, or one from its q8_1 blocks: a warp takes R
+// rows, decodes each call's weights once and keeps row_dot's lane-strided sum per (row, column), so every value is
+// bitwise mmvq_kernel's.
 template <int NC, int R>
 __global__ void __launch_bounds__(128) mmvq_il_iq3_s_kernel(const uint8_t* __restrict__ w, size_t row_bytes,
-                                                            const int* __restrict__ xq, const float* __restrict__ xd,
+                                                            const void* __restrict__ xq, const float* __restrict__ xd,
                                                             float* __restrict__ y, int n_in, int n_out) {
     using F = Fmt<21>;
     const int lane = threadIdx.x & 31;
-    const int row0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * R;
-    if (row0 >= n_out) return;
-    const Q81Il<NC, true> x{xq, xd, n_in / 32};
+    const auto x = q8_1_cols<NC, true>(xq, xd, n_in / 32);
     const int nb = n_in / F::qk;
-    float acc[R][NC];
+    // a grid-stride loop, though the grid gives each warp one group: native_mmvq_il_kernel's form, which its
+    // rows-a-warp table is measured on
+    for (int grp = blockIdx.x * 4 + (threadIdx.x >> 5); grp * R < n_out; grp += gridDim.x * 4) {
+        const int row0 = grp * R;
+        float acc[R][NC];
 #pragma unroll
-    for (int i = 0; i < R; ++i)
+        for (int i = 0; i < R; ++i)
 #pragma unroll
-        for (int c = 0; c < NC; ++c) acc[i][c] = 0.0f;
-    for (int k = lane; k < nb * F::ipb; k += 32) {
-        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+            for (int c = 0; c < NC; ++c) acc[i][c] = 0.0f;
+        for (int k = lane; k < nb * F::ipb; k += 32) {
+            const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
 #pragma unroll
-        for (int i = 0; i < R; ++i) {
-            const int row = min(row0 + i, n_out - 1);   // a partial last group recomputes its last row
-            IQ3SCols wv;
-            wv.load(w + (size_t) row * row_bytes, kbx, iqs);
-            float o[NC];
-            wv.apply<NC>(x, kbx * (F::qk / 32) + iqs / 2, o);
+            for (int i = 0; i < R; ++i) {
+                const int row = min(row0 + i, n_out - 1);   // a partial last group recomputes its last row
+                IQ3SCols wv;
+                wv.load(w + (size_t) row * row_bytes, kbx, iqs);
+                float o[NC];
+                wv.apply<NC>(x, kbx * (F::qk / 32) + iqs / 2, o);
 #pragma unroll
-            for (int c = 0; c < NC; ++c) acc[i][c] += o[c];
+                for (int c = 0; c < NC; ++c) acc[i][c] += o[c];
+            }
         }
+#pragma unroll
+        for (int i = 0; i < R; ++i)
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                const float s = warp_sum(acc[i][c]);
+                if (lane == 0 && row0 + i < n_out) y[(size_t) c * n_out + row0 + i] = s;
+            }
     }
-#pragma unroll
-    for (int i = 0; i < R; ++i)
-#pragma unroll
-        for (int c = 0; c < NC; ++c) {
-            const float s = warp_sum(acc[i][c]);
-            if (lane == 0 && row0 + i < n_out) y[(size_t) c * n_out + row0 + i] = s;
-        }
 }
 
 // ---------------------------------------------------------------- grouped native experts
@@ -590,21 +594,38 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
 
 bool iq_mmvq_il_supported(int t) noexcept { return t == 21; }
 
-void iq_mmvq_il(int t, const void* w, const void* x_il, float* y, int n_in, int n_out, int ncols, void* stream) {
-    if (t != 21 || ncols < 2 || ncols > 8 || n_in % 256 != 0) {
+namespace {
+template <int R>
+void launch_iq3_s_il(const uint8_t* w, size_t rb, const void* x_q8_1, const void* x_il, float* y, int n_in,
+                     int n_out, int ncols, cudaStream_t s) {
+    const unsigned blocks = (unsigned) (((n_out + R - 1) / R + 3) / 4);
+    if (ncols == 1) {
+        mmvq_il_iq3_s_kernel<1, R><<<blocks, 128, 0, s>>>(w, rb, x_q8_1, nullptr, y, n_in, n_out);
+        return;
+    }
+    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
+    switch (ncols) {
+#define STRATA_IL(N) \
+    case N: mmvq_il_iq3_s_kernel<N, R><<<blocks, 128, 0, s>>>(w, rb, parts.pm, parts.d, y, n_in, n_out); break;
+        STRATA_IL(2) STRATA_IL(3) STRATA_IL(4) STRATA_IL(5) STRATA_IL(6) STRATA_IL(7) STRATA_IL(8)
+#undef STRATA_IL
+    }
+}
+}  // namespace
+
+void iq_mmvq_il(int t, const void* w, const void* x_q8_1, const void* x_il, float* y, int n_in, int n_out, int ncols,
+                void* stream, int rows) {
+    if (t != 21 || ncols < 1 || ncols > 8 || n_in % 256 != 0) {
         std::fprintf(stderr, "iq_mmvq_il: type %d, %d columns are not supported\n", t, ncols);
         std::exit(1);
     }
-    constexpr int R = 2;
-    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
     const size_t rb = iq_row_bytes(t, n_in);
     const auto* W = (const uint8_t*) w;
-    const unsigned blocks = (unsigned) (((n_out + R - 1) / R + 3) / 4);
     cudaStream_t s = (cudaStream_t) stream;
-    switch (ncols) {
-#define STRATA_IL(N) case N: mmvq_il_iq3_s_kernel<N, R><<<blocks, 128, 0, s>>>(W, rb, parts.pm, parts.d, y, n_in, n_out); break;
-        STRATA_IL(2) STRATA_IL(3) STRATA_IL(4) STRATA_IL(5) STRATA_IL(6) STRATA_IL(7) STRATA_IL(8)
-#undef STRATA_IL
+    switch (rows) {
+    case 1: launch_iq3_s_il<1>(W, rb, x_q8_1, x_il, y, n_in, n_out, ncols, s); break;
+    case 4: launch_iq3_s_il<4>(W, rb, x_q8_1, x_il, y, n_in, n_out, ncols, s); break;
+    default: launch_iq3_s_il<2>(W, rb, x_q8_1, x_il, y, n_in, n_out, ncols, s); break;
     }
     check("iq_mmvq_il");
 }

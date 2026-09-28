@@ -4,9 +4,11 @@
 
 #include "strata/kernels/native_mmvq.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace strata::kernels {
 namespace {
@@ -61,6 +63,25 @@ template <int NC, bool PM> struct Q81Il {
         }
     }
 };
+
+// One column's plain q8_1 blocks (36 bytes: the half2 scale and sum, then 32 codes) behind Q81Il's interface
+struct Q81One {
+    const uint8_t* __restrict__ x;
+    __device__ __forceinline__ void u(int b, int p, int (&o)[1]) const {
+        o[0] = reinterpret_cast<const int*>(x + std::size_t(b) * 36 + 4)[p];
+    }
+    __device__ __forceinline__ void scales(int b, float (&o)[1]) const {
+        o[0] = __low2float(*reinterpret_cast<const half2*>(x + std::size_t(b) * 36));
+    }
+};
+
+// The activations a kernel for NC columns reads: one column's q8_1 blocks, 2+ columns' interleaved copy (nb blocks a
+// column)
+template <int NC, bool PM>
+__device__ __forceinline__ auto q8_1_cols(const void* xq, const float* xd, int nb) {
+    if constexpr (NC == 1) return Q81One{static_cast<const uint8_t*>(xq)};
+    else return Q81Il<NC, PM>{static_cast<const int*>(xq), xd, nb};
+}
 
 // The copy's parts inside the buffer native_q8_1_il_bytes sizes: bm, pm (int32) and d (float).
 struct Q81IlParts {

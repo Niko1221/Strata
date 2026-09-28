@@ -479,6 +479,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
         nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
         nsw.q8_1 = xq_;                                   // the main stream's next use is the next layer's mixer
+        nsw.q8_1_il = xil_;
         cudaStream_t ws = cs, gs = cs;
         if (beside) {
             if (cudaStreamWaitEvent(shs_, efork_, 0) != cudaSuccess ||
@@ -528,8 +529,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             else native_quantize_q8_1(x, xq_, (int) n_in, n, cs);
         };
         auto mm = [&](int type, const void* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
-            if (n >= 2) native_mmvq_il(type, w, xq_, xil_, y, (int) n_in, (int) n_out, n, ps);
-            else native_mmvq(type, w, xq_, y, (int) n_in, (int) n_out, n, ps);
+            native_mmvq_il(type, w, xq_, xil_, y, (int) n_in, (int) n_out, n, ps);
         };
         auto proj = [&](const WeightRef* w, float* y, int64_t n_in, int64_t n_out, cudaStream_t ps) {
             mm(w->native_type, w->native_data, y, n_in, n_out, ps);
@@ -602,7 +602,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
                 // beside qkv and the conv: alpha/beta (a few blocks, latency-bound) and the gate projection, joined
-                // before the recurrence
+                // before the recurrence.  qkv's grid is recorded first, so it is dispatched first and the conv runs
+                // beside the gate projection's last blocks.
                 if (!fork(side_, bfork_)) return false;
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
@@ -610,9 +611,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!mark(side_, bjoin_)) return false;
                 quant(xm, N);
                 if (!fork(shs_, pfork_)) return false;
+                proj(wqkv, qkv + (size_t) tb * C, N, C, cs);
                 proj(wg, z_ + (size_t) tb * ZV, N, ZV, shs_);
                 if (!mark(shs_, pjoin_)) return false;
-                proj(wqkv, qkv + (size_t) tb * C, N, C, cs);
                 gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
                 if (!wait(bjoin_) || !wait(pjoin_)) return false;
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's

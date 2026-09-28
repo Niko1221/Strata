@@ -116,10 +116,13 @@ constexpr int native_q8_1_il_cp(int ncols) { return ncols <= 2 ? 2 : ncols <= 4 
 std::size_t native_q8_1_il_bytes(int n_in, int ncols);
 // native_quantize_q8_1 that also writes the interleaved copy to x_il (native_q8_1_il_bytes); 2 <= ncols <= 8.
 void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in, int ncols, void* stream);
-// native_mmvq for 2..8 columns quantized by native_quantize_q8_1_il, bitwise native_mmvq's output: kernels that read
-// the interleaved copy for IQ4_XS, Q4_K, Q5_K, Q6_K, Q8_0 and IQ3_S matrices of at least 2048 rows, native_mmvq
-// otherwise.
+// native_mmvq for 1 column (x_il unused) or 2..8 quantized by native_quantize_q8_1_il, bitwise native_mmvq's output:
+// kernels in which a warp takes 1, 2 or 4 rows, reading 2+ columns from the interleaved copy, where they are the faster
+// on the RTX 3090 (a table by format, columns and rows: IQ4_XS, Q4_K, Q5_K, Q6_K and Q8_0 matrices of 2+ columns and
+// 2048+ rows, IQ3_S ones); native_mmvq otherwise.
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream);
+// Tests and benchmarks: every native_mmvq_il call takes `rows` a warp (0: the table), and with `one` 1 column too.
+void native_mmvq_il_tune(int rows, bool one);
 
 } // namespace strata::kernels

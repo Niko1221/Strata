@@ -176,9 +176,16 @@ void shared_expert_multi(int n_tok, const float* x, const NativeSharedWeights& n
                                     "streams");
     cudaStream_t cs = (cudaStream_t) stream;
     bf16_gemv_fp32_mmvf_multi(x, gate_inp_bf16, g, n_embd, 1, n_tok, gate_stream);
-    native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
-    native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
-    native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+    // native_mmvq_il's kernels where they are the faster (1 token, or 2+ with the interleaved copy)
+    const bool il = n_tok == 1 || nw.q8_1_il;
+    if (n_tok >= 2 && nw.q8_1_il) native_quantize_q8_1_il(x, nw.q8_1, nw.q8_1_il, (int) n_embd, n_tok, stream);
+    else native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
+    auto proj = [&](int type, const void* w, float* y) {
+        if (il) native_mmvq_il(type, w, nw.q8_1, nw.q8_1_il, y, (int) n_embd, (int) n_ff, n_tok, stream);
+        else native_mmvq(type, w, nw.q8_1, y, (int) n_embd, (int) n_ff, n_tok, stream);
+    };
+    proj(nw.gate_type, nw.gate_data, gate);
+    proj(nw.up_type, nw.up_data, up);
     const int n = (int) (n_ff * n_tok);
     native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
     native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);

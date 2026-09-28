@@ -38,6 +38,7 @@ struct NativeSharedWeights {
     const void* up_data = nullptr;
     const void* down_data = nullptr;
     void* q8_1 = nullptr;
+    void* q8_1_il = nullptr;   // shared_expert_multi: the interleaved copy of 2+ tokens' inputs (native_q8_1_il_bytes)
 };
 
 /// Bytes of caller-owned scratch `shared_expert` needs.  **THE KERNEL USED TO `cudaMalloc` FOUR BUFFERS ON
@@ -78,7 +79,8 @@ void shared_expert_gate_rows(float* out, float* g, int64_t n_embd, int n_tok, vo
 /// scratch; `out` (n_tok, n_embd) receives the down projection's rows and `g` the scalar gate's n_tok logits,
 /// computed on `gate_stream` (may be `stream`), so that the chain ends with the down projection:
 /// `shared_expert_gate_rows` on them, or `native_moe_gather_combine` applying them, gives every token bitwise
-/// `shared_expert` on that token.  `nw.q8_1` must hold n_tok columns of n_embd.
+/// `shared_expert` on that token.  `nw.q8_1` must hold n_tok columns of n_embd; with `nw.q8_1_il` 2+ tokens' gate and
+/// up projections run through `native_mmvq_il` (IQ3_S's weights decoded once for all tokens).
 void shared_expert_multi(int n_tok, const float* x, const NativeSharedWeights& nw, const uint16_t* gate_inp_bf16,
                          float* gate, float* up, float* g, float* out, int64_t n_embd, int64_t n_ff, void* stream,
                          void* gate_stream);

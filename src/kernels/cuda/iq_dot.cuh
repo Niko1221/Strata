@@ -245,17 +245,18 @@ struct IQ3SCols {
     }
     template <int NC, class X>
     __device__ __forceinline__ void apply(const X& x, const int& b, float (&out)[NC]) const {
+        int u[8][NC];   // every position's activations first, so that their loads overlap
+#pragma unroll
+        for (int l = 0; l < 8; ++l) x.u(b, l, u[l]);
         int sp[NC], sn[NC];
 #pragma unroll
         for (int c = 0; c < NC; ++c) sp[c] = sn[c] = 0;
 #pragma unroll
         for (int l = 0; l < 8; ++l) {
-            int u[NC];
-            x.u(b, l, u);
 #pragma unroll
             for (int c = 0; c < NC; ++c) {
-                sp[c] = ggml_cuda_dp4a((int) g[l], u[c], sp[c]);
-                sn[c] = ggml_cuda_dp4a((int) gm[l], u[c], sn[c]);
+                sp[c] = ggml_cuda_dp4a((int) g[l], u[l][c], sp[c]);
+                sn[c] = ggml_cuda_dp4a((int) gm[l], u[l][c], sn[c]);
             }
         }
         float d8[NC];

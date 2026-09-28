@@ -1,6 +1,7 @@
-// src/kernels/mmvq_il_parity.cu - native_mmvq_il (2..8 columns from the interleaved q8_1 copy) against native_mmvq,
-// bitwise, on synthetic matrices of the model files' dense formats and shapes; the interleaving quantizer's q8_1 blocks
-// against native_quantize_q8_1's.  --bench times both inside CUDA graphs (weights cycled past the L2).
+// src/kernels/mmvq_il_parity.cu - native_mmvq_il (1 column from its q8_1 blocks, 2..8 from the interleaved copy)
+// against native_mmvq, bitwise, on synthetic matrices of the model files' dense formats and shapes, with every rows a
+// warp; the interleaving quantizer's q8_1 blocks against native_quantize_q8_1's.  --bench times both inside CUDA graphs
+// (weights cycled past the L2).
 #include "strata/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
@@ -78,6 +79,7 @@ std::vector<T> fetch(const void* d, size_t n) {
     return h;
 }
 
+// every column count 1..8 (1: the one-column kernels), with the table's rows a warp and each of 1, 2, 4
 int check_shape(const Fmt& f, const Act& a, int n_out) {
     const int n_in = a.n_in;
     void* w = dev_weights(f, n_in, n_out);
@@ -85,25 +87,33 @@ int check_shape(const Fmt& f, const Act& a, int n_out) {
     CK(cudaMalloc(&y0, (size_t) 8 * n_out * 4));
     CK(cudaMalloc(&y1, (size_t) 8 * n_out * 4));
     int bad = 0;
-    for (int nc = 2; nc <= 8; ++nc) {
+    for (int nc = 1; nc <= 8; ++nc) {
         native_quantize_q8_1(a.x, a.q_ref, n_in, nc, g_s);
-        native_quantize_q8_1_il(a.x, a.q, a.il, n_in, nc, g_s);
+        if (nc >= 2) native_quantize_q8_1_il(a.x, a.q, a.il, n_in, nc, g_s);
+        else native_quantize_q8_1(a.x, a.q, n_in, nc, g_s);
         CK(cudaMemsetAsync(y0, 0xff, (size_t) 8 * n_out * 4, g_s));
-        CK(cudaMemsetAsync(y1, 0xee, (size_t) 8 * n_out * 4, g_s));
         native_mmvq(f.type, w, a.q_ref, y0, n_in, n_out, nc, g_s);
-        native_mmvq_il(f.type, w, a.q, a.il, y1, n_in, n_out, nc, g_s);
         CK(cudaStreamSynchronize(g_s));
         const size_t qb = native_q8_1_bytes(n_in, nc);
         if (fetch<uint8_t>(a.q_ref, qb) != fetch<uint8_t>(a.q, qb)) {
             ++bad;
             std::printf("  %s %d->%d, %d columns: the q8_1 blocks differ\n", f.name, n_in, n_out, nc);
         }
-        const auto r0 = fetch<uint32_t>(y0, (size_t) nc * n_out), r1 = fetch<uint32_t>(y1, (size_t) nc * n_out);
-        size_t diff = 0;
-        for (size_t i = 0; i < r0.size(); ++i) diff += r0[i] != r1[i];
-        if (diff) {
-            ++bad;
-            std::printf("  %s %d->%d, %d columns: %zu of %zu values differ\n", f.name, n_in, n_out, nc, diff, r0.size());
+        const auto r0 = fetch<uint32_t>(y0, (size_t) nc * n_out);
+        for (int rows : {0, 1, 2, 4}) {
+            CK(cudaMemsetAsync(y1, 0xee, (size_t) 8 * n_out * 4, g_s));
+            native_mmvq_il_tune(rows, nc == 1);
+            native_mmvq_il(f.type, w, a.q, a.il, y1, n_in, n_out, nc, g_s);
+            native_mmvq_il_tune(0, false);
+            CK(cudaStreamSynchronize(g_s));
+            const auto r1 = fetch<uint32_t>(y1, (size_t) nc * n_out);
+            size_t diff = 0;
+            for (size_t i = 0; i < r0.size(); ++i) diff += r0[i] != r1[i];
+            if (diff) {
+                ++bad;
+                std::printf("  %s %d->%d, %d columns, rows %d: %zu of %zu values differ\n", f.name, n_in, n_out, nc,
+                            rows, diff, r0.size());
+            }
         }
     }
     cudaFree(w);
@@ -112,6 +122,13 @@ int check_shape(const Fmt& f, const Act& a, int n_out) {
     return bad;
 }
 
+__global__ void spin_kernel(long long cycles) {
+    const long long t0 = clock64();
+    while (clock64() - t0 < cycles) {}
+}
+
+// The median of 20 launches, each after ~3 ms of a one-thread spin, as the engine's load: the GPU active at little
+// power (a continuous load reaches the 3090's 260 W cap and lowers the clocks, an idle GPU lowers them too).
 double time_calls(const std::function<void(int)>& fn, int reps = 48) {
     cudaGraph_t g;
     CK(cudaStreamBeginCapture(g_s, cudaStreamCaptureModeThreadLocal));
@@ -120,25 +137,25 @@ double time_calls(const std::function<void(int)>& fn, int reps = 48) {
     cudaGraphExec_t ex;
     CK(cudaGraphInstantiate(&ex, g, 0));
     cudaGraphDestroy(g);
-    const auto t0 = std::chrono::steady_clock::now();
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 0.3) {   // clocks up
-        CK(cudaGraphLaunch(ex, g_s));
-        CK(cudaStreamSynchronize(g_s));
-    }
     cudaEvent_t a, b;
     CK(cudaEventCreate(&a));
     CK(cudaEventCreate(&b));
-    const int iters = 20;
-    CK(cudaEventRecord(a, g_s));
-    for (int i = 0; i < iters; ++i) CK(cudaGraphLaunch(ex, g_s));
-    CK(cudaEventRecord(b, g_s));
-    CK(cudaEventSynchronize(b));
-    float ms = 0;
-    CK(cudaEventElapsedTime(&ms, a, b));
+    std::vector<double> ts;
+    for (int k = 0; k < 24; ++k) {
+        spin_kernel<<<1, 1, 0, g_s>>>(5'500'000);
+        CK(cudaEventRecord(a, g_s));
+        CK(cudaGraphLaunch(ex, g_s));
+        CK(cudaEventRecord(b, g_s));
+        CK(cudaEventSynchronize(b));
+        float ms = 0;
+        CK(cudaEventElapsedTime(&ms, a, b));
+        if (k >= 4) ts.push_back(ms * 1000.0 / reps);
+    }
+    std::sort(ts.begin(), ts.end());
     cudaGraphExecDestroy(ex);
     cudaEventDestroy(a);
     cudaEventDestroy(b);
-    return ms * 1000.0 / iters / reps;
+    return ts[ts.size() / 2];
 }
 
 void bench_shape(const Fmt& f, const Act& a, int n_out) {
@@ -150,7 +167,7 @@ void bench_shape(const Fmt& f, const Act& a, int n_out) {
     float* y;
     CK(cudaMalloc(&y, (size_t) 8 * n_out * 4));
     std::printf("%-6s %5d -> %5d (%5.2f MB), us (GB/s):", f.name, n_in, n_out, mb);
-    for (int nc : {2, 3, 4, 8}) {
+    for (int nc : {2, 3, 4}) {
         native_quantize_q8_1(a.x, a.q_ref, n_in, nc, g_s);
         native_quantize_q8_1_il(a.x, a.q, a.il, n_in, nc, g_s);
         const double t0 = time_calls([&](int r) { native_mmvq(f.type, w[(size_t) (r % copies)], a.q_ref, y, n_in, n_out, nc, g_s); });
@@ -172,16 +189,19 @@ int main(int argc, char** argv) {
     Act a2560 = make_act(2560), a6144 = make_act(6144), a640 = make_act(640);
     if (bench) {
         for (const Fmt& f : kFmts) {
+            bench_shape(f, a2560, 12288);
             bench_shape(f, a2560, 10240);
             bench_shape(f, a2560, 6144);
             bench_shape(f, a6144, 2560);
+            bench_shape(f, a2560, 640);
         }
         return 0;
     }
     int bad = 0, cases = 0;
     for (const Fmt& f : kFmts) {
         const std::pair<Act*, int> shapes[] = {{&a2560, 10240}, {&a2560, 6144}, {&a6144, 2560}, {&a2560, 12288},
-                                               {&a2560, 2050}, {&a2560, 4097}, {&a2560, 8192}, {&a2560, 512}};
+                                               {&a2560, 2050}, {&a2560, 4097}, {&a2560, 8192}, {&a2560, 512},
+                                               {&a2560, 640}};
         for (const auto& sh : shapes) {
             bad += check_shape(f, *sh.first, sh.second);
             ++cases;
@@ -191,6 +211,7 @@ int main(int argc, char** argv) {
             ++cases;
         }
     }
-    std::printf("mmvq_il_parity: %d shape/format cases x 2..8 columns: %s\n", cases, bad ? "FAILED" : "bitwise equal");
+    std::printf("mmvq_il_parity: %d shape/format cases x 1..8 columns x rows a warp: %s\n", cases,
+                bad ? "FAILED" : "bitwise equal");
     return bad ? 1 : 0;
 }
