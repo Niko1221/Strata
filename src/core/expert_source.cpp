@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -38,9 +39,39 @@ FileExpertSource::~FileExpertSource() { close(); }
 bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
     if (n_layers <= 0 || n_expert <= 0) { err = "FileExpertSource: the geometry is empty"; return false; }
+    if (n_layers > (std::numeric_limits<int64_t>::max)() / n_expert) {
+        err = "FileExpertSource: geometry overflows"; return false;
+    }
     n_expert_ = n_expert;
     blobs_ = n_layers * n_expert;
-    const uint64_t want = (uint64_t) blobs_ * (uint64_t) strata::kernels::cpu::BLOB;
+    const auto& layout = strata::kernels::cpu::expert_layout();
+    uint64_t want = 0;
+    if (layout.native) {
+        if (layout.n_layers != n_layers || layout.n_expert != n_expert ||
+            layout.offset.size() != (size_t) n_layers || layout.bytes.size() != (size_t) n_layers) {
+            err = "FileExpertSource: native layout geometry mismatch"; return false;
+        }
+        want = layout.total;
+        layer_offsets_ = layout.offset;
+        layer_strides_ = layout.bytes;
+    } else {
+        const uint64_t stride = strata::kernels::cpu::BLOB;
+        if ((uint64_t) blobs_ > (std::numeric_limits<uint64_t>::max)() / stride) {
+            err = "FileExpertSource: file size overflows"; return false;
+        }
+        want = (uint64_t) blobs_ * stride;
+        for (int64_t l = 0; l < n_layers; ++l) {
+            layer_offsets_.push_back((uint64_t) l * (uint64_t) n_expert * stride);
+            layer_strides_.push_back(stride);
+        }
+    }
+    for (int64_t l = 0; l < n_layers; ++l) {
+        const uint64_t off = layer_offsets_[(size_t) l], stride = layer_strides_[(size_t) l];
+        if (!stride || off > want || (uint64_t) n_expert > (want - off) / stride) {
+            err = "FileExpertSource: native layer outside mapping"; return false;
+        }
+    }
+    mapping_bytes_ = want;
     const std::string path = pack_dir + "/experts.bin";
 
 #if defined(_WIN32)
@@ -75,7 +106,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if ((uint64_t) sz.QuadPart != want) {
         char buf[400];
         std::snprintf(buf, sizeof buf,
-                      "FileExpertSource: %s is %llu B but %lld layers x %lld experts x %d B is %llu B - this "
+                      "FileExpertSource: %s is %llu B but the layout (%lld layers, %lld experts; canonical blob %d B) needs %llu B - this "
                       "is not the pack this geometry came from",
                       path.c_str(), (unsigned long long) sz.QuadPart, (long long) n_layers,
                       (long long) n_expert, (int) strata::kernels::cpu::BLOB, (unsigned long long) want);
@@ -107,7 +138,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if ((uint64_t) st.st_size != want) {
         char buf[400];
         std::snprintf(buf, sizeof buf,
-                      "FileExpertSource: %s is %llu B but %lld layers x %lld experts x %d B is %llu B - this "
+                      "FileExpertSource: %s is %llu B but the layout (%lld layers, %lld experts; canonical blob %d B) needs %llu B - this "
                       "is not the pack this geometry came from",
                       path.c_str(), (unsigned long long) st.st_size, (long long) n_layers, (long long) n_expert,
                       (int) strata::kernels::cpu::BLOB, (unsigned long long) want);
@@ -131,13 +162,15 @@ void FileExpertSource::close() {
     mapping_ = nullptr;
     file_ = nullptr;
 #else
-    if (base_ != nullptr) munmap((void*) base_, (size_t) blobs_ * (size_t) strata::kernels::cpu::BLOB);
+    if (base_ != nullptr) munmap((void*) base_, (size_t) mapping_bytes_);
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
 #endif
     base_ = nullptr;
     blobs_ = 0;
     reads_ = 0;
+    mapping_bytes_ = 0;
+    layer_offsets_.clear(); layer_strides_.clear();
 }
 
 const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
@@ -147,11 +180,11 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
     // index is `layer * n_expert + expert`, so `blob(0, 512)` has flat index 512 - which is in range, and is
     // `blob(1, 0)`.  A router id one past the end of a layer would then read the NEXT LAYER's first expert:
     // finite, correctly sized, and wrong.  Layer and expert are separate axes and are validated as such.
-    if (expert >= n_expert_) return nullptr;
+    if (expert >= n_expert_ || (uint64_t) layer >= layer_offsets_.size()) return nullptr;
     const int64_t i = layer * n_expert_ + expert;
     if (i >= blobs_) return nullptr;
     ++reads_;
-    return base_ + (size_t) i * strata::kernels::cpu::BLOB;
+    return base_ + layer_offsets_[(size_t) layer] + (uint64_t) expert * layer_strides_[(size_t) layer];
 }
 
 // ================================ THE ADAPTER ================================

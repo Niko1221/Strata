@@ -382,6 +382,11 @@ if(STRATA_ENABLE_CUDA)
   target_link_libraries(cvec_parity PRIVATE strata_kernels CUDA::cudart)
   add_test(NAME cvec_parity COMMAND cvec_parity)
 
+  # Available as a standalone target even in source distributions without tests/.
+  add_executable(native_mmap_test src/core/native_mmap_test.cpp)
+  target_link_libraries(native_mmap_test PRIVATE strata_engine)
+  add_test(NAME native_mmap_test COMMAND native_mmap_test)
+
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS)
   add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
