@@ -131,6 +131,61 @@ Their acceptance list wants hits, reused tokens, capture/restore time, occupancy
 skips, disk bytes and time. Our promote/dump messages are stderr-only; `serve/server.py` and
 `serve/telemetry.py` parse nothing NVMe-related.
 
+## Where step 2 leaves NvmeHeader
+
+Step 2 (`114300f`) moved the tier onto the shared core's **types** and left its **format** exactly where step 1
+left it.  This is the inventory that `include/strata/platform/kv_nvme.hpp` (the `NvmeHeader` comment) points at,
+and the list of what step 3 has to change.  Nothing here is new design: it is what C9 says our format does,
+written against the code that does it.
+
+**What is on disk today.**  `struct NvmeHeader` (`include/strata/platform/kv_nvme.hpp:33-47`): `magic`,
+`version = 2`, `L`, `n_imgs`, `cvec`, `kv_format`, eight geometry fields, `mtp_host`.  Then ids, image records,
+the per-layer KV / pooled / tail / dead / `block_pos` segments, the drafter arrays, and the FNV-1a footer.
+
+**The four ways it breaks the boundary their core draws.**  Their rule (C9) is that a disk adapter must not
+serialize C++ structs, pointers or native vector layouts, and must define a versioned envelope.
+
+1. **A raw C++ struct is copied into the envelope.**  `src/platform/kv_nvme.cpp:176` writes `&h, sizeof h`;
+   `:288` and `:412` read it back the same way.  There is no field-by-field encode/decode, so the file is a
+   picture of one compiler's struct rather than a described record.
+2. **The ABI is implicit.**  The file states no offsets, widths, endianness or padding; they come from the
+   translation unit that wrote it.  Every field is fixed-width, so on the toolchains we build with the struct
+   happens to be padding-free - but nothing checks that, and a reordered or widened field would silently
+   re-map every segment after it.  Worse, the payload digest deliberately covers only
+   `[sizeof(NvmeHeader), at)` (`src/platform/kv_nvme.cpp:362-363`), so the one thing that can move the whole
+   layout is the one thing the integrity footer cannot see.
+3. **There is no versioned envelope.**  `version` is compared for exact equality with `2` (`:289`, `:412`);
+   there is no segment table, no per-segment size or offset, and no older-reader rule.  The restore
+   **re-derives** every segment length from the live engine (`sizes_of()`, `qsa_real_shapes()`,
+   `idx_pooled_rows`, `max_cells`) and then compares the walk's end with the file size (`:344-356`).  That is
+   why a sizing change surfaces as *"layout mismatch ... idx_pooled_rows / PLE / drafter ring changed?"*
+   instead of as a version negotiation: the format cannot describe itself.
+4. **Its geometry tag is a derived projection, not the shared core's geometry key.**  The eight fields are
+   computed, not read: `n_qsa` / `n_gdn` come from `n_layers` + `qsa_interval`, `idx_dim` is `idx_key_dim`, and
+   `page_size` / `idx_block` are `qsa_real_shapes()` granules - runtime shapes, not model identity.  Their
+   `SavedConversation::geometry` is `geometry_key(g)`'s 18 raw fields (`src/core/conversation_state.cpp:20-25`)
+   and is labelled *"Runtime compatibility only; NOT a model/weights identity or disk schema"*
+   (`include/strata/core/conversation_cache.hpp:50`).  So **neither** key is a disk schema today, and they
+   answer different questions: ours asks *can this engine read this file*, theirs asks *is this the same
+   conversation object in this process*.  Step 3 must not stack a third key on top of the two.
+
+**What step 3 must turn it into.**
+
+- a **segment table**: an explicit byte offset and length per segment, written as fixed-width integers at fixed
+  offsets, so a reader validates sizes instead of re-deriving them from a live engine;
+- a **version and minimum-reader rule** inside the envelope, with the header itself covered by the integrity
+  digest;
+- **one geometry identity for the file** - their 18-field key, or a documented superset of it - replacing the
+  derived tag, so the two tiers refuse the same mismatch;
+- **one pooled-row formula** (C4) and **one home for `dead` / `block_pos`** (C5), written down as format fields
+  rather than left as whichever array the writer happened to reach for;
+- the **turn-boundary key stated as a format property** (C1): the ids, the images and the running state all
+  describe position `L`, and the envelope says so.
+
+Step 2 moved no field, no offset and no sizing formula.  `src/platform/kv_nvme.cpp:31-33` is what proves the one
+record type that changed *name* (`std::pair<int64_t, uint64_t>` -> `ConversationImageKey`) did not change
+layout.
+
 ## The answer we would give to their open question
 
 They ask: *"how #52 would consume the snapshot without unbounded promotion staging?"*
