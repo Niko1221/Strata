@@ -318,18 +318,30 @@ bool nvme_restore(const char* path, strata::core::SessionState& ss, strata::core
             ++mtp_arrays;
         }
     }
+    // ORDER MATTERS: decide layout first, integrity second - a layout-drifted file (an engine upgrade
+    // changed a sizing formula) would otherwise misreport as "corrupt"
     if (bad) { err = "nvme_restore: truncated snapshot"; return false; }
-    if (buf.size() < at + sizeof(uint64_t)) { err = "nvme_restore: no integrity footer"; return false; }
+    if (buf.size() < at + sizeof(uint64_t)) {
+        err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + " past payload of a "
+              + std::to_string(buf.size()) + "-byte file: idx_pooled_rows / PLE / drafter ring changed?) - refusing";
+        return false;
+    }
+    if (at != buf.size() - sizeof(uint64_t)) {
+        err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + ", file payload "
+              + std::to_string(buf.size() - sizeof(uint64_t)) + ": idx_pooled_rows / PLE / drafter ring changed?) - refusing";
+        return false;
+    }
+    if (mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) {
+        err = "nvme_restore: layout mismatch (drafter arrays " + std::to_string(mtp_arrays) + " != header "
+              + std::to_string(h.mtp_host) + ") - refusing";
+        return false;
+    }
     uint64_t digest = 0;
     std::memcpy(&digest, buf.data() + buf.size() - sizeof digest, sizeof digest);
     // the digest covers the PAYLOAD only (the header is written unhashed before the hasher exists, and its
     // geometry fields are validated field-by-field): hash [sizeof(NvmeHeader), at)
     const uint64_t expect = fnv1a_up(1469598103934665603ull, buf.data() + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
     if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return false; }
-    // the file is complete but its layout differs: idx_pooled_rows, PLE presence or the drafter's ring size
-    if (at != buf.size() - sizeof(uint64_t))
-        err = "nvme_restore: layout mismatch (idx_pooled_rows / PLE / drafter ring?) - refusing";
-    if (at != buf.size() - sizeof(uint64_t) || mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) return false;
 
     // ---- everything validated: apply ----
     ids.assign(idp, idp + L);
