@@ -50,6 +50,9 @@ public:
     uint64_t vram_bytes() const { return vram_; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
+    /// The draft layer's K/V state, writable: the NVMe KV store (docs/nvme-kv-cache-design.md) dumps/restores its
+    /// host copy so a promoted session keeps the drafter's ring warm (not just correct - drafts are always verified).
+    QsaState& kv_state_mut() { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
     /// `upto` (a conversation-cache resume). No-op unless the drafter's K/V is a ring.
     void kv_restore(int64_t upto);

@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
+#include <cmath>
 #if defined(_WIN32)
 #include <intrin.h>
 #endif

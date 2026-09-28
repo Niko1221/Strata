@@ -42,6 +42,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/platform/kv_nvme.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -278,6 +279,14 @@ struct Options {
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
+    /// NVMe KV cold tier (docs/nvme-kv-cache-design.md), Step 0 spike: hidden debug flags.  --nvme-dump PATH writes
+    /// the live session's full state at DONE; --nvme-restore PATH loads one at startup so the first request resumes.
+    std::string nvme_dump, nvme_restore;
+    /// Steps 1-3: the automatic cold tier.  --kv-nvme DIR dumps the consumed session at every DONE (synchronously,
+    /// idempotently, one file per growing conversation) and promotes the longest stored prefix on a match.
+    /// --kv-nvme-max GB evicts the least recently stored snapshots past the cap (0 = unlimited).
+    std::string kv_nvme;
+    long long kv_nvme_max_gb = 100;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
@@ -363,6 +372,10 @@ void usage() {
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
                  "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
                  "                       of RAM each; 0 = read every prompt from the start)\n"
+                 "  --kv-nvme DIR        --serve: keep whole sessions on disk (docs/nvme-kv-cache-design.md): every DONE\n"
+                 "                       stores the conversation's full state there and a returning prompt is restored\n"
+                 "                       from it instead of re-read. Needs streamed KV (forced). --kv-nvme-max GB caps\n"
+                 "                       the store, evicting the least recently stored (default 100, 0 = unlimited)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
@@ -748,6 +761,90 @@ bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss,
     return cudaDeviceSynchronize() == cudaSuccess;
 }
 
+/// The STRATA_STATE_HASH fingerprint of a session over the positions it holds ([0, L)), plus the stale tail past
+/// them.  Used at DONE and, under STRATA_NVME_HASH, straight after an NVMe restore: equality of the two lines is
+/// the bit-exactness proof for the dump/restore pair (docs/nvme-kv-cache-design.md §11 Step 0).
+static std::string state_hash_line(const strata::core::SessionState& ss, const strata::core::MtpDrafter& mtp,
+                                   const strata::core::ModelGeometry& g, int64_t L) {
+    // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
+    // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
+    cudaDeviceSynchronize();
+    const strata::kernels::QsaShapes qs = [&] {
+        strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+        s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
+        return s;
+    }();
+    auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+        std::vector<uint8_t> b(bytes);
+        if (bytes) cudaMemcpy(b.data(), p, bytes, cudaMemcpyDefault);   // VRAM or a streamed host copy
+        return fnv1a(b.data(), b.size(), h);
+    };
+    // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
+    auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+        const int64_t ps = qs.page_size;
+        for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
+            for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
+                const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
+                const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
+            }
+        return h;
+    };
+    const ConvStateSizes z = conv_state_sizes(g);
+    uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
+    if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
+        const size_t per = z.gdn / (size_t) g.n_gdn_layers();
+        std::string s;
+        char b[8];
+        for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
+            std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
+            s += b;
+        }
+        std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
+    }
+    uint64_t h_ple = hash_dev(ss.ple_hist, z.ple, 1469598103934665603ull);
+    uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+    const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+    // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
+    auto kv_arrays = [&](const strata::core::QsaState& st) {
+        const bool h = st.kv_mode != 0;
+        std::vector<std::pair<const void*, int64_t>> a;
+        if (st.kv_q4) {
+            const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+            a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+        } else {
+            a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
+                 {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
+        }
+        return a;
+    };
+    const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
+                                               ss.qsa_states[0].max_cells);
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+        const strata::core::QsaState& st = ss.qsa_states[i];
+        h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
+        h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
+        // KV streaming: the host copy is the identity layout and holds every cell
+        for (const auto& [pool, w] : kv_arrays(st)) {
+            h_kv = hash_cells(pool, w, 0, L, h_kv);
+            h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+        }
+    }
+    const strata::core::QsaState& ms = mtp.kv_state();
+    uint64_t h_mtp = 1469598103934665603ull;
+    const int64_t mL = std::min<int64_t>(L, ms.max_cells);
+    for (const auto& [pool, w] : kv_arrays(ms))
+        if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
+                  "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
+                  (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
+                  (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
+                  (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+    return buf;
+}
+
 // --control-vector-scaled: llama.cpp's `common_control_vector_load` (every file's `direction.<l>` times its scale,
 // summed; layer 0 has none) and `llama_adapter_cvec::apply` with the projection-mode patch (project: the unit
 // direction and its norm as the scale), into the tables `cvec_upload` takes.  `summary` is what INFO reports.
@@ -994,6 +1091,13 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
+        else if (a == "--nvme-dump") o.nvme_dump = next("--nvme-dump");
+        else if (a == "--nvme-restore") o.nvme_restore = next("--nvme-restore");
+        else if (a == "--kv-nvme") o.kv_nvme = next("--kv-nvme");
+        else if (a == "--kv-nvme-max") {
+            o.kv_nvme_max_gb = std::atoll(next("--kv-nvme-max"));
+            if (o.kv_nvme_max_gb < 0) { std::fprintf(stderr, "strata generate: --kv-nvme-max must be >= 0 (0 = unlimited)\n"); return 2; }
+        }
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
         else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
@@ -1157,6 +1261,12 @@ int main(int argc, char** argv) {
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
         return 2;
+    }
+    // the NVMe cold tier needs the KV host copy (the authoritative tier it dumps): force streamed mode (design §0.3)
+    if (!o.kv_nvme.empty() && o.kv_resident == 0) {
+        o.kv_resident = strata::core::qsa_kv_resident_min();
+        std::fprintf(stderr, "strata generate: --kv-nvme needs the KV host copy: --kv-resident %lld\n",
+                     (long long) o.kv_resident);
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
@@ -3072,6 +3182,9 @@ int main(int argc, char** argv) {
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
+        // the NVMe cold tier (Steps 1-3): declared here so the resume selection and the DONE cascade both reach it
+        strata::platform::KvNvmeStore kvstore;
+        bool have_kvstore = false;
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         Clock::time_point pp_t0 = Clock::now();
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
@@ -3341,6 +3454,41 @@ int main(int argc, char** argv) {
         }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
+        // Steps 1-3: open the NVMe cold tier - scan what is already stored, under the byte cap.
+        if (!o.kv_nvme.empty()) {
+            std::string kerr;
+            kvstore.set_cap_bytes(o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
+            if (!kvstore.open(o.kv_nvme, g, strata::core::qsa_kv_format(ss.qsa_states[0]), kerr)) {
+                std::fprintf(stderr, "strata serve: kv-nvme: %s\n", kerr.c_str());
+                return 1;
+            }
+            have_kvstore = true;
+            std::fprintf(stderr, "strata serve: NVMe KV store %s: %zu sessions, %.2f GiB (cap %s)\n",
+                         o.kv_nvme.c_str(), kvstore.size(), (double) kvstore.total_bytes() / (double) (1LL << 30),
+                         o.kv_nvme_max_gb > 0 ? std::to_string(o.kv_nvme_max_gb).append(" GB").c_str() : "unlimited");
+        }
+        // NVMe cold tier, Step 0 spike: load a snapshot at startup so the first request resumes from it.
+        if (!o.nvme_restore.empty()) {
+            std::vector<int32_t> r_ids;
+            std::vector<std::pair<int64_t, uint64_t>> r_imgs;
+            bool r_cvec = false;
+            int64_t rL = 0;
+            std::string rerr;
+            if (!strata::platform::nvme_restore(o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs, r_cvec, rL, rerr)) {
+                std::fprintf(stderr, "strata serve: nvme_restore failed: %s\n", rerr.c_str());
+                return 1;
+            }
+            mtp.kv_restore(rL);   // refill the drafter ring from its now-restored host copy
+            live.swap(r_ids);
+            live_imgs.clear();
+            for (const auto& kv : r_imgs) live_imgs.push_back(ImgKey{kv.first, kv.second});
+            live_ok = o.prompt_cache > 0;
+            cvec_cached = r_cvec;
+            std::fprintf(stderr, "strata serve: nvme_restore: loaded %lld tokens from %s\n", (long long) rL,
+                         o.nvme_restore.c_str());
+            if (std::getenv("STRATA_NVME_HASH") != nullptr)   // Step 0 oracle: the fingerprint straight after restore
+                std::fputs(state_hash_line(ss, mtp, g, rL).c_str(), stderr);
+        }
         std::string line;
         int64_t rounds = 0;
         const int S = o.spec;
@@ -3554,6 +3702,44 @@ int main(int argc, char** argv) {
                         resume = (int64_t) c.ids.size();
                         from_live = false;
                     }
+            }
+            // Steps 1-3, the NVMe cold tier: the longest stored session whose tokens (and pictures) start this
+            // prompt.  Promoting reads the snapshot into the live arena, so from here on it IS the live session -
+            // automatic, no client call: the key is the prompt the server reads anyway.
+            if (have_kvstore) {
+                const strata::platform::NvmeEntry* best = nullptr;
+                for (const strata::platform::NvmeEntry& e : kvstore.entries()) {
+                    const int64_t EL = e.L;
+                    if (e.cvec != cvec_cached || EL <= resume || EL < 1 || EL > n - 1) continue;
+                    bool m = true;
+                    for (int64_t i = 0; i < EL; ++i)
+                        if ((int32_t) ids[(size_t) i] != e.ids[(size_t) i]) { m = false; break; }
+                    if (!m) continue;
+                    std::vector<ImgKey> eimgs;
+                    for (const auto& pr : e.imgs) eimgs.push_back(ImgKey{pr.first, pr.second});
+                    if (!(imgs_below(req_imgs, EL) == eimgs)) continue;
+                    if (best == nullptr || EL > best->L) best = &e;   // the LONGEST prefix wins, not the last scanned
+                }
+                if (best != nullptr) {
+                    std::string nerr;
+                    if (!kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr)) {
+                        // a snapshot that will not restore is not worth keeping; and a half-applied one must not be
+                        // trusted: fall back to the clean path (session_zero + full read), never a mixed state
+                        std::fprintf(stderr, "strata serve: nvme promote failed (%s); reading the prompt instead\n",
+                                     nerr.c_str());
+                        kvstore.drop(*best);
+                        resume = 0;
+                        from_live = false;
+                    } else {
+                        resume = best->L;
+                        from_live = true;
+                        live = best->ids;
+                        live_imgs.clear();
+                        for (const auto& pr : best->imgs) live_imgs.push_back(ImgKey{pr.first, pr.second});
+                        std::fprintf(stderr, "strata serve: nvme promote: resumed %lld tokens from %s\n",
+                                     (long long) best->L, best->path.c_str());
+                    }
+                }
             }
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
@@ -3916,82 +4102,29 @@ int main(int argc, char** argv) {
                 live_ok = o.prompt_cache > 0;
             }
             static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
-            if (state_hash && live_ok) {
-                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
-                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
+            if (state_hash && live_ok)
+                std::fputs(state_hash_line(ss, mtp, g, (int64_t) live.size()).c_str(), stderr);
+            // NVMe cold tier, Step 0 spike: dump the consumed live state synchronously at DONE.
+            if (!o.nvme_dump.empty() && live_ok) {
+                cudaDeviceSynchronize();   // the host KV pools are device-mapped: order the GPU writes first
+                std::vector<std::pair<int64_t, uint64_t>> d_imgs;
+                for (const ImgKey& im : live_imgs) d_imgs.push_back({im.start, im.hash});
+                std::string derr;
+                if (!strata::platform::nvme_dump(o.nvme_dump.c_str(), ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, derr))
+                    std::fprintf(stderr, "strata serve: nvme_dump failed: %s\n", derr.c_str());
+                else
+                    std::fprintf(stderr, "strata serve: nvme_dump: wrote %zu tokens to %s\n", live.size(),
+                                 o.nvme_dump.c_str());
+            }
+            // Steps 1-3, the automatic cascade: the consumed state goes to the NVMe cold tier at every DONE,
+            // synchronously (the arena is the next request's arena) and idempotently (one file per conversation).
+            if (have_kvstore && live_ok) {
                 cudaDeviceSynchronize();
-                const int64_t L = (int64_t) live.size();
-                const strata::kernels::QsaShapes qs = [&] {
-                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
-                    return s;
-                }();
-                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
-                    std::vector<uint8_t> b(bytes);
-                    if (bytes) cudaMemcpy(b.data(), p, bytes, cudaMemcpyDefault);   // VRAM or a streamed host copy
-                    return fnv1a(b.data(), b.size(), h);
-                };
-                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
-                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
-                    const int64_t ps = qs.page_size;
-                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
-                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
-                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
-                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
-                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
-                        }
-                    return h;
-                };
-                const ConvStateSizes z = conv_state_sizes(g);
-                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
-                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
-                    const size_t per = z.gdn / (size_t) g.n_gdn_layers();
-                    std::string s;
-                    char b[8];
-                    for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
-                        std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
-                        s += b;
-                    }
-                    std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
-                }
-                uint64_t h_ple = hash_dev(ss.ple_hist, z.ple, 1469598103934665603ull);
-                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
-                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
-                // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
-                auto kv_arrays = [&](const strata::core::QsaState& st) {
-                    const bool h = st.kv_mode != 0;
-                    std::vector<std::pair<const void*, int64_t>> a;
-                    if (st.kv_q4) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
-                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
-                    } else {
-                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
-                             {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
-                    }
-                    return a;
-                };
-                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
-                                                           ss.qsa_states[0].max_cells);
-                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
-                    const strata::core::QsaState& st = ss.qsa_states[i];
-                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
-                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
-                    // KV streaming: the host copy is the identity layout and holds every cell
-                    for (const auto& [pool, w] : kv_arrays(st)) {
-                        h_kv = hash_cells(pool, w, 0, L, h_kv);
-                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
-                    }
-                }
-                const strata::core::QsaState& ms = mtp.kv_state();
-                uint64_t h_mtp = 1469598103934665603ull;
-                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
-                for (const auto& [pool, w] : kv_arrays(ms))
-                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
-                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
-                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
-                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
-                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
-                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+                std::vector<std::pair<int64_t, uint64_t>> d_imgs;
+                for (const ImgKey& im : live_imgs) d_imgs.push_back({im.start, im.hash});
+                std::string derr;
+                if (!kvstore.dump(ss, mtp.kv_state(), g, live, d_imgs, cvec_cached, derr))
+                    std::fprintf(stderr, "strata serve: kv-nvme dump failed: %s\n", derr.c_str());
             }
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
