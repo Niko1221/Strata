@@ -9,20 +9,22 @@
 
 > | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
 > | --- | ---: | ---: | ---: | ---: | ---: |
-> | Prompt processing | **1073.1 tok/s** | **1064.0 tok/s** | **1271.2 tok/s** | **1036.1 tok/s** | **466.7 tok/s** |
-> | Output generation | 56.9 tok/s | 55.5 tok/s | 50.6 tok/s | 37.1 tok/s | 38.5 tok/s |
+> | Prompt processing | **1163.8 tok/s** | **1169.7 tok/s** | **1462.3 tok/s** | **1099.0 tok/s** | **546.3 tok/s** |
+> | Output generation | 42.3 tok/s | 54.4 tok/s | 54.0 tok/s | 41.6 tok/s | 39.1 tok/s |
 >
 > All rows are uncached API requests (`reused=0`) on the prefill fast path: FP16 tensor-core
-> GEMMs for the Volta BF16 projections (no scalar fallback), io_uring O_DIRECT reads for the PLE
-> table, and model storage on the NVMe. Re-measured 2026-09-29 on the prefill-decode branch
-> (batched verify windows, the tiled block scorer, `--spec 8`): the 4K/8K/32K rows are
-> cool-card measurements against the 2026-09-28 table (+8.5% / +10.1% / +11.8% prompt),
-> and the long rows were re-measured from the same cool-card start on the same day's builds
-> (baseline 805.5 / 396.3: +28.6% / +17.8%). The passively-cooled V100 throttles when hot
-> (the same 8K prompt spans 616-967 tok/s on the 2026-09-28 build), so the table shows the
-> cool-idle measurement; the 128K/256K output rows swing with the card temperature
-> (+10-16% measured against the same-day baseline). Raw rows and notes:
-> [`bench/results/2026-09-29-prefill-decode`](bench/results/2026-09-29-prefill-decode).
+> GEMMs for the Volta BF16 projections (no scalar fallback), tensor-core prompt attention
+> (Volta m8n8k4 MMAs), io_uring O_DIRECT reads for the PLE table, and model storage on the
+> NVMe. Re-measured 2026-09-29 on the prefill-decode branch (batched verify windows, the
+> tiled block scorer, `--spec 8`, and the Volta prompt-attention port): the table's rows are
+> cool-card measurements; the same-day warm-card baseline (the same branch without the
+> attention port) measures 1051.5 / 984.9 / 781.7 / 566.0 / 470.5 tok/s at 4K / 8K / 32K /
+> 128K / 256K (+12% / +19% / +24% / +13% / +11% at the same condition; the isolated
+> QSA attention kernel is 1.6-1.9x faster, and the previously largest long-context term,
+> the FP32 decode-style prompt fallback that the V100 ran before, is gone). The
+> passively-cooled V100 throttles when hot (the same 8K prompt spans 557-1170 tok/s across
+> sessions), so the table shows the cool-idle measurement. Raw rows and notes:
+> [`bench/results/2026-09-29-volta-prompt-attn`](bench/results/2026-09-29-volta-prompt-attn).
 > [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
