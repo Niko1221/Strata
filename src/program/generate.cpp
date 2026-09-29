@@ -1515,6 +1515,21 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: session_init failed\n");
         return 1;
     }
+    // **A GENERATE RUN ON A NATIVE PACK NEVER ZEROED THE SESSION STATE.**  The canonical path zeroes it from
+    // `put_input` at position 0 (`session_zero`, with the embedding as `R`), but a native pack breaks out of that
+    // loop before the first `put_input` - it runs verify windows instead - and neither the batched prompt path
+    // nor the verifier zeroes anything.  `sbuf` is `cudaMalloc`'d, so the GDN recurrence, the QSA KV/indexer
+    // state, the PLE history and `R` all started from whatever the allocator last held: finite on a fresh
+    // allocation and overflow/NaN after reuse, which surfaced as the whole layer stack saturating and every
+    // prompt decoding to the same token.  `--serve` zeroes exactly this state when `resume == 0`; generate mode
+    // always starts from an empty sequence, so it must too.
+    if (native_pack) {
+        strata::core::session_zero(ss, g, nullptr, main_cs);
+        if (cudaDeviceSynchronize() != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: zeroing the session state failed\n");
+            return 1;
+        }
+    }
     if (g.n_qsa_layers() > 0 && ss.qsa_states[0].kv_mode == 1)
         std::fprintf(stderr, "strata generate: KV streaming: %lld of %lld cells per QSA layer in VRAM, the K/V in "
                              "%.2f GiB of pinned RAM\n", (long long) (ss.qsa_states[0].n_slots * 4),
