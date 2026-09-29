@@ -21,7 +21,7 @@ E=${NVME_ENGINE:-build/strata}
 OUT=/tmp/nvme-s123
 STORE=$OUT/store
 rm -rf "$OUT"; mkdir -p "$OUT"
-export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:${LD_LIBRARY_PATH-}   # ${VAR-}: set -u kills an unset LD_LIBRARY_PATH (found on first run)
 NVME_PYTHON=.venv/bin/python
 
 ARGS="--serve --pack packs/iq3_xxs
