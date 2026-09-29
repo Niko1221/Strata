@@ -464,17 +464,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # splitting them across two libraries would only add a layer.
   #
   # The pack, the original GGUF and the ggml capture are all REQUIRED inputs: this test's oracles are real
-  # artifacts, so the working directory is pinned to the source tree and a missing input is a hard error
-  # INSIDE the test - for a run WITH provisioned inputs.  A test that passes by finding nothing to compare is
-  # the failure mode this project keeps re-learning, but a test that hard-fails for every consumer is its
-  # mirror image: it trains people to ignore red.  The block fixtures are too large for the repository (they
-  # carry full-size dequantized f32 weights, >100 MB - GitHub's own per-file limit), and the oracle include's
-  # pack offsets are specific to the artifact it was generated for, so a fresh clone can never have both.
-  # When inputs are unprovisioned the test is therefore NOT ADDED, and the configure step says exactly what is
-  # missing and how to provision it; when they ARE provisioned but wrong, ple_parity still hard-fails inside
-  # itself.  Provision: generate the fixtures (tests/python/gen_ple_capture.py), then configure with
-  # STRATA_PLE_TEST_GGUF (the shard carrying the table tensor) and STRATA_PLE_TEST_PACK (the dense pack the
-  # oracle offsets were generated for).
+  # artifacts. A test that hard-fails for every fresh clone trains people to ignore red, so when the inputs
+  # are absent the test is NOT ADDED and the configure step says what is missing. When inputs ARE present
+  # but wrong, ple_parity still hard-fails inside itself. The block fixtures are too large for the repository
+  # (>100 MB of dequantized f32 weights, over GitHub's per-file limit), and the oracle include's pack offsets
+  # are specific to the artifact it was generated for, so a fresh clone cannot have both by default.
+  # Provision: generate the fixtures, then configure with STRATA_PLE_TEST_GGUF (shard carrying the table) and
+  # STRATA_PLE_TEST_PACK (dense pack the oracle offsets were generated for).
   add_executable(ple_parity src/kernels/ple_parity.cpp)
   target_include_directories(ple_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(ple_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})

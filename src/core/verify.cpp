@@ -408,13 +408,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
     }
 
-    // ---- the C1 ladder for a native pack (set_layer_dump): the capture carries the same per-layer copies
-    // `session_loop` enqueues on its live stream.  Inside a capture each copy becomes a memcpy NODE, so the
-    // ladder is rewritten every launch for free and reads current `R_` contents; the stride is `max_t_`, not
-    // this window's T, so one staging buffer serves every captured window size.  Row 0 is the embedding
-    // broadcast (session_loop's convention: slot 0 is the INPUT), row l+1 is after layer l - see the layout
-    // caveat on set_layer_dump: these rows are the fused-layout residual, with layer l's pending write NOT
-    // folded in (the next fused read folds it).
+    // Capture the residual ladder inside the graph when set_layer_dump is armed. Each copy becomes a
+    // memcpy node in the capture, so the ladder is rewritten every launch and reads current R_ contents.
+    // Row 0 is the embedding broadcast; row l+1 is after layer l and before pre(l+1). See set_layer_dump's
+    // layout caveat: these rows are the fused-layout residual, with layer l's pending write not yet folded.
     auto ladder_copy = [&](int64_t row) -> bool {
         for (int t = 0; t < T; ++t) {
             const cudaError_t de = cudaMemcpyAsync(ldump_host_ + ((size_t) row * (size_t) max_t_ + (size_t) t) *
@@ -782,7 +779,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
 
     for (int grp = 0; grp < G; ++grp)
         if (!pre(lb_, grp)) return false;
-    if (ldump_host_ != nullptr && !ladder_copy(0)) return false;   // the embedding broadcast = row 0
+    if (ldump_host_ != nullptr && !ladder_copy(0)) return false;   // embedding broadcast
     for (int64_t l = lb_; l < le_; ++l) {
         for (int grp = 0; grp < G; ++grp)
             if (!post(l, grp)) return false;

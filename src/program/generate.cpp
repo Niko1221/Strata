@@ -1243,10 +1243,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (!o.dump_halves.empty() && o.spec > 0) {
-        // The half-level copies are issued by the captured canonical block path (`block_layer_pre`/`post`),
-        // so a run that ends in verify windows produces a file with no frames at all under a native pack
-        // (the token loop never runs) or one stale frame with a batched prompt.  A dump that looks like
-        // evidence but is not is worse than an error.
+        // Half-level ladder copies belong to the captured canonical block path. Under --spec the actual
+        // decode runs in verify windows, so the half dump would be empty or stale on a native pack.
         std::fprintf(stderr, "strata generate: --dump-halves cannot follow --spec: the half-level copies live "
                              "in the captured canonical block path, and a --spec run verifies in windows that "
                              "do not carry them. Use --dump-layers (the verify window captures the residual "
@@ -1430,11 +1428,10 @@ int main(int argc, char** argv) {
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
-    // Plan v0.3 P3: the fused hyper-connection read rides the native (FP32-activation) contract; the per-stage
-    // and dump measurements need the unfused layout of R, so they keep the old kernels.  A native pack cannot
-    // take that trade: its ONLY decode path is the verify window, whose captures require the fused read
-    // (layer_verify_compatible refuses without it), and its ladder comes from the verify window's own dump
-    // copies (Verifier::set_layer_dump), not from `session_loop`.  A canonical run with dumps keeps unfused.
+    // Plan v0.3 P3: the fused hyper-connection read is the native-path contract. Per-stage and dump
+    // measurements keep the unfused layout, so a canonical run with dumps disables fused_gr. A native
+    // pack has no ordinary decode path; its verify windows require the fused read, and its ladder is
+    // captured by Verifier::set_layer_dump, so fused_gr stays enabled there.
     strata::core::layer_set_fast_attn(!o.no_fast_attn);
     strata::core::layer_set_publish_kernel(!o.no_publish_kernel);
     strata::core::layer_set_fused_gdn(!o.no_fused_gdn);
@@ -1522,14 +1519,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: session_init failed\n");
         return 1;
     }
-    // **A GENERATE RUN ON A NATIVE PACK NEVER ZEROED THE SESSION STATE.**  The canonical path zeroes it from
-    // `put_input` at position 0 (`session_zero`, with the embedding as `R`), but a native pack breaks out of that
-    // loop before the first `put_input` - it runs verify windows instead - and neither the batched prompt path
-    // nor the verifier zeroes anything.  `sbuf` is `cudaMalloc`'d, so the GDN recurrence, the QSA KV/indexer
-    // state, the PLE history and `R` all started from whatever the allocator last held: finite on a fresh
-    // allocation and overflow/NaN after reuse, which surfaced as the whole layer stack saturating and every
-    // prompt decoding to the same token.  `--serve` zeroes exactly this state when `resume == 0`; generate mode
-    // always starts from an empty sequence, so it must too.
+    // Generate mode always starts from an empty sequence, so the session state must be zeroed. The
+    // canonical path does this from put_input at position 0, but a native pack breaks out before the
+    // first put_input and runs verify windows instead, leaving cudaMalloc'd state uninitialized. That
+    // produced NaN/overflow and degenerate identical-token output once the allocation was reused.
     if (native_pack) {
         strata::core::session_zero(ss, g, nullptr, main_cs);
         if (cudaDeviceSynchronize() != cudaSuccess) {
@@ -2910,13 +2903,10 @@ int main(int argc, char** argv) {
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
     const bool graph_hits = hit_fn != nullptr && !profile.empty() && !o.no_pool;
-    // The residency table and the rest of `thits` are the EXPERT TIER's state: the token graph needs them,
-    // and so do the verify windows (--spec reads the same table through VerifyHits).  They used to be staged
-    // only when neither dump flag was set - and since the dump flags also keep the token graph from being
-    // captured, the two gates together made --dump-layers/--dump-logits and --spec accidentally mutually
-    // exclusive, with the refusal surfacing later as "--spec needs the device residency table".  For a native
-    // pack, whose ONLY decode path is verify windows, that gated its own diagnostic dumps out of existence.
-    // Stage the tier's state whenever the tier exists; the token graph capture keeps its own gate below.
+    // The expert tier's residency table is needed by both the token graph and the verify windows
+    // (--spec reads it through VerifyHits). Staging it was previously gated on having no dump flags, which
+    // made --dump-layers/--dump-logits and --spec mutually exclusive and left native packs without diagnostics.
+    // Stage the tier state whenever the tier exists; the token graph capture keeps its own gate below.
     if (graph_hits) {
         host_res.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
         int64_t resident = 0;
@@ -4879,22 +4869,16 @@ int main(int argc, char** argv) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
             }
-            // ---- THE C1 ORACLES, PER ACCEPTED ROW.  Row t of a window at `p` is the distribution after the
-            // tokens at p..p+t - exactly what the ordinary loop's row at position p+t is - so the accepted rows
-            // ARE `--dump-logits`/`--dump-final-r`/`--dump-layers` frames for the positions this run actually
-            // emitted.  The rejected rows are conditioned on drafts the ordinary path would never feed, so
-            // they are NOT frames of anything and are skipped.  `head_logits_`, `final_R` and the ladder
-            // staging are all rewritten by the next `ver.run`, so they are read here, before commit launches
-            // its own graph on the same buffers.
+            // ---- C1 oracles per accepted window row. Row t at window start p is the distribution after
+            // token p+t, exactly what the ordinary loop writes at position p+t. Rejected draft rows are
+            // conditioned on tokens the ordinary path never feeds, so they are skipped. Read the per-window
+            // buffers here, before the next ver.run overwrites them and before commit launches its own graph.
             if (dump != nullptr || o.check_logits || layer_dump != nullptr || final_r != nullptr) {
                 for (int t = 0; t <= a; ++t) {
                     const int64_t rpos = p + t;
-                    // The dump covers the rows for positions [first, n_prompt - 1 + max_new): row `pos` is the
-                    // distribution after the token AT `pos`, which predicts produced[rpos - (n_prompt - 1)].
-                    // A window can run past the generation cap (its drafts for positions past max_new - 1 are
-                    // still conditioned on committed tokens) - those rows would read as if the text continued,
-                    // so they are not written.  The accepted rows end at the last produced token's predictor,
-                    // exactly where the ordinary loop's file ends.
+                    // The dump covers positions [first, n_prompt - 1 + max_new). Windows can run past the
+                    // generation cap because their drafts are still conditioned on committed tokens, but
+                    // those extra rows are not part of the emitted sequence and are not written.
                     if (rpos >= dump_positions) break;
                     const bool emit_row = dump != nullptr &&
                         strata::program::logits_selection::selected(rpos, dump_positions, o.logits_stride);
@@ -5043,15 +5027,10 @@ int main(int argc, char** argv) {
     }
 
     if (dump != nullptr) {
-        // **THE HEADER WAS A FORECAST; THE FILE IS THE TRUTH.**  The count written at open time is the loop
-        // level estimate `n_prompt - 1 + max_new` (filtered by the stride), which is the number of rows only
-        // when the token loop runs every position - no batched prefill, no spec, no early stop.  A run with
-        // --prefill (the native packs' required configuration) emits the generated positions' rows only, an
-        // EOS stop ends the file early, and the accepted verify rows are written in the speculative loop
-        // above.  A header that describes a different file from the one written is the same class of defect
-        // as a self-check that verifies the wrong invariant: anything reading the count instead of the size
-        // gets a wrong answer that looks authoritative (tools/logits_identical.py refuses such files).  So
-        // the header is rewritten with the rows the file ACTUALLY holds before it is closed.
+        // The header written at open time estimates n_prompt - 1 + max_new (filtered by stride), but that
+        // only matches the file when the ordinary token loop runs every position. Batched prefill, --spec,
+        // and EOS early-stop all emit fewer rows. Rewrite the header with the actual row count before close
+        // so readers such as tools/logits_identical.py see the size the file really holds.
         std::rewind(dump);
         const int32_t hdr[2] = {(int32_t) n_vocab, (int32_t) logits_rows_written};
         if (std::fwrite(hdr, sizeof hdr, 1, dump) != 1) {

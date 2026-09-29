@@ -129,12 +129,9 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
 }
 
 int main() {
-    // The table is REQUIRED to be version-scoped (solution ids are scoped to the hipBLASLt version), so the
-    // one that matters is whatever matches THIS runtime.  Priority: the env (the docs' contract,
-    // AMD_HIP_PERFORMANCE.md), then the repo's own shipped tables for (arch, runtime version) - so a machine
-    // with a committed table runs the parity check unconditionally instead of skipping.  Without either, the
-    // test skips: it has no oracle to load, and a test that passes by finding nothing to compare is the
-    // failure mode this project keeps re-learning.
+    // hipBLASLt solution ids are version-scoped, so load the table for THIS runtime. Priority: env,
+    // then the repo's own shipped tools/hip/<arch>-hipblaslt-<version>.txt. Without either, skip: the test
+    // has no oracle, and a test that passes by finding nothing to compare is worse than a skipped test.
     std::string tuning;
     if (const char* p = std::getenv("STRATA_HIPBLASLT_TUNING"); p && *p) {
         tuning = p;
