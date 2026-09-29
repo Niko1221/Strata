@@ -359,6 +359,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     if(STRATA_HIPBLASLT_AVAILABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/prefill_hipblaslt_gemm.cpp")
       add_executable(hip_prefill_hipblaslt_gemm tests/hip/prefill_hipblaslt_gemm.cpp)
       target_include_directories(hip_prefill_hipblaslt_gemm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
+      # the packaged-table fallback in the test resolves tools/hip/<arch>-hipblaslt-<version>.txt below this dir
+      target_compile_definitions(hip_prefill_hipblaslt_gemm PRIVATE
+        "STRATA_TUNING_TABLE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tools/hip\"")
       target_link_libraries(hip_prefill_hipblaslt_gemm PRIVATE strata_prefill strata_hip_runtime roc::hipblaslt roc::hipblas)
       add_test(NAME hip_prefill_hipblaslt_gemm COMMAND hip_prefill_hipblaslt_gemm)
       set_tests_properties(hip_prefill_hipblaslt_gemm PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
@@ -462,16 +465,47 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   #
   # The pack, the original GGUF and the ggml capture are all REQUIRED inputs: this test's oracles are real
   # artifacts, so the working directory is pinned to the source tree and a missing input is a hard error
-  # INSIDE the test.  A test that passes by finding nothing to compare is the failure mode this project keeps
-  # re-learning.
+  # INSIDE the test - for a run WITH provisioned inputs.  A test that passes by finding nothing to compare is
+  # the failure mode this project keeps re-learning, but a test that hard-fails for every consumer is its
+  # mirror image: it trains people to ignore red.  The block fixtures are too large for the repository (they
+  # carry full-size dequantized f32 weights, >100 MB - GitHub's own per-file limit), and the oracle include's
+  # pack offsets are specific to the artifact it was generated for, so a fresh clone can never have both.
+  # When inputs are unprovisioned the test is therefore NOT ADDED, and the configure step says exactly what is
+  # missing and how to provision it; when they ARE provisioned but wrong, ple_parity still hard-fails inside
+  # itself.  Provision: generate the fixtures (tests/python/gen_ple_capture.py), then configure with
+  # STRATA_PLE_TEST_GGUF (the shard carrying the table tensor) and STRATA_PLE_TEST_PACK (the dense pack the
+  # oracle offsets were generated for).
   add_executable(ple_parity src/kernels/ple_parity.cpp)
   target_include_directories(ple_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(ple_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   set(STRATA_PLE_FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro" CACHE PATH
       "Directory containing required ple_in.bin and ple_out.bin parity fixtures")
-  add_test(NAME ple_parity COMMAND ple_parity --selftest
-    --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set(STRATA_PLE_TEST_GGUF "" CACHE PATH
+      "Path to the PLE artifact shard carrying the table tensor (enables the ple_parity test)")
+  set(STRATA_PLE_TEST_PACK "" CACHE PATH
+      "Path to the dense pack directory holding dense.bin at the offsets ple_oracle_vectors.inc was generated "
+      "for (enables the ple_parity test)")
+  set(_ple_fixtures_present FALSE)
+  if(EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" AND EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin")
+    set(_ple_fixtures_present TRUE)
+  endif()
+  if(TARGET ple_parity AND NOT _ple_fixtures_present)
+    message(STATUS "ple_parity NOT added: no fixtures under ${STRATA_PLE_FIXTURE_DIR}. Provision them "
+                   "(tests/python/gen_ple_capture.py --gguf <shard> --out bench/micro), then set "
+                   "STRATA_PLE_TEST_GGUF/STRATA_PLE_TEST_PACK.")
+  endif()
+  if(TARGET ple_parity AND _ple_fixtures_present AND (NOT STRATA_PLE_TEST_GGUF OR NOT STRATA_PLE_TEST_PACK))
+    message(STATUS "ple_parity NOT added: fixtures exist but no artifact. Set STRATA_PLE_TEST_GGUF (the shard "
+                   "with the table) and STRATA_PLE_TEST_PACK (the dense pack ple_oracle_vectors.inc was built "
+                   "from) so the table oracle and the pack cross-check have their inputs.")
+  endif()
+  if(TARGET ple_parity AND _ple_fixtures_present AND STRATA_PLE_TEST_GGUF AND STRATA_PLE_TEST_PACK)
+    add_test(NAME ple_parity COMMAND ple_parity --selftest
+      --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin"
+      --pack "${STRATA_PLE_TEST_PACK}" --gguf "${STRATA_PLE_TEST_GGUF}"
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(ple_parity PROPERTIES TIMEOUT 600)
+  endif()
 
   # Plan v0.3 P7: INT8 KV storage vs a host reference and vs the FP16 path (GPU, synthetic, no model).
   add_executable(kv_q8_parity src/kernels/kv_q8_parity.cpp)

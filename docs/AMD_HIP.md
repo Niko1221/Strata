@@ -101,6 +101,46 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 The installer supports this backend (see "Install with setup" above). The vision helper and multi-GPU layer
 splits are NVIDIA-only for now.
 
+## Native-pack diagnostics (the C1 oracles under --spec)
+
+A native (IQ) pack decodes through verify windows only, so the three oracle
+dumps are served by the windows themselves, not by the ordinary decode loop:
+
+* `--dump-logits PATH` — the head's logits for every position the run actually
+  emitted, rows written by the verify windows (rejected draft rows are never
+  written: they are conditioned on tokens the ordinary path would never feed;
+  a window that runs past the generation cap leaves its extra rows out).  The
+  file's header is rewritten at close with the row count the file actually
+  holds, so `tools/logits_identical.py` never sees a count that lies about the
+  size.  With `--check-logits`, the same rows are scanned for non-finite
+  values.  On a native pack the rows start at the prompt's last position
+  (`n_prompt - 1`) because the prompt prefix is batched; the summary line
+  prints the row span so a reader can align with a teacher-forced reference.
+* `--dump-layers PATH` — the residual ladder, captured into every verify
+  window graph: one device-to-host copy per layer, row 0 the embedding
+  broadcast.  **The rows are the fused hyper-connection layout**: layer l's
+  write stays pending inside layer l+1's fused read, so a row is what the next
+  read consumes, not the canonical (unfused) ladder — bitwise what the engine
+  holds at that point, which is the right oracle for tracing where two of the
+  engine's own runs diverge.  Canonical ladder rows (comparable against
+  llama-debug's `l_last` nodes) come from a canonical-pack run without `--spec`.
+* `--dump-final-r PATH` — the window's final residual per accepted row, the
+  same frames the ordinary loop writes.
+* `--dump-halves` is refused under `--spec`: its copies live in the captured
+  canonical block path, and a file of zeros would read as "the model emitted
+  nothing".
+
+The device residency table used to be staged only when neither dump flag was
+set, which made these flags and `--spec` mutually exclusive — a native pack had
+no diagnostic path at all.  The table is now staged whenever the expert tier
+exists, independent of what is dumped.
+
+Measured on IQ2_XS (native pack, `--spec 4`, 8 tokens): 8 logits rows whose
+argmax replays the emitted tokens token for token; against llama.cpp at the
+pinned revision the top-1 agrees 8/8 with mean Spearman 0.733 over the
+reference's top-100 (the native Q5_K head is quantized; the reference is f16);
+8 ladder frames and 8 final-R frames at positions [4, 12), finite, max |R| 10.8.
+
 ## Original backend validation (PR #94)
 
 The following is historical validation of the original backend, not a fresh
