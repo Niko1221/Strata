@@ -309,17 +309,20 @@ def main() -> int:
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         offset += blob * n_expert
     with open(out / "native_experts.txt", "w", encoding="utf-8", newline="\n") as fo:
-        fo.write("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
+        fo.write("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
+                 "[shard | gate_shard up_shard down_shard] "
                  "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
                  % (n_expert, offset, src.name))
         for l, gt, dt, off, blob, ts in layout:
             ws = [model.where[t.name] for t in ts]
-            if len({w[3] for w in ws}) != 1:
-                print("layer %d: its gate/up/down tensors are in different shards" % l)
-                return 1
-            gg, shard = ws[0][0], ws[0][3]
-            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
-            fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
+            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob,
+                                                  *[w[0].data_start + t.offset for w, t in zip(ws, ts)])
+            shards = [w[3] for w in ws]
+            if len(set(shards)) == 1:
+                suffix = "" if shards[0] == src else " " + shards[0].name
+            else:
+                suffix = " " + " ".join(shard.name for shard in shards)
+            fo.write(line + suffix + "\n")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -36,10 +37,13 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
-    if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [layer ...]\n"); return 2; }
-    strata::GgufFile gguf(argv[1]);
+    if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [more-shards.gguf ...] [layer ...]\n"); return 2; }
+    std::vector<std::unique_ptr<strata::GgufFile>> ggufs;
+    int first_layer = 1;
+    while (first_layer < argc && std::string(argv[first_layer]).ends_with(".gguf"))
+        ggufs.emplace_back(std::make_unique<strata::GgufFile>(argv[first_layer++]));
     std::vector<int> layers;
-    for (int i = 2; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
+    for (int i = first_layer; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
     if (layers.empty()) layers = {0, 1, 2, 3, 20, 47};
     const int NT = 3, E = 7;
     const int64_t H = 2560, FF = 640;
@@ -48,10 +52,15 @@ int main(int argc, char** argv) {
     cudaStreamCreate(&s);
     for (int l : layers) {
         const strata::TensorInfo* t[3] = {};
+        const strata::GgufFile* source[3] = {};
         const char* roles[3] = {"gate", "up", "down"};
-        for (const auto& ti : gguf.tensors())
-            for (int r = 0; r < 3; ++r)
-                if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") t[r] = &ti;
+        for (const auto& gguf : ggufs)
+            for (const auto& ti : gguf->tensors())
+                for (int r = 0; r < 3; ++r)
+                    if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") {
+                        t[r] = &ti;
+                        source[r] = gguf.get();
+                    }
         if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
         cpu::NativeFmt f;
         std::string err;
@@ -59,9 +68,9 @@ int main(int argc, char** argv) {
             std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
         }
         std::vector<uint8_t> blob(f.bytes);
-        std::memcpy(blob.data(), gguf.tensor_data(*t[0]) + (size_t) E * f.up_off, f.up_off);
-        std::memcpy(blob.data() + f.up_off, gguf.tensor_data(*t[1]) + (size_t) E * f.up_off, f.up_off);
-        std::memcpy(blob.data() + f.down_off, gguf.tensor_data(*t[2]) + (size_t) E * (f.bytes - f.down_off),
+        std::memcpy(blob.data(), source[0]->tensor_data(*t[0]) + (size_t) E * f.up_off, f.up_off);
+        std::memcpy(blob.data() + f.up_off, source[1]->tensor_data(*t[1]) + (size_t) E * f.up_off, f.up_off);
+        std::memcpy(blob.data() + f.down_off, source[2]->tensor_data(*t[2]) + (size_t) E * (f.bytes - f.down_off),
                     f.bytes - f.down_off);
         // (a) the float reference
         const auto* tg = ggml_get_type_traits((ggml_type) f.gu_type);
