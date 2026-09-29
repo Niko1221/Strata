@@ -47,6 +47,7 @@
 //     1e-3 for FP16 paths.  That difference is the FP16 CACHE's cost, not the kernel's, and it is kept
 //     separate so a kernel bug cannot hide inside it.
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/native_qsa_indexer.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/rope.hpp"
@@ -1374,6 +1375,74 @@ int main(int argc, char** argv) {
 
         check(cudaGraphExecDestroy(ex2), "exd");
         check(cudaGraphDestroy(g2), "gd");
+    }
+
+    // ================= the NATIVE indexer's batched append vs the sequential one =================
+    // The prefill path appends a chunk in one native_qsa_indexer_append_batch call, the decode path appends
+    // token by token - and one cache must never be able to tell which path filled it (rope_scaling.hpp's
+    // one-rotation rule).  So the batch's whole end state must be BIT-IDENTICAL to the sequential appends',
+    // under the two extremes of the scaling config: none (today's rotation) and yarn factor 2, whose mscale
+    // and corr-dims both kernels must take from the same RopeScaling.  Eight cells: exactly two completed
+    // blocks, so the paths' end states agree on block_pos too (a mid-block chunk end leaves the sequential
+    // path pointing at the open block's base and the batch at the last completed one's - upstream C-2's own
+    // semantics, the same for every scaling).
+    {
+        std::printf("\n-- the native indexer's batched append vs the sequential one\n");
+        const int64_t NB = 8;                          // exactly two complete blocks of r=4
+        const int32_t BASE = 100;                      // positions 100..107, not cell indices 0..7
+        const int64_t MC = 1024;                       // the capacity both sides validate against
+        std::vector<float> raws((size_t) NB * IDXD);
+        for (int64_t t = 0; t < NB; ++t)
+            for (int64_t d = 0; d < IDXD; ++d)
+                raws[(size_t) t * IDXD + d] = (float) (gauss(rng) * std::pow(4.0, (double) (t % 4)));
+        cudaStream_t cs = nullptr;
+        check(cudaStreamCreate(&cs), "cs");
+        std::vector<float> none_pooled;
+        for (int variant = 0; variant < 2; ++variant) {
+            strata::kernels::RopeScaling sc;
+            if (variant == 1) { sc.type = strata::kernels::RopeScalingType::YaRN; sc.factor = 2.0; sc.ext_factor = 1.0; }
+            const size_t prows = (size_t) (MC / R + 1) * IDXD, trows = (size_t) (R - 1) * IDXD;
+            Dev<float> pooledA(prows), deadA(IDXD), tailA(trows), pooledB(prows), deadB(IDXD), tailB(trows);
+            Dev<int32_t> bposA(1), bposB(1), dpos(1);
+            for (Dev<float>* dp : {&pooledA, &deadA, &tailA, &pooledB, &deadB, &tailB})
+                check(cudaMemset(dp->p, 0, dp == &pooledA || dp == &pooledB ? prows * 4
+                                : dp == &deadA || dp == &deadB ? IDXD * 4 : trows * 4), "zero");
+            check(cudaMemset(bposA.p, 0, 4), "zero"); check(cudaMemset(bposB.p, 0, 4), "zero");
+            Dev<float> draw((size_t) IDXD), drawAll;
+            drawAll.put(raws);
+            strata::kernels::QsaIndexerBuffers bufsA{tailA.p, deadA.p, pooledA.p, bposA.p};
+            strata::kernels::QsaIndexerBuffers bufsB{tailB.p, deadB.p, pooledB.p, bposB.p};
+            for (int64_t t = 0; t < NB; ++t) {         // the sequential side: one cell, its device position
+                check(cudaMemcpy(draw.p, &raws[(size_t) t * IDXD], (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw");
+                const int32_t tp = (int32_t) t;
+                check(cudaMemcpy(dpos.p, &tp, 4, cudaMemcpyHostToDevice), "pos");
+                strata::kernels::native_qsa_indexer_append(draw.p, dpos.p, BASE, dw_kn.p, EPS, bufsA, S, MC, sc, cs);
+            }
+            strata::kernels::native_qsa_indexer_append_batch(drawAll.p, NB, 0, BASE, dw_kn.p, EPS, bufsB, S, MC, sc, cs);
+            check(cudaStreamSynchronize(cs), "sync");
+            const std::vector<float> pa = pooledA.get(prows), pb = pooledB.get(prows);
+            const std::vector<float> da = deadA.get((size_t) IDXD), db = deadB.get((size_t) IDXD);
+            const std::vector<float> ta = tailA.get(trows), tbb = tailB.get(trows);
+            const std::vector<int32_t> ba = bposA.get(1), bb = bposB.get(1);
+            long long bad = 0;
+            for (size_t i = 0; i < pa.size(); ++i) bad += pa[i] != pb[i];
+            for (size_t i = 0; i < da.size(); ++i) bad += da[i] != db[i];
+            for (size_t i = 0; i < ta.size(); ++i) bad += ta[i] != tbb[i];
+            bad += ba[0] != bb[0];
+            std::printf("  %-44s %s (%lld of %zu state values differ)\n",
+                        variant == 0 ? "batch vs sequential, none" : "batch vs sequential, yarn 2",
+                        bad ? "*** WRONG ***" : "bit-identical", bad, pa.size() + da.size() + ta.size() + 1);
+            if (bad) ++g_bad;
+            if (variant == 0) none_pooled = pa;
+            else {
+                int differ = 0;
+                for (size_t i = 0; i < pa.size(); ++i) differ += pa[i] != none_pooled[i];
+                std::printf("  %-44s %d of %zu pooled values moved\n", "the scaling is visible in the batched keys",
+                            differ, pa.size());
+                if (!differ) { std::printf("    *** the batched append ignored its scaling ***\n"); ++g_bad; }
+            }
+        }
+        check(cudaStreamDestroy(cs), "csd");
     }
 
     std::printf("\nqsa: %d failures\n", g_bad);
