@@ -33,20 +33,21 @@ DeltaShapes delta_shapes() {
     // lcm, not max and not a tuning constant: a sealed chunk must not straddle a KV page (the slice is then a
     // plain contiguous range of the pinned host array) nor an indexer block (the pooled rows stay whole rows).
     sh.block = std::lcm(sh.shapes.page_size, sh.shapes.idx_block);
+    sh.span = sh.block * kDeltaBlocksPerChunk;
     sh.rows_per_chunk = sh.block / sh.shapes.idx_block;
     return sh;
 }
 
 int64_t delta_chunk_payload_bytes(const SessionState& ss, const QsaState& mtp, const ModelGeometry& g,
                                   const DeltaShapes& sh, int64_t a) {
-    const int64_t pages = sh.block / sh.shapes.page_size;   // sealed chunks are page-aligned by construction
+    const int64_t pages = sh.span / sh.shapes.page_size;   // sealed chunks are page-aligned by construction
     const int64_t page_kv_bytes = g.n_head_kv * sh.shapes.page_size;   // x the array's row width w
     int64_t bytes = 0;
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
         const QsaState& st = ss.qsa_states[i];
         for (int k = 0; k < nvme_kv_array_count(st); ++k)
             bytes += pages * page_kv_bytes * nvme_kv_host_array(st, g.head_dim, k).w;
-        bytes += sh.rows_per_chunk * g.idx_key_dim * 4;   // pooled rows are fp32 (idx_key_dim, 4 bytes)
+        bytes += (sh.span / sh.shapes.idx_block) * g.idx_key_dim * 4;   // the chunk's whole span of pooled rows
     }
     if (a < mtp.max_cells) {   // §5.4: the drafter's cells are covered only while the chunk starts inside the ring
         for (int k = 0; k < nvme_kv_array_count(mtp); ++k) {
@@ -428,9 +429,12 @@ bool delta_read_manifest(const std::string& path, DeltaManifestHeader& h, std::v
         std::fclose(f);
         return false;
     }
-    if (h.n_chunks != h.L / h.block) {
+    // the chunk span this manifest was written with (0 = the pre-grouping layout: one block per chunk)
+    const int64_t k = h.blocks_per_chunk > 0 ? h.blocks_per_chunk : 1;
+    if (h.n_chunks != h.L / (h.block * k)) {
         err = "kv-delta: manifest " + path + ": " + std::to_string(h.n_chunks) + " chunks for a " +
-              std::to_string(h.L) + "-token boundary at block " + std::to_string(h.block) + " - refusing";
+              std::to_string(h.L) + "-token boundary at block " + std::to_string(h.block) + " x " +
+              std::to_string(k) + " - refusing";
         std::fclose(f);
         return false;
     }
@@ -466,9 +470,9 @@ bool delta_read_manifest(const std::string& path, DeltaManifestHeader& h, std::v
         std::memcpy(&r, body.data() + at, sizeof r);
         at += sizeof r;
         // a chunk reference starts where its index says it must - the sealed lattice is not negotiable
-        if (r.a != j * h.block) {
+        if (r.a != j * h.block * k) {
             err = "kv-delta: manifest " + path + ": chunk " + std::to_string(j) + " starts at " +
-                  std::to_string(r.a) + ", not at its block boundary " + std::to_string(j * h.block);
+                  std::to_string(r.a) + ", not at its chunk boundary " + std::to_string(j * h.block * k);
             return false;
         }
         chunks[(size_t) j] = r;
@@ -542,11 +546,12 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
             }
 
     const int64_t BLOCK = sh.block;
+    const int64_t SPAN = sh.span;                     // tokens per sealed chunk (kDeltaBlocksPerChunk blocks)
     const int64_t S = delta_sealed(T, sh);
-    const int64_t n_chunks = S / BLOCK;
+    const int64_t n_chunks = S / SPAN;
     const int64_t reuse = prev && prev->L > 0 && prev->L <= T && (int64_t) prev->ids.size() == prev->L &&
                                   std::equal(prev->ids.begin(), prev->ids.end(), ids.begin())
-                              ? prev->L / BLOCK
+                              ? prev->L / SPAN
                               : 0;   // every sealed chunk fully covered by the previous head; a fork reuses none
 
     const uint64_t tag = delta_tag(g, strata::core::qsa_kv_format(ss.qsa_states[0]), cvec, weights_fp, BLOCK);
@@ -559,7 +564,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
     // ---- the chunk payload walker: the sealed chunk covering [a, a+BLOCK) is the v3 segments' own bytes for
     // that token range, in the v3 walk's order (§5.4).  Host KV slices are memcpy off the pinned arrays; the
     // pooled rows come off the device with ONE cudaMemcpy per layer (consume_cuda_error on failure).
-    const int64_t pages_per_chunk = BLOCK / sh.shapes.page_size;
+    const int64_t pages_per_chunk = SPAN / sh.shapes.page_size;
     std::vector<uint8_t> chunk_buf((size_t) delta_chunk_payload_bytes(ss, mtp_state, g, sh, 0));
     auto fill_chunk = [&](int64_t a) -> bool {
         size_t off = 0;
@@ -571,7 +576,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
                 std::memcpy(chunk_buf.data() + off, (const uint8_t*) ka.p + (size_t) ((a / sh.shapes.page_size) * g.n_head_kv * sh.shapes.page_size * ka.w), bytes);
                 off += bytes;
             }
-            const size_t pb = (size_t) sh.rows_per_chunk * (size_t) g.idx_key_dim * 4;
+            const size_t pb = (size_t) ((sh.span / sh.shapes.idx_block) * g.idx_key_dim * 4);   // the chunk's span of rows
             if (pb && cudaMemcpy(chunk_buf.data() + off, st.idx_pooled + (size_t) ((a / sh.shapes.idx_block) * g.idx_key_dim),
                                  pb, cudaMemcpyDeviceToHost) != cudaSuccess) {
                 consume_cuda_error();
@@ -594,17 +599,18 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
 
     std::vector<DeltaChunkRef> refs((size_t) n_chunks);
     for (int64_t j = 0; j < n_chunks; ++j) {
-        refs[(size_t) j].key = delta_chunk_key(tag, ids.data(), j + 1);
-        refs[(size_t) j].a = j * BLOCK;
+        // chunk j covers the token span [j*SPAN, (j+1)*SPAN); its key is the id chain THROUGH ITS LAST TOKEN
+        refs[(size_t) j].key = delta_chunk_key(tag, ids.data(), (j + 1) * kDeltaBlocksPerChunk);
+        refs[(size_t) j].a = j * SPAN;
     }
     // The FIRST new chunk is where C1/C2 fire (a dump reusing everything has no chunk step to crash in).
     const int64_t first_new = reuse < n_chunks ? reuse : -1;
     for (int64_t j = reuse; j < n_chunks; ++j) {
-        if (!fill_chunk(j * BLOCK)) return false;
+        if (!fill_chunk(j * SPAN)) return false;
         DeltaChunkHeader ch;
         ch.key = refs[(size_t) j].key;
-        ch.a = j * BLOCK;
-        ch.b = (j + 1) * BLOCK;
+        ch.a = j * SPAN;
+        ch.b = (j + 1) * SPAN;
         ch.layers = g.n_qsa_layers();
         ch.payload_bytes = (int64_t) chunk_buf.size();
         const std::string path = chunks_dir + "/" + delta_key_name(ch.key) + ".bin";
@@ -690,6 +696,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
     h.state_key = state_key;
     h.pid = dump_pid;
     h.seq = seq;
+    h.blocks_per_chunk = kDeltaBlocksPerChunk;   // the field's old reserved slot, now carrying the grouping
     h.mtp_host = 0;   // counted below, exactly as the v3 dump counts it: non-null drafter arrays
     for (int k = 0; k < nvme_kv_array_count(mtp_state); ++k) h.mtp_host += nvme_kv_host_array(mtp_state, g.head_dim, k).p ? 1 : 0;
     char name[64];
@@ -753,14 +760,16 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     // digest, identity via the tag) BEFORE anything is assembled.  A payload must also equal what THIS
     // geometry's slice math says - the shapes were checked, but the arrays' formats are the live engine's word.
     const uint64_t tag = delta_tag(g, h.kv_format, h.cvec != 0, weights_fp, sh.block);
+    // the chunk span this manifest was written with (0 = the pre-grouping layout: one block per chunk)
+    const int64_t K = h.blocks_per_chunk > 0 ? h.blocks_per_chunk : 1;
     const int64_t T = h.L, S = delta_sealed(T, sh);
-    const int64_t pages_per_chunk = sh.block / sh.shapes.page_size;
+    const int64_t pages_per_chunk = sh.block * K / sh.shapes.page_size;
     const std::string dir = fs::path(e.path).parent_path().string();
     std::vector<std::vector<uint8_t>> chunk_payloads(refs.size());
     for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
         const std::string path = dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin";
         std::vector<uint8_t>& payload = chunk_payloads[(size_t) j];
-        if (!delta_read_chunk(path, refs[(size_t) j].key, refs[(size_t) j].a, refs[(size_t) j].a + sh.block,
+        if (!delta_read_chunk(path, refs[(size_t) j].key, refs[(size_t) j].a, refs[(size_t) j].a + sh.block * K,
                               payload, err))
             return Restore::invalid;   // the read's message already names the chunk and the reason
         const int64_t want = delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[(size_t) j].a);
@@ -801,7 +810,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         st_arrays += st_pages * page_kv * widths[k];
         dr_slice += pages_per_chunk * page_kv * widths[k];
     }
-    const int64_t ch_stride = ch_arrays + sh.rows_per_chunk * idx4;
+    const int64_t ch_stride = ch_arrays + (sh.span / sh.shapes.idx_block) * idx4;   // the chunk's span of rows
     const int64_t st_stride = st_arrays + st_rows * idx4 + (int64_t) (z.tail + z.dead + z.block_pos);
     const int64_t st_drafter_base = (int64_t) z.gdn + (has_ple ? (int64_t) z.ple : 0) + g.n_qsa_layers() * st_stride;
     int64_t arr_total = 0;
@@ -841,7 +850,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
             ch_off += (int64_t) slice;
             st_off += (int64_t) (st_pages * page_kv * widths[k]);
         }
-        const size_t rows_slice = (size_t) (sh.rows_per_chunk * idx4);
+        const size_t rows_slice = (size_t) ((sh.span / sh.shapes.idx_block) * idx4);
         for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
             put(chunk_payloads[(size_t) j].data() + ch_base + (size_t) ch_off, rows_slice);
         put(state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
@@ -850,15 +859,21 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         put(state.data() + st_base + (size_t) st_off, z.dead);   st_off += (int64_t) z.dead;
         put(state.data() + st_base + (size_t) st_off, z.block_pos);
     }
-    {   // the drafter: the chunks' pages for [0, S) plus the State record's tail pages, per non-null array
+    {   // the drafter: the chunks' pages for [0, S) plus the State record's tail pages, per non-null array.
+        // TWO offsets: the chunk's drafter section strides by the CHUNK's per-array slice (span/page pages),
+        // while the State's drafter section strides by the TAIL's per-array slice (st_pages pages) - one
+        // running offset was correct only when a chunk was ONE block (the strides then coincided), and the
+        // K-grouping turned the difference into silently wrong scale-array bytes.
         const size_t ch_drafter = (size_t) (g.n_qsa_layers() * ch_stride);
-        int64_t dr_off = 0;
+        int64_t ch_dr = 0, st_dr = 0;
         for (int k = 0; k < n_arrays; ++k) {
-            const size_t slice = (size_t) (pages_per_chunk * page_kv * widths[k]);
+            const size_t csz = (size_t) (pages_per_chunk * page_kv * widths[k]);
+            const size_t ssz = (size_t) (st_pages * page_kv * widths[k]);
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-                put(chunk_payloads[(size_t) j].data() + ch_drafter + (size_t) dr_off, slice);
-            put(state.data() + st_drafter_base + (size_t) dr_off, (size_t) (st_pages * page_kv * widths[k]));
-            dr_off += (int64_t) slice;
+                put(chunk_payloads[(size_t) j].data() + ch_drafter + (size_t) ch_dr, csz);
+            put(state.data() + st_drafter_base + (size_t) st_dr, ssz);
+            ch_dr += (int64_t) csz;
+            st_dr += (int64_t) ssz;
         }
     }
     // the walk must land exactly on the footer - an assembly bug here would otherwise hide behind the digest
@@ -1013,7 +1028,7 @@ bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const
         superseded = true;
     }
     const int64_t prev_T = prev.L;
-    const int64_t reused = prev_T / delta_shapes().block;
+    const int64_t reused = prev_T / delta_shapes().span;   // whole sealed chunks the previous head covers
     const long seq = seq_base_ + seq_++;
     const std::string path = dir_ + "/log-" + std::to_string(pid_of()) + "-" + std::to_string(seq) + ".manifest";
     if (!delta_dump_at(prev.L ? &prev : nullptr, dir_, ss, mtp_state, g, key, stored, cvec, at, weights_fp_,

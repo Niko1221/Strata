@@ -121,7 +121,7 @@ std::vector<uint8_t> slurp(const std::string& path) {
 
 // ---- the fixture: the same small geometry the v3 host fixture uses, with the REAL QSA widths ----
 
-constexpr int64_t L_BOUNDARY = 10;   // NOT idx_block-aligned: sealed(10) = 8, a 2-token ragged tail
+constexpr int64_t L_BOUNDARY = 10;   // sub-span: everything is ragged tail, zero sealed chunks
 
 struct Fixture {
     ModelGeometry g;
@@ -147,13 +147,13 @@ struct Fixture {
 
         layers.resize((size_t) g.n_qsa_layers());
         ss.qsa_states = layers.data();
-        ss.max_cells = 64;
+        ss.max_cells = 1024;
         scratch.assign(4096, 0);
         uint8_t* p = scratch.data();
         for (QsaState& st : layers) {
             st.kv_int8 = true;
             st.kv_mode = 1;
-            st.max_cells = 64;
+            st.max_cells = 1024;
             st.host.k_q = (int8_t*) p; st.host.v_q = (int8_t*) p;
             st.host.k_scale = (uint16_t*) p; st.host.v_scale = (uint16_t*) p;
         }
@@ -161,7 +161,7 @@ struct Fixture {
         ss.ple_hist = (float*) p;
         mtp.kv_int8 = true;
         mtp.kv_mode = 2;
-        mtp.max_cells = 64;
+        mtp.max_cells = 1024;
         mtp.host.k_q = (int8_t*) p; mtp.host.v_q = (int8_t*) p;
         mtp.host.k_scale = (uint16_t*) p; mtp.host.v_scale = (uint16_t*) p;
         if (drop_one_drafter_array) mtp.host.k_scale = nullptr;   // the v3 dump skips it; the delta tier must too
@@ -187,19 +187,20 @@ void fixture_shapes_and_slices() {
     Fixture F;
     ck_eq(F.sh.shapes.page_size, 4, "the real artifact's page size");
     ck_eq(F.sh.block, 4, "BLOCK = lcm(page_size, idx_block) = 4 with the real shapes");
-    ck_eq(F.sh.rows_per_chunk, 1, "one sealed pooled row per chunk");
+    ck_eq(F.sh.span, 256, "one sealed chunk covers kDeltaBlocksPerChunk = 64 blocks = 256 tokens");
+    ck_eq(F.sh.rows_per_chunk, 1, "one sealed pooled row per BLOCK");
 
-    // sealed(): the largest BLOCK multiple not exceeding T - the ragged tail is what is left over
+    // sealed(): the largest CHUNK-SPAN multiple not exceeding T - the ragged tail is what is left over
     ck_eq(strata::platform::delta_sealed(0, F.sh), 0, "an empty boundary seals nothing");
-    ck_eq(strata::platform::delta_sealed(3, F.sh), 0, "below one BLOCK everything is tail");
-    ck_eq(strata::platform::delta_sealed(4, F.sh), 4, "exactly one BLOCK seals fully");
-    ck_eq(strata::platform::delta_sealed(L_BOUNDARY, F.sh), 8, "a non-aligned boundary leaves a 2-token tail");
+    ck_eq(strata::platform::delta_sealed(255, F.sh), 0, "below one chunk span everything is tail");
+    ck_eq(strata::platform::delta_sealed(256, F.sh), 256, "exactly one chunk span seals fully");
+    ck_eq(strata::platform::delta_sealed(517, F.sh), 512, "a non-aligned boundary leaves a 5-token tail");
 
-    // one sealed chunk: 1 page of each of the 4 arrays per layer, 1 pooled row per layer, then the drafter page
+    // one sealed chunk: 64 pages of each of the 4 arrays per layer, 64 pooled rows per layer, the drafter pages
     const int64_t chunk0 = strata::platform::delta_chunk_payload_bytes(F.ss, F.mtp, F.g, F.sh, 0);
-    ck_eq(chunk0, (int64_t) F.g.n_qsa_layers() * F.per_layer_chunk_bytes() + F.drafter_page_bytes(),
-          "a chunk's payload is the per-layer page slices plus the pooled row plus the drafter page");
-    ck_eq(chunk0, 13696, "and with this geometry that is 13696 bytes (4 tokens, ~26 KB/token as the handoff says)");
+    ck_eq(chunk0, (int64_t) F.g.n_qsa_layers() * F.per_layer_chunk_bytes() * 64 + F.drafter_page_bytes() * 64,
+          "a chunk's payload is 64x the per-BLOCK slices (the K grouping multiplies the payload, not the walk)");
+    ck_eq(chunk0, 13696 * 64, "and with this geometry that is 876544 bytes (~4 MB, the handoff's BLOCK-256 example)");
 
     // a chunk starting at or past the drafter's ring contributes no drafter pages (the T <= max_cells gate keeps
     // this out of production; the rule itself is §5.4's "only while a < max_cells")
@@ -207,14 +208,16 @@ void fixture_shapes_and_slices() {
         Fixture G;
         G.mtp.max_cells = 4;
         const int64_t past = strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, 4);
-        ck_eq(past, (int64_t) G.g.n_qsa_layers() * G.per_layer_chunk_bytes(),
-               "a chunk past the drafter ring carries no drafter pages");
+        ck_eq(past, (int64_t) G.g.n_qsa_layers() * G.per_layer_chunk_bytes() * 64,
+               "a chunk STARTING past the drafter ring carries no drafter pages (the T <= max_cells gate keeps"
+               " straddling chunks out of production - the sizing follows the same rule the writer enforces)");
     }
     // a null drafter array is skipped exactly as the v3 dump skips it (and as mtp_host counts it)
     {
         Fixture G(/*drop_one_drafter_array=*/true);
         const int64_t got = strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, 0);
-        ck_eq(got, (int64_t) G.g.n_qsa_layers() * G.per_layer_chunk_bytes() + G.drafter_page_bytes() - G.page_bytes(2),
+        ck_eq(got, (int64_t) G.g.n_qsa_layers() * G.per_layer_chunk_bytes() * 64 +
+                   (G.drafter_page_bytes() - G.page_bytes(2)) * 64,
               "a null drafter array contributes nothing to the chunk payload");
     }
 
@@ -223,8 +226,8 @@ void fixture_shapes_and_slices() {
     {
         Fixture G;
         const int64_t T = L_BOUNDARY, S = strata::platform::delta_sealed(T, G.sh);
-        const int64_t chunks = strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, 0) +
-                               strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, S);
+        ck_eq(S, 0, "a sub-span boundary seals nothing: the whole prefix is the State record's tail");
+        const int64_t chunks = 0;   // no sealed chunks at T=10
         const int64_t state = strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, T);
         const int64_t pages3 = (T + G.sh.shapes.page_size - 1) / G.sh.shapes.page_size;      // v3: ceil(L/page)
         const int64_t rows3 = strata::kernels::qsa_pooled_rows(T, G.sh.shapes);              // v3: pooled rows
@@ -235,33 +238,50 @@ void fixture_shapes_and_slices() {
                        rows3 * G.g.idx_key_dim * 4 + (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
         v3_body += drafter_pages3 * G.drafter_page_bytes();
         ck_eq(chunks + state - ((int64_t) G.z.gdn + (int64_t) G.z.ple), v3_body,
-              "sealed chunks + the State record add up to the v3 payload (the byte-identity precondition)");
+              "the State record alone adds up to the v3 payload (the byte-identity precondition, sub-span)");
+        // the same sum at a boundary that crosses chunk spans: 2 chunks + the tail
+        {
+            const int64_t T2 = 517, S2 = strata::platform::delta_sealed(T2, G.sh);
+            ck_eq(S2, 512, "T=517 seals 512 tokens in two 256-token chunks");
+            const int64_t chunks2 = strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, 0) +
+                                    strata::platform::delta_chunk_payload_bytes(G.ss, G.mtp, G.g, G.sh, 256);
+            const int64_t state2 = strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, T2);
+            const int64_t pagesT2 = (T2 + G.sh.shapes.page_size - 1) / G.sh.shapes.page_size;
+            const int64_t rowsT2 = strata::kernels::qsa_pooled_rows(T2, G.sh.shapes);
+            int64_t v3_body2 = 0;
+            for (int64_t i = 0; i < G.g.n_qsa_layers(); ++i)
+                v3_body2 += pagesT2 * (G.page_bytes(0) + G.page_bytes(1) + G.page_bytes(2) + G.page_bytes(3)) +
+                            rowsT2 * G.g.idx_key_dim * 4 + (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
+            v3_body2 += pagesT2 * G.drafter_page_bytes();
+            ck_eq(chunks2 + state2 - ((int64_t) G.z.gdn + (int64_t) G.z.ple), v3_body2,
+                  "2 chunks + the State record add up to the v3 payload at T=517 (the invariant holds per span)");
+        }
     }
 
-    // the State record's own arithmetic, at the boundaries that matter
+    // the State record's own arithmetic, at the boundaries that matter.  With span-grouped chunks the SEALED
+    // prefix is span-aligned: every T below 256 seals nothing, so the state carries the whole prefix's tail.
     {
         Fixture G;
         const int64_t per_layer = G.page_bytes(0) + G.page_bytes(1) + G.page_bytes(2) + G.page_bytes(3);
-        // T = 10, S = 8: one tail page per array, the spare row only, plus the checkpoint's three blobs
-        int64_t want10 = (int64_t) G.z.gdn + (int64_t) G.z.ple;
-        for (int64_t i = 0; i < G.g.n_qsa_layers(); ++i)
-            want10 += per_layer + G.g.idx_key_dim * 4 + (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
-        want10 += per_layer;   // the drafter's tail page
-        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 10), want10,
-              "the T=10 state is one tail page + the spare row + the running state per layer");
-        // T = 8, S = 8: no tail pages at all, but the spare row is ALWAYS in the state (qsa_pooled_rows(8) - 2 = 1)
-        int64_t want8 = (int64_t) G.z.gdn + (int64_t) G.z.ple;
-        for (int64_t i = 0; i < G.g.n_qsa_layers(); ++i)
-            want8 += G.g.idx_key_dim * 4 + (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
-        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 8), want8,
-              "a block-aligned boundary's state carries no tail pages but still the spare row");
-        // T = 3, S = 0: everything is tail (one page) and the spare row is the only pooled row
-        int64_t want3 = (int64_t) G.z.gdn + (int64_t) G.z.ple;
-        for (int64_t i = 0; i < G.g.n_qsa_layers(); ++i)
-            want3 += per_layer + G.g.idx_key_dim * 4 + (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
-        want3 += per_layer;
-        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 3), want3,
-              "a sub-BLOCK boundary's state is all tail plus the running state");
+        auto want_state = [&](int64_t T) {
+            const int64_t S = strata::platform::delta_sealed(T, G.sh);
+            const int64_t tail_pages = (T + G.sh.shapes.page_size - 1) / G.sh.shapes.page_size - S / G.sh.shapes.page_size;
+            const int64_t tail_rows = strata::kernels::qsa_pooled_rows(T, G.sh.shapes) - S / G.sh.shapes.idx_block;
+            int64_t want = (int64_t) G.z.gdn + (int64_t) G.z.ple;
+            for (int64_t i = 0; i < G.g.n_qsa_layers(); ++i)
+                want += tail_pages * per_layer + tail_rows * G.g.idx_key_dim * 4 +
+                        (int64_t) (G.z.tail + G.z.dead + G.z.block_pos);
+            want += tail_pages * per_layer;   // the drafter's tail pages
+            return want;
+        };
+        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 10), want_state(10),
+              "the T=10 state: one tail page + 3 pooled rows (spare included) + the running state per layer");
+        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 8), want_state(8),
+              "the T=8 state: two tail pages (ceil(8/4)) + 3 pooled rows + the running state");
+        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 3), want_state(3),
+              "the T=3 state: one tail page + the spare row + the running state");
+        ck_eq(strata::platform::delta_state_payload_bytes(G.ss, G.mtp, G.g, G.z, G.sh, 256), want_state(256),
+              "a span-aligned boundary's state carries no tail pages but still the spare row");
     }
 }
 
@@ -407,9 +427,9 @@ void fixture_state_records(const std::string& dir) {
 // ================================ the synthetic session (copied from kv_nvme_host_test.cpp) ================================
 
 const strata::kernels::QsaShapes SHP = strata::kernels::qsa_real_shapes();   // page_size 4, idx_block 4
-constexpr int64_t MAX_CELLS = 64;                       // 16 pages; the QSA layers' array
-constexpr int64_t DRAFT_CELLS = 28;                     // the drafter's ring: 7 host pages; the delta gate is T <= 28
-constexpr int64_t DRAFT_SLOTS = 2;
+constexpr int64_t MAX_CELLS = 1024;                     // the QSA layers' array (16 pages x 64)
+constexpr int64_t DRAFT_CELLS = 1024;                   // the drafter's ring; the delta gate is T <= DRAFT_CELLS
+constexpr int64_t DRAFT_SLOTS = 8;
 
 uint8_t block_tag(int array_id, int64_t block) { return (uint8_t) (1 + ((array_id * 37 + block * 11) % 250)); }
 void tag_blocks(std::vector<uint8_t>& b, int array_id, size_t block_bytes) {
@@ -582,10 +602,12 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
        ("the state reads: " + err).c_str());
 
     const int64_t T = h.L, page = h.page_size, blk = h.block, ib = h.idx_block;
-    const int64_t sealed = (T / blk) * blk;
+    const int64_t K = h.blocks_per_chunk > 0 ? h.blocks_per_chunk : 1;   // the span grouping (0 = legacy K=1)
+    const int64_t span = blk * K;
+    const int64_t sealed = (T / span) * span;
     const int64_t pagesT = (T + page - 1) / page;
     const int64_t rowsT = strata::kernels::qsa_pooled_rows(T, SHP);
-    const int64_t pagesC = blk / page, rowsC = blk / ib;
+    const int64_t pagesC = span / page, rowsC = span / ib;
     const int64_t nL = S.g.n_qsa_layers();
     const int64_t idx4 = S.g.idx_key_dim * 4;
     const int64_t pb[4] = {block_bytes(0), block_bytes(1), block_bytes(2), block_bytes(3)};
@@ -633,7 +655,7 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
                 std::vector<uint8_t> payload;
                 ck(delta_read_chunk(delta_dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin",
-                                    refs[(size_t) j].key, j * blk, (j + 1) * blk, payload, err),
+                                    refs[(size_t) j].key, j * span, (j + 1) * span, payload, err),
                    ("chunk " + std::to_string(j) + " reads: " + err).c_str());
                 const size_t src = (size_t) (i * ch_layer + ch_prefix);
                 std::memcpy(buf.data() + dest + (size_t) written, payload.data() + src, (size_t) (pagesC * pb[k]));
@@ -654,7 +676,7 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
                 std::vector<uint8_t> payload;
                 ck(delta_read_chunk(delta_dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin",
-                                    refs[(size_t) j].key, j * blk, (j + 1) * blk, payload, err), err.c_str());
+                                    refs[(size_t) j].key, j * span, (j + 1) * span, payload, err), err.c_str());
                 const size_t src = (size_t) (i * ch_layer + pagesC * (pb[0] + pb[1] + pb[2] + pb[3]));
                 std::memcpy(buf.data() + dest + (size_t) written, payload.data() + src, (size_t) (rowsC * idx4));
                 written += rowsC * idx4;
@@ -689,7 +711,7 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
                 std::vector<uint8_t> payload;
                 ck(delta_read_chunk(delta_dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin",
-                                    refs[(size_t) j].key, j * blk, (j + 1) * blk, payload, err), err.c_str());
+                                    refs[(size_t) j].key, j * span, (j + 1) * span, payload, err), err.c_str());
                 const size_t src = (size_t) ch_drafter + (size_t) ch_prefix;
                 std::memcpy(buf.data() + dest + (size_t) written, payload.data() + src, (size_t) (pagesC * pb[k]));
                 written += pagesC * pb[k];
@@ -725,19 +747,20 @@ void fixture_reader(const std::string& root) {
     S.tag_kv();
     const ConversationCheckpoint cp = boundary_checkpoint(S, L_BOUNDARY, 8);
     const std::string dir = root + "/reader";
+    const ConversationCheckpoint cp300 = boundary_checkpoint(S, 300, 300);
     std::string err;
-    const bool d_ok = strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp,
+    const bool d_ok = strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp300.ids, cp300.imgs, true, &cp300,
                                                       WFP, 7, 1, err);
     ck(d_ok, ("the reader's store dumps: " + err).c_str());
     const std::string v3_path = root + "/reader-v3.bin";
-    const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err);
+    const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp300.ids, cp300.imgs, true, &cp300, err);
     ck(v3_ok, ("the reader's v3 control writes: " + err).c_str());
 
     strata::platform::NvmeEntry e;
     e.path = dir + "/log-7-1.manifest";
-    e.ids = cp.ids;
-    e.imgs = cp.imgs;
-    e.L = L_BOUNDARY;
+    e.ids = cp300.ids;
+    e.imgs = cp300.imgs;
+    e.L = 300;
     e.cvec = true;
     e.kind = 1;
 
@@ -751,8 +774,8 @@ void fixture_reader(const std::string& root) {
                Restore::restored, ("the v3 restore of the control file: " + err).c_str());
         ck(strata::platform::delta_restore(e, R2.ss, R2.draft, R2.g, WFP, ids2, imgs2, cvec2, L2, err) ==
                Restore::restored, ("the delta restore: " + err).c_str());
-        ck_eq(L1, L_BOUNDARY, "the v3 restore's length");
-        ck_eq(L2, L_BOUNDARY, "the delta restore's length");
+        ck_eq(L1, 300, "the v3 restore's length");
+        ck_eq(L2, 300, "the delta restore's length");
         ck(ids1 == ids2 && imgs1 == imgs2 && cvec1 == cvec2, "the two restores hand back the same prefix and images");
         for (int64_t i = 0; i < S.g.n_qsa_layers(); ++i) {
             const Store& a = R1.stores[(size_t) i];
@@ -762,16 +785,30 @@ void fixture_reader(const std::string& root) {
                "the indexer state is identical");
         }
         ck(R1.gdn == R2.gdn && R1.ple == R2.ple, "the running state is identical");
+        if (!(R1.draft_store.k == R2.draft_store.k && R1.draft_store.ks == R2.draft_store.ks)) {
+            for (size_t i = 0; i < R1.draft_store.k.size(); ++i)
+                if (R1.draft_store.k[i] != R2.draft_store.k[i]) {
+                    std::fprintf(stderr, "DEBUG drafter k diff at byte %zu (page %zu): R1=%02x R2=%02x\n", i,
+                                 i / (size_t) block_bytes(0), R1.draft_store.k[i], R2.draft_store.k[i]);
+                    break;
+                }
+            for (size_t i = 0; i < R1.draft_store.ks.size(); ++i)
+                if (R1.draft_store.ks[i] != R2.draft_store.ks[i]) {
+                    std::fprintf(stderr, "DEBUG drafter ks diff at byte %zu: R1=%02x R2=%02x\n", i,
+                                 R1.draft_store.ks[i], R2.draft_store.ks[i]);
+                    break;
+                }
+        }
         ck(R1.draft_store.k == R2.draft_store.k && R1.draft_store.ks == R2.draft_store.ks,
            "the drafter's host copy is identical");
         ck(R1.ss.ple_prev[0] == R2.ss.ple_prev[0] && R1.ss.ple_prev[1] == R2.ss.ple_prev[1],
            "and the PLE window");
         // and the delta restore is a REAL restore: the prefix actually landed in the fresh session
-        const int64_t pages = (L_BOUNDARY + SHP.page_size - 1) / SHP.page_size;
+        const int64_t pages = (300 + SHP.page_size - 1) / SHP.page_size;
         ck(std::equal(R2.stores[0].k.begin(), R2.stores[0].k.begin() + pages * block_bytes(0), S.stores[0].k.begin()),
            "the restored KV equals the dumper's, page for page");
         ck(((const float*) R2.stores[0].dead.data())[0] == 987654.0f, "the dead key is the checkpoint's");
-        ck(((const float*) R2.stores[0].pooled.data())[(L_BOUNDARY / SHP.idx_block) * S.g.idx_key_dim] == 987654.0f,
+        ck(((const float*) R2.stores[0].pooled.data())[(300 / SHP.idx_block) * S.g.idx_key_dim] == 987654.0f,
            "C3: the spare row was re-published to the dead key");
     }
 
@@ -811,12 +848,13 @@ void fixture_reader(const std::string& root) {
         std::vector<strata::platform::DeltaChunkRef> refs;
         strata::platform::DeltaManifestHeader m;
         ck(strata::platform::delta_read_manifest(e.path, m, ids, imgs, refs, err), "the manifest reads");
+        ck_eq((int64_t) refs.size(), 1, "a 300-token boundary sealed exactly one 256-token chunk");
         const std::string victim =
-            dir + "/chunks/" + strata::platform::delta_key_name(refs[1].key) + ".bin";
+            dir + "/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin";
         const std::string kept = victim + ".kept";
         fs::rename(victim, kept);
         expect_invalid("chunks/", "a missing chunk is the recoverable class");
-        ck(last_error.find(strata::platform::delta_key_name(refs[1].key)) != std::string::npos,
+        ck(last_error.find(strata::platform::delta_key_name(refs[0].key)) != std::string::npos,
            "and the refusal names the chunk's key");
         fs::rename(kept, victim);
     }
@@ -829,7 +867,7 @@ void fixture_reader(const std::string& root) {
         const std::string victim = dir + "/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin";
         const std::vector<uint8_t> good = slurp(victim);
         std::ofstream f(victim, std::ios::binary | std::ios::trunc);
-        f.write((const char*) good.data(), (std::streamsize) (good.size() - 5));
+        f.write((const char*) good.data(), (std::streamsize) (good.size() - 5000));
         f.close();
         expect_invalid("truncated or oversized", "a truncated chunk is the recoverable class");
         { std::ofstream f2(victim, std::ios::binary | std::ios::trunc);
@@ -922,14 +960,14 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         ck(delta.open(root + "/supersede", S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
            "the store opens");
-        const ConversationCheckpoint cp10 = boundary_checkpoint(S, 10, 8);
-        ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &cp10, err), "dump at 10");
+        const ConversationCheckpoint cp256 = boundary_checkpoint(S, 256, 256);
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(256), {}, true, &cp256, err), "dump at 256");
         const std::string first_head = delta.entries()[0].path;
-        const ConversationCheckpoint cp18 = boundary_checkpoint(S, 18, 16);
-        ck(delta.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &cp18, err), "dump at 18");
+        const ConversationCheckpoint cp600 = boundary_checkpoint(S, 600, 600);
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(600), {}, true, &cp600, err), "dump at 600");
         ck_eq((int64_t) delta.size(), 1, "still one conversation");
         ck(!fs::exists(first_head), "the old head's manifest was unlinked");
-        ck_eq(count_files(root + "/supersede/delta/chunks", ""), 4, "and the chunks accumulated (2 + 2 new)");
+        ck_eq(count_files(root + "/supersede/delta/chunks", ""), 2, "and the chunks accumulated (1 + 1 new)");
     }
     {   // THE P2-2 TEST: fork sharing survives eviction.  Two conversations share most of their chunks (a cross-
         // restart fork: the second store instance's head tracking is empty); evicting the first must NOT delete
@@ -943,20 +981,20 @@ void fixture_store(const std::string& root) {
         {
             strata::platform::KvDeltaStore first;   // "process 1"
             ck(first.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 1 opens");
-            const ConversationCheckpoint fa = boundary_checkpoint(S, 10, 8);
-            ck(first.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &fa, err), "A dumps at 10");
+            const ConversationCheckpoint fa = boundary_checkpoint(S, 300, 300);
+            ck(first.dump(S.ss, S.draft, S.g, ids_of(300), {}, true, &fa, err), "A dumps at 300");
         }
         std::vector<std::string> shared_names;
         for (const auto& de : fs::directory_iterator(dir + "/delta/chunks"))
             shared_names.push_back(de.path().filename().string());
-        ck_eq((int64_t) shared_names.size(), 2, "A sealed two chunks");
-        std::vector<int32_t> forked = ids_of(14);          // B: A's prefix, then a different tail
-        for (int64_t i = 10; i < 14; ++i) forked[(size_t) i] = 700 + (int32_t) i;
+        ck_eq((int64_t) shared_names.size(), 1, "A sealed one 256-token chunk");
+        std::vector<int32_t> forked = ids_of(400);         // B: A's whole first chunk, then a different tail
+        for (int64_t i = 256; i < 400; ++i) forked[(size_t) i] = 700 + (int32_t) (i % 140);
         {
             strata::platform::KvDeltaStore second;   // "process 2": a restart - nothing superseded
             ck(second.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 2 opens");
             ck_eq((int64_t) second.size(), 1, "the scan sees A");
-            const ConversationCheckpoint fb = boundary_checkpoint(S, 14, 12);
+            const ConversationCheckpoint fb = boundary_checkpoint(S, 400, 400);
             ck(second.dump(S.ss, S.draft, S.g, forked, {}, true, &fb, err), "B dumps");
             ck_eq((int64_t) second.size(), 2, "A and B are BOTH live now");
         }
@@ -965,7 +1003,7 @@ void fixture_store(const std::string& root) {
         ck_eq((int64_t) both.size(), 2, "both manifests scanned");
         // evict A: cap = A's bytes exactly (A is the oldest mtime)
         const strata::platform::NvmeEntry* a = nullptr;
-        for (const strata::platform::NvmeEntry& e : both.entries()) if (e.ids.size() == 10) a = &e;
+        for (const strata::platform::NvmeEntry& e : both.entries()) if (e.ids.size() == 300) a = &e;
         ck(a != nullptr, "A is in the store");
         const uint64_t cap = both.total_bytes() - a->bytes;
         kv_delta_enforce_cap(nov3, both, (int64_t) cap);
@@ -975,15 +1013,15 @@ void fixture_store(const std::string& root) {
             ck(fs::exists(dir + "/delta/chunks/" + name),
                ("the shared chunk " + name + " SURVIVED A's eviction (B references it)").c_str());
         {   // evict B too: a THIRD conversation gives the never-empty policy something to keep
-            const ConversationCheckpoint fc = boundary_checkpoint(S, 20, 16);
-            std::vector<int32_t> third = ids_of(20);
-            for (int64_t i = 14; i < 20; ++i) third[(size_t) i] = 800 + (int32_t) i;   // extends nothing live
+            const ConversationCheckpoint fc = boundary_checkpoint(S, 400, 400);
+            std::vector<int32_t> third = ids_of(400);
+            for (int64_t i = 0; i < 400; ++i) third[(size_t) i] = 800 + (int32_t) (i % 150);   // extends nothing live
             ck(both.dump(S.ss, S.draft, S.g, third, {}, true, &fc, err), "C dumps");
             kv_delta_enforce_cap(nov3, both, 1);   // 1 byte: evict everything evictable
             ck_eq((int64_t) both.size(), 1, "B evicted (C stands: the policy keeps the last entry)");
             both.sweep();
-            ck_eq((int64_t) count_files(dir + "/delta/chunks", ""), 5,
-                  "and with A and B gone, only C's own five chunks survive the sweep (sealed(20) = 20 = 5)");
+            ck_eq((int64_t) count_files(dir + "/delta/chunks", ""), 1,
+                  "and with A and B gone, only C's own chunk survives the sweep (sealed(400) = 256 = 1)");
         }
     }
     {   // TWO-TIER SINGLE CAP: eviction order is global oldest-mtime; the accounting counts both tiers
@@ -1017,10 +1055,10 @@ void fixture_store(const std::string& root) {
         {
             strata::platform::KvDeltaStore d;
             ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
-            const ConversationCheckpoint b10 = boundary_checkpoint(S, 10, 8);
-            const ConversationCheckpoint b18 = boundary_checkpoint(S, 18, 16);
-            ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &b10, err), "A");
-            ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &b18, err), "B");
+            const ConversationCheckpoint b10 = boundary_checkpoint(S, 256, 256);
+            const ConversationCheckpoint b18 = boundary_checkpoint(S, 600, 600);
+            ck(d.dump(S.ss, S.draft, S.g, ids_of(256), {}, true, &b10, err), "A");
+            ck(d.dump(S.ss, S.draft, S.g, ids_of(600), {}, true, &b18, err), "B");
         }
         strata::platform::KvDeltaStore d;
         ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store reopens");
@@ -1040,8 +1078,8 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvDeltaStore d;
         ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
-        const ConversationCheckpoint r10 = boundary_checkpoint(S, 10, 8);
-        const ConversationCheckpoint r18 = boundary_checkpoint(S, 18, 16);
+        const ConversationCheckpoint r10 = boundary_checkpoint(S, 256, 256);
+        const ConversationCheckpoint r18 = boundary_checkpoint(S, 600, 600);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &r10, err), "A (will go stale)");
         ::sleep(1);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err), "B (the active one)");
@@ -1049,7 +1087,7 @@ void fixture_store(const std::string& root) {
         const uint64_t total = d.total_bytes();
         kv_delta_enforce_cap(nov3, d, (int64_t) total - 1);
         ck_eq((int64_t) d.size(), 1, "one was evicted");
-        ck_eq((int64_t) d.entries()[0].L, 18, "and it was A: the re-dump kept B's mtime fresh");
+        ck_eq((int64_t) d.entries()[0].L, 600, "and it was A: the re-dump kept B's mtime fresh");
     }
     {   // P7 AT THE STORE LEVEL: an externally deleted chunk degrades to refuse-and-drop, and drop() works
         const std::string dir = root + "/p7";
@@ -1060,8 +1098,8 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvDeltaStore d;
         ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
-        const ConversationCheckpoint p10 = boundary_checkpoint(S, 10, 8);
-        ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &p10, err), "dumped");
+        const ConversationCheckpoint p10 = boundary_checkpoint(S, 300, 300);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(300), {}, true, &p10, err), "dumped");
         const strata::platform::NvmeEntry e = d.entries()[0];
         std::vector<int32_t> ids;
         std::vector<ConversationImageKey> imgs;
@@ -1209,8 +1247,8 @@ void fixture_fuzz(const std::string& root) {
             if (kind == 0 && !live.empty()) {   // EXTEND a random live conversation
                 const size_t c = (size_t) rnd(0, (int64_t) live.size() - 1);
                 FuzzConv f = live[c];
-                if ((int64_t) f.ids.size() + 8 > 28) continue;   // the delta path's gate: T <= the drafter ring
-                const int64_t grow = rnd(1, 8);
+                if ((int64_t) f.ids.size() + 40 > 1000) continue;   // the delta path's gate: T <= the drafter ring
+                const int64_t grow = rnd(8, 40);
                 for (int64_t i = 0; i < grow; ++i) f.ids.push_back(700 + (int32_t) ((f.ids.size() * 13 + i) % 500));
                 do_dump(f);
             } else if (kind == 1 && !live.empty()) {   // FORK at a random prefix of a random conversation
@@ -1218,13 +1256,13 @@ void fixture_fuzz(const std::string& root) {
                 const int64_t p = rnd(1, (int64_t) live[c].ids.size());
                 FuzzConv f;
                 f.ids.assign(live[c].ids.begin(), live[c].ids.begin() + (int) p);
-                const int64_t tail = rnd(0, 28 - p > 8 ? 8 : 28 - p);   // keep the fork inside the ring too
+                const int64_t tail = rnd(0, 1000 - p > 40 ? 40 : 1000 - p);   // keep the fork inside the ring too
                 for (int64_t i = 0; i < tail; ++i) f.ids.push_back(900 + (int32_t) ((p * 7 + i) % 400));
                 if (f.ids.empty()) continue;
                 do_dump(f);   // an in-epoch fork that extended the process's head REPLACED it (§5.14)
             } else if (kind == 2) {   // a NEW conversation: ids that extend nothing
                 FuzzConv f;
-                const int64_t n = rnd(5, 28);
+                const int64_t n = rnd(300, 900);
                 for (int64_t i = 0; i < n; ++i) f.ids.push_back(100 + (int32_t) ((seed * 31 + op * 7 + i) % 900));
                 do_dump(std::move(f));
             } else if (kind == 3 && !live.empty()) {   // RE-DUMP the same T (idempotent)
@@ -1234,7 +1272,7 @@ void fixture_fuzz(const std::string& root) {
                 setenv("STRATA_DELTA_FAIL_AT", crash_opts[rng() % 5], 1);
                 {
                     FuzzConv f;
-                    f.ids = ids_of(rnd(5, 28));
+                    f.ids = ids_of(rnd(300, 900));
                     const ConversationCheckpoint cp = checkpoint_for((int64_t) f.ids.size());
                     f.imgs = cp.imgs;
                     std::string derr;
@@ -1433,7 +1471,8 @@ void fixture_fuzz(const std::string& root) {
 
 void fixture_byte_identity(const std::string& root) {
     const uint64_t WFP = 0xDEADBEEF12345678ull;   // any fixed weight-set fingerprint - it rides in the manifest
-    const int64_t Ts[] = {3, 4, 5, 10, 18};   // sub-BLOCK, exactly BLOCK, BLOCK+1, mid, several BLOCKs
+    // sub-span boundaries (all-tail), exactly one span, span+1, and boundaries crossing 2-3 spans
+    const int64_t Ts[] = {3, 10, 18, 256, 257, 517, 700};
     for (int64_t T : Ts) {
         Session S;
         S.seed_indexer(987654.0f, T / SHP.idx_block, 555.0f);
@@ -1496,18 +1535,18 @@ void fixture_writer_semantics(const std::string& root) {
         Session S;
         S.seed_indexer(1.0f, 4, 2.0f);
         S.tag_kv();
-        const strata::platform::DeltaHead h1 = dump_head(S, 10, dir, 1, nullptr, WFP);
-        ck_eq(h1.L, 10, "the head is the boundary it was dumped at");
-        ck_eq(count_files(dir + "/chunks", ""), 2, "sealed(10) = 8 = two chunks on a fresh store");
+        const strata::platform::DeltaHead h1 = dump_head(S, 256, dir, 1, nullptr, WFP);
+        ck_eq(h1.L, 256, "the head is the boundary it was dumped at");
+        ck_eq(count_files(dir + "/chunks", ""), 1, "sealed(256) = one 256-token chunk on a fresh store");
         // the extended session: the SAME arrays (the KV below T1 is untouched by the generation that followed),
-        // a boundary at 18
-        const strata::platform::DeltaHead h2 = dump_head(S, 18, dir, 2, &h1, WFP);
-        ck_eq(h2.L, 18, "the second head is the grown boundary");
-        ck_eq(count_files(dir + "/chunks", ""), 4, "sealed(18) = 16 = four chunks, of which two are the first dump's");
+        // a boundary at 600
+        const strata::platform::DeltaHead h2 = dump_head(S, 600, dir, 2, &h1, WFP);
+        ck_eq(h2.L, 600, "the second head is the grown boundary");
+        ck_eq(count_files(dir + "/chunks", ""), 2, "sealed(600) = 512 = two chunks, of which one is the first dump's");
         ck(count_files(dir, "log-") == 1, "the previous head's manifest was unlinked: one head per conversation");
         // the byte-identity oracle ALSO holds for the grown head (the §5.2 invariant is per boundary, not per dump)
         const std::string v3_path = root + "/growth-v3.bin";
-        const ConversationCheckpoint cp = boundary_checkpoint(S, 18, (int32_t) (16));
+        const ConversationCheckpoint cp = boundary_checkpoint(S, 600, (int32_t) (600 / SHP.idx_block * SHP.idx_block));
         std::string err;
         const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err);
         ck(v3_ok, ("the v3 dump of the grown boundary writes: " + err).c_str());
@@ -1520,10 +1559,10 @@ void fixture_writer_semantics(const std::string& root) {
         Session S;
         S.seed_indexer(1.0f, 2, 2.0f);
         S.tag_kv();
-        const strata::platform::DeltaHead h1 = dump_head(S, 10, dir, 1, nullptr, WFP);
+        const strata::platform::DeltaHead h1 = dump_head(S, 256, dir, 1, nullptr, WFP);
         const int before = count_files(dir + "/chunks", "");
-        const strata::platform::DeltaHead h2 = dump_head(S, 10, dir, 2, &h1, WFP);
-        ck_eq(h2.L, 10, "the re-dump is keyed at the same boundary");
+        const strata::platform::DeltaHead h2 = dump_head(S, 256, dir, 2, &h1, WFP);
+        ck_eq(h2.L, 256, "the re-dump is keyed at the same boundary");
         ck_eq(count_files(dir + "/chunks", ""), before, "an idempotent re-dump writes ZERO new chunk files");
         ck(count_files(dir, "log-") == 1, "and leaves exactly one head");
     }
@@ -1532,16 +1571,17 @@ void fixture_writer_semantics(const std::string& root) {
         Session S;
         S.seed_indexer(1.0f, 2, 2.0f);
         S.tag_kv();
-        const strata::platform::DeltaHead h1 = dump_head(S, 10, dir, 1, nullptr, WFP);
-        // the two chunks the parent head sealed, by name - the fork must REUSE exactly these files
+        const strata::platform::DeltaHead h1 = dump_head(S, 256, dir, 1, nullptr, WFP);
+        // the chunk the parent head sealed, by name - the fork must REUSE exactly this file
         std::vector<std::string> parent_chunks;
         std::error_code ec;
         for (const auto& de : fs::directory_iterator(dir + "/chunks", ec))
             parent_chunks.push_back(de.path().filename().string());
-        ck_eq((int64_t) parent_chunks.size(), 2, "the parent sealed two chunks");
-        // the fork: a second conversation branching at the boundary - new ids share the first 10 tokens
-        std::vector<int32_t> forked = ids_of(14);          // the SAME first 10 tokens, then a different tail
-        for (int64_t i = 10; i < 14; ++i) forked[(size_t) i] = 700 + (int32_t) i;
+        ck_eq((int64_t) parent_chunks.size(), 1, "the parent sealed one 256-token chunk");
+        // the fork: a second conversation sharing the parent's whole first chunk (the divergence sits INSIDE
+        // the second chunk's span) and running to 600 - so chunk 0 is shared and chunk 1 is brand new
+        std::vector<int32_t> forked = ids_of(600);         // the SAME first 256 tokens, then a different tail
+        for (int64_t i = 256; i < 600; ++i) forked[(size_t) i] = 700 + (int32_t) (i % 290);
         ConversationCheckpoint cp;
         cp.ids = forked;
         cp.imgs = {};
@@ -1550,22 +1590,34 @@ void fixture_writer_semantics(const std::string& root) {
         cp.dead.assign((size_t) S.g.n_qsa_layers() * S.z.dead, 0);
         cp.block_pos.assign((size_t) S.g.n_qsa_layers() * S.z.block_pos, 0);
         std::string err;
+        strata::platform::DeltaManifestHeader m0;
+        std::vector<int32_t> ids0;
+        std::vector<ConversationImageKey> imgs0;
+        std::vector<strata::platform::DeltaChunkRef> rf0;
+        ck(strata::platform::delta_read_manifest(dir + "/log-7-1.manifest", m0, ids0, imgs0, rf0, err),
+           "the parent's manifest reads before the fork");
+        ck_eq((int64_t) rf0.size(), 1, "the parent sealed one chunk");
+        const uint64_t parent_key0 = rf0[(size_t) 0].key;
         const bool fork_ok = strata::platform::delta_dump_at(&h1, dir, S.ss, S.draft, S.g, forked, {}, true, &cp, WFP, 7, 3, err);
         ck(fork_ok, ("the fork's dump writes: " + err).c_str());
-        ck_eq(count_files(dir + "/chunks", ""), 3,
-              "sealed(14) = 12 = three chunks; the two below the fork point are the SAME files the parent used");
+        ck_eq(count_files(dir + "/chunks", ""), 2,
+              "sealed(600) = 512 = two chunks; the one below the fork point is the SAME file the parent used");
         for (const std::string& name : parent_chunks)
             ck(fs::exists(dir + "/chunks/" + name), ("the parent's chunk " + name + " is still on disk - shared, not rewritten").c_str());
         // the fork's manifest references the parent's chunks BY KEY for the shared prefix (derived from the ids,
-        // never stored - which is exactly why sharing needs no parent references)
+        // never stored).  The parent's manifest was read BEFORE the fork: a strict-prefix extension SUPERSEDES
+        // the process's previous head (the writer cannot tell a fork from growth - the store's head-tracking
+        // rule, working as designed), so log-7-1.manifest no longer exists here.
         strata::platform::DeltaManifestHeader m;
         std::vector<int32_t> ids;
         std::vector<ConversationImageKey> imgs;
         std::vector<strata::platform::DeltaChunkRef> rf;
         ck(strata::platform::delta_read_manifest(dir + "/log-7-3.manifest", m, ids, imgs, rf, err),
            "the fork's manifest reads");
-        ck_eq((int64_t) rf.size(), 3, "three chunk refs");
-        for (int j = 0; j < 2; ++j)
+        ck_eq((int64_t) rf.size(), 2, "two chunk refs");
+        ck_eq(rf[(size_t) 0].key, parent_key0,
+              "the fork's first chunk ref IS the parent's (shared by content, derived from the shared ids)");
+        for (int j = 0; j < 1; ++j)
             ck(fs::exists(dir + "/chunks/" + strata::platform::delta_key_name(rf[(size_t) j].key) + ".bin"),
                "the fork's chunk ref names a file that existed before the fork");
         ck(count_files(dir, "log-") == 1,
@@ -1579,7 +1631,7 @@ void fixture_writer_semantics(const std::string& root) {
         S.tag_kv();
         reset_faults();
         fail_copy = 1;   // the first pooled-rows D2H copy fails, before any file is written
-        const ConversationCheckpoint cp = boundary_checkpoint(S, 10, 8);
+        const ConversationCheckpoint cp = boundary_checkpoint(S, 256, 256);
         std::string err;
         ck(!strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, WFP, 7, 1, err),
            "a dump whose device read fails returns false");
@@ -1603,6 +1655,7 @@ void fixture_writer_semantics(const std::string& root) {
             return strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp.ids, {}, true, nullptr, 0, 1, 1, e);
         }, "turn boundaries only");
         expect_fail([&](std::string& e) {   // T past the drafter ring: the fallback message, and the caller falls back
+            S.draft.max_cells = 28;         // shrink the ring for the gate: T=30 exceeds it, the pooled guard passes
             const ConversationCheckpoint cp30 = boundary_checkpoint(S, 30, 28);
             return strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, ids_of(30), {}, true,
                                                    &cp30, 0, 1, 1, e);
@@ -1620,9 +1673,11 @@ void fixture_writer_semantics(const std::string& root) {
         Session S;
         S.seed_indexer(1.0f, 2, 2.0f);
         S.tag_kv();
-        // the crash hooks fire on a GROWN dump (T=10 -> T=18): the second write of a growing conversation, which
-        // is the scenario the matrix's supersede rows describe
-        const ConversationCheckpoint cp = boundary_checkpoint(S, 18, 16);
+        // the crash hooks fire on a GROWN dump (256 -> 600): the second write of a growing conversation, which
+        // is the scenario the matrix's supersede rows describe.  The h1 head is what C4/C5's both-heads row needs.
+        const std::string dir0 = root + "/crash-head";   // a scratch dir for the shared h1 head (never scanned)
+        const strata::platform::DeltaHead h1c = dump_head(S, 256, dir0, 1, nullptr, WFP);
+        const ConversationCheckpoint cp = boundary_checkpoint(S, 600, (int32_t) (600 / SHP.idx_block * SHP.idx_block));
         auto dump_with = [&](const char* at, const std::string& dir, const strata::platform::DeltaHead* prev,
                              int64_t seq) {
             if (at) setenv("STRATA_DELTA_FAIL_AT", at, 1); else unsetenv("STRATA_DELTA_FAIL_AT");
@@ -1640,33 +1695,33 @@ void fixture_writer_semantics(const std::string& root) {
             ck_eq(count_files(dir + "/chunks", ".tmp-"), 1, "C1 leaves exactly the temp the sweep will reclaim");
             ck_eq(count_files(dir, "log-"), 0, "and no manifest");
         }
-        {   // C2: the first chunk is durable, nothing else
+        {   // C2: the first NEW chunk is durable, nothing else (turn 2 reuses turn 1's chunk and seals one new)
             const std::string dir = root + "/c2";
-            const auto r = dump_with("C2", dir, nullptr, 1);
+            const auto r = dump_with("C2", dir, &h1c, 1);
             ck(!r.first, "C2 aborts the dump");
-            ck_eq(count_real(dir + "/chunks"), 1, "C2 leaves the first chunk durable");
+            ck_eq(count_real(dir + "/chunks"), 1, "C2 leaves the NEW chunk durable (turn 1's shared chunk lives in the h1c dir)");
             ck_eq(count_files(dir + "/chunks", ".tmp-"), 0, "and no temp");
             ck_eq(count_files(dir, "log-"), 0, "and no manifest");
         }
         {   // C3: chunks + state, still no manifest
             const std::string dir = root + "/c3";
-            const auto r = dump_with("C3", dir, nullptr, 1);
+            const auto r = dump_with("C3", dir, &h1c, 1);
             ck(!r.first, "C3 aborts the dump");
-            ck_eq(count_real(dir + "/chunks"), 4, "C3 leaves all the new sealed chunks (sealed(18) = 16 = four)");
+            ck_eq(count_real(dir + "/chunks"), 1, "C3 leaves the new chunk (turn 1's shared chunk lives in the h1c dir)");
             ck_eq(count_real(dir + "/states"), 1, "and the state record");
             ck_eq(count_files(dir, "log-"), 0, "and still no manifest");
         }
         {   // C4 - THE INTERESTING ROW: the new head is committed, the old head STILL EXISTS; both reassemble
             const std::string dir = root + "/c4";
-            const strata::platform::DeltaHead h1 = dump_head(S, 10, dir, 1, nullptr, WFP);
+            const strata::platform::DeltaHead h1 = dump_head(S, 256, dir, 1, nullptr, WFP);
             const auto r = dump_with("C4", dir, &h1, 2);
             ck(!r.first, "C4 aborts the dump after the new manifest is durable");
             ck_eq(count_files(dir, "log-"), 2, "BOTH heads are on disk: the new head was complete before the old vanished");
             // byte-identity for both heads, each against its own boundary
             {
                 const std::string v3a = root + "/c4-v3a.bin", v3b = root + "/c4-v3b.bin";
-                const ConversationCheckpoint cp10 = boundary_checkpoint(S, 10, 8);
-                const ConversationCheckpoint cp18 = boundary_checkpoint(S, 18, 16);
+                const ConversationCheckpoint cp10 = boundary_checkpoint(S, 256, 256);
+                const ConversationCheckpoint cp18 = boundary_checkpoint(S, 600, 600);
                 std::string err;
                 const bool a_ok = strata::platform::nvme_dump_at(v3a.c_str(), S.ss, S.draft, S.g, cp10.ids, cp10.imgs, true, &cp10, err);
                 ck(a_ok, ("C4's v3 control a writes: " + err).c_str());
@@ -1678,7 +1733,7 @@ void fixture_writer_semantics(const std::string& root) {
         }
         {   // C5: the old head is gone; the new head is the only one - the final state
             const std::string dir = root + "/c5";
-            const strata::platform::DeltaHead h1 = dump_head(S, 10, dir, 1, nullptr, WFP);
+            const strata::platform::DeltaHead h1 = dump_head(S, 256, dir, 1, nullptr, WFP);
             const auto r = dump_with("C5", dir, &h1, 2);
             ck(!r.first, "C5 aborts the dump after the old head was unlinked");
             ck_eq(count_files(dir, "log-"), 1, "exactly one head: the new one");
