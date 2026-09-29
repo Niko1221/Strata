@@ -5,6 +5,13 @@
 #include <limits>
 #include <sstream>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 using namespace strata::core;
 namespace {
 int checks = 0;
@@ -45,5 +52,15 @@ int main() {
     // Test the real provider without assuming any particular amount of free RAM.
     const auto available = conversation_available_memory();
     check(!available || conversation_memory_admit(available, 0, 0), "provider returns bytes or unknown");
+#if defined(_WIN32)
+    // Unknown must fail closed in production, but must not let a broken Windows provider pass this test.
+    // Compare with total physical memory, not a second available reading: other processes can allocate
+    // between calls. No pressure allocation or fixed free-memory assumption is needed.
+    MEMORYSTATUSEX physical{};
+    physical.dwLength = sizeof physical;
+    check(GlobalMemoryStatusEx(&physical) != 0, "Windows physical-memory API is available");
+    check(available.has_value() && *available <= physical.ullTotalPhys,
+          "Windows provider returns a known, physically bounded sample");
+#endif
     std::printf("conversation_memory_test: %d checks passed\n", checks);
 }
