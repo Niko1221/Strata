@@ -486,7 +486,9 @@ def engine_args(cfg: dict) -> list[str]:
 
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
-    compiled it) first on the library search path."""
+    compiled it) first on the library search path.  `env` in the config is merged last (the config wins), so
+    measured engine knobs (e.g. STRATA_HIPBLASLT_TUNING) survive a restart instead of living in one unit's
+    command line."""
     env = dict(os.environ)
     if gpu_list(cfg):                                # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
@@ -495,6 +497,8 @@ def child_env(cfg: dict) -> dict:
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+    for k, v in (cfg.get("env") or {}).items():
+        env[str(k)] = str(v)
     return env
 
 
