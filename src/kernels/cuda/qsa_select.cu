@@ -13,6 +13,20 @@ namespace {
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
 constexpr int SCORE_WARPS = 8;
 constexpr int TOPK_T = 256;
+// Query tiling for the block scorer: one block scores KEY_GROUPS * SCORE_WARPS key rows (one per warp)
+// against QUERY_TILE queries, so each pooled key row is read from DRAM once per tile instead of once per
+// query (the old kernel re-read its 512 B of fp32 key for every (query, block) pair, which made the whole
+// indexer's DRAM traffic O(nq * n_bid) and the long prompts' collapse).  Same per-(query, block) arithmetic:
+// the key is held in registers and each query's dot is the old kernel's exact expression, so the scores are
+// bit-identical.
+#ifndef QSA_SCORE_QUERY_TILE
+#define QSA_SCORE_QUERY_TILE 8
+#endif
+#ifndef QSA_SCORE_KEY_GROUPS
+#define QSA_SCORE_KEY_GROUPS 4
+#endif
+constexpr int QUERY_TILE = QSA_SCORE_QUERY_TILE;
+constexpr int KEY_GROUPS = QSA_SCORE_KEY_GROUPS;
 
 __device__ __forceinline__ uint32_t order_key(float s) {
     const float v = s + 0.0f;
@@ -22,33 +36,61 @@ __device__ __forceinline__ uint32_t order_key(float s) {
 }
 
 __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_kernel(const float* __restrict__ pooled,
-                                                                        const float* __restrict__ dead,
-                                                                        const float* __restrict__ q_idx,
-                                                                        const int32_t* __restrict__ steps,
-                                                                        int64_t max_blocks, float* __restrict__ out) {
-    const int64_t qi = blockIdx.y;
-    const int32_t* st = steps + qi * kStepCount;
-    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid];
-    const int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5);
-    if (b > n_bid || b >= max_blocks) return;
-    const int lane = threadIdx.x & 31;
-    const float* key = (b == n_bid) ? dead : pooled + b * IDX_DIM;
-    const float4 k4 = *reinterpret_cast<const float4*>(key + lane * 4);
-    const float* q = q_idx + qi * IDX_HEADS * IDX_DIM + lane * 4;
-    float score = 0.0f;
+                                                                         const float* __restrict__ dead,
+                                                                         const float* __restrict__ q_idx,
+                                                                         const int32_t* __restrict__ steps,
+                                                                        int64_t max_blocks, int64_t nq,
+                                                                        float* __restrict__ out) {
+     const int lane = threadIdx.x & 31;
+    const int64_t qi0 = (int64_t) blockIdx.y * QUERY_TILE;
+    const int64_t b0 = (int64_t) blockIdx.x * (KEY_GROUPS * SCORE_WARPS) + (threadIdx.x >> 5);
+    // Each warp walks KEY_GROUPS key rows, one at a time, and scores all QUERY_TILE queries against the row in
+    // registers.  The queries of the tile are re-read for each key (L1/L2-hot: the same 2 KB per query), which
+    // leaves the DRAM traffic at one 512 B key read per (row, tile) instead of per (row, query).
+    for (int kg = 0; kg < KEY_GROUPS; ++kg) {
+        const int64_t b = b0 + (int64_t) kg * SCORE_WARPS;
+        if (b >= max_blocks) return;
+        // The block's key row, exact floats for this lane (the old kernel's `key + lane * 4` load).
+        const float4 k4 = *reinterpret_cast<const float4*>(pooled + b * IDX_DIM + lane * 4);
 #pragma unroll
-    for (int h = 0; h < IDX_HEADS; ++h) {
-        const float4 q4 = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
-        float d = k4.x * q4.x + k4.y * q4.y + k4.z * q4.z + k4.w * q4.w;
+        for (int qq = 0; qq < QUERY_TILE; ++qq) {
+            const int64_t qi = qi0 + qq;
+            if (qi >= nq) break;
+            const int32_t* st = steps + qi * kStepCount;
+            const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid];
+            if (b > n_bid) continue;
+            float score = 0.0f;
+            const float* q = q_idx + qi * IDX_HEADS * IDX_DIM + lane * 4;
+            if (b == n_bid) {
+                // The incomplete tail block: its key is the spare slot's (dead), exactly as before.
+                const float4 d4 = *reinterpret_cast<const float4*>(dead + lane * 4);
 #pragma unroll
-        for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
-        score += d > 0.0f ? d : 0.0f;
-    }
-    if (lane == 0) {
-        if (b == n_bid && n_kv % R != 0) score += 1e9f;
-        out[qi * max_blocks + b] = score;
-    }
-}
+                for (int h = 0; h < IDX_HEADS; ++h) {
+                    const float4 q4 = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
+                    float d = d4.x * q4.x + d4.y * q4.y + d4.z * q4.z + d4.w * q4.w;
+#pragma unroll
+                    for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
+                    score += d > 0.0f ? d : 0.0f;
+                }
+                if (lane == 0) {
+                    if (n_kv % R != 0) score += 1e9f;
+                    out[qi * max_blocks + b] = score;
+                }
+            } else {
+#pragma unroll
+                for (int h = 0; h < IDX_HEADS; ++h) {
+                    const float4 q4 = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
+                    float d = k4.x * q4.x + k4.y * q4.y + k4.z * q4.z + k4.w * q4.w;
+#pragma unroll
+                    for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
+                    score += d > 0.0f ? d : 0.0f;
+                }
+                if (lane == 0) out[qi * max_blocks + b] = score;
+            }
+        }
+     }
+ }
+
 
 __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restrict__ scores,
                                                             const int32_t* __restrict__ steps, int64_t max_blocks,
@@ -157,11 +199,12 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         std::fprintf(stderr, "qsa_block_scores: unsupported indexer geometry\n");
         std::exit(1);
     }
-    // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
+    // a block past the batch's largest n_bid returns at once: the grid need only reach that (C-1)
     const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
-    const dim3 grid((unsigned) ((reach + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
+    const dim3 grid((unsigned) ((reach + KEY_GROUPS * SCORE_WARPS - 1) / (KEY_GROUPS * SCORE_WARPS)),
+                    (unsigned) ((nq + QUERY_TILE - 1) / QUERY_TILE));
     block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, max_blocks,
-                                                                              scores);
+                                                                              nq, scores);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
