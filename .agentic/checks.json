@@ -1,0 +1,1 @@
+{"checks": [{"name": "ctest HIP suite (excl. documented ple_parity/platform_memory_test + Q2_0-fixture-blocked expert_parity/pool_test: no pack/full Q2_0 fixture on this host)", "argv": ["ctest", "--test-dir", "build-hip-mmq", "--output-on-failure", "--timeout", "120", "-E", "^(ple_parity|platform_memory_test|expert_parity|pool_test)$"], "timeout": 900}]}

@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -227,7 +227,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON
-  if(STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN)
+  # Declared HIP exclusion: this target links CUDA::cudart and exercises the tensor-core
+  # path that is compiled out under __HIP__; with STRATA_ENABLE_HIP it is not built.
+  if(STRATA_ENABLE_CUDA AND (STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN))
     add_executable(qsa_prompt_attn_parity src/kernels/qsa_prompt_attn_parity.cpp)
     target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
@@ -489,7 +491,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME cvec_parity COMMAND cvec_parity)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
-  if(STRATA_BUILD_TESTS)
+  # Declared exclusion: bench/micro/native_mmvq_multi.cpp is not present in this repository's
+  # history (nor upstream); the target is guarded so STRATA_BUILD_TESTS=ON configures cleanly.
+  # When the source is added, the guard drops away and the test registers as before.
+  if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp")
   add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
   target_include_directories(native_mmvq_multi PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_mmvq_multi PRIVATE strata_kernels ${_strata_gpu_runtime_target})
