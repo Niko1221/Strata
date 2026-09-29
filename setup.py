@@ -51,13 +51,20 @@ LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.zip"
 
 # The ready-made engine: <PREBUILT_URL><asset>, a zip with strata(.exe), strata-vision(.exe) and BUILD.json, built
-# by tools/make_release.py.  Set this to the GitHub release download folder when publishing, e.g.
+# by tools/make_release.py (Windows) and .github/workflows/linux-prebuilt.yml (Linux, attached to each published
+# release).  Set this to the GitHub release download folder when publishing, e.g.
 # "https://github.com/<you>/Strata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
 PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
-# the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
-CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
-MIN_DRIVER = 580                       # CUDA 13.0
+# The CUDA the ready-made engine is built with: 13.0 on Windows (driver 580 or newer), 12.8 on Linux, where cloud and
+# server GPUs often cannot update their driver (525 or newer).  STRATA_CUDA=12 or 13 picks the other one; a ready-made
+# engine built with another CUDA is not used (it would look for libraries this setup does not install).
+CUDA_MAJOR = 12 if (os.environ.get("STRATA_CUDA") or ("13" if WIN else "12")).strip().startswith("12") else 13
+# the CUDA libraries the ready-made engine loads (the same CUDA it is built with), from NVIDIA's pip packages
+CUDA_WHEELS = (["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"] if CUDA_MAJOR == 13 else
+               ["nvidia-cublas-cu12==12.8.5.5", "nvidia-cuda-runtime-cu12==12.8.90"])
+MIN_DRIVER = 580 if CUDA_MAJOR == 13 else 525
+TOOLKIT = "13.0" if CUDA_MAJOR == 13 else "12.8"   # what a compile installs when the PC has no CUDA Toolkit
 MIN_ENGINE = (0, 1, 27)                # v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
@@ -674,13 +681,18 @@ def pip_install(packages, what):
 
 
 def cuda_lib_dirs():
-    """Where pip put NVIDIA's CUDA libraries (nvidia/cu13/bin/x86_64 on Windows, nvidia/cu13/lib on Linux)."""
-    pattern = "cublas64_13.dll" if WIN else "libcublas.so.13*"
+    """Where pip put NVIDIA's CUDA libraries (nvidia/cu13/bin/x86_64 on Windows, nvidia/cu13/lib on Linux; CUDA 12's
+    packages keep cuBLAS and the runtime in folders of their own, nvidia/cublas/lib and nvidia/cuda_runtime/lib)."""
+    if CUDA_MAJOR == 13:
+        patterns = ["cublas64_13.dll"] if WIN else ["libcublas.so.13*"]
+    else:
+        patterns = ["cublas64_12.dll", "cudart64_12.dll"] if WIN else ["libcublas.so.12*", "libcudart.so.12*"]
     dirs = []
     for sp in {Path(p) for p in sys.path if p.endswith("site-packages")}:
-        for hit in (sp / "nvidia").rglob(pattern) if (sp / "nvidia").is_dir() else []:
-            if hit.parent not in dirs:
-                dirs.append(hit.parent)
+        for pattern in patterns:
+            for hit in (sp / "nvidia").rglob(pattern) if (sp / "nvidia").is_dir() else []:
+                if hit.parent not in dirs:
+                    dirs.append(hit.parent)
     return [str(d) for d in dirs]
 
 
@@ -856,6 +868,12 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
                  f"{need}: compiling instead")
         shutil.rmtree(tmp, ignore_errors=True)
         return None
+    built = str(meta.get("cuda") or "13").split(".")[0]
+    if built != str(CUDA_MAJOR):                       # it would look for libraries this setup does not install
+        warn(f"the ready-made engine is built with CUDA {meta.get('cuda', '13')} and this setup uses CUDA "
+             f"{CUDA_MAJOR} (STRATA_CUDA)" + ("" if updating else ": compiling instead"))
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
     archs = [int(a) for a in meta.get("archs", [])]
     miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
             if int(x) not in archs and not (meta.get("ptx") and int(x) > max(archs))]
@@ -955,7 +973,7 @@ def install_build_tools(gpu, yes):
     if not have_cc:
         missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler (build-essential)")
     if nvcc is None or cuda_v < need_cuda:
-        missing.append("the NVIDIA CUDA Toolkit 13.0")
+        missing.append(f"the NVIDIA CUDA Toolkit {TOOLKIT}")
     if not missing:
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
@@ -975,7 +993,7 @@ def install_build_tools(gpu, yes):
                  "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"],
                 check=False)
         if nvcc is None or cuda_v < need_cuda:
-            run([*wg, "--id", "Nvidia.CUDA", "--version", "13.0"], check=False)
+            run([*wg, "--id", "Nvidia.CUDA", "--version", TOOLKIT], check=False)
         vcvars = find_vcvars()
     else:
         apt = shutil.which("apt-get")
@@ -996,7 +1014,7 @@ def install_build_tools(gpu, yes):
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-" + TOOLKIT.replace(".", "-")])
     nvcc, cuda_v = find_nvcc()
     if (WIN and find_vcvars() is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")

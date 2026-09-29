@@ -1,0 +1,133 @@
+# The ready-made Linux engine setup.py downloads (strata-linux-x64.zip): the engine and the image encoder
+# (strata-vision), compiled with CUDA 12.8 - which runs on drivers from 525 up, as cloud and server GPUs often have -
+# for sm_80, sm_86 and sm_89 with PTX for newer cards, and the CPU code at the AVX2 baseline (STRATA_PORTABLE: the
+# AVX-512 kernels are still picked at run time on CPUs that have them). Compiling needs no GPU; nothing here runs it.
+#
+# A published release gets the zip and its SHA-256 as assets, so setup.py's releases/latest/download/ finds it next
+# to the Windows one. Run by hand (Actions > linux-prebuilt), it builds an artifact only; a pull request that changes
+# this file builds one too.
+name: linux-prebuilt
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      archs:
+        description: "CUDA architectures, space-separated; the last also gets PTX (80 A100, 86 RTX 30, 89 RTX 40 / L4)"
+        default: "80 86 89"
+  pull_request:
+    paths: [".github/workflows/linux-prebuilt.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04        # its glibc (2.35) is the oldest the engine then needs
+    timeout-minutes: 300
+    env:
+      ARCHS: ${{ github.event.inputs.archs || '80 86 89' }}
+      CUDA_HOME: /usr/local/cuda-12.8
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Room on the disk (the CUDA packages are several GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: CUDA 12.8 - the compiler and what the engine links (no driver)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 \
+            libcublas-dev-12-8 cuda-nvrtc-dev-12-8 cuda-driver-dev-12-8 ninja-build zip
+          echo "$CUDA_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: The architectures (each as machine code, the last also as PTX for newer cards)
+        run: |
+          last="${ARCHS##* }"
+          list=""
+          for a in $ARCHS; do [ "$a" = "$last" ] && list="$list;$a" || list="$list;$a-real"; done
+          echo "CUDA_ARCHS=${list#;}" >> "$GITHUB_ENV"
+          echo "CUDA architectures: ${list#;}"
+
+      - name: llama.cpp at the commit setup.py pins
+        run: |
+          C=$(python3 -c "import re; print(re.search(r'LLAMA_CPP_COMMIT = \"([0-9a-f]+)\"', open('setup.py').read()).group(1))")
+          mkdir -p third_party
+          curl -sSL "https://github.com/ggml-org/llama.cpp/archive/$C.tar.gz" | tar -xz -C third_party
+          mv "third_party/llama.cpp-$C" third_party/llama.cpp
+          echo "llama.cpp $C"
+
+      - name: Compile the engine
+        run: |
+          cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_PORTABLE=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHS" -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc" \
+            -DSTRATA_GGML_DIR="$PWD/third_party/llama.cpp"
+          # fewer jobs on a retry: a runner has 16 GB and nvcc is memory-hungry; a retry also gets past ptxas now and
+          # then failing on a file it just wrote (issue #45)
+          cmake --build build --target strata -j 4 || cmake --build build --target strata -j 2 \
+            || cmake --build build --target strata -j 1
+
+      - name: Compile the image encoder (strata-vision - llama.cpp's mtmd on CUDA, linked statically)
+        run: |
+          cmake -G Ninja -S tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_DIR="$PWD/third_party/llama.cpp" -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHS" -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc"
+          cmake --build build-vision --target strata-vision -j 4 || cmake --build build-vision --target strata-vision -j 2 \
+            || cmake --build build-vision --target strata-vision -j 1
+
+      - name: What they link (cuBLAS and the CUDA 12 runtime come from NVIDIA's pip packages at setup)
+        run: |
+          ldd build/strata | grep -E "cuda|cublas|stdc\+\+|libc\.so|libgomp" || true
+          ldd build-vision/bin/strata-vision | grep -E "cuda|cublas|stdc\+\+|libc\.so|libgomp" || true
+
+      - name: Package strata-linux-x64.zip (what setup.py's get_prebuilt unpacks into engine/)
+        run: |
+          mkdir -p dist/pkg
+          cp build/strata build-vision/bin/strata-vision LICENSE dist/pkg/
+          python3 - <<'EOF'
+          import json, os, re, subprocess
+          ver = re.search(r"project\(strata VERSION ([\d.]+)",
+                          open("CMakeLists.txt", encoding="utf-8-sig").read()).group(1)
+          archs = [int(a) for a in os.environ["ARCHS"].split()]
+          cuda = re.search(r"release (\d+\.\d+)",
+                           subprocess.run(["nvcc", "--version"], capture_output=True, text=True).stdout).group(1)
+          meta = {"version": ver, "archs": archs, "ptx": True, "cuda": cuda, "vision": "gpu",
+                  "cpu": "AVX2 baseline (STRATA_PORTABLE)", "commit": os.environ["GITHUB_SHA"]}
+          json.dump(meta, open("dist/pkg/BUILD.json", "w"), indent=1)
+          print(meta)
+          EOF
+          (cd dist/pkg && zip -9 -q ../strata-linux-x64.zip strata strata-vision LICENSE BUILD.json)
+          (cd dist && sha256sum strata-linux-x64.zip | tee strata-linux-x64.zip.sha256)
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-linux-x64
+          path: |
+            dist/strata-linux-x64.zip
+            dist/strata-linux-x64.zip.sha256
+          retention-days: 30
+
+  release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write           # this job alone: adding the zip to the release that started the run
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: strata-linux-x64
+          path: dist
+      - name: Attach strata-linux-x64.zip to ${{ github.event.release.tag_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" -R "$GITHUB_REPOSITORY" --clobber \
+            dist/strata-linux-x64.zip dist/strata-linux-x64.zip.sha256

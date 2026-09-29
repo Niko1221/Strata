@@ -120,7 +120,8 @@ window to stop the model.
 model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy finds them and sets itself up
 the same way - nothing big is downloaded again.
 
-**Linux:** run `./setup.sh` - same questions, same result.
+**Linux:** run `./setup.sh` - same questions, same result. Its ready-made engine is built with CUDA 12.8, so an NVIDIA
+driver from 525 up runs it (cloud GPUs often cannot update theirs); `STRATA_CUDA=13` uses CUDA 13 instead.
 
 ## Using it
 

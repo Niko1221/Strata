@@ -181,7 +181,8 @@ elsewhere) finds them and sets itself up the same way. The place is remembered p
 `~/.config/strata/settings.json`); `--data-dir` chooses another. Installs from before 0.1.16 are moved there by the next
 start (a rename on the same drive; files on another drive are used where they are).
 Python 3.12 if you have none (for your user account, no admin), a private Python environment, NVIDIA's CUDA libraries
-(from pip, ~0.4 GB), the ready-made Strata engine for RTX 20/30/40/50, the model and the MTP draft layer. If no
+(from pip, ~0.4 GB), the ready-made Strata engine for RTX 20/30/40/50 (on Linux: CUDA 12.8, driver 525 or newer, for
+A100, RTX 30 and RTX 40 / L4, and newer cards through PTX), the model and the MTP draft layer. If no
 ready-made engine fits your PC, it offers to install the build tools (Visual Studio Build Tools + CUDA Toolkit on
 Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GPU (asks first; 20-40 minutes once).
 
