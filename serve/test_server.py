@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -16,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
+from serve.kvcache import KvCache, parse_kv  # noqa: E402
 from serve.server import CTX_SLACK, ByteTokenizer, EngineDied, MockEngine, Service, StrataEngine, request_timings, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -931,6 +934,333 @@ class TimingsDrafts(unittest.TestCase):
         self.assertEqual((t["prompt_n"], t["cache_n"]), (20, 4))
         self.assertNotIn("draft_n", request_timings(24, 20, base))
         self.assertIsNone(request_timings(24, 20, {}))
+
+# --------------------------------------------------------------------------------- the cache tiers (serve/kvcache.py)
+# The exact lines step 2 prints (src/program/generate.cpp:3225 and :3544), used as the parser's contract.
+KV_START_LINE = ("KV start=1 entries=104 entries_bytes=213674598400 delta_entries=1 delta_bytes=1181116416 "
+                 "cap=107374182400")
+KV_REQUEST_LINE = ("KV src=delta resume=4107 promote_ms=1840 promote_bytes=1010893312 staging_bytes=1010893312 "
+                   "dump_ms=412 dump_bytes=1184923648 evict=1 evict_bytes=154000384 sweep=0 sweep_bytes=0 "
+                   "refused=0 transfer=0 entries=104 entries_bytes=213674598400 delta_entries=1 "
+                   "delta_bytes=1181116416 cap=107374182400 checkpoints=3 live=4131 total_dump_bytes=1184923648 "
+                   "total_promote_bytes=1010893312 total_refused=0 total_transfer=0 total_evict_bytes=154000384")
+KV_FIELDS = {"src", "resume", "promote_ms", "promote_bytes", "staging_bytes", "dump_ms", "dump_bytes", "evict",
+             "evict_bytes", "sweep", "sweep_bytes", "refused", "transfer", "entries", "entries_bytes",
+             "delta_entries", "delta_bytes", "cap", "checkpoints", "live", "total_dump_bytes",
+             "total_promote_bytes", "total_refused", "total_transfer", "total_evict_bytes"}
+
+
+class KvLine(unittest.TestCase):
+    """The engine's `KV` line: typed, unknown keys kept, and nothing a malformed line can raise."""
+
+    def test_the_startup_line(self):
+        self.assertEqual(parse_kv(KV_START_LINE),
+                         {"start": 1, "entries": 104, "entries_bytes": 213674598400, "delta_entries": 1,
+                          "delta_bytes": 1181116416, "cap": 107374182400})
+
+    def test_a_request_line_is_every_field_the_engine_prints(self):
+        kv = parse_kv(KV_REQUEST_LINE)
+        self.assertEqual(set(kv), KV_FIELDS)
+        self.assertEqual(kv["src"], "delta")                      # a value that is not a number stays a string
+        self.assertEqual(kv["resume"], 4107)
+        self.assertIsInstance(kv["resume"], int)
+        self.assertEqual(kv["promote_ms"], 1840.0)                # the two ms fields are floats
+        self.assertIsInstance(kv["promote_ms"], float)
+        self.assertEqual(kv["dump_ms"], 412.0)
+        self.assertEqual(kv["promote_bytes"], 1010893312)
+        self.assertEqual(kv["total_evict_bytes"], 154000384)
+
+    def test_an_unknown_key_is_kept(self):
+        kv = parse_kv("KV src=none resume=0 future_fact=7 note=whatever")
+        self.assertEqual(kv["future_fact"], 7)
+        self.assertEqual(kv["note"], "whatever")
+
+    def test_a_truncated_line_keeps_what_it_can(self):
+        self.assertEqual(parse_kv("KV src=delta resume= entries 123"), {"src": "delta"})
+        self.assertEqual(parse_kv("KV src=ram resume=41 promote"), {"src": "ram", "resume": 41})
+
+    def test_a_non_numeric_value_does_not_raise(self):
+        kv = parse_kv("KV resume=abc promote_ms=xyz dump_bytes= src=none")
+        self.assertEqual(kv["src"], "none")
+        self.assertEqual(kv["resume"], "abc")                     # kept, and every reader coerces it to None
+        self.assertEqual(kv["promote_ms"], "xyz")
+        self.assertNotIn("dump_bytes", kv)
+
+    def test_no_line_is_no_facts(self):
+        for line in ("KV", "", "   ", "DONE 5 10 1.0 2.0 eos 0 0 0 0 0", None):
+            with self.subTest(line=line):
+                self.assertEqual(parse_kv(line), {})
+
+
+def snapshot(path: str, version: int, length: int, size: int) -> None:
+    """A v3 snapshot the way kv_nvme.cpp writes one: magic, version, then the prefix length L."""
+    Path(path).write_bytes(struct.pack("<IIq", 0x5E564D45, version, length) + b"\0" * max(0, size - 16))
+
+
+def manifest(path: str, version: int, length: int, n_chunks: int, state_key: int, chunk_keys: list[int]) -> None:
+    """A delta head the way kv_delta.cpp writes one: the 264-byte header at its pinned offsets, the body's ids
+    and image keys, then the chunk refs, then the 8-byte footer."""
+    head = bytearray(264)
+    struct.pack_into("<II", head, 0, 0x474F4C44, version)
+    struct.pack_into("<q", head, 8, length)
+    struct.pack_into("<q", head, 16, 1024)                       # BLOCK
+    struct.pack_into("<q", head, 24, n_chunks)
+    struct.pack_into("<Q", head, 232, state_key)
+    refs = b"".join(struct.pack("<Qq", k, i * 1024) for i, k in enumerate(chunk_keys))
+    Path(path).write_bytes(bytes(head) + b"\0" * 40 + refs + b"\0" * 8)
+
+
+def delta_record(path: str, magic: int, size: int) -> None:
+    Path(path).write_bytes(struct.pack("<II", magic, 1) + b"\0" * max(0, size - 8))
+
+
+class CountingKvCache(KvCache):
+    """Counts the directory walks, so the throttle is measured instead of assumed."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.walks = 0
+
+    def _walk(self, now: float) -> dict:
+        self.walks += 1
+        return super()._walk(now)
+
+
+class KvStore(unittest.TestCase):
+    """The serve-side walk (design §2.2): per-class counts and bytes, the format version of each head record,
+    the delta tier's `.tmp-` residue, and the free space the engine never reports."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = os.path.join(cls.tmp.name, "kvstore")
+        now = time.time()
+        os.makedirs(cls.root)
+        snapshot(os.path.join(cls.root, "kv-1-1.bin"), 3, 4107, 1000)        # promotable, the warmest prefix
+        snapshot(os.path.join(cls.root, "kv-1-2.bin"), 3, 100, 500)          # promotable, the coldest
+        snapshot(os.path.join(cls.root, "kv-1-3.bin"), 2, 900, 700)          # another build's format version
+        Path(os.path.join(cls.root, "kv-1-4.bin")).write_bytes(struct.pack("<IIq", 0x12345678, 3, 5) + b"\0" * 284)
+        os.makedirs(os.path.join(cls.root, "delta/chunks"))
+        os.makedirs(os.path.join(cls.root, "delta/states"))
+        manifest(os.path.join(cls.root, "delta/log-1-1.manifest"), 1, 217, 2, 0x1111, [0x2222, 0x3333])
+        delta_record(os.path.join(cls.root, "delta/chunks/0000000000002222.bin"), 0x4B4E4843, 400)
+        delta_record(os.path.join(cls.root, "delta/chunks/0000000000003333.bin"), 0x4B4E4843, 400)
+        delta_record(os.path.join(cls.root, "delta/states/0000000000001111.bin"), 0x54415453, 200)
+        Path(os.path.join(cls.root, "delta/chunks/.tmp-9-0")).write_bytes(b"x" * 123)   # a crash's residue
+        Path(os.path.join(cls.root, "delta/.tmp-9-1")).write_bytes(b"x" * 55)
+        os.utime(os.path.join(cls.root, "kv-1-1.bin"), (now - 60, now - 60))
+        os.utime(os.path.join(cls.root, "kv-1-2.bin"), (now - 7200, now - 7200))
+        for name in ("kv-1-3.bin", "kv-1-4.bin"):        # neither is a prefix: they must not move the ages
+            os.utime(os.path.join(cls.root, name), (now - 3600, now - 3600))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def cache(self) -> CountingKvCache:
+        return CountingKvCache(["--kv-nvme", self.root, "--kv-nvme-max", "100", "--kv-delta", "1"])
+
+    def test_per_class_counts_and_bytes(self):
+        on_disk = self.cache().scan()["on_disk"]
+        self.assertEqual({k: (v["count"], v["bytes"]) for k, v in on_disk.items()},
+                         {"snapshots": (4, 2500), "manifests": (1, 344), "chunks": (2, 800),
+                          "states": (1, 200), "residue": (2, 178)})
+
+    def test_a_stale_version_is_a_number_and_stays_on_disk(self):
+        s = self.cache().scan()
+        self.assertEqual(s["stale"], {"count": 1, "version": 2})
+        self.assertEqual(s["on_disk"]["snapshots"]["stale"], 1)
+        self.assertEqual(s["on_disk"]["snapshots"]["promotable"], 2)      # counted, but not promotable
+        self.assertEqual(s["on_disk"]["snapshots"]["foreign"], 1)         # the file with another magic
+        self.assertEqual(s["foreign"], 1)
+        self.assertTrue(any("version 2" in w for w in s["warnings"]), s["warnings"])
+
+    def test_residue_is_the_delta_tmp_class_and_is_said(self):
+        s = self.cache().scan()
+        self.assertEqual(s["on_disk"]["residue"]["count"], 2)
+        self.assertEqual(s["on_disk"]["residue"]["bytes"], 178)
+        self.assertTrue(any(".tmp-" in w for w in s["warnings"]), s["warnings"])
+
+    def test_mtime_ages_per_class(self):
+        snaps = self.cache().scan()["on_disk"]["snapshots"]
+        self.assertAlmostEqual(snaps["newest_age_s"], 60.0, delta=5)
+        self.assertAlmostEqual(snaps["oldest_age_s"], 7200.0, delta=5)
+        self.assertLess(snaps["newest_age_s"], snaps["oldest_age_s"])
+
+    def test_disk_space_is_a_real_number(self):
+        s = self.cache().scan()
+        self.assertGreater(s["disk_free_bytes"], 0)
+        self.assertGreaterEqual(s["disk_total_bytes"], s["disk_free_bytes"])
+
+    def test_stored_prefixes_are_lengths_and_sizes_only(self):
+        p = self.cache().scan()["prefixes"]
+        self.assertEqual([(x["tier"], x["tokens"], x["age_s"] < 3600) for x in p],
+                         [("delta", 217, True), ("v3", 4107, True), ("v3", 100, False)])   # newest first
+        self.assertEqual(p[0]["records"], {"manifests": 1, "chunks": 2, "states": 1})
+        self.assertEqual(p[0]["bytes"], 344 + 800 + 200)          # manifest + its chunks + its State record
+        self.assertEqual(p[1]["records"], {"snapshots": 1})
+        self.assertEqual(p[1]["bytes"], 1000)
+        self.assertNotIn("kv-1-3.bin", str(p))                    # the stale one is not a promotable prefix
+        for row in p:
+            self.assertEqual(set(row), {"age_s", "tokens", "tier", "kind", "records", "bytes"})
+
+    def test_two_scans_inside_the_throttle_walk_once(self):
+        c = self.cache()
+        first = c.scan()
+        second = c.scan()
+        self.assertEqual(c.walks, 1)
+        self.assertIs(first, second)                              # the cached result, with its timestamp
+        self.assertEqual(first["scanned_at"], second["scanned_at"])
+        c.scan()
+        c.scan(force=True)
+        self.assertEqual(c.walks, 2)
+
+    def test_a_directory_that_is_not_there_is_a_warning_row(self):
+        c = KvCache(["--kv-nvme", os.path.join(self.tmp.name, "not-here")])
+        s = c.scan()
+        self.assertEqual(s["on_disk_files"], 0)
+        self.assertEqual(s["prefixes"], [])
+        self.assertEqual(s["disk_free_bytes"], None)
+        self.assertTrue(any("not there" in w for w in s["warnings"]), s["warnings"])
+        self.assertTrue(any("not there" in w for w in c.detail()["warnings"]), c.detail())
+
+    def test_an_unreadable_directory_is_a_warning_row(self):
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("a chmod 000 directory is readable for a superuser")
+        locked = os.path.join(self.tmp.name, "locked")
+        os.makedirs(locked, exist_ok=True)
+        os.chmod(locked, 0o000)
+        try:
+            s = KvCache(["--kv-nvme", locked]).scan()
+            self.assertTrue(any("could not be read" in w for w in s["warnings"]), s["warnings"])
+        finally:
+            os.chmod(locked, 0o755)
+
+    def test_a_path_that_is_a_file_is_a_warning_row(self):
+        not_a_dir = os.path.join(self.tmp.name, "a-file")
+        Path(not_a_dir).write_bytes(b"x")
+        s = KvCache(["--kv-nvme", not_a_dir]).scan()
+        self.assertEqual(s["on_disk_files"], 0)
+        self.assertTrue(s["warnings"])
+
+    def test_no_kv_nvme_means_no_tier_and_no_work(self):
+        c = CountingKvCache(["--model", "x", "--kv-resident", "0"])      # no --kv-nvme: no tier
+        self.assertFalse(c.enabled)
+        self.assertEqual(c.summary(), {})
+        self.assertEqual(c.detail(), {})
+        self.assertEqual(c.scan(), {})
+        self.assertEqual(c.scan(force=True), {})
+        self.assertEqual(c.series(), {})
+        self.assertEqual(c.walks, 0)                              # no directory walk at all
+        self.assertIsNone(c.observe(parse_kv(KV_REQUEST_LINE), {"finish": "eos"}))
+        self.assertIsNone(c.store_state(parse_kv(KV_START_LINE)))
+        self.assertEqual(list(c.events), [])
+
+    def test_the_config_facts(self):
+        c = KvCache(["--kv-nvme", self.root])                     # the engine's own defaults
+        self.assertEqual((c.enabled, c.mode, c.cap_bytes), (True, "delta", 100 * 2**30))
+        self.assertIsNone(c.inert_reason)
+        c = KvCache(["--kv-nvme", self.root, "--kv-nvme-max", "0", "--kv-delta", "0"])
+        self.assertEqual((c.mode, c.cap_bytes), ("v3", 0))        # 0 = unlimited
+        c = KvCache(["--kv-nvme", self.root, "--layer-split", "auto"])
+        self.assertIn("layer split", c.inert_reason)
+        self.assertIn("layer split", c.summary()["warnings"][0])
+
+
+class KvEvents(unittest.TestCase):
+    """What the `KV` lines produce: event rows, and cumulative totals a missing or garbage line cannot corrupt."""
+
+    def cache(self):
+        return KvCache(["--kv-nvme", "/tmp/unused-store", "--kv-nvme-max", "100"])
+
+    def test_a_request_line_becomes_event_rows(self):
+        c = self.cache()
+        c.observe(parse_kv(KV_REQUEST_LINE), {"finish": "eos"})
+        rows = c.summary()["events"]
+        self.assertEqual([r["kind"] for r in rows], ["promote", "cascade", "evict"])
+        self.assertEqual((rows[0]["src"], rows[0]["tokens"], rows[0]["bytes"], rows[0]["ms"]),
+                         ("delta", 4107, 1010893312, 1840.0))
+        self.assertEqual(rows[1]["ms"], 412.0)
+        self.assertEqual(rows[2]["count"], 1)
+        self.assertEqual(rows[0]["finish"], "eos")
+
+    def test_a_cold_request_is_not_a_promote(self):
+        c = self.cache()
+        c.observe(parse_kv("KV src=none resume=0 promote_ms=0 promote_bytes=0 staging_bytes=0 dump_ms=412 "
+                           "dump_bytes=1184923648 evict=0 evict_bytes=0 sweep=0 sweep_bytes=0 refused=1 "
+                           "transfer=0 entries=1 entries_bytes=1 delta_entries=0 delta_bytes=0 cap=0 "
+                           "checkpoints=0 live=1 total_dump_bytes=1 total_promote_bytes=0 total_refused=1 "
+                           "total_transfer=0 total_evict_bytes=0"), {"finish": "eos"})
+        self.assertEqual([r["kind"] for r in c.summary()["events"]], ["cascade", "refuse"])
+        self.assertEqual(c.summary()["totals"]["promotes"], 0)
+
+    def test_a_transfer_failure_is_a_row(self):
+        """The engine prints `transfer=1` with `src=none` (generate.cpp:3849): the line is the server's only
+        chance to learn the class before the engine dies."""
+        c = self.cache()
+        c.observe(parse_kv("KV src=none resume=4107 transfer=1 refused=0 entries=1 entries_bytes=1000 "
+                           "total_transfer=1"), {"finish": "error"})
+        rows = c.summary()["events"]
+        self.assertEqual([(r["kind"], r["src"], r["finish"]) for r in rows], [("transfer", "none", "error")])
+        self.assertEqual(c.summary()["totals"]["total_transfer"], 1)
+
+    def test_the_startup_line_is_store_state_not_an_event(self):
+        c = self.cache()
+        c.observe(parse_kv(KV_START_LINE), {"finish": "eos"})
+        s = c.summary()
+        self.assertEqual(s["events"], [])
+        self.assertEqual(s["promotable"]["entries"], 104)         # merged, because it is store state
+        self.assertEqual(s["promotable"]["prefixes"], 105)
+        self.assertEqual(s["totals"]["requests_with_kv_line"], 0)
+
+    def test_totals_survive_a_missing_a_garbage_and_a_partial_line(self):
+        c = self.cache()
+        c.observe(parse_kv(KV_REQUEST_LINE), {"finish": "eos"})
+        before = dict(c.summary()["totals"])
+        self.assertEqual(before["total_dump_bytes"], 1184923648)
+        for kv in (None, {}, parse_kv("KV"), parse_kv("KV resume=abc"), parse_kv("garbage"), [], "KV src=x"):
+            with self.subTest(kv=kv):
+                c.observe(kv, {"finish": "eos"})
+                after = c.summary()["totals"]
+                for key in ("total_dump_bytes", "total_promote_bytes", "total_refused", "total_transfer",
+                            "total_evict_bytes"):
+                    self.assertEqual(after[key], before[key], key)   # last seen wins, and a bad line changes none
+                self.assertEqual(c.summary()["events"], c.summary()["events"][:3])   # no row from a bad line
+
+    def test_totals_are_the_engine_s_cumulative_fields_not_a_sum(self):
+        c = self.cache()
+        c.observe(parse_kv("KV src=none dump_bytes=100 total_dump_bytes=100"), {"finish": "eos"})
+        c.observe(parse_kv("KV src=none dump_bytes=250 total_dump_bytes=350"), {"finish": "eos"})
+        self.assertEqual(c.summary()["totals"]["total_dump_bytes"], 350)
+        self.assertEqual(c.summary()["totals"]["requests"], 2)
+        self.assertEqual(c.summary()["totals"]["requests_with_kv_line"], 2)
+
+    def test_summary_and_detail_keys(self):
+        c = self.cache()
+        c.observe(parse_kv(KV_REQUEST_LINE), {"finish": "eos"})
+        s = c.summary()
+        self.assertEqual(set(s), {"enabled", "mode", "dir", "cap_bytes", "inert_reason", "promotable",
+                                  "ram_tier", "totals", "events", "series", "warnings"})
+        self.assertEqual(s["promotable"]["bytes"], 213674598400 + 1181116416)   # cap accounting, from the engine
+        self.assertEqual(s["ram_tier"], {"checkpoints": 3, "live_tokens": 4131})
+        d = c.detail()
+        self.assertTrue(set(s) <= set(d))
+        self.assertTrue({"scanned_at", "on_disk", "on_disk_bytes", "stale", "prefixes",
+                         "disk_free_bytes"} <= set(d), sorted(d))
+        self.assertNotEqual(d["promotable"]["bytes"], d["on_disk_bytes"])        # the two are never merged
+
+    def test_series_samples_one_point_per_call(self):
+        c = self.cache()
+        c.observe(parse_kv(KV_REQUEST_LINE), {"finish": "eos"})
+        first = c.series()
+        self.assertEqual(set(first), {"store_bytes", "write_mb", "read_mb", "warm"})
+        self.assertEqual([len(v) for v in first.values()], [1, 1, 1, 1])
+        self.assertEqual(first["warm"], [105])                     # entries + delta_entries
+        self.assertEqual(first["read_mb"], [round(1010893312 / 2**20, 2)])
+        second = c.series()
+        self.assertEqual([len(v) for v in second.values()], [2, 2, 2, 2])
+        self.assertEqual(len(c.summary()["series"]["warm"]), 2)   # summary reads them without appending
+
 
 if __name__ == "__main__":
     unittest.main()
