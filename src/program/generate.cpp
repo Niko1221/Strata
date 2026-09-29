@@ -687,13 +687,6 @@ void mem_mark(const char* where) {
     std::fprintf(stderr, "strata trace: %lld MiB free after %s\n", (long long) (free_b >> 20), where);
 }
 
-int argmax(const std::vector<float>& v) {
-    int best = 0;
-    for (size_t i = 1; i < v.size(); ++i)
-        if (v[i] > v[best]) best = (int) i;
-    return best;
-}
-
 // ---- --serve's conversation cache.  A chat or an agent sends the whole conversation again with every request, and
 // reading it again is what made a long session wait minutes for every turn.  What a sequence leaves behind splits in
 // two, and only one half needs copying:
@@ -4908,7 +4901,7 @@ int main(int argc, char** argv) {
                     if (!emit_row && !o.check_logits && layer_dump == nullptr && final_r == nullptr) continue;
                     if (emit_row || o.check_logits) {
                         if (cudaMemcpy(logits.data(), ver.window_logits() + (size_t) t * (size_t) n_vocab,
-                                       (size_t) n_vocab * 4, cudaMemcpyDeviceToHost) != cudaSuccess ||
+                                       (size_t) n_vocab * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess ||
                             cudaDeviceSynchronize() != cudaSuccess) {
                             std::fprintf(stderr, "strata generate: reading the verify logits back failed\n");
                             return 1;

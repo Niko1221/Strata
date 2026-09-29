@@ -50,8 +50,14 @@ int main(int argc, char** argv) {
             }
         }
     }
+    // Q2_K must dequantize for embedding gather, but must NOT be silently treated as an IQ/MMvq type -
+    // that path does not claim to support raw-GGUF Q2_K blocks.
     if (strata::kernels::iq_row_bytes(10, cols) != row_bytes ||
-        !strata::kernels::iq_dequant_supported(10) || strata::kernels::iq_supported(10)) return 1;
+        !strata::kernels::iq_dequant_supported(10) ||
+        strata::kernels::iq_supported(10)) {
+        std::fprintf(stderr, "q2k_embed_parity: Q2_K geometry or support-set contract is wrong\n");
+        return 1;
+    }
 
     // token ids 1 and 0, in that order: the two rows must be GATHERED, not replayed in order
     void* table = nullptr;
@@ -78,9 +84,9 @@ int main(int argc, char** argv) {
     HIP_CHECK(hipMemcpy(got.data(), out, got.size() * sizeof(float), hipMemcpyDeviceToHost));
     for (size_t i = 0; i < got.size(); ++i)
         if (std::fabs(got[i] - ref[i]) > 1e-6f) ++bad;
-    hipFree(table);
-    hipFree(tokens);
-    hipFree(out);
+    HIP_CHECK(hipFree(table));
+    HIP_CHECK(hipFree(tokens));
+    HIP_CHECK(hipFree(out));
     if (argc == 3) {
         std::FILE* raw_file = std::fopen(argv[1], "rb");
         std::FILE* ref_file = std::fopen(argv[2], "rb");
@@ -108,8 +114,8 @@ int main(int argc, char** argv) {
         HIP_CHECK(hipMemcpy(real_got.data(), real_out, real_got.size() * sizeof(float), hipMemcpyDeviceToHost));
         for (size_t i = 0; i < real_got.size(); ++i)
             if (std::fabs(real_got[i] - real_ref[i]) > 1e-6f) ++bad;
-        hipFree(real_table);
-        hipFree(real_out);
+        HIP_CHECK(hipFree(real_table));
+        HIP_CHECK(hipFree(real_out));
     }
     std::printf("q2k_embed_parity: %d mismatches\n", bad);
     return bad ? 1 : 0;
