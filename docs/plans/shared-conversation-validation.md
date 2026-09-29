@@ -1,5 +1,8 @@
 # Shared snapshot core: validation record
 
+Historical 0.1.18 evidence. The later integration is documented separately in
+[the upstream 0.1.25 validation record](shared-conversation-upstream-validation.md).
+
 Date: 2026-09-28. Engine source: `3657b8f`, based on upstream `b38c183`
 (0.1.18). This is development-branch evidence for the RAM tier/shared core,
 not acceptance of a combined RAM/NVMe implementation or a deployment report.

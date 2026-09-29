@@ -14,6 +14,8 @@ Parking rejects `--layer-split` while ordinary upstream multi-device checkpoint
 handling is retained. Checkpoint LRU stamps and system-prompt/root retention are
 preserved. K8V4 snapshots store separate INT8 K/scales and Q4 V payloads; hybrid
 streaming/ring layouts are rejected before calling upstream's block movers.
+See the [current integration and validation record](shared-conversation-upstream-validation.md)
+for revision-specific evidence and platform limits.
 
 ## Boundaries
 
