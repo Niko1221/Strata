@@ -152,4 +152,9 @@ private:
     int64_t admitted_ = 0;
 };
 
+/// Copies `n` pinned host blobs into VRAM on `stream` as one submission (cudaMemcpyBatchAsync: the copies in any
+/// order, the batch in the stream's).  Under WDDM a copy submitted alone raises an interrupt when it completes, on the
+/// CPU its GPU's interrupts go to (~10 us there, in the ISR and a DPC); a batch raises one.
+bool copy_blobs(void* const* dst, const void* const* src, const size_t* bytes, size_t n, void* stream);
+
 }  // namespace strata::core

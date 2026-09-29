@@ -63,14 +63,24 @@ void AdaptiveTier::evict(const Move& m) {
 
 bool AdaptiveTier::copy(const Move& m, uint64_t off, uint64_t n, std::string& err) {
     const uint8_t* b = src_->blob(m.layer, m.in);
-    if (b == nullptr ||
-        cudaMemcpyAsync(cache_->device_slot(m.slot) + off, b + off, (size_t) n, cudaMemcpyHostToDevice, stream_) !=
-            cudaSuccess) {
+    if (b == nullptr) {
         err = "adaptive tier: a refill copy failed";
         return false;
     }
+    cp_dst_.push_back(cache_->device_slot(m.slot) + off);
+    cp_src_.push_back(b + off);
+    cp_bytes_.push_back((size_t) n);
     sent_bytes += n;
     return true;
+}
+
+bool AdaptiveTier::send(std::string& err) {
+    const bool ok = copy_blobs(cp_dst_.data(), cp_src_.data(), cp_bytes_.data(), cp_dst_.size(), stream_);
+    cp_dst_.clear();
+    cp_src_.clear();
+    cp_bytes_.clear();
+    if (!ok) err = "adaptive tier: a refill copy failed";
+    return ok;
 }
 
 // Takes the last timed copies' rate once they have landed; then starts timing these when `worth` (long enough for
@@ -129,7 +139,7 @@ bool AdaptiveTier::pump_bytes(uint64_t bytes, std::string& err) {
             ++sent_;
         }
     }
-    return done == 0 || end_batch(timed, done, err);
+    return done == 0 || (send(err) && end_batch(timed, done, err));
 }
 
 bool AdaptiveTier::pump(uint64_t budget, uint64_t& sent, std::string& err) {
@@ -153,7 +163,7 @@ bool AdaptiveTier::pump(uint64_t budget, uint64_t& sent, std::string& err) {
         if (!copy(queued_[sent_], 0, bytes_of(queued_[sent_]), err)) return false;
     }
     staged_ = sent_;
-    return end_batch(timed, sent, err);
+    return send(err) && end_batch(timed, sent, err);
 }
 
 bool AdaptiveTier::adapt(std::vector<float>& usage, std::string& err, bool decay) {

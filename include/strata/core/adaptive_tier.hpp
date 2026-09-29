@@ -106,9 +106,14 @@ private:
     cudaEvent_t evs_[kBatches] = {};
     size_t batch_sent_[kBatches] = {};
     int first_ = 0, flying_ = 0;
+    // a call's copies, sent as one batch (copy_blobs)
+    std::vector<void*> cp_dst_;
+    std::vector<const void*> cp_src_;
+    std::vector<size_t> cp_bytes_;
     uint64_t bytes_of(const Move& m) const;
     void evict(const Move& m);
     bool copy(const Move& m, uint64_t off, uint64_t n, std::string& err);
+    bool send(std::string& err);
     bool time_begin(bool worth);
     bool end_batch(bool timed, uint64_t bytes, std::string& err);
 };

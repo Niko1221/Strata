@@ -117,11 +117,15 @@ bool SecondGpu::prefetch(int64_t layer, const int32_t* ids, const uint8_t* const
     if (n <= 0) return true;
     if (n > pre_max_ || bytes > pre_cap_) { err = "second GPU: a prefetch does not fit its slots"; return false; }
     DeviceScope scope(dev_, main_);
-    bool ok = cudaStreamWaitEvent(pre_s_, ev_, 0) == cudaSuccess;   // the last submitted layer may read the slots
-    for (int i = 0; ok && i < n; ++i)
-        ok = cudaMemcpyAsync(d_pre_ + (size_t) i * pre_cap_, src[i], (size_t) bytes, cudaMemcpyHostToDevice, pre_s_) ==
-             cudaSuccess;
-    if (!ok || cudaEventRecord(pre_ev_, pre_s_) != cudaSuccess) {
+    void* dst[kPrefetchMax];
+    size_t size[kPrefetchMax];
+    for (int i = 0; i < n; ++i) {
+        dst[i] = d_pre_ + (size_t) i * pre_cap_;
+        size[i] = (size_t) bytes;
+    }
+    if (cudaStreamWaitEvent(pre_s_, ev_, 0) != cudaSuccess ||   // the last submitted layer may read the slots
+        !copy_blobs(dst, (const void* const*) src, size, (size_t) n, pre_s_) ||
+        cudaEventRecord(pre_ev_, pre_s_) != cudaSuccess) {
         err = std::string("second GPU: prefetch: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }

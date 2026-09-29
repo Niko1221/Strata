@@ -1393,7 +1393,9 @@ int main(int argc, char** argv) {
     // --ple-io ram: the table goes into RAM once the SSD has delivered the experts and the draft layer
     if (ple_table.is_open() && !ple_table.start_ram_load(err))
         std::fprintf(stderr, "strata generate: %s; its rows stay on the SSD\n", err.c_str());
-    strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker);
+    // with a second GPU the first core stays with the OS: that GPU's interrupts go there (core_plan)
+    const bool spare_first = o.second_gpu >= 0;
+    strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker, spare_first);
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     std::fprintf(stderr, "strata generate: session is up; locating the head\n");
     const strata::core::WeightRef* wo = wt.find("output.weight");
@@ -1688,8 +1690,12 @@ int main(int argc, char** argv) {
     strata::core::HitFn hit_fn =
         (o.no_pool || o.expert_cache <= 0) ? nullptr : &strata::core::expert_hit_run;
     void* pool_user = o.no_pool ? nullptr : (void*) &drive;
-    std::fprintf(stderr, "strata generate: %d expert-pool workers%s%s\n", pool.workers(),
-                 pool.host_works() ? " + the host thread" : "",
+    const strata::kernels::cpu::CorePlan cores = strata::kernels::cpu::core_plan(spare_first);
+    std::string on;
+    for (int i = 0; i < pool.workers() && i < (int) cores.workers.size(); ++i)
+        on += (i > 0 ? "," : "") + std::to_string(cores.workers[(size_t) i]);
+    std::fprintf(stderr, "strata generate: %d pool workers on logical processors %s, the host thread on %d%s%s\n",
+                 pool.workers(), on.c_str(), cores.host, pool.host_works() ? " (draining too)" : "",
                  o.no_pool ? " (UNUSED: --no-pool)" : "");
 
     // **THE MISALIGNMENT WARNING THAT STOOD HERE IS GONE, BECAUSE THE MISALIGNMENT IS FIXED.**

@@ -19,7 +19,7 @@
 
 namespace strata::kernels::cpu {
 
-std::vector<int> physical_cores(bool skip_first) {
+std::vector<int> physical_cores() {
     std::vector<int> cores;
 #if defined(_WIN32)
     // Ask the OS rather than assuming a layout.  `hardware_concurrency()` returns LOGICAL processors, and on
@@ -55,8 +55,16 @@ std::vector<int> physical_cores(bool skip_first) {
     else
         for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cores.push_back((int) i);
 #endif
-    if (skip_first && !cores.empty()) cores.erase(cores.begin());
     return cores;
+}
+
+CorePlan core_plan(bool spare_first) {
+    const std::vector<int> cores = physical_cores();
+    CorePlan plan;
+    if (cores.empty()) return plan;
+    plan.host = cores.back();
+    plan.workers.assign(cores.begin() + (spare_first && cores.size() > 4 ? 1 : 0), cores.end() - 1);
+    return plan;
 }
 
 namespace {
@@ -112,8 +120,8 @@ void restore_thread_affinity(long long previous) {
 #endif
 }
 
-ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works) : host_works_(host_works) {
-    const std::vector<int> cores = physical_cores(true);
+ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, bool spare_first) : host_works_(host_works) {
+    const std::vector<int> cores = core_plan(spare_first).workers;
     n_ = n_workers > 0 ? n_workers : (int) cores.size();
     if (n_ < 1) n_ = 1;
     state_.store(kClosed | (uint64_t) n_, std::memory_order_relaxed);   // epoch 0, closed, everyone parked
@@ -390,8 +398,8 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
 
     // ---- **THE HOST DRAINS TOO (R2.2), INSTEAD OF SPINNING ON `done_`.**
     //
-    // The loop below used to be `while (done_ != n) _mm_pause();`.  The host is pinned to core 0 - the core
-    // `physical_cores(true)` deliberately keeps the five workers off - so for the whole drain that core was
+    // The loop below used to be `while (done_ != n) _mm_pause();`.  The host is pinned to its own core - the
+    // one `core_plan()` deliberately keeps the workers off - so for the whole drain that core was
     // idle while five cores did six cores' worth of work.  Measured before the change: 33.7 GB/s against
     // 5/6 x 44.14 = 36.8 for five workers and 44.14 for six.
     //

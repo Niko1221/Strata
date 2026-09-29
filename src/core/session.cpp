@@ -569,15 +569,15 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
         free();
         return false;
     }
-    // **PIN THE HOST ONCE, NOT ONCE PER TOKEN.**  `ExpertPool` builds its workers from `physical_cores(true)`,
-    // which drops the first physical core so the host loop can spin without taking a worker's cycles - and
+    // **PIN THE HOST ONCE, NOT ONCE PER TOKEN.**  `ExpertPool` builds its workers from `core_plan()`, which
+    // keeps them off the host's core so the host loop can spin without taking a worker's cycles - and
     // nothing in the pool can pin the host, so if this does not happen the spin is free to land on a worker's
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
-    if (!cores.empty()) {
-        pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+    const int host = strata::kernels::cpu::core_plan(false).host;   // the last core, a second GPU or not
+    if (host >= 0) {
+        pinned_core = strata::kernels::cpu::pin_current_thread(host);
         pinned = true;
     }
     return true;

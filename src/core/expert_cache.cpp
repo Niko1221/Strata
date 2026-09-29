@@ -245,6 +245,15 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
     return true;
 }
 
+bool copy_blobs(void* const* dst, const void* const* src, const size_t* bytes, size_t n, void* stream) {
+    if (n == 0) return true;
+    cudaMemcpyAttributes attr{};
+    attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+    attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;   // the copy engines, beside the kernels
+    size_t first = 0;
+    return cudaMemcpyBatchAsync(dst, src, bytes, n, &attr, &first, 1, (cudaStream_t) stream) == cudaSuccess;
+}
+
 bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);

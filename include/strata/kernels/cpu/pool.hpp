@@ -62,15 +62,24 @@ struct ExpertJobMulti {
 /// worker.  On the 6-core/12-thread machine this project measures on, `hardware_concurrency()/2` workers on
 /// logical processors 0..5 would put every worker on a sibling pair and halve the useful bandwidth - which is
 /// exactly the kind of error that shows up as "the CPU path is slower than the model says" with no clue why.
-///
-/// `skip_first` drops the first core, which P2.S3 reserves for the host loop.
-std::vector<int> physical_cores(bool skip_first);
+std::vector<int> physical_cores();
+
+/// Where the host loop and the pool's workers run, one logical processor each: the host on the last physical core,
+/// the workers on the others.  With `spare_first` (a second GPU) the first core stays with the OS: Windows sends the
+/// GPUs' interrupts there (here the 5070 Ti's to its first logical processor, the 3090's to its second), and the
+/// second GPU's copies and launches raise thousands a second during generation, each ~16 us there in the ISR and a
+/// DPC.  With four physical cores or fewer the first core takes a worker anyway.
+struct CorePlan {
+    int host = -1;
+    std::vector<int> workers;
+};
+CorePlan core_plan(bool spare_first);
 
 /// **THE RESERVATION IS A FICTION UNLESS THE HOST IS ACTUALLY PUT THERE.**
 ///
-/// `physical_cores(true)` keeps the workers off the first physical core so that the host loop can spin on
-/// `cudaEventQuery` without stealing a worker's cycles.  Nothing in the pool can enforce the other half of
-/// that, so this is it: the host loop calls this on entry and restores on exit.
+/// `core_plan()` keeps the workers off the host's core so that the host loop can spin on `cudaEventQuery`
+/// without stealing a worker's cycles.  Nothing in the pool can enforce the other half of that, so this is it:
+/// the host loop calls this on entry and restores on exit.
 ///
 /// MEASURED, and this is why it exists: the pool runs at **36.32 GB/s on 5 workers with nothing else running**
 /// - exactly 5/6 of L9's 44.14 on 6 - and at **26.9 GB/s inside the host loop**, where the unpinned spinning
@@ -86,13 +95,13 @@ void restore_thread_affinity(long long previous);
 #endif
 class ExpertPool {
 public:
-    /// `n_workers <= 0` means "every physical core except the first".  Workers are pinned to physical cores
-    /// (minus core 0 by default) and each owns one `ExpertScratch`, so nothing in the token path allocates.
+    /// `n_workers <= 0` means a worker on each of `core_plan(spare_first).workers`.  Workers are pinned to those
+    /// cores and each owns one `ExpertScratch`, so nothing in the token path allocates.
     ///
     /// **`host_works` PUTS THE HOST THREAD INTO THE DRAIN (R2.2's FIRST HALF).**
     ///
-    /// The pool reserves core 0 for the host loop so the doorbell spin cannot steal a worker's cycles - but
-    /// during `run()` the host does not spin, it waits, so core 0 is idle for the whole drain. Measured on the
+    /// The pool keeps a core for the host loop so the doorbell spin cannot steal a worker's cycles - but
+    /// during `run()` the host does not spin, it waits, so that core is idle for the whole drain. Measured on the
     /// 6-core machine this project targets: the engine's pool drains at **33.7 GB/s** (663.6 MB of expert
     /// blobs in 19.71 ms/token) where the same kernel on 5 workers should reach 5/6 x 44.14 = 36.8 and the
     /// machine measures 44.14 GB/s on all six. So the sixth core is being paid for and not used.
@@ -100,7 +109,7 @@ public:
     /// With `host_works`, `run()` claims jobs itself instead of spinning on `done_`, and the pool is six
     /// threads on six cores. `false` is the A/B arm and exists so the change is measurable rather than
     /// asserted - the counter it moves is `pool phases ... drain`, which is host-side and needs no profiler.
-    explicit ExpertPool(int n_workers = 0, bool pin = true, bool host_works = true);
+    explicit ExpertPool(int n_workers = 0, bool pin = true, bool host_works = true, bool spare_first = false);
     ~ExpertPool();
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;

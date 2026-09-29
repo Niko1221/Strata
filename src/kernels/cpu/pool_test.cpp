@@ -314,9 +314,9 @@ int main(int argc, char** argv) {
     }
 
     // ---- the pool
-    const std::vector<int> cores = cpu::physical_cores(true);
+    const std::vector<int> cores = cpu::core_plan(false).workers;
     const int hw = (int) std::thread::hardware_concurrency();
-    std::printf("  %-44s %d logical, %d physical (skipping the first)\n", "cores the pool will use",
+    std::printf("  %-44s %d logical, %d physical (not the last, the host's)\n", "cores the pool will use",
                 hw, (int) cores.size());
 
     cpu::ExpertPool pool;
