@@ -1033,12 +1033,13 @@ bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const
     e.mtime = (int64_t) ::time(nullptr);
     std::error_code ec;
     e.bytes = (uint64_t) fs::file_size(path, ec);
-    uint64_t appended = e.bytes;
+    uint64_t appended = e.bytes;   // the manifest rewrite is this turn's write too
     {
         std::error_code ec2;
-        e.bytes += (uint64_t) fs::file_size(dir_ + "/states/" + delta_key_name(h.state_key) + ".bin", ec2);
+        const uint64_t state_bytes = (uint64_t) fs::file_size(dir_ + "/states/" + delta_key_name(h.state_key) + ".bin", ec2);
+        e.bytes += state_bytes;
+        appended += state_bytes;   // + the State record
     }
-    appended += e.bytes - (uint64_t) fs::file_size(path, ec);   // + the state record
     for (size_t j = 0; j < refs.size(); ++j) {
         std::error_code ec2;
         const uint64_t sz = (uint64_t) fs::file_size(dir_ + "/chunks/" + delta_key_name(refs[j].key) + ".bin", ec2);
