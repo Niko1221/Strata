@@ -89,7 +89,11 @@ struct DeltaManifestHeader {
     uint64_t weights_fp = 0;       ///< the weight-set fingerprint (§5.8); match-time, like cvec
     uint64_t state_key = 0;        ///< the head State record's key
     int64_t pid = 0, seq = 0;      ///< the file name's numbers, for debugging a store by eye
-    int64_t reserved = 0;
+    /// How many lcm-blocks one of this manifest's chunk refs covers.  This is the header's old `reserved`
+    /// field at the same offset: existing manifests hold 0 there, which reads as 1 (one block per chunk - the
+    /// pre-grouping layout), so nothing is refused and nothing converts; new manifests write
+    /// kDeltaBlocksPerChunk.  A chunk ref at `a` covers [a, a + blocks_per_chunk * block).
+    int64_t blocks_per_chunk = 0;
 };
 
 // The file IS these structs' bytes, so the layout is the format - the same discipline NvmeHeader's static_asserts
@@ -107,7 +111,8 @@ static_assert(sizeof(DeltaManifestHeader) == kDeltaManifestHeaderBytes && aligno
                   offsetof(DeltaManifestHeader, geometry) == 80 &&
                   offsetof(DeltaManifestHeader, weights_fp) == 224 &&
                   offsetof(DeltaManifestHeader, state_key) == 232 && offsetof(DeltaManifestHeader, pid) == 240 &&
-                  offsetof(DeltaManifestHeader, seq) == 248 && offsetof(DeltaManifestHeader, reserved) == 256,
+                  offsetof(DeltaManifestHeader, seq) == 248 &&
+                  offsetof(DeltaManifestHeader, blocks_per_chunk) == 256,
               "the delta manifest header gained padding or reordered a field");
 
 /// The runtime shapes the delta tier cuts on (§5.3).  A chunk must not straddle a KV page or an indexer block,
@@ -116,22 +121,35 @@ static_assert(sizeof(DeltaManifestHeader) == kDeltaManifestHeaderBytes && aligno
 /// manifests instead of re-deriving them wrong.
 struct DeltaShapes {
     strata::kernels::QsaShapes shapes;  // page_size / idx_block (and the rest, for qsa_pooled_rows)
-    int64_t block = 0;                  ///< BLOCK: tokens per sealed chunk
-    int64_t rows_per_chunk = 0;         ///< sealed pooled rows per chunk = BLOCK / idx_block
+    int64_t block = 0;                  ///< BLOCK: the lcm granule (a chunk is a whole number of these)
+    int64_t span = 0;                   ///< the CHUNK SPAN in tokens: kDeltaBlocksPerChunk * block
+    int64_t rows_per_chunk = 0;         ///< sealed pooled rows per BLOCK = BLOCK / idx_block
 };
+
+/// How many lcm-blocks ONE sealed chunk covers.  The §5.3 rule (a chunk must not straddle a KV page nor an
+/// indexer block) requires the span to be a MULTIPLE of lcm(page_size, idx_block) - it does NOT pin it to ONE
+/// block, and the live store proved one-block chunks are operationally wrong: a big turn's append became
+/// ~2,300 individual 61 KB files, each with its own fsync + rename (a journal op), and the dump drained for
+/// tens of seconds while the client's generation sat frozen.  64 blocks = 256 tokens = the handoff's own
+/// worked example (~4 MB files); the key chain is per BLOCK either way, so a chunk's key is the chain value
+/// through its LAST token and the prefix property, the fork sharing and the byte-identity invariant are
+/// unchanged - only the file count drops 64x.  Recorded per manifest (`blocks_per_chunk`); readers treat 0
+/// (the field's old reserved value) as 1, so existing manifests keep reading, nothing converts.
+inline constexpr int64_t kDeltaBlocksPerChunk = 64;
 
 DeltaShapes delta_shapes();
 
-/// The token length covered by sealed chunks: the largest multiple of BLOCK not exceeding T.  Everything past
-/// it is the ragged tail, and the ragged tail lives in the State record - only sealed, block-aligned chunks are
-/// content-addressed, because a partial chunk's content changes every turn and re-writing an "immutable" file
-/// is the contradiction the sealed/tail split exists to prevent (§5.4).
-inline int64_t delta_sealed(int64_t t, const DeltaShapes& sh) { return (t / sh.block) * sh.block; }
+/// The token length covered by sealed chunks: the largest multiple of the CHUNK SPAN (kDeltaBlocksPerChunk
+/// blocks) not exceeding T.  Everything past it is the ragged tail, and the ragged tail lives in the State
+/// record - only sealed, span-aligned chunks are content-addressed, because a partial chunk's content changes
+/// every turn and re-writing an "immutable" file is the contradiction the sealed/tail split exists to prevent.
+inline int64_t delta_sealed(int64_t t, const DeltaShapes& sh) { return (t / sh.span) * sh.span; }
 
-/// The payload bytes one sealed chunk covering [a, a+BLOCK) holds, given the live arrays' formats and the
-/// drafter's residency - i.e. the exact cut of the v3 segments (§5.4): per QSA layer, every KV host array's
-/// pages [a/page, (a+BLOCK)/page) then rows_per_chunk pooled rows; then the drafter's pages for the same range
-/// while `a < max_cells` (the delta path's T <= max_cells gate keeps every sealed chunk inside the ring).
+/// The payload bytes one sealed chunk covering [a, a+span) holds (span = kDeltaBlocksPerChunk blocks), given
+/// the live arrays' formats and the drafter's residency - i.e. the exact cut of the v3 segments (§5.4): per
+/// QSA layer, every KV host array's pages [a/page, (a+span)/page) then span/idx_block pooled rows; then the
+/// drafter's pages for the same range while `a < max_cells` (the delta path's T <= max_cells gate keeps every
+/// sealed chunk inside the ring, so a chunk never straddles it).
 /// Pure byte math, no I/O: the writer sizes its buffer with it and the reader sizes its expectation with it,
 /// which is what makes a size disagreement a REFUSAL rather than a short read.
 int64_t delta_chunk_payload_bytes(const SessionState& ss, const QsaState& mtp, const ModelGeometry& g,
@@ -192,8 +210,8 @@ uint64_t delta_tag(const ModelGeometry& g, int kv_format, bool cvec, uint64_t we
 /// 10^6 chunks is ~1e-8, and one is caught by the footer check - a refused restore, never corruption).
 uint64_t delta_chunk_key(uint64_t tag, const int32_t* ids, int64_t blocks);
 
-/// One manifest body's chunk reference: the sealed chunk covering [a, a+BLOCK) - `b` is not stored, it is
-/// `a + block` from the header (16 bytes on disk, the layout §5.6 pins).
+/// One manifest body's chunk reference: the sealed chunk covering [a, a + blocks_per_chunk*block) - `b` is
+/// not stored, it comes from the header's span (16 bytes on disk, the layout §5.6 pins).
 struct DeltaChunkRef {
     uint64_t key = 0;
     int64_t a = 0;
@@ -207,8 +225,8 @@ bool delta_write_manifest(const std::string& path, const DeltaManifestHeader& h,
                           std::string& err);
 
 /// Read a manifest back, verifying magic, version, the header's own counts against the file size, that
-/// `n_chunks` matches `L / block` (a manifest whose chunk count disagrees with its own boundary is not scanned
-/// at all), and only then the footer over the body.
+/// `n_chunks` matches `L / (blocks_per_chunk * block)` (a manifest whose chunk count disagrees with its own
+/// boundary is not scanned at all), and only then the footer over the body.
 bool delta_read_manifest(const std::string& path, DeltaManifestHeader& h, std::vector<int32_t>& ids,
                          std::vector<ConversationImageKey>& imgs, std::vector<DeltaChunkRef>& chunks,
                          std::string& err);
