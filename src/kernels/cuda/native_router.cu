@@ -43,13 +43,17 @@ __device__ __forceinline__ float warp_max(float value) {
 }
 __launch_bounds__(256, 1)
 __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ ids,
-                      float* __restrict__ weights) {
+                      float* __restrict__ weights, int n_expert) {
     // Preserve the pinned 32x8 block geometry; only row zero is active here.
     if (threadIdx.y != 0) return;
     const int lane = threadIdx.x;
+    // `per_lane` is 16 for the 512-expert file and 8 for the pruned Coder file (256).  The unused slots are
+    // -INFINITY so the softmax's max, the sum and the argmax all ignore them, exactly as if the tensor were
+    // shorter - which is what makes one kernel serve both counts with no second code path.
+    const int per_lane = n_expert / 32;
     float values[16];
 #pragma unroll
-    for (int i = 0; i < 16; ++i) values[i] = logits[lane + i * 32];
+    for (int i = 0; i < 16; ++i) values[i] = (i < per_lane) ? logits[lane + i * 32] : -INFINITY;
     __syncthreads();
     float maximum = -INFINITY;
 #pragma unroll
@@ -58,13 +62,15 @@ __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ id
     float sum = 0.0f;
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
-        values[i] = expf(values[i] - maximum);
-        sum += values[i];
+        // **THE UNUSED SLOTS MUST NOT ENTER THE SUM.**  They hold -INFINITY so the MAX and the argmax ignore
+        // them, but adding one to `sum` makes it -inf, `reciprocal` -0 and every probability a NaN that is then
+        // replaced by -FLT_MAX - a router that selects arbitrary experts.  Only the live slots are summed.
+        if (i < per_lane) { values[i] = expf(values[i] - maximum); sum += values[i]; }
     }
     const float reciprocal = 1.0f / warp_sum(sum);
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
-        values[i] *= reciprocal;
+        if (i < per_lane) values[i] *= reciprocal;
         if (__isnanf(values[i])) values[i] = -FLT_MAX;
     }
     float selected = 0.0f, selected_sum = 0.0f;
@@ -105,12 +111,15 @@ bool overlap(const void* a, size_t an, const void* b, size_t bn) {
 }
 void native_router_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 bool native_router_enabled() { return enabled.load(std::memory_order_relaxed); }
-void native_router_top10(const float* logits, int32_t* ids, float* weights, void* stream) {
-    if (!stream || !valid(logits, 512 * 4) || !valid(ids, 10 * 4) || !valid(weights, 10 * 4)
-        || overlap(logits, 512 * 4, ids, 10 * 4) || overlap(logits, 512 * 4, weights, 10 * 4)
+void native_router_top10(const float* logits, int32_t* ids, float* weights, int n_expert, void* stream) {
+    if (n_expert <= 0 || n_expert > 512 || (n_expert & 31) != 0)
+        throw std::invalid_argument("native router requires 32..512 experts in multiples of 32");
+    const size_t lb = (size_t) n_expert * 4;
+    if (!stream || !valid(logits, lb) || !valid(ids, 10 * 4) || !valid(weights, 10 * 4)
+        || overlap(logits, lb, ids, 10 * 4) || overlap(logits, lb, weights, 10 * 4)
         || overlap(ids, 10 * 4, weights, 10 * 4))
         throw std::invalid_argument("native router requires a stream, aligned spans, and disjoint outputs");
-    route<<<1, dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(logits, ids, weights);
+    route<<<1, dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(logits, ids, weights, n_expert);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

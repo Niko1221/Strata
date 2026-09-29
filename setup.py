@@ -24,7 +24,8 @@ answers, no questions), --setup (install another model / change settings instead
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
-engine), --check (only check this PC).
+engine), --check (only check this PC). --low-ram is EXPERIMENTAL, Q2_0 with --gguf-dir only: SSD paging,
+separate native pack, 4K context by default (explicit 512-32768 supported), no guaranteed speedup.
 """
 from __future__ import annotations
 
@@ -61,11 +62,12 @@ MIN_ENGINE = (0, 1, 21)                # v0.1.21: multi-GPU layer split (--gpus)
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
+    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0,
+             "families": ("qwen", "swift")},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
-               "arena_gb": 35.5},
+               "arena_gb": 35.5, "families": ("qwen", "swift")},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
-                "ram_gb": 60, "arena_gb": 42.9},
+                "ram_gb": 60, "arena_gb": 42.9, "families": ("qwen", "swift")},
     # the original model only (Swift 1.5 has no IQ3_S): matches the full BF16 model on the published benchmarks
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
                        "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
@@ -109,6 +111,11 @@ VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
           "cpu": {"max_tokens": 300, "reserve_mib": 700}}
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
+# one line: write_run_script emits it as a single `echo` (an embedded newline would become a broken command)
+LOW_RAM_WARNING = ("EXPERIMENTAL low-RAM: SSD paging, no guaranteed speedup; may still run out of memory. "
+                   "GPU 0 computes and holds the expert cache; GPU 1's VRAM holds whole layers of experts "
+                   "(--vram-experts) so those read from VRAM instead of the SSD. The two cards' VRAM is still "
+                   "not combined into one pool.")
 
 
 # ------------------------------------------------------------------------------------------------ output
@@ -338,6 +345,115 @@ def find_tool(name):
 def free_gb(path):
     path.mkdir(parents=True, exist_ok=True)
     return shutil.disk_usage(path).free / 1e9
+
+
+def low_ram_expert_bytes(shards):
+    """Read headers only: reserve space for the native expert copy on the packs drive."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    total = 0
+    for shard in shards:
+        if not shard.is_file():
+            fail(f"--low-ram requires existing GGUF shards: missing {shard}")
+        for tensor in GGUFFile(shard).tensors:
+            if tensor.name.startswith("blk.") and tensor.name.endswith("_exps.weight"):
+                size = tensor.expected_bytes()
+                if not size:
+                    fail(f"cannot size expert tensor {tensor.name} in {shard}")
+                total += size
+    if not total:
+        fail("--low-ram: the GGUF shards contain no expert tensors")
+    return total
+
+
+def expert_count_of(shard):
+    """The routed experts per layer, from the model's own tensors (256 for the pruned Coder release).
+
+    Returns 0 when the count cannot be read - a test double without `shape`, or an unexpected file.  A caller
+    then keeps the shipped profile rather than refusing the install, because an unreadable header is not by itself
+    evidence that the model is pruned.
+    """
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    counts = set()
+    for t in GGUFFile(shard).tensors:
+        if not (t.name.startswith("blk.") and t.name.endswith("_exps.weight")):
+            continue
+        shape = getattr(t, "shape", None)
+        if not shape:
+            return 0
+        counts.add(int(shape[-1]))
+    if not counts:
+        return 0
+    if len(counts) != 1:
+        fail(f"the expert tensors disagree on the expert count: {sorted(counts)}")
+    return counts.pop()
+
+
+def shipped_expert_profile(family, shard):
+    """The `--expert-profile` a family must run with.
+
+    `data/expert-profile.bin` is built for the ORIGINAL model's 48x512 geometry and the engine REFUSES it for any
+    other artifact - a pruned release (the Coder: 256 of 512 experts) needs its own.  For the original the shipped
+    file is used; for every other expert count a family-specific one is generated on demand by
+    `ensure_expert_profile`.
+    """
+    return ROOT / "data" / "expert-profile.bin" if family in ("qwen", "swift") \
+        else ROOT / "data" / f"expert-profile-{family}.bin"
+
+
+def ensure_expert_profile(family, shard, out, engine, pack, extra_args):
+    """Generate `out` when it does not exist, from a short routing trace of the model itself.
+
+    The engine's `--dump-routing` records which experts each layer routes, and `tools/make_expert_profile.py`
+    turns that into the `STRP` profile the engine reads.  `--spec` REFUSES to start without one, so this runs
+    before the model is started rather than as a tuning step.  It is a one-time cost: the trace comes from a
+    handful of decode steps on a short prompt, and it is the model's own routing rather than a guess.
+    """
+    if out.is_file():
+        ok(f"expert profile: {out.name}")
+        return
+    n_expert = expert_count_of(shard)
+    say(f"  This model has {n_expert} experts per layer, and the shipped profile is built for 512, so it needs")
+    say(f"  its own. One is written now from a short routing trace of the model (one time, a few seconds).")
+    trace = ROOT / "data" / f"routing-{family}.bin"
+    probe = ROOT / "data" / f"prompt-{family}.txt"
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        from strata_tokenizer import Tokenizer
+        tk = Tokenizer.from_gguf(str(shard))
+        ids = tk.encode("The capital of France is Paris. Write a short paragraph about the sea.")[:48]
+        probe.write_text(" ".join(str(i) for i in ids), encoding="utf-8")
+    except Exception as e:                                     # the probe is a convenience, not a dependency
+        warn(f"could not build a probe prompt ({e}); run the model once with --dump-routing instead")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(Path(engine).parent) + os.pathsep + env.get("PATH", "")
+    base = [str(engine), "--pack", str(pack)] + [str(x) for x in extra_args]
+    # Strip the serving-only flags: this is a short batch run, not the server.
+    drop = {"--mtp", "--spec", "--spec-min-p", "--vram-experts", "--vram-expert-layers", "--vram-expert-device"}
+    run_args, skip_next = [], False
+    for x in base:
+        if skip_next:
+            skip_next = False
+            continue
+        if x in drop:
+            skip_next = x in ("--mtp",)
+            continue
+        run_args.append(x)
+    cmd = run_args + ["--tokens-file", str(probe), "--max-new", "64", "--dump-routing", str(trace)]
+    r = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=1800)
+    if not trace.is_file() or trace.stat().st_size == 0:
+        warn(f"the routing trace came out empty; {out.name} was not written")
+        warn("run the model once with --dump-routing FILE, then tools/make_expert_profile.py")
+        return
+    r2 = subprocess.run([sys.executable, str(ROOT / "tools" / "make_expert_profile.py"), "--routing",
+                         str(trace), "--want-expert", str(n_expert), "--out", str(out), "--slots", "8000"],
+                        cwd=str(ROOT), capture_output=True, text=True)
+    if not out.is_file():
+        warn(f"could not write {out.name}: {(r2.stderr or r2.stdout).strip()[:200]}")
+        return
+    ok(f"expert profile built: {out.name}")
 
 
 # ------------------------------------------------------------------------------------------------ downloads
@@ -1043,26 +1159,34 @@ def start(cfg_path: Path, port: int | None, gpu: int | None = None, open_browser
         except (OSError, IndexError):
             pass
     say()
-    say("  " + "-" * 100)
-    say(f"  Starting {cfg.get('model_name', 'the model')}: it loads {f'about {gb:.0f} GB' if gb >= 1 else '34-55 GB'} "
-        "into RAM and locks part of it for the GPU.")
-    say("  While it does, YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES (longer the first time after a")
-    say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
-    say("  Later, closing this window stops the model.")
-    say("  " + "-" * 100)
+    if cfg.get("low_ram"):
+        warn(LOW_RAM_WARNING)
+        say(f"Starting {cfg.get('model_name', 'the model')} with file-backed experts. Close this window to stop it.")
+    else:
+        say("  " + "-" * 100)
+        say(f"  Starting {cfg.get('model_name', 'the model')}: it loads {f'about {gb:.0f} GB' if gb >= 1 else '34-55 GB'} "
+            "into RAM and locks part of it for the GPU.")
+        say("  While it does, YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES (longer the first time after a")
+        say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
+        say("  Later, closing this window stops the model.")
+        say("  " + "-" * 100)
     return subprocess.call(cmd)
 
 
 def write_run_script(model, cfg_path, port):
     serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
              "--port", str(port), "--open"]
+    warning = LOW_RAM_WARNING if model.lower().endswith("-lowram") else ""
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
+                          ("echo " + warning + "\r\n" if warning else "") +
                           " ".join(f'"{x}"' for x in serve) + "\r\npause\r\n", encoding="utf-8")
     else:
         script = ROOT / f"run-{model.lower()}.sh"
-        script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
+        script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\n" +
+                          ("echo '" + warning + "'\n" if warning else "") +
+                          "exec " + " ".join(f'"{x}"' for x in serve) + "\n",
                           encoding="utf-8")
         script.chmod(0o755)
     return script
@@ -1097,6 +1221,8 @@ def main() -> int:
                                        "remembered for every Strata folder on this PC")
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with the two shards)")
+    ap.add_argument("--low-ram", action="store_true",
+                    help="EXPERIMENTAL SSD paging; requires existing --gguf-dir and Q2_0; no guaranteed speedup")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -1108,6 +1234,21 @@ def main() -> int:
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.low_ram:
+        if not a.gguf_dir or not Path(a.gguf_dir).is_dir():
+            ap.error("--low-ram requires --gguf-dir pointing to existing files")
+        # Q2_0 (the original) and the Coder release's IQ1_M are the two the low-RAM path has been built for: both
+        # are file-backed expert packs, and the engine takes the expert count from whichever file it is given.
+        if a.model not in (None, "Q2_0", "IQ1_M"):
+            ap.error("--low-ram supports Q2_0 (the original) and IQ1_M (the Coder release)")
+        if a.context is not None and not 512 <= a.context <= 131072:
+            ap.error("--low-ram supports explicit --context from 512 to 131072 tokens")
+        if a.context is not None and a.context > 32768:
+            warn("a context this long costs RAM for the KV cache and pages more experts from the SSD each "
+                 "prompt; if it thrashes, lower it or add system RAM")
+        a.model = a.model or "Q2_0"
+        warn(LOW_RAM_WARNING)
+
     say("Strata - Qwen3.8-Flash-Next on a normal PC (NVIDIA GPU + system RAM + CPU)")
     data, elsewhere = data_folder(a.data_dir)          # the model files: in the data folder, found from any copy
     roots = [data, *elsewhere]
@@ -1115,7 +1256,7 @@ def main() -> int:
         a.models_dir = str(data / "models")
 
     # ---- 0. already installed: just start it
-    have = installed_configs()
+    have = [p for p in installed_configs() if p.stem.endswith("-lowram") == a.low_ram]
     explicit = a.setup or a.model or a.family or a.check or a.no_start
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
@@ -1132,6 +1273,14 @@ def main() -> int:
                 a.port = a.port or ch["port"]
                 a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
                 a.yes = True
+    if not have and not a.low_ram and not explicit:
+        # A plain START-HERE.bat finds no ordinary config, but a low-RAM install exists: start that rather than
+        # walking into the RAM refusal in step 1, which is otherwise the first thing its owner would see.
+        low = [p for p in installed_configs() if p.stem.endswith("-lowram")]
+        if low:
+            warn(LOW_RAM_WARNING)
+            say(f"  starting the experimental low-RAM install: {low[0].name}")
+            have = low
     global GPU_PICK
     multi = [int(x) for x in a.gpus.split(",") if x.strip()] if a.gpus else []
     if multi:
@@ -1187,7 +1336,7 @@ def main() -> int:
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values())
-    if ram < need - 4 and not a.check:
+    if ram < need - 4 and not a.check and not a.low_ram:
         # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
         # bigger GPU does not lower this
         fail(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
@@ -1234,14 +1383,18 @@ def main() -> int:
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
-    if ram < MODELS[model]["ram_gb"] - 4:
+    if ram < MODELS[model]["ram_gb"] - 4 and not a.low_ram:
         fail(f"{model} needs about {MODELS[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
              "choose Q2_0 or IQ2_XS, or add RAM")
     ok(f"size: {model}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
+    if a.low_ram:
+        tag += "-lowram"
     rec_ctx = 32768 if gpu["vram_gb"] < 14 else 65536 if gpu["vram_gb"] < 20 else 131072
     if a.context:
         ctx = a.context
+    elif a.low_ram:
+        ctx = 4096
     else:
         say()
         say("  Context length = how much text the model can see at once (your chat, files, tool output).")
@@ -1255,16 +1408,21 @@ def main() -> int:
         ctx = 131072
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
-    if ctx > 8192 and not a.kv and not a.yes:
+    if a.low_ram:
+        # the low-RAM path trades long-context precision for memory: 576 B/cell instead of 1,056, and it is
+        # passed at every context length rather than only above 8K (fp16 is not the free option here)
+        kv = a.kv or "q4_0"
+    else:
+        kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
+    if ctx > 8192 and not a.kv and not a.yes and not a.low_ram:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
         say("  1) 8-bit   (recommended: what every published number was measured with)")
         say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
         kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
-    if ctx > 8192:
-        ok(f"KV cache: {'8-bit' if kv == 'int8' else '4-bit (Hadamard-rotated)'}")
+    if ctx > 8192 or (a.low_ram and kv != "fp16"):
+        ok(f"KV cache: {'8-bit' if kv == 'int8' else '4-bit (Hadamard-rotated)' if kv == 'q4_0' else 'fp16'}")
     if a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
@@ -1302,10 +1460,22 @@ def main() -> int:
                 ok(f"model files found in {models_dir}")
                 break
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
-    need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
-        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
-    if free_gb(models_dir) < need:
-        fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
+    if a.low_ram:
+        expert_bytes = low_ram_expert_bytes(shards)
+        expert_file = ROOT / "packs" / tag.lower() / "experts.bin"
+        copy_needed = not expert_file.is_file() or expert_file.stat().st_size != expert_bytes
+        # MTP download + intermediate/runtime copies, dense pack and setup headroom. Do not credit a partial copy.
+        need = (expert_bytes / 1e9 if copy_needed else 0) + 10
+        if free_gb(ROOT / "packs") < need:
+            fail(f"not enough free disk space in {ROOT / 'packs'}: need ~{need:.1f} GB for experts + MTP/headroom",
+                 "free space on the packs drive; --models-dir does not relocate packs or MTP")
+        if vision != "none" and free_gb(Path(a.models_dir)) < 1:
+            fail(f"not enough free disk space in {a.models_dir} for the vision encoder")
+    else:
+        need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
+            (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
+        if free_gb(models_dir) < need:
+            fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
 
     # ---- 3. python packages
     step(3, "Python packages")
@@ -1363,7 +1533,13 @@ def main() -> int:
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
-    if model == "Q2_0" and avx512 and family == "qwen":
+    if a.low_ram:
+        if copy_needed or not all((pack / p).is_file() for p in
+                                  ("native_experts.txt", "index.txt", "dense.bin", "tokenizer/vocab.json",
+                                   "tokenizer/chat_template.jinja")):
+            run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]),
+                 "--out", str(pack), "--experts-bin"], env=env)
+    elif model == "Q2_0" and avx512 and family == "qwen":
         # the Q2_0 experts repacked for the AVX-512 kernel (the measured speed): a one-time ~40 GB conversion
         if not (pack / "index.txt").exists() or not (pack / "experts.bin").exists():   # index.txt is written last
             say("  Converting the Q2_0 experts for the AVX-512 kernel (one time, ~40 GB written, 2-5 min) ...")
@@ -1398,11 +1574,30 @@ def main() -> int:
     ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
     if ple is None:
         fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+    # A PRUNED model needs its OWN expert profile: the shipped one is 48x512 and the engine refuses it for any
+    # other geometry.  `--spec` will not start without one, so this runs before the args are written.
+    expert_profile = shipped_expert_profile(family, shards[0])
+    low_ram_args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(ple),
+                    "--expert-cache", "auto", "--prefill", "512", "--max-context", str(ctx), "--mmap-experts"]
+    ensure_expert_profile(family, shards[0], expert_profile, eng / EXE, pack, low_ram_args)
+    if not expert_profile.is_file():
+        if family not in ("qwen", "swift"):
+            fail(f"the {fam['title']} release has {expert_count_of(shards[0])} experts per layer, so the shipped "
+                 f"512-expert profile cannot be used and its own one could not be built",
+                 "build it by hand: run the engine once with --dump-routing FILE, then "
+                 "tools/make_expert_profile.py --routing FILE --want-expert N --out data/expert-profile-NAME.bin")
+        expert_profile = ROOT / "data" / "expert-profile.bin"
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(ple),
-            "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--expert-profile", str(expert_profile), "--expert-cache", "auto",
+            "--prefill", "8192" if a.low_ram else "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
-    if ctx > 8192:
+    if a.low_ram:
+        # The RELEASED engine (BUILD.json source=release) accepts these.  It does NOT accept the build-only
+        # research flags --pcie-frac / --adapt-every, so they must not be emitted here: an unknown argument
+        # would stop the engine at startup.  Unpinned experts are already skipped by the PCIe DMA path, which
+        # checks `ExpertSource::pinned()` before fetching.
+        args += ["--mmap-experts", "--vram-experts", "--ple-io", "direct"]
+    if ctx > 8192 or (a.low_ram and kv != "fp16"):
         args += ["--kv", kv]
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
@@ -1411,7 +1606,7 @@ def main() -> int:
     # the RAM copy must be pinned, and under WSL the NVIDIA driver pins only about 1 GB in all
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
-    elif ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
+    elif not a.low_ram and ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
     if vision != "none":
@@ -1423,6 +1618,9 @@ def main() -> int:
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
+    if a.low_ram:
+        cfg["low_ram"] = True
+        cfg["model_name"] += "-lowram"
     if gpu["count"] > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
     if multi:                                          # a layer split across these cards (the server adds the flag)

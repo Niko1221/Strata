@@ -176,7 +176,8 @@ function render(m) {
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
+    const eta = live.prompt_eta_s != null ? ` · ETA ${live.prompt_eta_s}s` : "";
+    setPill("reading", pct != null ? `Reading prompt · ${pct}%${eta}` : "Reading prompt");
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else {
@@ -207,7 +208,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      const spd = live.prompt_tok_s ? ` · ${fmt(live.prompt_tok_s, 1)} tok/s` : "";
+      const eta = live.prompt_eta_s != null ? ` · ETA ${live.prompt_eta_s}s` : "";
+      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%${spd}${eta}`;
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }

@@ -19,7 +19,7 @@ public:
     Gemm& operator=(const Gemm&) = delete;
 
     /// `scratch_elems`: BF16 elements of the dequantization scratch (the largest weight dequantized at once).
-    bool init(void* stream, int64_t scratch_elems, std::string& err);
+    bool init(void* stream, int64_t scratch_elems, std::string& err, bool* resource_failure = nullptr);
     /// The same with caller-owned device buffers (the prompt path borrowing expert-cache slots).
     bool init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
                        std::string& err);

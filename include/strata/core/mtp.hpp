@@ -87,6 +87,7 @@ private:
     SessionState* ss_ = nullptr;
     const WeightTable* wt_ = nullptr;
     const NativeHead* head_ = nullptr;
+    int64_t n_expert_ = 0;      ///< the DRAFT layer's own routed experts (512), NOT the main model's
     const float* window_R_ = nullptr;
     int max_t_ = 0;
     int device_ = -1;   ///< the device `load` ran on: the public calls switch to it (layer split)

@@ -162,6 +162,7 @@ class StrataEngine:
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.progress_tok_s = None       # fresh prompt tokens/s from the last PP line (the reused prefix excluded)
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -299,6 +300,7 @@ class StrataEngine:
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
+        self.progress_tok_s = None
         head = f"GENI {int(max_new)}{self.projection_key(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {}) if not embeddings else ''}"
         try:
@@ -327,6 +329,11 @@ class StrataEngine:
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
+                        if len(f) >= 5:                                    # engine sends the fresh tokens/s as field 4, which is
+                            try:                                          # the only speed evidence while a prompt is reading
+                                self.progress_tok_s = float(f[4])
+                            except ValueError:
+                                pass
                     if cancel.is_set():                   # lines reset the 10 s wait, so without this a long prompt
                         return                            # would send no keep-alives at all)
                     yield None
@@ -607,7 +614,7 @@ class Service:
         with self.status_lock:
             s = dict(self.status)
             hist = list(self.history)
-            totals = dict(self.totals)
+            totals = dict(getattr(self, "totals", {}) or {})
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -624,6 +631,10 @@ class Service:
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+            rate = getattr(self.engine, "progress_tok_s", None)
+            live["prompt_tok_s"] = round(rate, 1) if rate else None
+            if rate and rate > 0 and progress[1] > progress[0]:
+                live["prompt_eta_s"] = round((progress[1] - progress[0]) / rate)
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
@@ -704,9 +715,39 @@ class Service:
             s = dict(self.status)
         el = now - s.get("started", now)
         if s.get("first_token") is None:
-            pr = getattr(self.engine, "progress", None)   # (position reached, prompt tokens): a reused prefix counts
-            done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
-            print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
+            # The engine reports prompt progress as `PP <read> <total> <ms> <tok/s>`, one line per chunk.  Its
+            # tok/s is the FRESH rate (the reused prefix is excluded), and it is the only speed evidence that
+            # exists while a prompt is still being read.  `prompt_tokens` is just the total, so a line built from
+            # it alone repeats the same number and never shows how far along the read is.
+            prog = getattr(self.engine, "progress", None)
+            rate = getattr(self.engine, "progress_tok_s", None)
+            if prog and prog[1]:
+                read, total = prog
+                if read == getattr(self, "_last_prompt_read", None):
+                    # Stale heartbeat while waiting for the next chunk; do not repeat the previous chunk line
+                    return last_print
+                self._last_prompt_read = read
+                pct = 100.0 * read / total
+                spd = f" at {rate:.1f} tok/s" if rate else ""
+                eta_str = ""
+                if rate and rate > 0 and total > read:
+                    rem_sec = (total - read) / rate
+                    if rem_sec >= 60:
+                        eta_str = f" (ETA {int(rem_sec // 60)}m {int(rem_sec % 60):02d}s)"
+                    else:
+                        eta_str = f" (ETA {rem_sec:.0f}s)"
+                if read >= total:
+                    print(f"[strata] reading the prompt: {total} of {total} tokens (100%){spd}, {el:.0f} s total",
+                          flush=True)
+                else:
+                    print(f"[strata] reading the prompt: {read} of {total} tokens ({pct:.0f}%){spd}{eta_str}, "
+                          f"{el:.0f} s so far", flush=True)
+            else:
+                if not getattr(self, "_last_prompt_initial_printed", False):
+                    print(f"[strata] reading the prompt: {s.get('prompt_tokens', 0)} tokens", flush=True)
+                    self._last_prompt_initial_printed = True
+                else:
+                    return last_print
         else:
             rate = s["generated"] / max(1e-6, now - s["first_token"])
             print(f"[strata] {s['phase']}: {s['generated']} of max {s.get('max_tokens')} tokens, {rate:.1f} tok/s, "
@@ -739,7 +780,11 @@ class Service:
                 with self.status_lock:
                     self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids), generated=0,
                                        started=time.time(), first_token=None, tool=None, tail="", max_tokens=max_new)
+                self._last_prompt_read = None
+                self._last_prompt_initial_printed = False
                 last_print = time.time()
+                print(f"[strata] reading the prompt: {len(ids)} tokens", flush=True)
+                self._last_prompt_initial_printed = True
                 gen = self.engine.generate(ids, max_new, sampling, cancel, embeddings=emb) if emb else \
                     self.engine.generate(ids, max_new, sampling, cancel)
                 try:

@@ -24,6 +24,9 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+// The per-layer expert geometry: a native pack's blob size differs from layer to layer, so `FileExpertSource`
+// and `VramExpertStore` both ask this table where a layer starts and how big its blobs are.
+#include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <cstdint>
 #include <string>
@@ -32,6 +35,10 @@
 namespace strata::core {
 
 class RemoteExperts;
+
+// Defined below.  Named here because `ExpertSource` exposes the store so a caller can ask whether the second
+// card is the one holding their bytes.
+class VramExpertStore;
 
 /// Where one routed expert's bytes come from.
 ///
@@ -61,6 +68,50 @@ public:
     virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
     /// Plan v0.3 P6: the DEVICE address of a pinned, mapped blob (the GPU can read it over PCIe), or null.
     virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return nullptr; }
+
+    // ==================== A SECOND GPU'S VRAM AS THE EXPERT STORE ====================
+    //
+    // **WHY THIS EXISTS.**  `FileExpertSource`'s design note assumes the expert set is read once and then lives
+    // in DRAM - 34 GB of experts against 64 GB of RAM, "the second token onward is a DRAM read at 44.14 GB/s".
+    // On a machine with 32 GB that assumption fails: the page cache cannot hold the set, so EVERY prompt
+    // re-reads it, and the file read becomes the entire cost of the prompt.  Measured on exactly such a machine
+    // (Q2_0 pack, 22,266-token prompt): 214.7 s to read the prompt, 27.4 GiB re-read from disk per prompt.
+    //
+    // A second GPU has VRAM the CPU can read, and reading it is far cheaper than the file path, measured on
+    // this machine with 1,382,400-byte Q2_0 blobs scattered across an 8 GiB allocation so it is not a
+    // hot-buffer benchmark:
+    //
+    //   * SSD through this engine's fault path:  219 MB/s  ->  6.31 ms per expert
+    //   * GPU1 VRAM to host over PCIe:         4,142 MB/s  ->  0.334 ms per expert   (18.9x)
+    //
+    // **NO PEER ACCESS IS ASSUMED.**  `cuDeviceCanAccessPeer` is 0 in both directions on this machine, so this
+    // deliberately does NOT try to have one GPU read the other's memory.  The bytes are staged through pinned
+    // host memory to the CPU, which is already the consumer for the non-resident experts.  Nothing here changes
+    // what is computed or which device computes it: only where the CPU gets the bytes.
+    //
+    // **A STORE IS AN ACCELERATOR, NEVER A DEPENDENCY.**  `vram_fetch` returning false means "not held", and
+    // every caller must then fall back to `blob()`.  Both calls default to false, so a source without a store -
+    // and every existing caller - behaves exactly as before.
+    //
+    // **HOST RAM IS NOT TOUCHED.**  The whole point is that the host is the scarce resource: the store consumes
+    // the second card's VRAM only, which is otherwise idle.
+
+    /// Is this expert held in the other GPU's VRAM?  Cheap (a table lookup) and safe to call per expert.
+    virtual bool vram_held(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// Synchronous copy of one held blob into `dst` (`blob_bytes` of them, in the pack's own layout).  Blocking,
+    /// because the CPU is about to compute from `dst` and there is nothing else for this thread to do.
+    virtual bool vram_fetch(int64_t layer, int64_t expert, uint8_t* dst) const {
+        (void) layer; (void) expert; (void) dst; return false;
+    }
+    /// Bytes held by the store, so the startup line can say how much of the second card is in use.  0 = none.
+    virtual int64_t vram_store_bytes() const { return 0; }
+    /// Blobs served from the store, for reporting whether it is actually being used.
+    virtual int64_t vram_served() const { return 0; }
+
+    /// **THE STORE ITSELF.**  Null unless this source is served by a `VramExpertStore`.  Read-only and not
+    /// owned: the driver builds the store and keeps it alive, so a caller may only read from the pointer, and
+    /// only while the source is open.  The prompt path uses it to size its pinned handoff buffers.
+    virtual const VramExpertStore* vram_store() const { return nullptr; }
 };
 
 /// Plan v0.3 P6: what the GPU computes in a verify window's layer, written by the pool (mapped host memory) right
@@ -123,6 +174,19 @@ struct ExpertDispatch {
     int64_t cache_refused = 0;   ///< lookups with no slot free (the cache is full)
     void* cache_stream = nullptr;
     const char* cache_fail = nullptr;
+
+    /// **STAGING FOR EXPERTS SERVED OUT OF THE OTHER CARD'S VRAM.**
+    ///
+    /// An expert held in the second GPU's store is copied to host memory here rather than faulted out of the
+    /// file.  It has to be a buffer the pool OWNS: `ExpertJob(::blob) [Multi].blob` pointers must stay valid
+    /// until every job of the layer has run (the header says so on `ExpertSource::blob`), and `vram_fetch`
+    /// writes into a caller-supplied destination, so a pointer into the mapping cannot be handed back.
+    ///
+    /// Per layer, then released: at most the number of distinct non-resident experts of one layer, which is
+    /// bounded by `MAXT * k`.  It is NOT a cache and holds nothing across layers, so the host cost stays small
+    /// on the machine this exists for - the one whose RAM is the scarce resource.
+    std::vector<uint8_t>* vram_stage = nullptr;
+    size_t vram_staged = 0;      ///< buffers used so far this layer (index into `*vram_stage`)
 
     // ================================ R4.2c: THE HITS GO TO THE GPU ================================
     //
@@ -249,6 +313,65 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
 void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids, int64_t k);
 /// The pool half of the same decision; see `ExpertDispatch::is_hit`.
 
+/// **A SECOND GPU'S VRAM AS AN EXPERT STORE.**  Held by `FileExpertSource` and consulted through
+/// `vram_held` / `vram_fetch`; see the note on `ExpertSource::vram_held` for the measurements that justify it.
+///
+/// It owns device memory on `device` (default: the second card) holding COMPLETE LAYERS of routed experts, and
+/// a small pinned bounce buffer used only while filling.  It deliberately does not touch host RAM: the host is
+/// the scarce resource on the machine this exists for.
+class VramExpertStore {
+public:
+    VramExpertStore() = default;
+    ~VramExpertStore();
+    VramExpertStore(const VramExpertStore&) = delete;
+    VramExpertStore& operator=(const VramExpertStore&) = delete;
+
+    /// Allocates the chosen layers' experts on `device` and uploads exactly those layers from `file` (the pack's
+    /// `experts.bin`, already mapped, `file_bytes` long).  Layers outside `[0, n_layers)` or whose extent does
+    /// not fit `file_bytes` are refused rather than read.
+    ///
+    /// **THE BLOB SIZE IS READ PER LAYER FROM THE LAYOUT, NOT TAKEN AS ONE NUMBER.**  An i-quant pack (the Coder
+    /// release among them) stores raw GGUF slices, so a layer's blob is 1.5-2.3 MB depending on its formats.
+    /// Sizing every slot with layer 0's blob would overlap the slots and read the wrong bytes from layer 1 on;
+    /// the layout table is the authority and `blob_bytes` is only the sizing hint for the caller's own budget.
+    ///
+    /// **`reserve_bytes` IS PART OF THE BUDGET, NOT A HINT.**  A caller may hold VRAM back for its own use on
+    /// that card (the driver passes 0: this tier stores bytes and computes nothing).  Accepting a store that
+    /// exactly fills the card would then fail a later allocation on the first prompt chunk, so the reserve is
+    /// subtracted here and the store REFUSES with both numbers rather than letting `cudaMalloc` fail with
+    /// nothing to go on.
+    bool open(int device, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
+              const std::vector<int64_t>& layers, const uint8_t* file, uint64_t file_bytes, std::string& err,
+              uint64_t reserve_bytes = 0);
+    void close();
+
+    bool valid() const { return base_ != nullptr; }
+    /// Is `layer` one of the stored layers, and is the expert in range?
+    bool held(int64_t layer, int64_t expert) const;
+    /// Blocking D2H of one held blob into `dst`, which the caller must have sized for that layer's blob.
+    bool fetch(int64_t layer, int64_t expert, uint8_t* dst) const;
+
+    int64_t bytes() const { return bytes_; }
+    int64_t served() const { return served_; }
+    int64_t layer_count() const { return (int64_t) layers_.size(); }
+    const std::vector<int64_t>& layers() const { return layers_; }
+    /// True when `layer` is held here whole.
+    bool covers_layer(int64_t layer) const;
+
+private:
+    int device_ = -1;
+    uint8_t* base_ = nullptr;
+    uint64_t scratch_reserve_ = 0;            ///< VRAM held back for the caller's reserve (see `open`)
+    int64_t n_expert_ = 0;
+    int64_t blob_ = 0;                        ///< the largest stored blob, for a caller that wants one number
+    int64_t bytes_ = 0;
+    mutable int64_t served_ = 0;
+    std::vector<int64_t> layers_;             ///< the stored layer, per slot
+    std::vector<int64_t> slot_off_;           ///< per slot: where the layer's experts start in `base_`
+    std::vector<int64_t> slot_blob_;          ///< per slot: the layer's blob size (they differ in a native pack)
+    std::vector<int32_t> slot_of_layer_;      ///< layer -> slot index, or -1
+};
+
 /// **PHASE 2'S ONLY SOURCE: `experts.bin`, memory-mapped, no cache.**
 ///
 /// `experts.bin` is 33,973,862,400 B and `BLOB` is 1,382,400, so it holds exactly `48 x 512 = 24,576` blobs and
@@ -286,11 +409,50 @@ public:
     /// interesting once Phase 3 makes it not so.
     int64_t reads() const override { return reads_; }
 
+    /// The whole mapping and its length, so the second-GPU store can upload complete layers from the file
+    /// directly instead of reading it blob by blob.
+    const uint8_t* mapped_base() const { return base_; }
+    uint64_t mapped_size() const { return mapped_bytes_; }
+
+    /// The second GPU's expert store, or null.  Not owned: `generate` builds it and keeps it alive.
+    void set_vram_store(const VramExpertStore* store) { store_ = store; }
+
+    bool vram_held(int64_t layer, int64_t expert) const override {
+        return store_ != nullptr && store_->held(layer, expert);
+    }
+    bool vram_fetch(int64_t layer, int64_t expert, uint8_t* dst) const override {
+        if (store_ == nullptr) return false;
+        const bool ok = store_->fetch(layer, expert, dst);
+        if (ok) vram_served_ += 1;
+        return ok;
+    }
+    int64_t vram_store_bytes() const override { return store_ != nullptr ? store_->bytes() : 0; }
+    int64_t vram_served() const override { return vram_served_; }
+    const VramExpertStore* vram_store() const override { return store_; }
+
 private:
+    /// Where `(layer, expert)` starts inside the mapping.
+    ///
+    /// **THE BLOB SIZE IS NOT ALWAYS `BLOB`.**  A canonical Q2_0 pack has one 1,382,400-byte blob per expert for
+    /// all 48 layers, but a NATIVE pack (the i-quant files, and the Coder release) stores each layer's raw GGUF
+    /// slices, so its blob size differs layer to layer - 1,510,400 to 2,329,600 bytes across the Coder release's
+    /// 48 layers.  Multiplying a fixed `BLOB` by the flat index therefore walks off the layer boundaries from
+    /// layer 1 onward: every read after the first returns the WRONG layer's experts, finite and correctly sized.
+    /// The layout table is the only thing that knows the true offsets, and it is already loaded before any
+    /// source opens, so it is asked here rather than duplicated.
+    uint64_t offset_of(int64_t layer, int64_t expert) const {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        if (lay.native) return lay.blob_offset(layer, expert);
+        return (uint64_t) (layer * n_expert_ + expert) * (uint64_t) strata::kernels::cpu::BLOB;
+    }
+
     const uint8_t* base_ = nullptr;
+    uint64_t mapped_bytes_ = 0;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;
     int64_t reads_ = 0;
+    const VramExpertStore* store_ = nullptr;
+    mutable int64_t vram_served_ = 0;
 #if defined(_WIN32)
     void* file_ = nullptr;
     void* mapping_ = nullptr;

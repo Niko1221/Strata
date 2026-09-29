@@ -60,8 +60,12 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
-constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
+constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
+// The routed experts per layer is NOT a constant: the model carries any count that GGUF can express, and the
+// Coder release is Qwen3.8-Flash-Next with half of them pruned away (256).  Every buffer, stride and range check
+// in this file reads `Impl::NE`, which `init` takes from the geometry - the file's own number - so a pack and a
+// router that disagree are caught by the range check instead of silently reading the next layer's experts.
 // plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below STREAM_ALL_MIN)
@@ -70,6 +74,9 @@ constexpr int STAGE = 8;           // host->device expert staging ring (chunks b
 // attention halves instead of waiting for each layer's routing.
 constexpr int RING_MAX = 512;           // the arrays; the ring itself is ring_slots()
 constexpr int64_t STREAM_ALL_MIN = 2048;
+// Pinned host buffers for the second card's store handoff (`--vram-experts`): one blob lands here per expert and is
+// immediately DMA'd into the ring slot, so two are enough to keep the copy engine fed across the boundary.
+constexpr int STAGE_STORE = 2;
 double g_pinned_share = 1.0;
 // The streamed ring: 384 slots when (nearly) every streamed expert is DMA'd from pinned RAM - measured on Q2_0,
 // 8192-token chunks: 96 slots 1153 tok/s, 384 1294 (the next layer's experts arrive during its attention half) -
@@ -237,6 +244,7 @@ struct Prefill::Impl {
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
+    int64_t NE = 0;               ///< routed experts per layer, from the geometry (256 for the pruned Coder file)
     bool borrowed = false;
     cudaStream_t cs = nullptr, copy = nullptr;
     Gemm gemm;
@@ -277,6 +285,13 @@ struct Prefill::Impl {
     uint16_t* dq_gu[DQ] = {};
     uint16_t* dq_d[DQ] = {};
     uint8_t* stage_dev[RING_MAX] = {};
+    // THE SECOND CARD'S HANDFF.  A blob held in the other GPU's VRAM is copied into ONE of a small set of pinned
+    // host buffers, then DMA'd into the ring slot that already exists - so `--vram-experts` costs no new device
+    // memory and no new host RAM beyond these few blob-sized buffers (2 x MAXBLOB, ~5 MB).  A single pinned buffer
+    // is enough because the copy out of the store is synchronous (`vram_fetch` returns when the bytes are here),
+    // and only one expert is fetched at a time on the host thread.
+    uint8_t* stage_store[STAGE_STORE] = {};
+    cudaEvent_t store_free[STAGE_STORE] = {};   // marks a handoff buffer's DMA out of it as done
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
     cudaEvent_t copied[RING_MAX] = {}, used[RING_MAX] = {};
@@ -343,6 +358,10 @@ Prefill::~Prefill() {
     for (int i = 0; i < RING_MAX; ++i) {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
+    }
+    for (int i = 0; i < STAGE_STORE; ++i) {
+        if (impl_->store_free[i]) cudaEventDestroy(impl_->store_free[i]);
+        if (impl_->stage_store[i]) cudaFreeHost(impl_->stage_store[i]);   // the second card's store handoff
     }
     for (int b = 0; b < 2; ++b) {
         if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);
@@ -437,8 +456,13 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     Impl& m = *impl_;
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = (cudaStream_t) stream; m.stats = &stats_;
+    m.NE = g.n_expert;
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
+    }
+    if (m.NE % 32 != 0 || m.NE > 512) {
+        err = "prefill: the prompt router handles 32..512 experts in multiples of 32, not " + std::to_string(m.NE);
+        return false;
     }
     cudaGetDevice(&m.device);
     if (stage_le_ < 0) stage_le_ = g.n_layers;
@@ -465,6 +489,17 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         m.stager = std::make_unique<Stager>();
         const int hw = (int) std::thread::hardware_concurrency();
         if (!m.stager->init((size_t) MAXBLOB(), std::max(2, std::min(4, hw / 4)))) ok = false;
+    }
+    // the second card's store handoff: a few pinned blob buffers, allocated once and reused by every layout.  They
+    // are only needed when the source actually has a store, so a machine with one GPU pins nothing.
+    if (src != nullptr && src->vram_store() != nullptr && !m.stage_store[0]) {
+        for (int i = 0; i < STAGE_STORE; ++i) {
+            if (cudaHostAlloc((void**) &m.stage_store[i], (size_t) MAXBLOB(), cudaHostAllocDefault) != cudaSuccess) {
+                cudaGetLastError();
+                ok = false;
+            }
+            if (cudaEventCreateWithFlags(&m.store_free[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
+        }
     }
     m.steps_host.resize(T * strata::kernels::kStepCount);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
@@ -619,6 +654,7 @@ double Prefill::pinned_share() { return g_pinned_share; }
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
     // the same allocation sequence as `init`, counted
     const size_t T = (size_t) chunk;
+    const size_t NE = (size_t) g.n_expert;
     bool ok = true;
     Alloc o;
     o.count_only = true;
@@ -832,7 +868,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const strata::kernels::cpu::ExpertLayout& lay0 = strata::kernels::cpu::expert_layout();
         const bool stream_all = m.ring > STAGE && T >= STREAM_ALL_MIN && m.src != nullptr;
-        struct StreamEntry { int32_t l, e; const uint8_t* blob; int job; };
+        // `held` marks an entry the second card's store owns (`--vram-experts`).  **THE STREAMED WALK MUST ASK
+        // FOR IT TOO, AND IT DID NOT UNTIL NOW:** `--prefill 8192` is >= STREAM_ALL_MIN, so a low-RAM run takes
+        // THIS path for every expert and the store lookup that only `stage_one` carried was never reached - the
+        // second card's VRAM was filled at startup, reported as holding whole layers, and then never read once.
+        struct StreamEntry { int32_t l, e; const uint8_t* blob; int job; bool held; };
         std::vector<StreamEntry> seq;
         std::vector<size_t> seq_start;
         size_t issued = 0, consumed = 0;
@@ -845,12 +885,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                     const uint8_t* b = m.src->blob(l, e);
                     if (!b) { err = "prefill: expert source has no blob"; return false; }
+                    // a held blob is served from the store, so it needs neither the file nor a stager copy
+                    const bool held = m.stage_store[0] != nullptr && m.src->vram_held(l, e);
                     int job = -1;
-                    if (!m.src->pinned(l, e)) {
+                    if (!held && !m.src->pinned(l, e)) {
                         job = (int) js.size();
                         js.push_back({b, (size_t) lay0.blob_bytes(l)});
                     }
-                    seq.push_back({(int32_t) l, e, b, job});
+                    seq.push_back({(int32_t) l, e, b, job, held});
                 }
             }
             for (int64_t l = LE; l <= g.n_layers; ++l) seq_start[(size_t) l] = seq.size();
@@ -868,6 +910,26 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 const auto th = Clock::now();
                 const size_t bytes = (size_t) lay0.blob_bytes(en.l);
                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[sl], 0);
+                // **THE OTHER CARD'S VRAM BEFORE THE FILE.**  Same rule as the staged path: a blob the store holds
+                // is copied out of its VRAM into a pinned buffer and DMA'd from there, which is ~19x faster than
+                // the file (0.334 ms against 6.31 ms per expert, see `ExpertSource::vram_held`).  The handoff
+                // buffer is round-robined and its previous DMA must have landed before it is overwritten.
+                if (en.held && m.src->vram_held(en.l, en.e)) {
+                    const int hb = sl % STAGE_STORE;
+                    cudaEventSynchronize(m.store_free[hb]);
+                    const bool got = m.src->vram_fetch(en.l, en.e, m.stage_store[hb]);
+                    if (got) {
+                        cudaMemcpyAsync(m.stage_dev[sl], m.stage_store[hb], bytes, cudaMemcpyHostToDevice, m.copy);
+                        cudaEventRecord(m.store_free[hb], m.copy);
+                        cudaEventRecord(m.copied[sl], m.copy);
+                        m.stage_live[sl] = true;
+                        stats_.ms_experts_host += ms_since(th);
+                        ++stats_.experts_streamed;
+                        ++issued;
+                        continue;
+                    }
+                    // the store is an accelerator, not a dependency: fall through to the file
+                }
                 if (en.job < 0) {
                     cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
                     ++stats_.experts_dma;
@@ -1209,8 +1271,32 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                         if (resident) return true;
                         const int sl = stage_next;
-                        stage_next = (stage_next + 1) % STAGE;
+                        stage_next = (stage_next + 1) % m.ring;
                         const auto th = Clock::now();
+                        // **THE OTHER CARD'S VRAM BEFORE THE FILE.**  This is the prompt path: one pass over
+                        // the whole expert set, which is why the file costs 6.31 ms per expert here while the
+                        // second GPU answers in 0.334 ms (measured on this machine, see the note on
+                        // `ExpertSource::vram_held`).  The copy lands directly in the staging buffer that the
+                        // H2D below already reads, so nothing new is allocated and host RAM is untouched.
+                        if (m.src->vram_held(l, e) && m.stage_store[0]) {
+                            const int hb = sl % STAGE_STORE;
+                            uint8_t* handoff = m.stage_store[hb];
+                            // the previous DMA out of THIS handoff buffer must be done before the store rewrites it
+                            cudaStreamWaitEvent(m.cs, m.store_free[hb], 0);
+                            const bool got = m.src->vram_fetch(l, e, handoff);
+                            if (got) {
+                                cudaMemcpyAsync(m.stage_dev[sl], handoff, (size_t) lay.blob_bytes(l),
+                                                cudaMemcpyHostToDevice, m.copy);
+                                cudaEventRecord(m.store_free[hb], m.copy);
+                                cudaEventRecord(m.copied[sl], m.copy);
+                                m.stage_live[sl] = true;
+                                stage_of[j] = sl;
+                                stats_.ms_experts_host += ms_since(th);
+                                ++stats_.experts_streamed;
+                                return true;
+                            }
+                            // otherwise fall through to the file: the store is an accelerator, not a dependency
+                        }
                         const uint8_t* b = m.src->blob(l, e);
                         if (!b) { err = "prefill: expert source has no blob"; return false; }
                         if (m.src->pinned(l, e)) {
