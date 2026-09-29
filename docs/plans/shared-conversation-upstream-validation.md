@@ -41,6 +41,21 @@ key export. This is not a linked engine build. The frontend suite passes 67 test
 paths. Full-model NVMe promotion, restart, output parity and state hashes are still
 unverified; no running benchmark server or GPU was used for these checks.
 
+The draft read-back diagnostic passes 1,188 host transfer checks under ASan/UBSan,
+including injected corruption and failed copies. The host backend wraps CUDA
+copies/synchronization; unused ring/stream GPU functions abort if reached. The
+real GPU fixture now checks the ring produced by restore directly, without an
+extra refill that could mask a bug; that updated GPU fixture has not run yet.
+State fingerprint reads now use fixed-size chunks and reject transfer failures.
+
+`tools/conversation_cache_disk.py` prepares six sequential private engines for
+baseline, eviction, restart, admission denial, changed tokenizer identity and
+corrupted files. It requires known answers, token/main-state parity, matching
+draft read-back fingerprints across restart, and the requested draft-prefill
+path. Its five offline verifier tests pass, including 28 rejected evidence
+mutations and optimized Python. This establishes the verifier's checks, not
+full-model success. All model executions remain pending the exclusive test window.
+
 ```sh
 cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
 cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test -j 1
@@ -101,6 +116,19 @@ denial. Isolation scenarios are `image`, `add`, and `project`. The soak requires
 at least 30 cycles and three lengths crossing resident KV and approaching the
 configured context limit. HTTP smoke requires an exclusive idle test endpoint.
 Run model/GPU gates only in an exclusive test window.
+
+The disk gate is dry-run by default. Run it separately for batched draft prefill
+and the draft ring; each run owns a new output directory and modifies only its
+copied tokenizer and generated cache files:
+
+```sh
+python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output NEW_DIRECTORY --draft-path batched
+python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output ANOTHER_NEW_DIRECTORY --draft-path ring
+```
+
+Add `--run` in the exclusive window. Run INT8 and K8V4 configurations where
+supported. The gate records actual paths/modes and refuses to count an absent
+batched pass or ring restore as coverage.
 
 ## Outstanding evidence
 

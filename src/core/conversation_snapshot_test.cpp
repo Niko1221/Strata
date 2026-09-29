@@ -197,6 +197,8 @@ int main() {
             cuda_check(cudaDeviceSynchronize());
             check(conversation_kv_save(restored,f.state,f.g,upto,index,err),"read back restored A");
             check(equal(a,restored),"A/B/A byte-exact K/V and indexer state");
+            uint64_t fingerprint = 0;
+            check(conversation_kv_verify(a,f.state,f.g,upto,index,fingerprint,err),"verify restored authoritative and resident bytes without rewriting them");
             if (mode==1) {
                 std::vector<int32_t> table((size_t)f.state.n_pages);
                 cuda_check(cudaMemcpy(table.data(),f.state.page_table,table.size()*4,cudaMemcpyDeviceToHost));
@@ -205,8 +207,6 @@ int main() {
             if (mode==2 && upto>0) {
                 const auto s=qsa_real_shapes();
                 const int64_t b1=(upto+s.page_size-1)/s.page_size,b0=std::max<int64_t>(0,b1-f.state.n_slots);
-                kv_ring_restore(qsa_attn_pools(f.state),f.state.host,fmt,b0,b1,f.state.n_slots,s,nullptr);
-                cuda_check(cudaDeviceSynchronize());
                 const size_t block=kv_block_bytes(s,fmt)/2;
                 // Codes and scales are separate in INT8; check code bytes here.
                 const size_t code_block=fmt==kKvInt8 ? s.page_size*s.n_head_kv*s.head_dim : block;

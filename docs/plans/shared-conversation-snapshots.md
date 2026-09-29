@@ -125,3 +125,9 @@ allowance; these limits cover vector storage, not allocator or process RSS.
 
 The integration is implemented but has only host tests and C++ syntax checks so
 far. Full-model restart, output/state parity and pressure validation remain open.
+
+For model validation, `STRATA_SNAPSHOT_VERIFY=1` records which draft-prefill path
+ran and compares restored draft KV bytes with the saved image immediately after
+restore. The read-back checks authoritative storage and resident ring pages with
+64 KiB of workspace, then emits a fingerprint only on success. A mismatch or
+read-back failure stops the test engine. This diagnostic is off by default.

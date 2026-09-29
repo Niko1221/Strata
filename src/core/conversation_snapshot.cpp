@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <cstring>
 #include <limits>
 
 namespace strata::core {
@@ -65,8 +66,8 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     return true;
 }
 
-std::array<void*, 5> pools(const QsaState& st) {
-    const bool host = st.kv_mode != 0;
+std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
+    const bool host = st.kv_mode != 0 && !resident;
     if (st.kv_hybrid) return {st.k_q, st.v_q4, st.k_scale, nullptr, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
@@ -186,6 +187,44 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot residency restore: ") + cudaGetErrorString(status);
     return false;
+}
+
+bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
+                            int64_t upto, bool index, uint64_t& fingerprint, std::string& error) {
+    if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
+    std::array<uint8_t, 65536> buffer;
+    uint64_t hash = 1469598103934665603ull;
+    auto compare = [&](const void* device, const uint8_t* expected, size_t bytes, bool include_hash) {
+        for (size_t offset = 0; offset < bytes;) {
+            const size_t n = std::min(buffer.size(), bytes - offset);
+            if (!transfer(buffer.data(), static_cast<const uint8_t*>(device) + offset, n, error)) return false;
+            if (std::memcmp(buffer.data(), expected + offset, n) != 0) {
+                error = "conversation snapshot: restored K/V bytes differ";
+                return false;
+            }
+            if (include_hash) for (size_t i = 0; i < n; ++i) { hash ^= buffer[i]; hash *= 1099511628211ull; }
+            offset += n;
+        }
+        return true;
+    };
+    const std::array<const std::vector<uint8_t>*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto authoritative = pools(st);
+    for (size_t i = 0; i < saved.size(); ++i)
+        if (!compare(authoritative[i], saved[i]->data(), saved[i]->size(), true)) return false;
+    if (st.kv_mode == 2 && image.cells > 0) {
+        const auto resident = pools(st, true);
+        const int64_t end = image.cells / image.page_size;
+        const int64_t begin = std::max<int64_t>(0, end - st.n_slots);
+        for (size_t i = 0; i < 4; ++i) {
+            if (saved[i]->empty()) continue;
+            const size_t page_bytes = saved[i]->size() / size_t(end);
+            for (int64_t page = begin; page < end; ++page)
+                if (!compare(static_cast<const uint8_t*>(resident[i]) + size_t(page % st.n_slots) * page_bytes,
+                             saved[i]->data() + size_t(page) * page_bytes, page_bytes, false)) return false;
+        }
+    }
+    fingerprint = hash;
+    return true;
 }
 
 } // namespace strata::core
