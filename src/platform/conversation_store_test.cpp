@@ -53,6 +53,8 @@ using namespace strata::platform;
 namespace fs = std::filesystem;
 namespace {
 int checks = 0;
+int heartbeats = 0;
+void heartbeat() noexcept { ++heartbeats; }
 void check(bool ok, const char* label) {
     ++checks;
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }
@@ -114,7 +116,8 @@ int main() {
     TempDirectory temp;
     ConversationStore store;
     std::string error;
-    check(store.open(temp.path / "disabled", {}, 0, 4, error) && !store.is_open(), "zero bytes disables store");
+    check(store.open(temp.path / "disabled", {}, 0, 4, error, heartbeat) && !store.is_open(), "zero bytes disables store");
+    check(heartbeats == 0, "disabled store reports no I/O progress");
     check(!fs::exists(temp.path / "disabled"), "disabled store performs no filesystem creation");
     check(store.open(temp.path / "disabled", {}, 1000, 0, error) && !store.is_open(), "zero slots disables store");
     check(!fs::exists(temp.path / "disabled"), "zero slots performs no filesystem creation");
@@ -124,17 +127,23 @@ int main() {
     const auto root = temp.path / "cache";
     const auto a = fixture(10), b = fixture(20), c = fixture(30);
     const uint64_t size = encoded(a).size();
-    check(store.open(root, {}, size * 3, 3, error) && store.is_open(), "open bounded cache");
+    check(store.open(root, {}, size * 3, 3, error, heartbeat) && store.is_open(), "open bounded cache");
     ConversationStore competing;
     check(!competing.open(root, {}, size * 3, 3, error) && !competing.is_open(), "second writer is refused");
+    heartbeats = 0;
     check(store.put(a, error), "spill first image");
+    check(heartbeats > 0, "store forwards write progress");
     check(count_files(root, ".snap") == 1 && count_files(root, ".tmp") == 0, "publication leaves only complete file");
+    heartbeats = 0;
     const auto selected = best(store, 10);
+    check(heartbeats > 0, "store forwards prefix-scan progress");
     check(selected.match.tokens == 3 && selected.match.live, "live prefix selected");
     check(best(store, 10, 2).match.tokens == 1 && !best(store, 10, 2).match.live, "early checkpoint selected");
     check(best(store, 90).match.tokens == 0, "unrelated prompt misses");
     SavedConversation image;
+    heartbeats = 0;
     check(store.read(selected, 1 << 20, 1 << 21, 0, image, error) && encoded(image) == encoded(a), "read preserves entire shared image");
+    check(heartbeats > 0, "store forwards read progress");
     check(!store.read(selected, 1 << 20, std::nullopt, 0, image, error), "unknown RAM declines disk staging");
     check(!store.read(selected, selected.match.staging_bytes - 1, 1 << 21, 0, image, error), "staging budget enforced again on read");
     check(!store.read(selected, 1 << 20, selected.match.staging_bytes + 9, 10, image, error), "physical floor applies to staged read");

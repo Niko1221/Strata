@@ -74,9 +74,21 @@ uint64_t allocation_bound(const SavedConversation& image) {
     return total;
 }
 
+struct IoProgress {
+    ConversationIoProgress callback = nullptr;
+    uint64_t bytes = 0;
+    void advance(uint64_t n) {
+        if (!callback) return;
+        if (n >= (1 << 20) - bytes) { bytes = 0; callback(); }
+        else bytes += n;
+    }
+    void finish() { if (callback) callback(); }
+};
+
 struct Writer {
     std::ostream& stream;
     Digest digest;
+    IoProgress progress;
     void bytes(const void* p, size_t n) {
         const auto* data = static_cast<const char*>(p);
         // Keep streamsize conversion bounded even for a very large snapshot.
@@ -84,6 +96,7 @@ struct Writer {
             const size_t chunk = std::min<size_t>(n, 65536);
             if (!stream.write(data, chunk)) throw std::runtime_error("snapshot write failed");
             digest.update(data, chunk);
+            progress.advance(chunk);
             data += chunk; n -= chunk;
         }
     }
@@ -105,12 +118,14 @@ struct Reader {
     std::istream& stream;
     Digest digest;
     uint64_t remaining = 0;
+    IoProgress progress;
     void bytes(void* p, size_t n) {
         auto* data = static_cast<char*>(p);
         while (n) {
             const size_t chunk = std::min<size_t>(n, 65536);
             if (!stream.read(data, chunk)) throw std::runtime_error("truncated snapshot");
             digest.update(data, chunk);
+            progress.advance(chunk);
             data += chunk; n -= chunk;
         }
     }
@@ -147,6 +162,7 @@ struct Reader {
 struct Probe {
     std::istream& stream;
     uint64_t file_remaining, allocation_remaining;
+    IoProgress progress;
     void consume(uint64_t n) {
         if (n > file_remaining) throw std::runtime_error("truncated snapshot metadata");
         file_remaining -= n;
@@ -154,12 +170,14 @@ struct Probe {
     void bytes(void* p, size_t n) {
         consume(n);
         if (!stream.read(static_cast<char*>(p), n)) throw std::runtime_error("snapshot metadata read failed");
+        progress.advance(n);
     }
     void skip(uint64_t n) {
         consume(n);
         if (n > uint64_t(std::numeric_limits<std::streamoff>::max()) ||
             !stream.seekg(static_cast<std::streamoff>(n), std::ios::cur))
             throw std::runtime_error("snapshot metadata seek failed");
+        progress.advance(n);
     }
     uint64_t integer(size_t width = 8) {
         std::array<uint8_t, 8> b{}; bytes(b.data(), width);
@@ -243,10 +261,10 @@ bool conversation_identity(const std::vector<ConversationAsset>& assets, const s
 }
 
 bool conversation_file_write(std::ostream& stream, const SavedConversation& image,
-                             const ConversationIdentity& identity, std::string& error) {
+                             const ConversationIdentity& identity, std::string& error, ConversationIoProgress progress) {
     try {
         const auto bound = allocation_bound(image);
-        Writer w{stream, {}};
+        Writer w{stream, {}, {progress}};
         w.bytes(magic.data(), magic.size()); w.bytes(identity.data(), identity.size()); w.integer(bound);
         for (int64_t n : image.geometry) w.integer(std::bit_cast<uint64_t>(n));
         w.integer(image.cvec ? 1 : 0);
@@ -263,6 +281,7 @@ bool conversation_file_write(std::ostream& stream, const SavedConversation& imag
         const auto sum = w.digest.finish();
         if (!stream.write(reinterpret_cast<const char*>(sum.data()), sum.size()))
             throw std::runtime_error("snapshot footer write failed");
+        w.progress.finish();
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -290,9 +309,9 @@ bool conversation_file_size(const SavedConversation& image, uint64_t& bytes, std
 
 bool conversation_file_read(std::istream& stream, const ConversationIdentity& identity,
                             uint64_t staging_limit, std::optional<uint64_t> available, uint64_t floor,
-                            SavedConversation& output, std::string& error) {
+                            SavedConversation& output, std::string& error, ConversationIoProgress progress) {
     try {
-        Reader r{stream, {}, 0};
+        Reader r{stream, {}, 0, {progress}};
         std::array<uint8_t, 8> tag;
         ConversationIdentity stored;
         r.bytes(tag.data(), tag.size());
@@ -327,6 +346,7 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
         if (stream.peek() != std::char_traits<char>::eof() || stream.bad())
             throw std::runtime_error("snapshot has trailing data or read error");
         output = std::move(image);
+        r.progress.finish();
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -334,12 +354,12 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
 bool conversation_file_match(std::istream& stream, const ConversationIdentity& identity,
                              uint64_t staging_limit, const std::vector<int64_t>& prompt,
                              const std::vector<ConversationImageKey>& images, bool cvec,
-                             ConversationFileMatch& match, std::string& error) {
+                             ConversationFileMatch& match, std::string& error, ConversationIoProgress progress) {
     try {
         if (!stream.seekg(0, std::ios::end)) throw std::runtime_error("snapshot metadata requires seekable input");
         const auto end = stream.tellg();
         if (end < std::streampos(0) || !stream.seekg(0)) throw std::runtime_error("cannot measure snapshot file");
-        Probe p{stream, static_cast<uint64_t>(end), 0};
+        Probe p{stream, static_cast<uint64_t>(end), 0, {progress}};
         std::array<uint8_t, 8> tag;
         ConversationIdentity stored;
         p.bytes(tag.data(), tag.size());
@@ -363,6 +383,7 @@ bool conversation_file_match(std::istream& stream, const ConversationIdentity& i
         }
         if (bool(steering) != cvec) found.tokens = 0;
         match = found;
+        p.progress.finish();
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }

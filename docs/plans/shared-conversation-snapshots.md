@@ -131,3 +131,40 @@ ran and compares restored draft KV bytes with the saved image immediately after
 restore. The read-back checks authoritative storage and resident ring pages with
 64 KiB of workspace, then emits a fingerprint only on success. A mismatch or
 read-back failure stops the test engine. This diagnostic is off by default.
+
+Disk I/O reports completed stream operations and directory scans to the request
+watchdog. A blocked filesystem call still receives no heartbeat. Spill and load
+logs include encoded bytes and elapsed time; load timing includes RAM staging
+admission and any spills it causes, while GPU restore time is logged separately.
+
+## Identity and coordinate review
+
+The persisted identity covers the following inputs before a candidate can load:
+
+| Input | Binding |
+| --- | --- |
+| Weights and tensor quantization, including embedding/output/PLE | Complete asset contents, including pack metadata and every referenced GGUF shard |
+| Expert count/selection and head geometry | Asset metadata plus the resolved 18-field geometry key |
+| Main/draft KV format and residency | Inference arguments and each state's resolved cells, slots, mode and format flags |
+| Prefill, speculation, steering, turn token | Inference arguments, resolved settings, environment and steering asset contents |
+| Tokenizer/template and engine version | Actual frontend assets, executable contents and version |
+
+Changing an identity input refuses reuse before GPU application. The identity is
+an opaque digest: it does **not** report the first differing input field. Host
+fixtures cover changed asset contents/settings and a foreign identity with the
+same snapshot prefix. Model-level changed-weight/quant coverage remains pending.
+Strict argument binding can also reject compatible states after a path change.
+
+Token positions and snapshot KV cells use absolute sequence order. KV cells are
+rounded to whole logical pages; pooled index rows refer to sequence blocks,
+including the moving spare row. Checkpoint `idx_dead`, `idx_tail` and
+`idx_block_pos` retain the indexer's own buffer coordinates. Physical VRAM slot
+numbers, streaming replacement metadata and scorer selection ranks are not
+serialized as authoritative KV: streamed snapshots use the full host pool,
+restore invalidates the streaming map, and draft rings are rematerialized from
+logical pages into resident slots. Hybrid K8V4 with streaming/rings is refused.
+The draft read-back diagnostic checks resident ring materialization; its real
+GPU run is still outstanding.
+
+Page-level deduplication, manifests and incremental durability are separate
+follow-up designs. This adapter writes whole images only on RAM eviction.

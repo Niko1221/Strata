@@ -126,13 +126,14 @@ struct ConversationStore::Impl {
     ConversationIdentity identity;
     uint64_t budget;
     size_t slots;
+    ConversationIoProgress progress;
 #ifdef _WIN32
     HANDLE lock = INVALID_HANDLE_VALUE;
 #else
     int lock = -1;
 #endif
-    Impl(fs::path path, const ConversationIdentity& id, uint64_t bytes, size_t count)
-        : directory(std::move(path)), identity(id), budget(bytes), slots(count) {}
+    Impl(fs::path path, const ConversationIdentity& id, uint64_t bytes, size_t count, ConversationIoProgress heartbeat)
+        : directory(std::move(path)), identity(id), budget(bytes), slots(count), progress(heartbeat) {}
     ~Impl() {
 #ifdef _WIN32
         if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock);
@@ -163,6 +164,7 @@ struct ConversationStore::Impl {
             fs::path oldest;
             fs::file_time_type oldest_time{};
             for (const auto& entry : fs::directory_iterator(directory)) {
+                if (progress) progress();
                 if ((!managed_name(entry.path(), ".snap") && !managed_name(entry.path(), ".tmp")) ||
                     !fs::is_regular_file(entry.symlink_status())) continue;
                 const uint64_t n = entry.file_size();
@@ -192,7 +194,7 @@ bool ConversationStore::is_open() const { return bool(impl_); }
 void ConversationStore::close() { impl_.reset(); }
 
 bool ConversationStore::open(const fs::path& root, const ConversationIdentity& identity,
-                             uint64_t bytes, size_t slots, std::string& error) {
+                             uint64_t bytes, size_t slots, std::string& error, ConversationIoProgress progress) {
     close();
     if (!bytes || !slots) return true;
     try {
@@ -207,7 +209,7 @@ bool ConversationStore::open(const fs::path& root, const ConversationIdentity& i
         if ((access & (fs::perms::group_all | fs::perms::others_all)) != fs::perms::none)
             throw std::runtime_error("snapshot directory must have owner-only permissions");
 #endif
-        auto store = std::make_unique<Impl>(directory, identity, bytes, slots);
+        auto store = std::make_unique<Impl>(directory, identity, bytes, slots, progress);
         store->acquire();
         for (const auto& entry : fs::directory_iterator(directory)) {
             if (managed_name(entry.path(), ".tmp") && fs::is_regular_file(entry.symlink_status()) && !fs::remove(entry.path()))
@@ -239,7 +241,7 @@ bool ConversationStore::put(const core::SavedConversation& image, std::string& e
         temporary.armed = true;
         FileBuffer buffer(file.get(), bytes);
         std::ostream stream(&buffer);
-        if (!conversation_file_write(stream, image, impl_->identity, error)) return false;
+        if (!conversation_file_write(stream, image, impl_->identity, error, impl_->progress)) return false;
         if (buffer.remaining()) throw std::runtime_error("snapshot encoded length differs from reservation");
         sync_file(file.get());
         if (std::fclose(file.release()) != 0) system_failure("close snapshot");
@@ -264,8 +266,10 @@ bool ConversationStore::best(const std::vector<int64_t>& prompt, const std::vect
             std::ifstream file(entry.path(), std::ios::binary);
             ConversationFileMatch match;
             std::string ignored;
-            if (!conversation_file_match(file, impl_->identity, staging_limit, prompt, images, cvec, match, ignored) ||
-                match.tokens == 0) continue;
+            const bool compatible = conversation_file_match(file, impl_->identity, staging_limit, prompt, images,
+                                                             cvec, match, ignored, impl_->progress);
+            if (impl_->progress) impl_->progress();
+            if (!compatible || match.tokens == 0) continue;
             const auto modified = entry.last_write_time();
             if (match.tokens > found.match.tokens || (match.tokens == found.match.tokens &&
                 (modified > newest || (modified == newest && entry.path() > found.path)))) {
@@ -282,7 +286,7 @@ bool ConversationStore::read(const Candidate& candidate, uint64_t staging_limit,
     try {
         if (!impl_ || !impl_->owns(candidate)) throw std::runtime_error("snapshot candidate is unavailable");
         std::ifstream file(candidate.path, std::ios::binary);
-        return conversation_file_read(file, impl_->identity, staging_limit, available, floor, image, error);
+        return conversation_file_read(file, impl_->identity, staging_limit, available, floor, image, error, impl_->progress);
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 

@@ -12,6 +12,8 @@ using namespace strata::core;
 using namespace strata::platform;
 namespace {
 int checks = 0;
+int heartbeats = 0;
+void heartbeat() noexcept { ++heartbeats; }
 void check(bool ok, const char* label) {
     ++checks;
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }
@@ -181,6 +183,23 @@ int main() {
     indexed.checkpoints[1].ids.resize(4);
     const auto indexed_bytes = encode(indexed, id);
     const auto indexed_bound = integer(indexed_bytes, 40);
+    std::ostringstream progressing;
+    heartbeats = 0;
+    check(conversation_file_write(progressing, indexed, id, error, heartbeat) && heartbeats >= 3,
+          "large writes report incremental progress before completion");
+    check(progressing.str() == indexed_bytes, "progress reporting leaves file bytes unchanged");
+    std::istringstream progressing_read(indexed_bytes);
+    heartbeats = 0;
+    check(conversation_file_read(progressing_read, id, indexed_bound, indexed_bound * 2, 0, decoded, error, heartbeat) && heartbeats >= 3,
+          "large reads report incremental progress");
+    std::istringstream denied_read(indexed_bytes);
+    heartbeats = 0;
+    check(!conversation_file_read(denied_read, id, indexed_bound, std::nullopt, 0, decoded, error, heartbeat) && heartbeats == 0,
+          "denied staging does not invent progress");
+    std::ostringstream failed_write;
+    failed_write.setstate(std::ios::badbit);
+    check(!conversation_file_write(failed_write, indexed, id, error, heartbeat) && heartbeats == 0,
+          "failed initial write does not invent progress");
     ConversationCache ram(indexed_bound, 2);
     auto ram_copy = indexed;
     check(ram.put(std::move(ram_copy)), "RAM reference accepts prefix fixture");

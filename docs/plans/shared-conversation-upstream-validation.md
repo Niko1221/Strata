@@ -15,8 +15,8 @@ path runs. That C++ integration change still needs an engine build and model
 validation; these Python passes do not establish it. No benchmark server or GPU
 was used for these checks.
 
-On the dependent NVMe branch, four CPU-only CTest targets pass: RAM policy,
-memory admission, file codec and disk store. The codec also passes 6,722 checks under
+On the dependent NVMe branch, five CPU-only CTest targets pass: RAM policy,
+memory admission, file codec, disk store and checkpoint retention. The codec also passes 6,727 checks under
 ASan/UBSan, compiled with `-Wall -Wextra -Werror`. Coverage includes every
 single-byte mutation and truncation of a fixture, foreign identities, missing
 assets, middle-of-file asset changes, staging/floor rejection, all encoded KV
@@ -31,8 +31,10 @@ write, file-sync, rename and directory-sync failures and observe quota usage dur
 writes. Child processes exit during writing and immediately after rename to verify
 lock release, temporary-file cleanup and complete-file discovery after restart.
 These are host lifecycle tests, not power-loss simulation or full-model restoration.
-The latest ASan/UBSan results are 137 store, 47 RAM-policy and 23 admission checks.
-Local commands and logs are in `logs/nvme-host-20260929/` on the NVMe worktree.
+The latest ASan/UBSan results are 141 store, 47 RAM-policy and 23 admission checks.
+Progress-callback tests cover large reads/writes, unchanged encoded bytes,
+forwarding through the store, and no heartbeat for disabled or initially rejected
+operations. Local commands and logs are in `logs/nvme-host-20260929/` on the NVMe worktree.
 
 The serve-loop integration passes GCC C++20 syntax checking against CUDA 13.4
 headers with disk support both enabled and disabled, including the shared geometry
@@ -58,8 +60,8 @@ full-model success. All model executions remain pending the exclusive test windo
 
 ```sh
 cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
-cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test -j 1
-ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_store_test|conversation_cache_test|conversation_memory_test)$' --output-on-failure
+cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test conv_cache_test -j 1
+ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_store_test|conversation_cache_test|conversation_memory_test|conv_cache_test)$' --output-on-failure
 ```
 
 ## Recorded Linux evidence (2026-09-29)
@@ -141,3 +143,22 @@ batched pass or ring restore as coverage.
   Coder-model runs are untested; synthetic fixtures do not substitute for them.
 - Full optional upstream test configuration was blocked on 0.1.25 by missing
   `native_mmvq_multi.cpp` and `hit_cpu_order_parity.cu`; focused tests were used.
+
+## Review updates (2026-09-29)
+
+[QilinWan's identity review](https://github.com/Niko1221/Strata/issues/57#issuecomment-5898749306)
+is mapped to named inputs and coordinate meanings in the design document. The
+current digest refuses foreign identities but cannot identify the first differing
+field in a log. Page-store deduplication suggested on #52 remains a follow-up.
+
+[midhatn reports a 0.1.27 Windows test](https://github.com/Niko1221/Strata/issues/57#issuecomment-5900605241)
+of a separate auxiliary snapshot patch: 3,216 reused tokens out of a 3,223-token
+lookup, correct answers and shorter return latency. This is contributor evidence,
+not validation of this branch; K8V4, HIP and batched draft prefill remain untested
+there. No local Windows claim is made.
+
+Upstream 0.1.27 (`a790805`) was inspected after the maintainer requested 0.1.26.
+It adds HIP-only compilation fixes, Turing support, frontend image-marker fixes
+and a changed draft vocabulary. The review branches remain based on 0.1.26;
+merging that newer base requires rerunning affected frontend/model checks. Neither
+release's upstream results establish this integration's model correctness.

@@ -3327,7 +3327,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: disk cache: hashing complete model assets and runtime identity\n");
                 if (!strata::platform::conversation_identity(assets, settings.str(), identity, disk_error) ||
                     !conversation_disk.open(o.conversation_disk, identity, uint64_t(o.conversation_disk_mib) * 1024 * 1024,
-                                            size_t(o.conversation_disk_slots), disk_error))
+                                            size_t(o.conversation_disk_slots), disk_error,
+                                            []() noexcept { strata::core::progress_beat(); }))
                     throw std::runtime_error(disk_error);
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata serve: disk cache initialization failed: %s\n", e.what());
@@ -3341,11 +3342,17 @@ int main(int argc, char** argv) {
         auto spill = [](void* user, const strata::core::SavedConversation& image) noexcept {
             auto& disk = *static_cast<DiskSpill*>(user);
             if (!disk.store->is_open()) return;
+            strata::core::progress_at("spilling conversation snapshot", int64_t(image.live.ids.size()));
             try {
+                const auto started = Clock::now();
                 std::string error;
-                if (!disk.store->put(image, error, disk.protected_entry))
+                uint64_t file_bytes = 0;
+                if (!strata::platform::conversation_file_size(image, file_bytes, error) ||
+                    !disk.store->put(image, error, disk.protected_entry))
                     std::fprintf(stderr, "strata serve: disk cache: dropped eviction (%s)\n", error.c_str());
-                else std::fprintf(stderr, "strata serve: disk cache: spilled %zu tokens\n", image.live.ids.size());
+                else std::fprintf(stderr, "strata serve: disk cache: spilled %zu tokens bytes=%llu in %.1f ms\n",
+                                  image.live.ids.size(), (unsigned long long) file_bytes,
+                                  std::chrono::duration<double, std::milli>(Clock::now() - started).count());
             } catch (...) { std::fprintf(stderr, "strata serve: disk cache: dropped eviction (allocation failure)\n"); }
         };
 #endif
@@ -3952,15 +3959,18 @@ int main(int argc, char** argv) {
 #ifdef STRATA_ENABLE_CONVERSATION_DISK
             strata::platform::ConversationStore::Candidate disk_hit;
             if (conversation_disk.is_open()) {
+                strata::core::progress_at("selecting disk conversation prefix");
                 try {
                     std::string disk_error;
                     const uint64_t floor = uint64_t(o.conversation_cache_min_free_mib) * 1024 * 1024;
                     if (!conversation_disk.best(ids, req_imgs, want_cvec, conversation_ram_budget, {}, disk_hit, disk_error)) {
                         std::fprintf(stderr, "strata serve: disk cache: lookup skipped (%s)\n", disk_error.c_str());
                     } else if (disk_hit.match.tokens > std::max(resume, parked.tokens)) {
+                        const auto started = Clock::now();
                         disk_spill.protected_entry = &disk_hit;
                         if (conversations.make_staging_room(size_t(disk_hit.match.staging_bytes))) {
                             incoming.emplace();
+                            strata::core::progress_at("reading conversation snapshot", int64_t(disk_hit.match.staging_bytes));
                             if (!conversation_disk.read(disk_hit, conversation_ram_budget,
                                     strata::core::conversation_available_memory(), floor, *incoming, disk_error) ||
                                 !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
@@ -3974,11 +3984,19 @@ int main(int argc, char** argv) {
                         parked = conversations.best(ids, req_imgs, want_cvec);
                         if (incoming) {
                             const auto loaded = strata::core::ConversationCache::match_image(*incoming, ids, req_imgs, want_cvec);
+                            uint64_t file_bytes = 0;
                             if (loaded.tokens <= std::max(resume, parked.tokens) ||
-                                !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), disk_error)) {
+                                !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), disk_error) ||
+                                !strata::platform::conversation_file_size(*incoming, file_bytes, disk_error)) {
                                 std::fprintf(stderr, "strata serve: disk cache: invalid or stale candidate (%s)\n", disk_error.c_str());
                                 incoming.reset();
-                            } else { selected = loaded; incoming_from_disk = true; }
+                            } else {
+                                selected = loaded; incoming_from_disk = true;
+                                std::fprintf(stderr, "strata serve: disk cache: loaded %lld tokens bytes=%llu staging=%llu in %.1f ms\n",
+                                             (long long) loaded.tokens, (unsigned long long) file_bytes,
+                                             (unsigned long long) disk_hit.match.staging_bytes,
+                                             std::chrono::duration<double, std::milli>(Clock::now() - started).count());
+                            }
                         }
                     }
                 } catch (const std::bad_alloc&) {

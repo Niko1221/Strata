@@ -22,7 +22,7 @@ public:
     // Quotas include all identities and any in-progress snapshot in that directory.
     // Failed open leaves the store closed. A zero quota disables it without I/O.
     bool open(const std::filesystem::path& root, const ConversationIdentity& identity,
-              uint64_t bytes, size_t slots, std::string& error);
+              uint64_t bytes, size_t slots, std::string& error, ConversationIoProgress progress = nullptr);
     bool is_open() const;
     void close();
     // Protect a selected disk hit while RAM admission evicts other images. If
