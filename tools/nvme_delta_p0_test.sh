@@ -206,7 +206,8 @@ EOF
 UNION=$(echo $SHARE | cut -d' ' -f1)
 REUSED=$(echo $SHARE | cut -d' ' -f2)
 echo "chunk files: $NCHUNKS for $NMANIFESTS conversations; distinct chunk keys: $UNION; shared references: $REUSED"
-if [ "$NMANIFESTS" -ge 2 ] && [ "$NCHUNKS" -le "$UNION" ] && [ "$REUSED" -gt 100 ]; then
+if [ "$NMANIFESTS" -ge 2 ] && [ "$NCHUNKS" -le "$UNION" ] && [ "$REUSED" -gt 3 ]; then   # 256-token chunks:
+   # the fork's shared references are the shared tokens / 256 - a handful for a 2,355-token shared prefix
   echo "PASS forks: $NMANIFESTS conversations, $UNION distinct chunk keys, $NCHUNKS chunk FILES ($REUSED references shared by content)"
 else echo "FAIL forks: $NCHUNKS files for $UNION distinct keys over $NMANIFESTS manifests - sharing is broken"; FAIL=1; fi
 # the fork restores bit-exactly: a fresh engine re-sends the fork's prompt
