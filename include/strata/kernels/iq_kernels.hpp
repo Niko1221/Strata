@@ -13,6 +13,8 @@ namespace strata::kernels {
 
 /// ggml type ids handled here.
 bool iq_supported(int ggml_type) noexcept;
+/// Types whose raw GGUF blocks the dequant/embedding entry points can read. This set may be wider than MMVQ.
+bool iq_dequant_supported(int ggml_type) noexcept;
 /// Bytes of one row of `n` values of `ggml_type` (n a multiple of the type's block).
 size_t iq_row_bytes(int ggml_type, int64_t n) noexcept;
 
