@@ -5,11 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jmnargi/Desktop/strata-v100
+WorkingDirectory=%h/strata-v100
 Environment=STRATA_ARENA_LOCK=0
 Environment=STRATA_WATCHDOG_S=300
-EnvironmentFile=/home/jmnargi/Desktop/strata-v100/.strata-service.env
-ExecStart=/home/jmnargi/Desktop/strata-v100/.venv/bin/python /home/jmnargi/Desktop/strata-v100/serve/server.py --engine strata --config /home/jmnargi/Desktop/strata-v100/strata-q2_0.json --host 0.0.0.0 --port 8088
+EnvironmentFile=%h/strata-v100/.strata-service.env
+ExecStart=%h/strata-v100/.venv/bin/python %h/strata-v100/serve/server.py --engine strata --config %h/strata-v100/strata-q2_0.json --host 0.0.0.0 --port 8088
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

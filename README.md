@@ -3,8 +3,8 @@
 > **Tesla V100 fork.** This fork keeps Strata compatible with NVIDIA Volta (`sm_70`) and is validated on a
 > Tesla V100-PCIE-16GB, Ryzen 5 3600, 48 GB DDR4-3200, and CUDA 12.8. The installed Qwen3.8-Flash-Next Q2_0
 > configuration provides the model's full **262,144-token context**, int8 KV cache, and MTP speculative decoding.
-> The bundled web chat and live performance monitor run at `http://100.80.155.43:8088/` over this machine's
-> Tailscale network. API access is protected by the key stored locally in `.strata-service.env`.
+> The bundled web chat and live performance monitor listen on port `8088`; open
+> `http://<host-or-lan-address>:8088/`. API access is protected by the key stored locally in `.strata-service.env`.
 > Hardware calibration selected a 0.28 PCIe share and 0.70 MTP draft floor, measuring **45.5 output tokens/s**.
 
 > | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
@@ -233,7 +233,8 @@ contains no credentials and can be committed. Use it for all future benchmark ru
 .venv/bin/python bench/run_v100_bench.py --model-gguf <shard-1.gguf> --only '~8K,128K'   # a subset of rows
 ```
 
-Raw rows and methodology notes for each measuring session live in `bench/results/`.
+Contributor-facing summaries and cross-hardware comparisons live in [`benchmarks/`](benchmarks/README.md);
+raw rows and methodology notes for each measuring session live in `bench/results/`.
 
 Before shipping any engine change, run the live OpenAI-compatible tool-call regression checks
 against the running server (they exercise function calling and a Hermes-style agent loop, and
