@@ -109,7 +109,7 @@ async function loadHealth() {
 
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
-  {key: "speed", label: "Speed", icon: "gauge", unit: "tok/s", series: "tok_s"},
+  {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
@@ -121,11 +121,17 @@ const METRICS = [
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
-    <span class="st-metric__value" id="mv-${m.key}">–</span>
-    <span class="st-metric__sub" id="ms-${m.key}"></span>
+    ${m.key === "speed" ? `<div class="speed-values">
+      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
+      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+    </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
+    <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
-      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
+        <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
+        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
 
 function spark(id, values, max) {
@@ -226,8 +232,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "tok/s", live.state === "generating" ? "now" : last ? "last request" : "");
+  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
+            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+  const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
+                : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
+  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
+            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
   spark("sp-speed", h.tok_s);
+  spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
