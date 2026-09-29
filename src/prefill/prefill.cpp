@@ -276,7 +276,7 @@ struct Prefill::Impl {
     float* sel_scores = nullptr;          // [sel_batch, max_blocks]
     int64_t sel_batch = 256, max_blocks = 0;
     float* attn_scratch = nullptr;
-    int64_t attn_batch = 64, cap = 0;
+    int64_t attn_batch = 32, cap = 0;
     // MoE
     float *logits = nullptr, *w = nullptr, *GU = nullptr, *Dm = nullptr, *sgate = nullptr, *sup = nullptr,
           *shared = nullptr, *sg = nullptr;

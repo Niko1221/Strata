@@ -115,10 +115,12 @@ pack's tokenizer.
 ## Local changes to the portable attention path (kept)
 
 The CUDA sm80 tensor-core prompt-attention kernel is compiled out on HIP, so prefill runs the decode
-kernel 32/64 queries at a time ("qsa attn" is 33-37% of long-context prefill GPU time). Two
-bitwise-neutral tweaks were measured and kept: `#pragma unroll 4` on the value-accumulation loop and
-a query batch of 64 instead of 32 (`src/prefill/prefill.cpp`) for better L2 reuse of overlapping
-selections. An RDNA4 MFMA rewrite of the prompt kernel remains the main unexplored lever.
+kernel 32 queries at a time ("qsa attn" is 33-37% of long-context prefill GPU time). One
+bitwise-neutral tweak was measured and kept: `#pragma unroll 4` on the value-accumulation loop.
+Doubling the prefill query batch (32 -> 64, for L2 reuse of overlapping selections) measured within
+noise on 0.1.26 and BROKE the prompt path's buffer fitting under 0.1.27's lend math ("device buffers
+for a chunk of 256 tokens do not fit") - reverted; the batch stays at the upstream 32. An RDNA4 MFMA
+rewrite of the prompt kernel remains the main unexplored lever.
 
 ## Not validated here
 

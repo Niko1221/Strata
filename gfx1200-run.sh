@@ -14,8 +14,8 @@ export STRATA_HIPBLASLT_TUNING="${STRATA_HIPBLASLT_TUNING:-$ROOT/tools/hip/gfx12
 export STRATA_PREFILL_MMQ="${STRATA_PREFILL_MMQ:-1}"
 
 PACK="${STRATA_PACK:-$ROOT/data/packs/iq1_m}"
-NATIVE="${STRATA_NATIVE_GGUF:?set STRATA_NATIVE_GGUF to the model's shard 1}"
-PLE="${STRATA_PLE_GGUF:?set STRATA_PLE_GGUF to the model's shard 2 (the PLE table)}"
+NATIVE="${STRATA_NATIVE_GGUF:?set STRATA_NATIVE_GGUF to the shard 1 GGUF of the model}"
+PLE="${STRATA_PLE_GGUF:?set STRATA_PLE_GGUF to the shard 2 GGUF of the model (the PLE table)}"
 PROFILE="${STRATA_PROFILE:-$ROOT/data/expert-profile-coder.bin}"
 MTP="${STRATA_MTP_RT:?set STRATA_MTP_RT to the MTP runtime directory}"
 

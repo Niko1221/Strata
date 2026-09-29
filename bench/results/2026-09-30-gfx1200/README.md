@@ -46,12 +46,14 @@ shrinks the expert tier more than streaming costs); `--prefill 32768` refuses (b
 A/B-tested the gfx1200 `multiProcessorCount`=16-WGP quirk by doubling ggml's `nsm`: 726.6 vs 731.1 —
 no effect (only ggml stream-k reads it, and the MMQ shapes do not partition by it here); reverted.
 
-## Local `qsa_decode_attn.cu` tweaks (kept, small)
+## Local `qsa_decode_attn.cu` tweak (kept, small)
 
-`#pragma unroll 4` on the V accumulation loop; prefill query batch 32 -> 64 (better L2 sharing of the
-overlapping selections). 64K prefill 754 -> 760 (within noise, not harmful); correctness unchanged
-(greedy outputs identical). The 32.6-36.5% "qsa attn" prefill share is structural: the CUDA sm80
-tensor-core kernel is compiled out on HIP, so prefill runs the decode kernel 32/64 queries at a time.
+`#pragma unroll 4` on the V accumulation loop: 64K prefill 754 -> 760 (within noise, not harmful);
+correctness unchanged (greedy outputs identical). A prefill query batch of 64 (instead of 32) also
+measured within noise on 0.1.26 but was REVERTED: under 0.1.27 it overflows the prompt path's
+borrowed buffer region ("device buffers for a chunk of 256 tokens do not fit"). The 32.6-36.5%
+"qsa attn" prefill share is structural: the CUDA sm80
+tensor-core kernel is compiled out on HIP, so prefill runs the decode kernel 32 queries at a time.
 A real fix is an RDNA4 MFMA rewrite of `qsa_prompt_attn.cu` (future work).
 
 ## Reproduce
