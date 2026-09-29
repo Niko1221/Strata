@@ -402,21 +402,44 @@ def check_gpus(sel, found, what="") -> None:
 
 
 def engine_archs():
-    """The GPU generations the installed engine has code for: (archs, ptx), or None when there is none."""
+    """The GPU generations the installed engine has code for: (archs, ptx, cuda), or None when there is none."""
     info = ROOT / "engine" / "BUILD.json"
     try:
         meta = json.loads(info.read_text())
     except (OSError, ValueError):
         return None
-    return [int(x) for x in meta.get("archs", [])], bool(meta.get("ptx"))
+    return [int(x) for x in meta.get("archs", [])], bool(meta.get("ptx")), str(meta.get("cuda") or "13.0")
+
+
+# The driver a CUDA release's PTX needs. A card newer than an engine's newest architecture runs its PTX, which the
+# driver compiles when the engine starts - and a driver reads the PTX of CUDA releases up to its own only: a CUDA 12.8
+# engine's PTX needs 570, although its machine code runs from 525 (CUDA's minor-version compatibility).
+PTX_DRIVER = {(12, 0): 525, (12, 1): 530, (12, 2): 535, (12, 3): 545, (12, 4): 550, (12, 5): 555, (12, 6): 560,
+              (12, 8): 570, (12, 9): 575, (13, 0): 580}
+
+
+def ptx_driver(cuda) -> int:
+    """The oldest driver that compiles PTX written by CUDA `cuda` ("12.8"); past the table, its newest entry."""
+    try:
+        v = tuple(int(x) for x in str(cuda).split(".")[:2])
+    except ValueError:
+        return max(PTX_DRIVER.values())
+    known = [d for k, d in PTX_DRIVER.items() if k <= v]
+    return PTX_DRIVER.get(v) or (max(known) if known else min(PTX_DRIVER.values()))
+
+
+def covers(g, archs, ptx, cuda) -> bool:
+    """Whether an engine with code for `archs` (and PTX past the newest, when `ptx`) runs on GPU `g`: its own
+    architecture, or a newer one whose driver can compile the PTX."""
+    a = int(g["arch"])
+    return a in archs or (ptx and bool(archs) and a > max(archs) and driver_major(g) >= ptx_driver(cuda))
 
 
 def engine_runs_on(g) -> bool:
     ea = engine_archs()
     if ea is None or not ea[0]:
         return True
-    archs, ptx = ea
-    return int(g["arch"]) in archs or (ptx and int(g["arch"]) > max(archs))
+    return covers(g, *ea)
 
 
 def choose_gpus(a, found) -> list:
@@ -497,7 +520,8 @@ def gpu_info(pick=None):
     return {**g, "count": len(found)}
 
 
-def find_nvcc():
+def find_nvcc(below=None):
+    """The newest CUDA Toolkit's nvcc and its (major, minor); `below`: only toolkits older than that version."""
     cands = [shutil.which("nvcc")]
     if os.environ.get("CUDA_PATH"):
         cands.append(str(Path(os.environ["CUDA_PATH"]) / "bin" / ("nvcc.exe" if WIN else "nvcc")))
@@ -512,8 +536,9 @@ def find_nvcc():
     for c in dict.fromkeys(cands):                     # every toolkit found; the newest wins
         if c and Path(c).exists():
             v = re.search(r"release (\d+)\.(\d+)", out([c, "--version"]))
-            if v and (best[1] is None or (int(v.group(1)), int(v.group(2))) > best[1]):
-                best = (c, (int(v.group(1)), int(v.group(2))))
+            ver = (int(v.group(1)), int(v.group(2))) if v else None
+            if ver and (below is None or ver < below) and (best[1] is None or ver > best[1]):
+                best = (c, ver)
     return best
 
 
@@ -874,12 +899,15 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
              f"{CUDA_MAJOR} (STRATA_CUDA)" + ("" if updating else ": compiling instead"))
         shutil.rmtree(tmp, ignore_errors=True)
         return None
-    archs = [int(a) for a in meta.get("archs", [])]
+    archs, ptx, cuda = [int(a) for a in meta.get("archs", [])], bool(meta.get("ptx")), str(meta.get("cuda") or "13.0")
     miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
-            if int(x) not in archs and not (meta.get("ptx") and int(x) > max(archs))]
+            if not covers({"arch": x, "driver": gpu.get("driver", "0")}, archs, ptx, cuda)]
     if miss:
+        ptx_short = ptx and bool(archs) and all(x > max(archs) for x in miss)   # a driver update would do
         warn(f"the ready-made engine is built for {', '.join(str(a) for a in archs)}; your GPU is "
-             f"{', '.join(str(x) for x in miss)}" + ("" if updating else ": compiling instead"))
+             f"{', '.join(str(x) for x in miss)}"
+             + (f" (its PTX needs driver {ptx_driver(cuda)} or newer; this one is {gpu.get('driver')})" if ptx_short else "")
+             + ("" if updating else ": compiling instead"))
         shutil.rmtree(tmp, ignore_errors=True)
         return None
     for p in tmp.iterdir():
@@ -965,7 +993,11 @@ def update_installed_engine(url_base) -> None:
 
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
-    nvcc, cuda_v = find_nvcc()
+    # a CUDA 13 build needs driver 580: below it, a CUDA 13 toolkit on this PC is passed over, and the one installed
+    # is 12.8, whose build runs from 525
+    old_driver = driver_major(gpu) < 580
+    below, toolkit = ((13, 0), "12.8") if old_driver else (None, TOOLKIT)
+    nvcc, cuda_v = find_nvcc(below)
     need_cuda = (12, 8) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
     vcvars = find_vcvars() if WIN else None
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
@@ -973,7 +1005,8 @@ def install_build_tools(gpu, yes):
     if not have_cc:
         missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler (build-essential)")
     if nvcc is None or cuda_v < need_cuda:
-        missing.append(f"the NVIDIA CUDA Toolkit {TOOLKIT}")
+        missing.append(f"the NVIDIA CUDA Toolkit {toolkit}"
+                       + (f" (driver {gpu.get('driver')} runs CUDA 12 builds, not CUDA 13)" if old_driver else ""))
     if not missing:
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
@@ -993,7 +1026,7 @@ def install_build_tools(gpu, yes):
                  "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"],
                 check=False)
         if nvcc is None or cuda_v < need_cuda:
-            run([*wg, "--id", "Nvidia.CUDA", "--version", TOOLKIT], check=False)
+            run([*wg, "--id", "Nvidia.CUDA", "--version", toolkit], check=False)
         vcvars = find_vcvars()
     else:
         apt = shutil.which("apt-get")
@@ -1014,8 +1047,8 @@ def install_build_tools(gpu, yes):
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-" + TOOLKIT.replace(".", "-")])
-    nvcc, cuda_v = find_nvcc()
+            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-" + toolkit.replace(".", "-")])
+    nvcc, cuda_v = find_nvcc(below)
     if (WIN and find_vcvars() is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
     if nvcc is None or cuda_v < need_cuda:
@@ -1903,7 +1936,7 @@ def main() -> int:
         elif vision == "gpu":                          # the encoder can cover fewer cards than the engine (RTX 20)
             m = json.loads((eng / "BUILD.json").read_text())
             va = [int(x) for x in m.get("vision_archs", m.get("archs", []))]
-            if va and int(gpu["arch"]) not in va and not (m.get("ptx") and int(gpu["arch"]) > max(va)):
+            if va and not covers(gpu, va, bool(m.get("ptx")), str(m.get("cuda") or "13.0")):
                 warn(f"the ready-made image encoder has no code for your GPU (sm_{gpu['arch']}): compiling it")
                 eng = None
     if eng is None:

@@ -1,7 +1,8 @@
 # The ready-made Linux engine setup.py downloads (strata-linux-x64.zip): the engine and the image encoder
-# (strata-vision), compiled with CUDA 12.8 - which runs on drivers from 525 up, as cloud and server GPUs often have -
-# for sm_80, sm_86 and sm_89 with PTX for newer cards, and the CPU code at the AVX2 baseline (STRATA_PORTABLE: the
-# AVX-512 kernels are still picked at run time on CPUs that have them). Compiling needs no GPU; nothing here runs it.
+# (strata-vision), compiled with CUDA 12.8 - whose machine code runs on drivers from 525 up, as cloud and server GPUs
+# often have - for sm_80, sm_86, sm_89, sm_90 and sm_120, with PTX for cards newer than those (a driver compiles CUDA
+# 12.8's PTX from 570 up; setup.py checks), and the CPU code at the AVX2 baseline (STRATA_PORTABLE: the AVX-512
+# kernels are still picked at run time on CPUs that have them). Compiling needs no GPU; nothing here runs it.
 #
 # A published release gets the zip and its SHA-256 as assets, so setup.py's releases/latest/download/ finds it next
 # to the Windows one. Run by hand (Actions > linux-prebuilt), it builds an artifact only; a pull request that changes
@@ -14,8 +15,8 @@ on:
   workflow_dispatch:
     inputs:
       archs:
-        description: "CUDA architectures, space-separated; the last also gets PTX (80 A100, 86 RTX 30, 89 RTX 40 / L4)"
-        default: "80 86 89"
+        description: "CUDA architectures, space-separated; the last also gets PTX (80 A100, 86 RTX 30, 89 RTX 40 / L4, 90 H100, 120 RTX 50)"
+        default: "80 86 89 90 120"
   pull_request:
     paths: [".github/workflows/linux-prebuilt.yml"]
 
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-22.04        # its glibc (2.35) is the oldest the engine then needs
     timeout-minutes: 300
     env:
-      ARCHS: ${{ github.event.inputs.archs || '80 86 89' }}
+      ARCHS: ${{ github.event.inputs.archs || '80 86 89 90 120' }}
       CUDA_HOME: /usr/local/cuda-12.8
     steps:
       - uses: actions/checkout@v5
@@ -97,7 +98,7 @@ jobs:
           archs = [int(a) for a in os.environ["ARCHS"].split()]
           cuda = re.search(r"release (\d+\.\d+)",
                            subprocess.run(["nvcc", "--version"], capture_output=True, text=True).stdout).group(1)
-          meta = {"version": ver, "archs": archs, "ptx": True, "cuda": cuda, "vision": "gpu",
+          meta = {"version": ver, "archs": archs, "ptx": True, "cuda": cuda, "vision": "gpu", "vision_archs": archs,
                   "cpu": "AVX2 baseline (STRATA_PORTABLE)", "commit": os.environ["GITHUB_SHA"]}
           json.dump(meta, open("dist/pkg/BUILD.json", "w"), indent=1)
           print(meta)
