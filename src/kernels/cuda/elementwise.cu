@@ -1,5 +1,6 @@
 // src/kernels/cuda/elementwise.cu - P2.S5's glue kernels.  See the header for why each exists.
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/dp4a.hpp"
 
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -208,7 +209,7 @@ __global__ void doorbell_ring_kernel(uint32_t* seq) {
 
 __global__ void doorbell_wait_kernel(const volatile uint32_t* flag, const volatile uint32_t* seq) {
     const uint32_t want = *seq;
-    while (*flag != want) __nanosleep(100);
+    while (*flag != want) strata_spin_pause();
     __threadfence_system();
 }
 
