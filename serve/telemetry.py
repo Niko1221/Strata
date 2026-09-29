@@ -3,8 +3,11 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.
-- CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
-  the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
+- GPU on ROCm: the same fields from amdgpu's sysfs (/sys/class/drm/card*/device - see _AmdSysfs), because NVML does
+  not exist on an AMD box.  PCIe throughput has no sysfs counter there: the link itself (Gen N x wide) is reported
+  and the throughput series stays absent rather than invented.
+- CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU, RAM and disk readings fall
+  back to the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc).
 Anything that cannot be read is None; nothing here can stop the server.
 """
 from __future__ import annotations
@@ -13,11 +16,71 @@ import collections
 import ctypes
 import os
 import platform
+import re
 import sys
 import threading
 import time
+from pathlib import Path
 
 HISTORY = 60
+
+# whole disks only: never their partitions, and never loop/zram/dm (a device-mapper layer would count the same
+# bytes twice).  /proc/diskstats counts 512-byte sectors - the same source psutil reads.
+_WHOLE_DISK = re.compile(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|xvd[a-z]+|mmcblk\d+|hd[a-z]+)$")
+
+# amdgpu exposes no marketing name, only the PCI ids.  This is the kernel's own description of the one card
+# this port is built for (gfx1100, the RX 7900 XT/XTX/GRE family); other cards show their ids.
+_AMD_PCI_NAMES = {"1002:744C": "Navi 31 [Radeon RX 7900 XT/XTX/GRE] (gfx1100)"}
+
+
+def _pcie_gen(speed):
+    """'16.0 GT/s PCIe' -> 4 (the generation the link runs at).  NVML reports this as a number already."""
+    if not speed:
+        return None
+    m = re.search(r"([0-9.]+)\s*GT/s", str(speed))
+    return {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}.get(float(m.group(1))) if m else None
+
+
+def _proc_lines(path):
+    """A /proc file's lines, closed properly; None when it cannot be read (also on Windows)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return None
+
+
+def _diskstats():
+    """(read_bytes, write_bytes) over the physical disks, from /proc/diskstats.  None when it cannot be read."""
+    lines = _proc_lines("/proc/diskstats")
+    if lines is None:
+        return None
+    read = write = 0
+    for line in lines:
+        f = line.split()
+        if len(f) < 10 or not _WHOLE_DISK.match(f[2]):
+            continue
+        read += int(f[5]) * 512
+        write += int(f[9]) * 512
+    return read, write
+
+
+def _physical_cores():
+    """How many physical cores /proc/cpuinfo shows (what psutil's cpu_count(logical=False) returns)."""
+    lines = _proc_lines("/proc/cpuinfo")
+    if lines is None:
+        return None
+    seen, phys, core = set(), None, None
+    for line in lines + [""]:
+        if line.startswith("physical id"):
+            phys = line.split(":", 1)[1].strip()
+        elif line.startswith("core id"):
+            core = line.split(":", 1)[1].strip()
+        elif not line.strip():
+            if phys is not None and core is not None:
+                seen.add((phys, core))
+            phys = core = None
+    return len(seen) or None
 
 
 # ------------------------------------------------------------------------------------------------ NVML
@@ -103,6 +166,108 @@ class _Nvml:
         return out
 
 
+def _read_text(path):
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+# ------------------------------------------------------------------------------------------------ amdgpu (ROCm)
+class _AmdSysfs:
+    """The NVML fields, from amdgpu's sysfs - what a ROCm box has instead of libnvidia-ml.
+
+    The card is found under /sys/class/drm/card*/device; the number is not fixed (a box with another DRM device
+    can have the AMD card at card1), so the backend scans for DRIVER=amdgpu and takes the index-th one.  Every
+    reading is a small sysfs file read: a sample cannot block the server, and anything the kernel does not
+    expose stays None so the Monitor shows "-" instead of a made-up number.  PCIe throughput has no sysfs
+    counter - the link generation and width are reported, the MB/s series stays empty."""
+
+    def __init__(self, index=0):
+        self.dir = None
+        self._temp = None
+        for d in self._cards():
+            if index <= 0:
+                self.dir = d
+                break
+            index -= 1
+        if self.dir is not None:
+            self._temp = self._find_temp()
+
+    @staticmethod
+    def _cards():
+        """Every /sys/class/drm/cardN/device whose driver is amdgpu, in card order."""
+        out = []
+        paths = sorted(Path("/sys/class/drm").glob("card[0-9]*/device"),
+                       key=lambda p: int(re.sub(r"\D", "", p.parent.name) or 0))
+        for p in paths:
+            try:
+                if "DRIVER=amdgpu" in (p / "uevent").read_text():
+                    out.append(p)
+            except OSError:
+                continue
+        return out
+
+    def _find_temp(self):
+        """The hwmon sensor labelled 'edge' (what NVML calls the GPU temperature), else the first temp input."""
+        for h in sorted((self.dir / "hwmon").glob("hwmon*")):
+            for label, value in (("temp1_label", "temp1_input"), ("temp2_label", "temp2_input"),
+                                 ("temp3_label", "temp3_input")):
+                try:
+                    if (h / label).read_text().strip() == "edge":
+                        return h / value
+                except OSError:
+                    continue
+            if (h / "temp1_input").exists():
+                return h / "temp1_input"
+        return None
+
+    def ok(self):
+        return self.dir is not None
+
+    @staticmethod
+    def _read(path, scale=1.0, digits=None):
+        try:
+            raw = int(path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        v = raw / scale if scale != 1.0 else raw
+        return round(v, digits) if digits is not None else v
+
+    def name(self):
+        if self.dir is None:
+            return "AMD GPU"
+        pci = None
+        try:
+            for line in (self.dir / "uevent").read_text().splitlines():
+                if line.startswith("PCI_ID="):
+                    pci = line.split("=", 1)[1]
+        except OSError:
+            pass
+        if not pci:
+            return "AMD GPU"
+        return _AMD_PCI_NAMES.get(pci.upper(), f"AMD GPU ({pci})")
+
+    def read(self):
+        if self.dir is None:                     # no amdgpu card: report nothing, the way NVML does when it cannot load
+            return {}
+        d = self.dir
+        out = {"util": self._read(d / "gpu_busy_percent"),
+               "mem_used": self._read(d / "mem_info_vram_used"),
+               "mem_total": self._read(d / "mem_info_vram_total")}
+        if self._temp is not None:
+            out["temp"] = self._read(self._temp, 1000.0)                 # millidegrees -> °C
+        for h in sorted((d / "hwmon").glob("hwmon*")):
+            if out.get("power") is None:
+                out["power"] = self._read(h / "power1_average", 1e6, 1)  # microwatts -> W
+            if out.get("power_limit") is None:
+                out["power_limit"] = self._read(h / "power1_cap", 1e6, 1)
+        out["pcie_gen"] = _pcie_gen(_read_text(d / "current_link_speed"))            # drops at idle (power saving)
+        out["pcie_gen_max"] = _pcie_gen(_read_text(d / "max_link_speed")) or out["pcie_gen"]
+        out["pcie_width"] = self._read(d / "current_link_width")
+        return {k: v for k, v in out.items() if v is not None}
+
+
 # ------------------------------------------------------------------------------------------------ CPU / RAM
 def _cpu_name():
     if os.name == "nt":
@@ -173,14 +338,18 @@ class Telemetry:
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
-        PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own."""
+        PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  A ROCm box has no
+        NVML: the same fields come from amdgpu's sysfs (_AmdSysfs)."""
         self.extra = extra
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
         self.gpus = [(i, _Nvml(i)) for i in idx]
-        self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
+        ok = [(i, g) for i, g in self.gpus if g.ok()]
+        if not ok:                                    # ROCm box (no libnvidia-ml): the same fields from amdgpu's sysfs
+            ok = [(i, g) for i, g in ((i, _AmdSysfs(i)) for i in idx) if g.ok()]
+        self.gpus = ok or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:
             import psutil  # noqa: F401
@@ -192,7 +361,7 @@ class Telemetry:
             "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
             "gpu_count": len(self.gpus),
             "cpu_name": _cpu_name(),
-            "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
+            "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or _physical_cores(),
             "threads": os.cpu_count(),
             "psutil": self.ps is not None,
         }
@@ -201,7 +370,15 @@ class Telemetry:
 
     def _disk(self):
         if not self.ps:
-            return None, None
+            cur = _diskstats()                   # no psutil: /proc/diskstats, the source psutil itself reads
+            if cur is None:
+                return None, None
+            t = time.time()
+            prev, self._disk_prev = self._disk_prev, (t, cur[0], cur[1])
+            if prev is None or t <= prev[0]:
+                return None, None
+            dt = t - prev[0]
+            return (cur[0] - prev[1]) / dt / 2**20, (cur[1] - prev[2]) / dt / 2**20
         try:
             c = self.ps.disk_io_counters()
         except (OSError, RuntimeError):
