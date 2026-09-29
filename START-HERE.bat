@@ -1,5 +1,6 @@
 @echo off
 rem Strata for Windows: the first run installs everything and starts the model; later runs just start it.
+rem Supports single GPU, Dual-GPU layer split, and Dual-GPU Low-RAM expert store (--vram-experts, >32 GB VRAM).
 rem Needs only an NVIDIA driver. Python is installed for your user account if it is missing (no admin needed).
 setlocal
 title Strata

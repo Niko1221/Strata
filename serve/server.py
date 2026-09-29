@@ -170,6 +170,7 @@ class StrataEngine:
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.progress_tok_s = None       # fresh prompt tokens/s from the last PP line (the reused prefix excluded)
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -307,6 +308,7 @@ class StrataEngine:
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
+        self.progress_tok_s = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
@@ -336,6 +338,11 @@ class StrataEngine:
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
+                        if len(f) >= 5:                                    # engine sends the fresh tokens/s as field 4, which is
+                            try:                                          # the only speed evidence while a prompt is reading
+                                self.progress_tok_s = float(f[4])
+                            except ValueError:
+                                pass
                     if cancel.is_set():                   # lines reset the 10 s wait, so without this a long prompt
                         return                            # would send no keep-alives at all)
                     yield None
@@ -479,7 +486,7 @@ def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
     args = list(cfg["args"])
-    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
+    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args and "--vram-experts" not in args and not cfg.get("low_ram"):
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
     return args
 
@@ -661,6 +668,12 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+            # the engine's `PP <read> <total> <ms> <tok/s>` line carries the FRESH rate (the reused prefix
+            # excluded); it is the only speed evidence that exists while a prompt is still being read.
+            rate = getattr(self.engine, "progress_tok_s", None)
+            live["prompt_tok_s"] = round(rate, 1) if rate else None
+            if rate and rate > 0 and progress[1] > progress[0]:
+                live["prompt_eta_s"] = round((progress[1] - progress[0]) / rate)
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}

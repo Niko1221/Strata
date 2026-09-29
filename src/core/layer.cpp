@@ -362,9 +362,9 @@ if (!native_bf16_projections) f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
 //      LEDGER L41 -> L42.
 project_bf16(x, b.x_bf16, (const uint16_t*) w_router->data, b.logits, g.n_embd, g.n_expert, true, stream);
 // ---- routing: softmax over ALL experts, stable descending argsort with ties by index, gather, renormalise
-// the native fused router is canonical-512x10 only; anything else takes the generic top-k kernel
-if (native_router_enabled() && g.n_expert == 512 && k == 10) {
-    try { native_router_top10(b.logits, b.ids, b.weights, stream); }
+// the native fused router is 512x10 or 256x10; anything else takes the generic top-k kernel
+if (native_router_enabled() && (g.n_expert == 512 || g.n_expert == 256) && k == 10) {
+    try { native_router_top10(b.logits, b.ids, b.weights, (int) g.n_expert, stream); }
     catch (const std::exception& error) { err = v.name("router") + ": " + error.what(); return false; }
 } else router_top10(b.logits, 1, (int) g.n_expert, (int) k, b.ids, b.weights, stream);
 // ---- THE DOORBELL, AND IT IS THE WHOLE POINT OF THE PROTOCOL.  The routed experts' INPUT (`x`) and the

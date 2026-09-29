@@ -3,6 +3,7 @@
 #   python tools/make_tiny_model.py
 bench/tiny-*.gguf
 bench/wide-*.gguf
+bench/prefill-bench-*.txt
 bench/micro/*.exe
 bench/micro/*.obj
 bench/micro/*.bin
@@ -46,4 +47,8 @@ build-vision.bat
 /dist/
 *.done
 /third_party/*.zip
+
+# Local compiler objects (including Windows reserved-name NUL.obj) and binary backups.
+*.obj
+/engine-release-backup/
 

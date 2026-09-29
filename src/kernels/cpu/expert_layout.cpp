@@ -93,13 +93,15 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     L.max_blob = 0;
     std::string line;
     while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') {
-            if (!line.empty() && line[0] == '#') {
-                // v3 packs record their expert count in the header; a pruned model (GSQ-RCO Coder) ships
-                // fewer experts than the canonical geometry the caller passes, which is a compile-time
-                // default, so the header wins.
-                const size_t at = line.find("(n_expert ");
-                if (at != std::string::npos) L.n_expert = std::atoll(line.c_str() + at + 10);
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            // v3 packs record their expert count in the header; a pruned model (GSQ-RCO Coder) ships
+            // fewer experts than the canonical geometry the caller passes, which is a compile-time
+            // default, so the header wins.
+            const size_t at = line.find("n_expert ");
+            if (at != std::string::npos) {
+                const long long v = std::strtoll(line.c_str() + at + 9, nullptr, 10);
+                if (v > 0) n_expert = L.n_expert = (int64_t) v;
             }
             continue;
         }

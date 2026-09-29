@@ -168,9 +168,30 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
-    // ---- the 512 routed experts, one blob each
+    // ---- the routed experts, one blob each.
+    //
+    // **THE DRAFT LAYER'S EXPERT COUNT IS ITS OWN, AND IT IS NOT `g.n_expert`.**  The MTP block comes from the
+    // ORIGINAL Qwen checkpoint (tools/mtp_fetch.py) and was never pruned, so it always has 512 experts even when
+    // the main model has 256 (the Coder release).  `g.n_expert` is the MAIN model's count, and using it here would
+    // both mis-size this allocation and, worse, index `mlp.gate.weight`'s 512 logits as if there were 256 - a
+    // silent wrong-expert draft.  The file is the authority: `mtp_rt.py` writes exactly `n_expert x BLOB` bytes.
     {
-        const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
+        // The file's own size is the authority for the draft layer's expert count (see the note above): one
+        // open with `ate` reads it, then the `FILE*` path does the reading.
+        std::ifstream probe(rt_dir + "/experts.bin", std::ios::binary | std::ios::ate);
+        if (!probe) { err = "mtp: cannot open experts.bin"; return false; }
+        const std::streamoff sz = probe.tellg();
+        const uint64_t per_blob = strata::kernels::cpu::BLOB;
+        if (sz <= 0 || (uint64_t) sz % per_blob != 0) {
+            err = "mtp: experts.bin is " + std::to_string((long long) sz) + " B, not a whole number of " +
+                  std::to_string(per_blob) + "-byte experts";
+            return false;
+        }
+        n_expert_ = (int64_t) ((uint64_t) sz / per_blob);
+        if (n_expert_ != (int64_t) g.n_expert)
+            std::fprintf(stderr, "strata mtp: the draft layer has %lld experts (the main model has %lld)\n",
+                         (long long) n_expert_, (long long) g.n_expert);
+        const uint64_t bytes = (uint64_t) sz;
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
         FILE* f = std::fopen((rt_dir + "/experts.bin").c_str(), "rb");
@@ -179,7 +200,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             FILE* f;
             ~Closer() { if (f != nullptr) std::fclose(f); }
         } closer{f};
-        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
+        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the draft experts do not fit in VRAM"; return false; }
         std::vector<uint8_t> chunk(64u << 20);
         for (uint64_t off = 0; off < bytes;) {
             const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);
@@ -246,7 +267,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
         attn_scratch_ = b.take<float>((uint64_t) attn_scratch_floats_);   // the full layer runs one row at a time
-        logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
+        logits_ = b.take<float>(T * (uint64_t) n_expert_); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); y_ = b.take<float>(T * N);
         sample_ = b.take<float>(T * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
@@ -277,9 +298,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
     std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
+                 (double) vram_ / 1048576.0, (double) n_expert_ * strata::kernels::cpu::BLOB / 1048576.0,
                  (double) tensors_.back().off / 1048576.0, files_s,
-                 files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
+                 files_s > 0 ? ((double) n_expert_ * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
                                    1048576.0 / files_s : 0.0);
     return true;
 }
@@ -429,11 +450,11 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             }
             fused_gr_read_multi(fa, T, xn_, cs);
         }
-        // ---- MoE: router, the 512 resident experts, the shared expert, the combine, the write
+        // ---- MoE: router, the draft layer's own resident experts, the shared expert, the combine, the write
         for (int t = 0; t < T; ++t) {
-            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
-            else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * n_expert_, (int) N, (int) n_expert_, cs);
+            if (native_router_enabled()) native_router_top10(logits_ + t * n_expert_, ids_ + t * K, w_ + t * K, (int) n_expert_, cs);
+            else router_top10(logits_ + t * n_expert_, 1, (int) n_expert_, (int) K, ids_ + t * K, w_ + t * K, cs);
         }
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) strata::kernels::cpu::BLOB, grp_ptr_,
                            grp_start_, grp_counts_, hit_dst_, hit_slot_, cs);

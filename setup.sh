@@ -1,5 +1,6 @@
 #!/bin/sh
 # Strata for Linux: the first run installs everything and starts the model; later runs just start it.
+# Supports single GPU, Dual-GPU layer split, and Dual-GPU Low-RAM expert store (--vram-experts, >32 GB VRAM).
 # Needs only an NVIDIA driver. Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 cd "$(dirname "$0")" || exit 1
 # Python 3.10+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
