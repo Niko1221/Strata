@@ -326,6 +326,8 @@ void usage() {
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
+                 "                       (vs int8's 1,056); not with --kv-resident\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
@@ -1183,14 +1185,19 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8 or q4_0\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
+        return 2;
+    }
+    if (o.kv == "k8v4" && o.kv_resident > 0) {
+        std::fprintf(stderr, "strata generate: --kv k8v4 does not support --kv-resident streaming (yet)\n");
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
@@ -4169,6 +4176,10 @@ int main(int argc, char** argv) {
                     if (st.kv_q4) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_hybrid) {
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
+                             {h ? st.host.k_scale : st.k_scale, scb}};
                     } else {
                         a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
                              {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};

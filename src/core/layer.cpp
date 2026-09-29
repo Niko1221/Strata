@@ -172,11 +172,13 @@ if (!w.wants_q8k()) {        s_gemv_q8_0_split(x80, p.codes, p.scales, p.offset,
 // namespace
 void layer_set_native_bf16(bool enabled) { native_bf16_projections = enabled; }
 void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short = enabled; }
-namespace { bool g_kv_int8 = false, g_kv_q4 = false; }
+namespace { bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false; }
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
 void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
+void qsa_set_kv_hybrid(bool enabled) { g_kv_hybrid = enabled; }
+bool qsa_kv_hybrid() { return g_kv_hybrid; }
 uint64_t gdn_buffers_bytes(const ModelGeometry& g) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd),
 // x_q8k
 (uint64_t) (g.n_embd / 32) * 34,
@@ -507,10 +509,15 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     }
     return p;
 }
-uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages) {
+uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
+    if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
+        const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
+        return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
+               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
+    }
     if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
-    return g_kv_int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
-                     : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
+    return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
+                : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
 }  // namespace
 
@@ -523,7 +530,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     uint64_t n = 0;
-    n += kv_pool_bytes(s, p.slots) + 4 * 16;                                   // K/V pools (the VRAM slots)
+    n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
+                       g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -544,14 +552,29 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     Cursor c{(uint8_t*) base};
     st.kv_int8 = g_kv_int8 && !g_kv_q4;
     st.kv_q4 = g_kv_q4;
+    // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
+    // mtp.cpp). Streamed mode is refused outright; generate.cpp validates it too, this is the backstop.
+    if (g_kv_hybrid && ring_cells <= 0) {
+        if (p.mode == 1) {
+            std::fprintf(stderr, "strata: hybrid K8V4 KV does not support --kv-resident streaming\n");
+            return 0;
+        }
+        st.kv_hybrid = true;
+        st.kv_int8 = false;
+        st.kv_q4 = false;
+    }
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
     const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
-    if (st.kv_q4) {
+    if (st.kv_hybrid) {
+        st.k_q = c.take<int8_t>(rows * s.head_dim);
+        st.k_scale = c.take<uint16_t>(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+        st.v_q4 = c.take<uint8_t>(rows * q4_row);
+    } else if (st.kv_q4) {
         st.k_q4 = c.take<uint8_t>(rows * q4_row);
         st.v_q4 = c.take<uint8_t>(rows * q4_row);
-    } else if (g_kv_int8) {
+    } else if (st.kv_int8) {   // st, not the global: the drafter's ring is INT8 under --kv k8v4 too
         st.k_q = c.take<int8_t>(rows * s.head_dim);
         st.v_q = c.take<int8_t>(rows * s.head_dim);
         st.k_scale = c.take<uint16_t>(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
@@ -619,7 +642,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         if (st.kv_q4) {
             st.host.k_q4 = hc.take<uint8_t>(hrows * q4_row);
             st.host.v_q4 = hc.take<uint8_t>(hrows * q4_row);
-        } else if (g_kv_int8) {
+        } else if (st.kv_int8) {
             st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
             st.host.v_q = hc.take<int8_t>(hrows * s.head_dim);
             st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
@@ -658,7 +681,11 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     const QsaShapes s = qsa_shapes(g);
     cudaStream_t cs = (cudaStream_t) stream;
     const size_t rows = (size_t) st.n_slots * s.n_head_kv * s.page_size;
-    if (st.kv_q4) {
+    if (st.kv_hybrid) {
+        cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
+        cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
+        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+    } else if (st.kv_q4) {
         cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
         cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
     } else if (st.kv_int8) {
@@ -682,7 +709,8 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     strata::kernels::QsaAttnPools pools;
     pools.page_table = st.page_table;
-    if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
+    if (st.kv_hybrid) { pools.k_q = st.k_q; pools.k_scale = st.k_scale; pools.v_q4 = st.v_q4; }
+    else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
     return pools;
@@ -863,11 +891,18 @@ if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n
 // EVERY ENTRY POINT FROM HERE ON IS THE CAPTURABLE ONE: the per-token counts come from `st.step` and every
 // launch is sized from a capacity in `st`/`b`, so this sequence can be captured and replayed.  The
 // host-scalar wrappers would be correct here today and silently wrong in a graph.
-if (st.kv_q4) {
+if (st.kv_hybrid) {
+    // K8V4: only V is rotated (kv_q4.hpp's H); the scores pair unrotated q with unrotated INT8 K, and the
+    // output - a mix of rotated values - is rotated back after attention. Each append/gather call folds the
+    // unused half's lanes onto the used pool (a bit-identical duplicate write), so no kernel variants exist.
+    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, st.step, b.kcur, b.kcur, s, stream, nullptr);   // mode 0: no host mirror
+    strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream, nullptr);
+} else if (st.kv_q4) {
     strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);   // Q4_0: rotated K and V (kv_q4.hpp)
     strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
-} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
+} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
             (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, (float) qsa_freq_base(), stream);
@@ -906,7 +941,13 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
         const strata::kernels::QsaAttnPools pools = qsa_attn_pools(st);
         strata::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
     } else {
-    if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
+    if (st.kv_hybrid) {
+        kv_gather_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, b.ids, st.step, cap, s,
+                          b.k_scratch, b.k_scratch, stream);
+        strata::kernels::kv_gather_q4_step(st.v_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s,
+                                           b.v_scratch, b.v_scratch, stream);
+    }
+    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
     if (st.max_cells < 1 || st.max_cells > 256 || !st.attention_status || !st.host_step) {
         err = v.name("native_flash_attn") + ": short adapter requires context <=256 and persistent status storage";
@@ -922,7 +963,7 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
 } else qsa_attend_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap, s, b.attn, nullptr, stream);
     }
-    if (st.kv_q4) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
+    if (st.kv_q4 || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
     dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) g.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim +                            (uint64_t) 2 * g.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) g.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) g.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) g.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
 // ---- 9. Gate the attention output before its projection. Native CUDA keeps F32
 // sigmoid/multiply arithmetic and uses Q8_1 for the native quantized projection.

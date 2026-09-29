@@ -1125,7 +1125,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                                             (p0 + s.page_size - 1) / s.page_size, s, m.cs);
                         pt.mark(kPfQsa, cs);
                     }
-                    if (st.kv_q4) {   // Q4_0 KV (kv_q4.hpp): rotated K and V, the queries below too, the output back
+                    if (st.kv_hybrid) {   // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
+                        strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        kv_append(m.Kc, m.Kc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
+                                  st.k_q, st.k_q, st.k_scale, st.k_scale, m.cs, nullptr,   // mode 0: no host mirror
+                                  staged ? &m.stage : nullptr);
+                        strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
+                                                      nullptr, staged ? &m.stage : nullptr);
+                    } else if (st.kv_q4) {   // Q4_0 KV (kv_q4.hpp): rotated K and V, the queries below too, the output back
                         strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                         strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
@@ -1278,7 +1285,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
                                                                    s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
                         }
-                    if (st.kv_q4) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
+                    if (st.kv_q4 || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
                     pt.mark(kPfQsa, cs);
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;

@@ -1283,9 +1283,9 @@ def main() -> int:
     ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--context", type=int)
-    ap.add_argument("--kv", choices=["int8", "q4_0"],
-                    help="KV cache precision above 8K context: int8 (default) or q4_0 (half the memory, a little less "
-                         "precise)")
+    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4"],
+                    help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
+                         "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (yes = the encoder on the GPU)")
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
@@ -1637,8 +1637,13 @@ def main() -> int:
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.
     kv_ram_gb = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9   # 12 QSA layers + the draft layer
-    # the RAM copy must be pinned, and under WSL the NVIDIA driver pins only about 1 GB in all
-    if is_wsl() and ctx >= 65536:
+    # Hybrid K8V4 never streams its KV (mode 0 only, layer.hpp), so it is excluded from the WHOLE streaming
+    # decision rather than one threshold at a time - a future tier added to this chain cannot reintroduce the
+    # combination the engine refuses (PR review).
+    if kv == "k8v4":
+        if ctx >= 65536:
+            ok("KV streaming off: not supported with --kv k8v4; the KV cache stays in VRAM")
+    elif is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
     elif ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
         args += ["--kv-resident", "32768"]
