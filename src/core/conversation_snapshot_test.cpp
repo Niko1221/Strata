@@ -160,7 +160,7 @@ void full_session(int fmt, int mode, int experts) {
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
-    for (int fmt : {kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
+    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
         if (fmt==3 && mode!=0) continue;
         Fixture f(fmt,mode);
         if (fmt==3) {

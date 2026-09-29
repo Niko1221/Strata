@@ -1,9 +1,19 @@
 # Shared conversation snapshots: convergence proposal
 
-Status: proposed interface and development work for issues/PRs #41, #52 and #57.
-This is not an agreed integration-owner assignment, a merged upstream feature,
-or a claim that the disk tier already uses this core. Development starts at
-upstream `b38c183` (0.1.18); the deployed/tested 0.1.15 branch remains separate.
+Status: shared-core development for issues/PRs #41, #52 and #57. In the issue's
+September 28 follow-up the maintainer asked @jeremiahritchey to own the unified
+PR, @midhatn to review Windows admission/acceptance, and @maedoc to layer optional
+NVMe persistence on the core. The September 29 follow-up permits the single-GPU
+core to land first. This is not a merged upstream feature or acceptance of the
+separate disk implementation.
+
+The original evidence targets upstream `b38c183` (0.1.18). Current integration
+is based on `8fc40dd` (0.1.25), fetched September 29 after main advanced beyond
+the requested 0.1.22. The earlier branches and their evidence remain separate.
+Parking rejects `--layer-split` while ordinary upstream multi-device checkpoint
+handling is retained. Checkpoint LRU stamps and system-prompt/root retention are
+preserved. K8V4 snapshots store separate INT8 K/scales and Q4 V payloads; hybrid
+streaming/ring layouts are rejected before calling upstream's block movers.
 
 ## Boundaries
 
