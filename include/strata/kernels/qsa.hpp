@@ -134,7 +134,7 @@ inline int64_t qsa_selection_width(int64_t n_kv, const QsaShapes& s) {
 
 /// THE ROWS OF `idx_pooled` A PREFIX OF `n_kv` CELLS OWNS: the completed block rows [0, n_kv/idx_block) PLUS the
 /// SPARE row at `n_kv / idx_block`.  One formula, stated here because three places need the same number
-/// (docs/nvme-kv-cache-convergence.md C4 and C8): the shared core's snapshot sizing
+/// (docs/nvme-kv-cache-design.md C4 and C8): the shared core's snapshot sizing
 /// (`conversation_snapshot.cpp: layout`), the NVMe envelope's pooled segment (`kv_nvme.cpp:
 /// snapshot_pooled_rows`), and the STRATA_STATE_HASH fingerprint's pooled span (`generate.cpp: state_hash_line`).
 ///

@@ -722,7 +722,7 @@ int argmax(const std::vector<float>& v) {
 //     back rejected drafts.
 // A checkpoint is only valid while the positional cells below it still hold ITS tokens, so the serve loop keeps
 // just the checkpoints that are prefixes of the tokens the session holds now.
-// THE SHARED CORE (issue #57, docs/nvme-kv-cache-convergence.md step 2).  These are no longer local shapes:
+// THE SHARED CORE (issue #57, docs/nvme-kv-cache-design.md step 2).  These are no longer local shapes:
 // `ConversationCheckpoint` is the one checkpoint type the serve loop, the RAM-cache policy and the NVMe disk
 // adapter all speak.  It carries two blobs ours did not - `dead` (the indexer's cell-0 key) and `block_pos` - so a
 // turn-boundary checkpoint describes the indexer COMPLETELY, not just its tail (collision C2).

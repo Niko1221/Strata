@@ -77,6 +77,17 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
 `qsa_kv_resident_min()`), `--kv-nvme-max GB` (default 100, 0 = unlimited). `--nvme-dump`/
 `--nvme-restore PATH` remain as hidden single-file debug spikes.
 
+**Under an active layer split (0.1.21) the tier is inert, by refusal.** A split session's later stages hold
+their own running state (`ConversationCheckpoint::stage_parts`, one checkpoint per stage, composed by the serve
+loop with per-stage saves), and the envelope carries the primary stage only - a snapshot written from a split
+engine could never be restored, because the file has nothing to put back into the later stages. So the dump side
+refuses a split session outright (`nvme_dump_at` rejects a checkpoint with non-empty `stage_parts`) and the serve
+loop does not promote (logged once per process): restoring into the primary session alone would leave the later
+stages' running state zeroed while the caller believes it mounted a whole conversation. Refusing rather than
+growing the format also keeps every stored snapshot - including the 106 converted in §5.3's wake - valid. Disk
+support for split sessions would be a version bump with the stage blobs as first-class segments, and is not
+built.
+
 ## 4. Correctness rules (each one earned the hard way)
 
 1. **Store bytes verbatim, never recompute on restore** - the expert path rounds differently
@@ -94,7 +105,9 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
    parked image verbatim produces a snapshot no next turn can match.  A picture at or past `L` is refused for the
    same reason: it describes a token the snapshot does not hold.
 5. **Refuse, never convert** across format/geometry changes - including a file of another format version, which is
-   refused by version (naming the one found) before any segment is walked.
+   refused by version (naming the one found) before any segment is walked. The one conversion that exists is the
+   offline v2→v3 store migration (§6, `tools/nvme_v2_to_v3.cpp`), which is a verified byte-mapping, not an
+   in-engine reinterpretation: the engine itself still refuses, always.
 6. **Payload digest** - hashed during the write with the same hasher that feeds the file (a plain
    write inside the payload silently desynchronizes the digest from the bytes; this exact bug
    shipped briefly and was caught by the corruption test).
@@ -104,6 +117,13 @@ Config: `--kv-nvme DIR` (enables the tier and forces the streamed-KV floor `--kv
    already overwritten, so `nvme_restore` re-publishes `dead` into it, as the shared core's
    `conversation_checkpoint_restore` does.  `STRATA_STATE_HASH` spans the same rows, so the DONE-vs-restore
    comparison can actually see the difference.
+8. **An image is part of the key, and the entry must carry what the file holds.**  Two defects lived exactly
+   here and none of the text-only tests could see them: `NvmeEntry::imgs` was never populated by the scan, so
+   every image comparison in the tier compared against an empty vector; and a turn-boundary dump stored the
+   *live* image list (every picture, including ones at `start >= L`) while keying on the boundary, so the resume
+   match could never equal it - any conversation with a picture produced an unreachable snapshot.  The boundary
+   now supplies its own filtered list (`at->imgs`), `nvme_dump_at` refuses an image record outside `[0, L)`, and
+   the entry carries the file's list, re-checked at restore.
 
 ## 5. The failure contract (C7)
 
@@ -182,6 +202,23 @@ keep them working, re-dump them with the binary that wrote them; to stop the ski
 rebuild`.  Both options are stated because both are legitimate: 113 GB of v2 snapshots is either a corpus to
 re-dump with the old binary or a store to delete and let refill - what it must not be is an ambiguity.
 
+**This case was then actually executed, end to end** (2026-09-29): the production store held 106 v2 snapshots
+(199.27 GiB), and "re-dump with the binary that wrote them" is impossible - the old binary writes v2 - so the
+store was migrated with an offline converter, `tools/nvme_v2_to_v3.cpp`. The payload bytes are the same layout
+with one formula difference (v2 wrote one spare pooled row per QSA layer that no reader can reach), so the
+converter verifies the source's own footer, solves the one unknown (the gdn+ple prefix block) from the file's own
+size, swaps in the shared core's 18-field geometry key from a reference v3 dump, copies every segment verbatim
+except that unreachable row, and recomputes the footer. Nothing was guessed: the drafter term and the prefix
+block were fitted - all 106 files and four fresh v3 references (L 12 … 58,513) solve to exactly
+gdn + ple = 118,038,528 B with zero spread, and the converter's walk must land on both footers to the byte or it
+refuses. Verification: the old binary restoring the v2 original and the new binary restoring the converted v3
+print IDENTICAL `gdn`/`ple`/`tail`/`kv`/`mtp`/`stale`/`ple_prev` hash fields (the two that differ are exactly the
+two v3 adds: `pooled` now spans the spare row, `dead` is a new field); the largest file (3.8 GB, L=242,357)
+restores cleanly; all 106 converted, zero refused. The originals are renamed aside in
+`/local/strata/kvstore-v2-backup/` (same filesystem, so a rename, not a copy) and should be deleted only after a
+few days of production promotes from converted files. The production store now scans as 106 sessions / 199.27
+GiB with no version refusals, and the live server has promoted from converted files.
+
 ### 5.4 What a future clean reset must prove before it may exist
 
 A clean reset after a transfer failure is not forbidden forever; it is unproven today.  Before it may exist, all
@@ -231,16 +268,40 @@ Oracles and harnesses (all exit non-zero on failure):
   generates the same tokens - those remain the GPU oracles' job.
 
 Results:
-- **P0**: restore-exactness PASS (post-restore hash == dumper's hash, deterministic across runs);
-  resume engages; negative control refuses. Token-equality across runs is informational only
-  (engine decode nondeterminism, pre-existing - reproduced on the old binary).
-- **Steps 1-3**: one growing file per conversation; promote after restart resumed 4235 tokens and
-  read 13 fresh in ~350 ms; cap evicted to 0.83 GiB under 1 GB.
-- **Not re-run since the v3 header.**  Step 3 widened the header to 208 bytes and step 4 changed the state-hash
-  field set, so the two results above are the v2-format record.  Both scripts now take the offset and the version
-  from `kNvmeHeaderBytes` / `kNvmeFormatVersion` through `tools/nvme_header_layout.sh` (and refuse a snapshot of a
-  version they do not write), but neither has been run on this branch: the GPU holds a live ~24 GB engine.
-- **Live needle test** (three ~110k-token sessions, needle ~900 tokens in, rotation): all three
+- **P0 (v3, on device, 2026-09-29)**: ALL PASS - restore-exactness (post-restore hash == dumper's hash; the
+  hash lines now include `dead` and the spare pooled row, the fields v3 added), resume engages
+  (`RESUME 4107`), the corruption negative control is refused and correctly classed (`refused`, never
+  `transfer`). This was the oracle's first execution against this branch; it found a harness bug (ROOT was
+  resolved after `cd`, so the script sourced another tree's header constants) which is fixed.
+- **Steps 1-3 (v3, on device)**: ALL PASS - one growing file per conversation (supersede), a promote after a
+  process restart read only 13 fresh tokens, the byte cap evicted correctly. First execution also found and
+  fixed an unset-`LD_LIBRARY_PATH` abort under `set -u`, and the scripts now accept `NVME_ENGINE` so a worktree
+  build can be the engine under test (previously they always ran the checkout's own binary).
+- **Image path (v3, on device, `tools/nvme_image_promote_test.sh`)**: ALL PASS - the first end-to-end exercise
+  of the image path anywhere (every earlier test was text-only, which is exactly how two image defects - §4.8 -
+  survived). An image conversation dumps at the turn boundary with `n_imgs == 1` and the key inside the user
+  turn; a second process re-sending the conversation PROMOTES it (19 of a 73-token conversation); the same grid
+  with different embeddings at the same position does not promote. No vision weights needed: `--vision` takes a
+  GENI request carrying an embeddings file, so synthetic rows exercise the same ImgKey plumbing - the tier keys
+  on the hash of the grid and the rows, not the picture.
+- **Failure contract (v3, on device, `tools/nvme_failure_contract_test.sh`)**: ALL PASS - the first execution of
+  a failing *transfer* anywhere (§5.0 explains why that gap hid the never-running fallback). `invalid`: a stored
+  snapshot with 64 corrupted GDN bytes is refused at promote, the entry is dropped (file unlinked), the engine
+  re-reads the prompt and keeps serving. `transfer_failed`: the test-only `STRATA_TEST_FAIL_CUDA` hook (default
+  inert, asserted inert by the host fixtures and by P0's clean restore) breaks the named transfer - gdn, the
+  spare-row re-publish, or the pre-apply sync - and the startup path exits 1 naming the class, while the
+  operator-facing PROMOTE path prints `nvme promote FAILED (transfer) … not attempting a clean reset`, the `ERR`
+  line, and leaves the snapshot on disk. A fresh process then serves normally: the new process IS the
+  supervisor-restart recovery.
+- **Restore staging, measured (`tools/nvme_restore_rss_probe.sh`)**: restoring a 964 MiB snapshot (58,513
+  tokens) peaks at 45,605 MiB RSS over a 43,548 MiB steady-state engine - a ~2 GiB transient on a 62 GiB host,
+  roughly twice the file size. This is the number that sizes the chunked-`pread` fix in §7.
+- **No base regression from the tier**: `tools/needle_bench.py` (1k/32k, tier off in both configs) is identical
+  across the pre-tier and converge binaries - 6/6 found, same timings.
+- **GPU parity suite**: 26/28 with a free GPU; the two failures are environmental/upstream (`ple_parity` needs a
+  Q2_0 fixture this machine lacks; `cuda_device_selftest` enforces an sm_120 policy in `device_info()`, which
+  only the selftest calls - the engine itself runs on this sm_89 card). Both documented, neither ours.
+- **Live needle test** (v2 era, three ~110k-token sessions, needle ~900 tokens in, rotation): all three
   needle turns promoted from NVMe (`reused 110,370/110,281/110,391 + 39/42/42 fresh read` vs
   ~110 s full prefill cold); TTFT 110 s -> **1.3-1.9 s** warm-cache / ~4 s cold-cache (the ~1.8 GB
   snapshot read dominates); needles retrieved (one empty reply was the reasoning budget exhausting
@@ -258,7 +319,17 @@ Results:
 
 - **Restore reads the whole file into RAM** (atomicity) - a streamed `pread` directly into the
   pinned buffers with size-then-digest validation would halve promote time and drop the transient
-  buffer. This is the path to sub-second TTFT for 128K sessions (currently ~2-4 s cold).
+  buffer. This is the path to sub-second TTFT for 128K sessions (currently ~2-4 s cold). **Measured**
+  (§6): a 964 MiB snapshot costs ~2 GiB of transient RSS over the engine's 43.5 GiB steady state.
+- **Layer-split sessions are not snapshot-able** (§3) - the envelope carries the primary stage only, the
+  dump refuses a split session, and the serve loop does not promote under a split. Disk support would be a
+  version bump with the stage blobs as first-class segments.
+- **The v2 originals of the converted store live in `/local/strata/kvstore-v2-backup/`** (106 files,
+  ~200 GiB) until deleted. Delete only after a few days of production promotes from converted files; the
+  converter and its verification are in the branch history if they are ever needed again.
+- **Metrics (issue #57's C11)**: the three failure classes, promotes, refusals and dump results are
+  stderr-only; `serve/telemetry.py` parses nothing NVMe-related. A log reader - not a metric - is currently
+  the only way to tell the failure classes apart.
 - **Per-turn snapshot accumulation** (no cross-restart supersession) - bounded by the cap; a
   conversation identity would enable per-conversation supersession.
 - **Sparsity** (Step 4, default skip): only the blocks the QSA selection can reach need storing;
@@ -283,3 +354,92 @@ client-initiated) and its hybrid-model restore no-op bug (#26676/#25913 - the ca
 behind rule §4.2). The full reviews that shaped the v1 (glm-5.3 design critique and implementation
 review) are in the branch history: commits `55e3337` (initial) and `0c7e6f7` (turn-boundary fix)
 reference them; they were removed from `docs/` at completion.
+
+## 9. The shared conversation core (issue #57) — the convergence record
+
+This tier did not grow up alone. Issue #57 (`jeremiahritchey`) proposed one shared capture/restore core for
+conversation state - RAM tier 1, this NVMe tier as optional tier 2 below it - and this branch adopted it. This
+section is the settled record of that convergence; it replaces the running "collision ledger" a working file
+(`docs/nvme-kv-cache-design.md`, now deleted) kept while the work was in flight.
+
+### 9.1 What was adopted, and what each side contributed
+
+The shared core (`include/strata/core/conversation_cache.hpp`, `conversation_snapshot.hpp`,
+`conversation_memory.hpp`, `src/core/conversation_state.cpp`, `conversation_snapshot.cpp`,
+`conversation_checked.hpp`) is imported **verbatim** from `feat/conversation-cache-shared-core` except for header
+comments, the export of `conversation_geometry_key` (the disk adapter keys its files on the same array the RAM
+tier's `SavedConversation` holds - one geometry identity, not two), and 0.1.21's `used` / `stage_parts` port.
+The core's own fixtures (1,805 checks: cache 35, memory 23, validation 780, transfer 1,020) pass here unchanged,
+which is what makes "one vocabulary in both tiers" more than a rename: the core's `ConversationRestore` enum is
+the failure contract's vocabulary (§5), its `conversation_state_sizes` is the one place running-state byte counts
+are computed, and its `conversation_checkpoint_{save,restore}` are what our serve-loop wrappers call.
+
+What the NVMe side contributed that the RAM core did not have: the disk envelope itself (versioned format,
+geometry key, digest footer, atomic publication, refusals instead of conversions), **turn-boundary keying** -
+the RAM image parks the *consumed* state including the model's hidden reasoning tokens, which a chat client
+re-sending history can never prefix-match, so any spill must re-key at the turn boundary (§4.4) - and the
+failure contract's on-device proof (§5). The answer to the core author's open question - *how would #52 consume
+a snapshot without unbounded promotion staging?* - is: drop the whole-file buffer, `pread` straight into the
+pinned host pools (they are device-mapped, so KV needs no `cudaMemcpy` at all), admit before the read against
+the bounded chunk, and hold one `open()` fd across validate → apply with `fstat` before/after plus
+write-temp-then-rename publication for TOCTOU. The staging cost of not doing it is now measured (§6: ~2 GiB
+transient for a 964 MiB snapshot); the fix itself is still §7's first item.
+
+### 9.2 The collision ledger, settled
+
+Each item below was a real incompatibility between the two designs when the work started. Status is current.
+
+- **C1 - turn-boundary keying**: settled as §4.4 (the spill rule) plus two defects the audit found in OUR tier:
+  `NvmeEntry::imgs` was never filled and a boundary dump stored the live image list - any conversation with a
+  picture was unreachable (§4.8). Still open: the *policy* question of whether a RAM-tier eviction also spills
+  through `nvme_dump_at`, and what spilling a parked (rather than live) session costs.
+- **C2 - checkpoint blobs**: settled - the shared checkpoint carries `dead` and `block_pos`, so a turn-boundary
+  checkpoint describes the indexer completely; 0.1.21 added `used`/`stage_parts` on top (§3).
+- **C3 - the spare pooled row**: settled - the "the `b == n_bid` path masks it" hope was false (two of three
+  readers score row `n_bid` out of the pool), so restore re-publishes `dead` into row `L / idx_block` (§4.7).
+- **C4 - pooled-row formula**: settled - the shared core's `L / idx_block + 1`, stated once
+  (`strata::kernels::qsa_pooled_rows`) and used by the envelope, the fingerprint and the core; our `+ 2` wrote
+  one row no reader can reach. Refuse-instead-of-truncate came with it.
+- **C5 - whose `dead` / `block_pos` the envelope owns**: settled - the boundary checkpoint's. The live
+  `idx_block_pos` names a block completed by tokens past the boundary, so reading it off the device wrote a
+  running-state value that did not describe the keyed prefix (§2). This is what bumped the format to v3.
+- **C6 - the drafter ring's home**: settled - the disk adapter refills it right after its apply pass, and the
+  serve loop keeps only the resumes that never touched the adapter (`from_nvme` gate). Collapse condition: this
+  is correct *while the adapter reads straight into the pinned pools*; it folds into
+  `conversation_kv_restore` (which already calls `kv_ring_restore`) the moment the adapter adopts that wholesale.
+- **C7 - the failure contract**: settled as §5, executed on device (§6).
+- **C8 - one state hash**: settled - `state_hash_line()` is the single implementation, matching the shared
+  formula (`dead`, the spare row via `qsa_pooled_rows`, `ss.max_cells`), used by the DONE line and
+  `STRATA_NVME_HASH` alike. A hash that could not see the row C3 fixes would have been a weak oracle for C3.
+- **C9 - the disk-envelope boundary**: settled for the format (v3, §2) - see the inventory below. A historical
+  note: the conversion boundary forbids serializing C++ structs; `NvmeHeader` still *is* one (fixed-width
+  fields, layout pinned by `static_assert`s on size and offsets), and the header sits outside the digest with
+  its layout pinned at compile time instead. That is the honest remaining divergence from the strict boundary.
+- **C10 - physical-RAM admission**: NOT settled. The restore still reads the whole file (§7, measured ~2 GiB
+  transient); the core's `conversation_available_memory` / `conversation_memory_admit` are imported dormant
+  (`conversation_memory.cpp` builds only the memory fixture, not the engine).
+- **C11 - metrics**: NOT settled (§7).
+
+### Where step 2 leaves NvmeHeader
+
+What step 2 inherited, what v3 is now. The v2 header violated the shared core's disk boundary four ways: a raw
+C++ struct `memcpy`ed into the envelope (implicit ABI, no stated offsets/widths/endianness); no versioned
+envelope (exact-equality version check, every segment length re-derived from the live engine at restore, so a
+sizing change surfaced as "layout mismatch" after the fact); the payload digest covering only `[sizeof(header),
+at)` - the one thing that could move every segment was the one thing the footer could not see; and a derived
+8-field geometry tag that was neither the core's 18-field key nor a disk schema. v3 answers each: the header is
+208 bytes with `static_assert`s pinning its size and the offsets of `L`, `geometry`, `page_size` and `mtp_host`
+(a reordered field fails the build instead of re-mapping segments); version 3 is refused by name before any
+segment is walked; the geometry is the shared core's 18-field key verbatim with `page_size` / `idx_block` /
+`max_cells` carried as separate *validated* runtime shapes (a reader must check them, not re-derive them); and
+the oracle scripts derive the header offset and format version from the same constants the asserts pin
+(`tools/nvme_header_layout.sh`). What remains deliberately un-done is the full segment table (offset+length per
+segment as fixed-width integers) and field-by-field encoding - the layout is still implicit, just compile-time
+pinned; that is the next envelope revision, and it is not needed until a format change actually happens.
+
+### 9.3 Steps, for the record
+
+The five alignment steps (rebase onto the shared core's base; adopt the core boundary; turn-boundary spill
+semantics; fixtures and one state hash; the failure contract) were executed serially on this branch, then the
+whole branch was rebased onto 0.1.21 and the GPU-phase validation was run (§6). The step-by-step running
+commentary lived in the deleted working file; what it found that is still true lives in §4, §5 and this section.

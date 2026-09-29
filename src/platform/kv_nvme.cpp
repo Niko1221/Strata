@@ -28,7 +28,7 @@ namespace strata::platform {
 
 // The envelope's image segment is one 16-byte (start, hash) record per image.  The plumbing now names the shared
 // core's type instead of std::pair<int64_t, uint64_t>; the BYTES must not move in this step, and this is what
-// proves they did not (docs/nvme-kv-cache-convergence.md step 2).  sizeof/alignof alone would not prove it: they
+// proves they did not (docs/nvme-kv-cache-design.md step 2).  sizeof/alignof alone would not prove it: they
 // say the record is still 16 bytes, not that `start` is still the first eight of them.  A standard-layout class
 // lays its non-static data members out in declaration order, so pinning that here makes the record's own layout
 // explicit - a field added, retyped OR REORDERED fails the build.  (The pair comparison is the tripwire against
@@ -44,7 +44,7 @@ namespace fs = std::filesystem;
 
 /// The byte counts the envelope is laid out with.  The running-state ones come from the SHARED CORE
 /// (`strata::core::conversation_state_sizes`) - this file no longer carries a second copy of those formulas
-/// (docs/nvme-kv-cache-convergence.md step 2).  `shapes` carries the granules the segment walk needs
+/// (docs/nvme-kv-cache-design.md step 2).  `shapes` carries the granules the segment walk needs
 /// (`page_size` / `idx_block`), read from the same `qsa_real_shapes()` the shared core reads.
 struct Sizes {
     strata::kernels::QsaShapes shapes;            // page_size / idx_block: the segment walk's granules
@@ -82,7 +82,7 @@ bool sizes_of(const strata::core::ModelGeometry& g, Sizes& z, std::string& err) 
 }
 
 /// C6: THE DRAFTER'S RING IS REFILLED BY THE ADAPTER, right after it applies a snapshot - not by whichever
-/// call site happened to remember.  The collapse condition is written in docs/nvme-kv-cache-convergence.md: this
+/// call site happened to remember.  The collapse condition is written in docs/nvme-kv-cache-design.md: this
 /// is the right home while the adapter reads straight into the pinned pools, because the refill is part of the
 /// residency contract for bytes it just wrote; it folds into `conversation_kv_restore` (which already calls
 /// `kv_ring_restore`, conversation_snapshot.cpp:171) the moment the adapter adopts that wholesale.

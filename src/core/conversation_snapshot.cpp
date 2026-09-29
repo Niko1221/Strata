@@ -1,5 +1,5 @@
 // src/core/conversation_snapshot.cpp - the SHARED CONVERSATION-CACHE CORE's K/V capture (issue #57, verbatim from
-// `jrich/feat/conversation-cache-shared-core@3657b8f`; docs/nvme-kv-cache-convergence.md step 2).
+// `jrich/feat/conversation-cache-shared-core@3657b8f`; docs/nvme-kv-cache-design.md step 2).
 //
 // Imported as the capture/restore primitive.  Our NVMe tier does NOT go through it yet: `nvme_dump_at` /
 // `nvme_restore` still lay out their own envelope (whole-file buffer, their own segment walk).  Step 3 moved the

@@ -1,5 +1,5 @@
 // src/platform/kv_nvme_host_test.cpp - the NVMe cold tier's FORMAT and RESUME rules, on the host, with NO CUDA
-// context (docs/nvme-kv-cache-convergence.md step 4: the fixtures C1 / C2 / C3 / C4 owed).
+// context (docs/nvme-kv-cache-design.md step 4: the fixtures C1 / C2 / C3 / C4 owed).
 //
 // WHAT THIS IS.  `nvme_dump_at`, `nvme_restore` and `KvNvmeStore` are the tier, and until now the only tests that
 // exercise them are three shell scripts that need a 24 GB model and the RTX 4090.  This fixture drives those same

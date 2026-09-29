@@ -1,5 +1,5 @@
 // The SHARED CORE's own CPU-only ownership fixture (issue #57, verbatim from
-// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-convergence.md step 4).
+// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-design.md step 4).
 // It exercises `ConversationCache` and `conversation_prefix` - the RAM policy this branch imports DORMANT - so the
 // code it links is proven even though nothing in the engine calls it yet.  No CUDA, no model, no GPU.
 #include "strata/core/conversation_cache.hpp"
