@@ -11,8 +11,10 @@ not the new base. The Windows admission test is @midhatn's `32cf918`, retained a
 After separating the general benchmark tooling and merging 0.1.27, all 47 tool
 tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
 rejection now clears its diagnostic error before the new batched draft-prefill
-path runs. That C++ integration change still needs an engine build and model
-validation; these Python passes do not establish it. No benchmark server or GPU
+path runs. The final core engine and snapshot test binaries build with GCC 15.2,
+CUDA 13.4, SM89 and portable AVX2. Five host CTests pass with GPU visibility
+disabled: policy, admission, checkpoint retention, validation and injected
+transfers. Model correctness remains unverified on this base. No benchmark server or GPU
 was used for these checks. The core frontend suite passes 66 tests (three skipped)
 on 0.1.27. Upstream changes include a HIP-only compilation fix and a changed draft
 vocabulary; the latter requires new model evidence with its exact loaded assets.
@@ -89,4 +91,6 @@ restored authoritative and resident-ring bytes before emitting a draft fingerpri
 The GPU fixture no longer refills the ring itself, which could hide a restore bug.
 On the 0.1.26 core, 1,188 ASan/UBSan host transfer checks passed, including corrupted
 bytes and failed copies, and affected translation units passed syntax checks.
-The actual GPU fixture and final 0.1.27 engine/model tests remain pending.
+The actual GPU fixture and final 0.1.27 model tests remain pending. The linked
+engine SHA-256 is `f3eda68ad0dce9a1604345743ba5432ed73f2efeaf6b4f84f435317d7f2ba9ff`;
+build and host-test records are in `logs/review-0.1.27/`.
