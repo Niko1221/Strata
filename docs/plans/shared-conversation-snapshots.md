@@ -168,3 +168,8 @@ GPU run is still outstanding.
 
 Page-level deduplication, manifests and incremental durability are separate
 follow-up designs. This adapter writes whole images only on RAM eviction.
+
+Before disk promotion, checkpoint ages are rebased to small relative stamps.
+This preserves the prefix chain, age ordering and ties without importing an old
+process clock that could wrap. The temporary stamps fit the codec metadata
+allowance; allocation failure declines promotion before GPU application.

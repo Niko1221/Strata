@@ -1,6 +1,6 @@
 # Conversation cache validation
 
-The core review branch is based on upstream 0.1.26 (`4c68013`). Recorded model
+The core review branch is based on upstream 0.1.27 (`a790805`). Recorded model
 results below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
 not the new base. The Windows admission test is @midhatn's `32cf918`, retained as
 `b319d43`. Historical records and the general Pi benchmark remain on local branch
@@ -8,7 +8,7 @@ not the new base. The Windows admission test is @midhatn's `32cf918`, retained a
 
 ## Current offline checks
 
-After separating the general benchmark tooling and merging 0.1.26, all 47 tool
+After separating the general benchmark tooling and merging 0.1.27, all 47 tool
 tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
 rejection now clears its diagnostic error before the new batched draft-prefill
 path runs. That C++ integration change still needs an engine build and model
@@ -38,7 +38,7 @@ operations. Local commands and logs are in `logs/nvme-host-20260929/` on the NVM
 
 The serve-loop integration passes GCC C++20 syntax checking against CUDA 13.4
 headers with disk support both enabled and disabled, including the shared geometry
-key export. This is not a linked engine build. The frontend suite passes 67 tests
+key export. This is not a linked engine build. The dependent frontend suite passes 68 tests
 (three skipped), including tokenizer/template forwarding from the actual frontend
 paths. Full-model NVMe promotion, restart, output parity and state hashes are still
 unverified; no running benchmark server or GPU was used for these checks.
@@ -134,7 +134,7 @@ batched pass or ring restore as coverage.
 
 ## Outstanding evidence
 
-- Repeat affected build/model gates on 0.1.26, including batched draft prompt KV
+- Repeat affected build/model gates on 0.1.27, including batched draft prompt KV
   and its fingerprint. Previous main-model hashes excluded draft scratch/state.
 - NVMe restart, corruption, foreign identity, eviction/promotion and explicit
   staging bounds; no disk acceptance is claimed yet.
@@ -159,6 +159,11 @@ there. No local Windows claim is made.
 
 Upstream 0.1.27 (`a790805`) was inspected after the maintainer requested 0.1.26.
 It adds HIP-only compilation fixes, Turing support, frontend image-marker fixes
-and a changed draft vocabulary. The review branches remain based on 0.1.26;
-merging that newer base requires rerunning affected frontend/model checks. Neither
-release's upstream results establish this integration's model correctness.
+and a changed draft vocabulary. Both review branches now include 0.1.27. The core frontend suite passes 66 tests
+(three skipped), its 47 tool tests and 22 optimized harness tests pass, and the
+dependent branch passes 52 tool tests. Five host CTests pass after the merge.
+These checks do not establish model correctness with the changed draft vocabulary.
+
+Persisted checkpoint ages are rebased before promotion. Retention tests cover
+extreme stamps, tied ages, unchanged prefix order and pinned-root eviction, and
+subsequent uses advancing without wrap. These pass under ASan/UBSan.
