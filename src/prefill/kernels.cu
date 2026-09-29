@@ -14,6 +14,11 @@
 namespace strata::prefill {
 namespace {
 
+// Set by Gemm::init on devices without native BF16 (Volta): the 16-bit activation images of the prompt GEMMs
+// are FP16 bits instead of BF16 bits (a BF16 value is exact in FP16, and the tensor-core GEMM is FP16).
+__device__ bool g_fp16_bits_device = false;
+bool g_fp16_bits_host = false;
+
 constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
 constexpr int S = 128, HK = 16, HV = 48, C = 10240;
 
@@ -67,14 +72,14 @@ __global__ void gr_norm_kernel(const float* __restrict__ R, const float* __restr
     for (int d = threadIdx.x; d < N; d += blockDim.x) {
         const float v = r[d] * rs * w[c * N + d];
         xn[row * N + d] = v;
-        xn16[row * N + d] = bf(v);
+        xn16[row * N + d] = g_fp16_bits_device ? hf(v) : bf(v);
     }
 }
 __global__ void gr_silu_kernel(const float* __restrict__ lo, uint16_t* __restrict__ lo16, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     const float x = lo[i] / (float) HC;
-    lo16[i] = bf(x / (1.0f + __expf(-x)));
+    lo16[i] = g_fp16_bits_device ? hf(x / (1.0f + __expf(-x))) : bf(x / (1.0f + __expf(-x)));
 }
 __global__ void gr_mix_kernel(const float* __restrict__ xn, const float* __restrict__ g, float* __restrict__ mixed,
                               uint16_t* __restrict__ mixed16, int64_t T, uint16_t* __restrict__ mixed_h) {
@@ -89,7 +94,7 @@ __global__ void gr_mix_kernel(const float* __restrict__ xn, const float* __restr
     }
     s /= (float) HC;
     mixed[i] = s;
-    if (mixed16) mixed16[i] = bf(s);
+    mixed16[i] = g_fp16_bits_device ? hf(s) : bf(s);
     if (mixed_h) mixed_h[i] = hf(s);
 }
 __global__ void gr_write_kernel(float* __restrict__ R, const float* __restrict__ bo, const float* __restrict__ inj,
@@ -396,6 +401,13 @@ __global__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict
 }
 
 }  // namespace
+
+void set_fp16_bits(bool on) {
+    g_fp16_bits_host = on;
+    cudaMemcpyToSymbol(g_fp16_bits_device, &on, sizeof on);
+}
+bool fp16_bits() { return g_fp16_bits_host; }
+
 
 void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const int32_t* page_table, int64_t page_size,
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,

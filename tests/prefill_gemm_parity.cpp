@@ -1,6 +1,7 @@
 // src/prefill/gemm_parity.cpp - checks the prefill BF16 matrix layout against a scalar reference.
 #include "strata/prefill/gemm.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -32,15 +33,28 @@ float fp32(uint16_t value) {
     return result;
 }
 
+// On devices without native BF16 (Volta) Gemm::bf16 reads X as FP16 bits: encode and decode accordingly.
+bool native_bf16() {
+    int ordinal = 0;
+    cudaDeviceProp properties{};
+    return cudaGetDevice(&ordinal) == cudaSuccess &&
+           cudaGetDeviceProperties(&properties, ordinal) == cudaSuccess && properties.major >= 8;
+}
+uint16_t encode_x(float value, bool native) { return native ? bf16(value) : __half_as_ushort(__float2half_rn(value)); }
+float decode_x(uint16_t bits, bool native) {
+    return native ? fp32(bits) : __half2float(__ushort_as_half(bits));
+}
+
 }  // namespace
 
 int main() {
     // Deliberately non-square and not tile-aligned: swapping the shared-memory K/N indices must fail this case.
     constexpr int T = 19, N = 23, K = 37, LDY = 29;
+    const bool native = native_bf16();
     std::vector<uint16_t> x(T * K), w(N * K);
     std::vector<float> initial(T * LDY), expected(T * LDY), actual(T * LDY);
     for (int t = 0; t < T; ++t) {
-        for (int k = 0; k < K; ++k) x[t * K + k] = bf16(static_cast<float>(((t * 7 + k * 3) % 17) - 8) / 4.0f);
+        for (int k = 0; k < K; ++k) x[t * K + k] = encode_x(static_cast<float>(((t * 7 + k * 3) % 17) - 8) / 4.0f, native);
     }
     for (int n = 0; n < N; ++n) {
         for (int k = 0; k < K; ++k) w[n * K + k] = bf16(static_cast<float>(((n * 5 - k * 2) % 19) - 9) / 8.0f);
@@ -52,7 +66,7 @@ int main() {
     for (int t = 0; t < T; ++t) {
         for (int n = 0; n < N; ++n) {
             float sum = 0.0f;
-            for (int k = 0; k < K; ++k) sum = std::fma(fp32(x[t * K + k]), fp32(w[n * K + k]), sum);
+            for (int k = 0; k < K; ++k) sum = std::fma(decode_x(x[t * K + k], native), fp32(w[n * K + k]), sum);
             expected[t * LDY + n] += sum;
         }
     }

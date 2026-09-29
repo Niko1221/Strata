@@ -728,6 +728,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         const char* v = std::getenv("STRATA_PLE_BATCH");
         return v == nullptr || std::atoi(v) != 0;
     }();
+
     const bool ple_batch = ple_on && ple_batch_env && strata::kernels::ple_native_postops_enabled() &&
                            (ss.ple.w.key_bf16 != nullptr || ss.ple.w.key_native_data != nullptr) &&
                            m.region_bytes / ((uint64_t) (3 * strata::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * 2 + 4096) >= 64;
@@ -877,13 +878,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     float* gate = carve_f((size_t) nb * 4);
                     uint16_t* e16 = (uint16_t*) carve_f((size_t) nb * N / 2);
                     const float* emb = m.ple_emb + s0 * N;
+                    const bool e16_fp16 = m.gemm.fp16_operands();   // the bf16 GEMM reads FP16 X on Volta
                     if (pw.key_bf16 != nullptr) {
-                        to_bf16(emb, e16, nb * N, m.cs);
+                        e16_fp16 ? to_f16(emb, e16, nb * N, m.cs) : (void) to_bf16(emb, e16, nb * N, m.cs);
                         m.gemm.bf16(e16, pw.key_bf16, key, nb, HD, N);
                     } else {
                         to_f16(emb, e16, nb * N, m.cs);
                         m.gemm.native(e16, pw.key_native_type, pw.key_native_data, key, nb, HD, N);
-                        to_bf16(emb, e16, nb * N, m.cs);
+                        e16_fp16 ? to_f16(emb, e16, nb * N, m.cs) : (void) to_bf16(emb, e16, nb * N, m.cs);
                     }
                     m.gemm.bf16(e16, pw.value_bf16, val, nb, N, N);
                     try {
