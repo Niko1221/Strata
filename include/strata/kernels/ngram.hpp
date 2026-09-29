@@ -5,9 +5,9 @@
 //   * `ngram_rows` - the HOST hash.  Sixteen row indices per token from the last three token ids, computed
 //     with 64-bit multiply/xor and no tensor op at all.  `qwen4exp.cpp` L1092-1124, where the source says
 //     outright that it is host-side because "ggml has no int64 and no xor".
-//   * `PleTable`  - the row gather.  `per_layer_token_embd.weight` is IQ4_NL and is NOT IN THE PACK: it is
-//     51.2e9 elements (28.8 GB) in the ORIGINAL second GGUF shard, and it is the only tensor this engine
-//     reads from the GGUF rather than from the canonical pack.
+//   * `PleTable`  - the row gather. `per_layer_token_embd.weight` is stored as IQ4_NL in the original pack,
+//     Q4_0 in Bartowski's IQ2_XS GGUF, and Q5_1 in the AD IQ4_XS-M64 checkpoint. Decoding and row geometry
+//     follow the tensor type from the GGUF header.
 //
 // THE HASH IS THE ONE PLACE IN THIS MODEL WHERE A WRONG BIT IS SILENTLY PLAUSIBLE.  Every one of its
 // properties has a rival reading that produces a valid index in range:
@@ -41,10 +41,14 @@ inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
 inline constexpr float NG_RMS_EPS = 1e-6f;
 
-// The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements =
-// 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
+// The table: [160, 320001536]. ne0 = 160 is the FAST axis, so one row is five contiguous 32-value blocks.
+// Q4_0/IQ4_NL rows use 90 bytes; the AD checkpoint's Q5_1 rows use 120 bytes. The head-slowest flatten then
+// makes 16 rows exactly n_embd = 2560.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
-inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90
+inline constexpr int PLE_Q4_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;        // 90
+inline constexpr int PLE_Q5_1_ROW_BYTES = (PLE_HEAD_DIM / 32) * 24;      // 120
+inline constexpr int PLE_ROW_BYTES = PLE_Q4_ROW_BYTES;                   // legacy Q4 callers
+inline constexpr int PLE_MAX_ROW_BYTES = PLE_Q5_1_ROW_BYTES;
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -86,7 +90,7 @@ void ngram_rows(const int32_t* tokens, const int32_t* prev, int n_tokens, const 
 /// codebook value; at 3cf03257 they do not, and the difference would shift every one of the 51.2e9 elements.
 int iq4nl_code(int code);
 
-/// One 90-byte row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
+/// One packed row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
 /// because IQ4_NL has no min term (`has_offset` is false in the manifest).
 ///
 /// THE NIBBLE ORDER IS SPLIT-HALF, NOT INTERLEAVED, and that is the trap here.  `dequantize_row_iq4_nl` is
@@ -95,6 +99,13 @@ int iq4nl_code(int code);
 /// so byte j carries elements j and j+16 - NOT 2j and 2j+1, which is the natural reading and which produces
 /// a perfectly plausible embedding of the wrong 160 values.
 void iq4nl_dequant_row(const uint8_t* row, float* out160);
+
+/// Bytes in one row for supported PLE table types; returns 0 for unsupported types.
+int ple_row_bytes(int ggml_type) noexcept;
+
+/// Decode one PLE row according to its GGML type: Q4_0 (2), Q5_1 (7), or IQ4_NL (20).
+/// Returns false for every other type.
+bool ple_dequant_row(int ggml_type, const uint8_t* row, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
@@ -108,7 +119,7 @@ enum class PleIo { Direct, Mmap };
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
     uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
-    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
+    uint64_t cache_rows = 1u << 20;  ///< bounded cache; 1M rows use ~90 MB (Q4) or ~120 MB (Q5_1); 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
 };
 

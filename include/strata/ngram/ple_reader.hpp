@@ -24,7 +24,9 @@
 
 namespace strata::ngram {
 
-inline constexpr uint32_t ROW_BYTES = 90;
+inline constexpr uint32_t ROW_BYTES_Q4 = 90;
+inline constexpr uint32_t ROW_BYTES_Q5_1 = 120;
+inline constexpr uint32_t ROW_BYTES = ROW_BYTES_Q4;  // default for existing callers and Q4 PLE fixtures
 inline constexpr uint32_t PAGE = 4096;
 
 struct ReaderStats {
@@ -57,12 +59,12 @@ public:
     /// `io_thread` (default): a worker thread submits and reaps reads, so `issue` costs the caller no ReadFile
     /// calls. false: the caller's thread does it (A/B arm).
     bool open(const std::string& path, uint64_t table_offset, uint64_t n_rows, uint32_t max_inflight,
-              uint64_t cache_rows, std::string& err, bool io_thread = true);
+              uint64_t cache_rows, std::string& err, bool io_thread = true, uint32_t row_bytes = ROW_BYTES);
     void close();
     bool is_open() const;
 
-    /// Start fetching `n` rows; row i's 90 raw bytes land at `out_raw + 90 * i`. `out_raw` must stay valid
-    /// until `collect` returns. Out-of-range rows produce 90 zero bytes (the mmap path's behaviour).
+    /// Start fetching `n` rows; row i's `row_bytes` raw bytes land at `out_raw + row_bytes * i`. `out_raw` must
+    /// stay valid until `collect` returns. Out-of-range rows produce `row_bytes` zero bytes (the mmap path's behaviour).
     Ticket issue(const uint32_t* rows, size_t n, uint8_t* out_raw);
 
     /// Block until every row of the ticket is in `out_raw`. Returns false on an I/O error (message in `err`).

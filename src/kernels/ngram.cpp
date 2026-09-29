@@ -1,13 +1,15 @@
-// src/kernels/ngram.cpp - P2.S4: the PLE n-gram hash and the IQ4_NL table read.
+// src/kernels/ngram.cpp - P2.S4: the PLE n-gram hash and type-aware PLE table row decode.
 //
 // See include/strata/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
 #include "strata/kernels/ngram.hpp"
+#include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include <stdexcept>
 
@@ -107,6 +109,50 @@ void iq4nl_dequant_row(const uint8_t* row, float* out160) {
     }
 }
 
+bool ple_dequant_row(int type, const uint8_t* row, float* out160) {
+    if (row == nullptr || out160 == nullptr) return false;
+    if (type == 20) {
+        iq4nl_dequant_row(row, out160);
+        return true;
+    }
+    if (type == 2) {
+        for (int block = 0; block < PLE_HEAD_DIM / 32; ++block)
+            strata::dequantize_q4_0(row + (size_t) block * 18, out160 + block * 32);
+        return true;
+    }
+    if (type == 7) {
+        // AD Q5_1 PLE rows use qh bits 0..15 for values 0..15 and bits 16..31 for values 16..31.
+        // This matches the checkpoint's PLE decoder; generic ggml Q5_1 GPU helpers in this tree use a
+        // different second-half shift and must not be reused here.
+        for (int block = 0; block < PLE_HEAD_DIM / 32; ++block) {
+            const uint8_t* packed = row + (size_t) block * 24;
+            const float d = f32_from_f16((uint16_t) (packed[0] | ((uint16_t) packed[1] << 8)));
+            const float m = f32_from_f16((uint16_t) (packed[2] | ((uint16_t) packed[3] << 8)));
+            const uint8_t* qh = packed + 4;
+            const uint8_t* qs = packed + 8;
+            const uint32_t high = (uint32_t) qh[0] | ((uint32_t) qh[1] << 8) |
+                                  ((uint32_t) qh[2] << 16) | ((uint32_t) qh[3] << 24);
+            for (int j = 0; j < 16; ++j) {
+                const int low = (qs[j] & 0x0f) | (int) (((high >> j) & 1u) << 4);
+                const int upper = (qs[j] >> 4) | (int) (((high >> (j + 16)) & 1u) << 4);
+                out160[block * 32 + j] = d * (float) low + m;
+                out160[block * 32 + j + 16] = d * (float) upper + m;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+int ple_row_bytes(int type) noexcept {
+    switch (type) {
+        case 2:
+        case 20: return PLE_Q4_ROW_BYTES;
+        case 7: return PLE_Q5_1_ROW_BYTES;
+        default: return 0;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------
 struct PleTable::Impl {
     GgufFile* file = nullptr;
@@ -119,8 +165,10 @@ struct PleTable::Impl {
     strata::ngram::PleReader reader;
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
+    int table_type = 0;
+    int row_bytes = PLE_ROW_BYTES;
     uint32_t rows[PLE_N_HEADS] = {};
-    uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES] = {};
+    std::vector<uint8_t> raw;
 };
 
 PleTable::PleTable() : impl_(new Impl) {}
@@ -145,36 +193,52 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         return false;
     }
     // [160, 320001536]: ne0 = 160 is the FAST axis, so the ROW index is shape[1] and a row is contiguous.
-    if (t->shape.size() != 2 || t->shape[0] != (uint64_t) PLE_HEAD_DIM) {
-        err = "per_layer_token_embd.weight has an unexpected shape";
+    if (t->shape.size() != 2 || t->shape[0] != (uint64_t) PLE_HEAD_DIM ||
+        t->shape[1] != PLE_TABLE_ROWS) {
+        char buf[192];
+        const uint64_t rows = t->shape.size() == 2 ? t->shape[1] : 0;
+        std::snprintf(buf, sizeof buf,
+                      "per_layer_token_embd.weight has shape [%llu, %llu], expected [%d, %llu]",
+                      (unsigned long long) (t->shape.empty() ? 0 : t->shape[0]),
+                      (unsigned long long) rows, PLE_HEAD_DIM,
+                      (unsigned long long) PLE_TABLE_ROWS);
+        err = buf;
         close();
         return false;
     }
-    if (std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL";
+    const int row_bytes = ple_row_bytes((int) t->type);
+    if (row_bytes == 0) {
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", expected Q4_0, Q5_1, or IQ4_NL";
         close();
         return false;
     }
+    impl_->table_type = (int) t->type;
+    impl_->row_bytes = row_bytes;
     impl_->n_rows = t->shape[1];
     impl_->data = impl_->file->tensor_data(*t);
+    impl_->raw.resize((size_t) PLE_N_HEADS * (size_t) impl_->row_bytes);
 
-    // THE CHECK THAT MAKES THE OFFSET FALSIFIABLE.  The manifest's `shard2_tensor.offset` is 0, but that is
-    // the offset within the GGUF's DATA SECTION: the file's first 192 bytes are a header, and reading at 0
-    // would decode the header plus 192 bytes of shifted rows - still plausible IQ4_NL, and wrong for every
-    // row.  `GgufFile` parses the header, so `tensor_data` is already correct; this asserts the tensor
+    // THE CHECK THAT MAKES THE OFFSET FALSIFIABLE. `tensor.offset` is relative to the GGUF data section;
+    // reading at file offset 0 would decode the header plus shifted rows and produce plausible but wrong
+    // values. `GgufFile` parses the header, so `tensor_data` is already correct; this asserts the tensor
     // exactly fills the file from there, which is what makes the whole arrangement checkable rather than
     // assumed.  A wrong data offset would leave a different remainder.
     // A shard may hold other tensors too (Swift 1.5's shard 1 holds layers 0-12 and the table): the table must
     // then fit inside the file at its own offset; alone in its shard (the original's shard 2) it fills it exactly.
-    const uint64_t need = impl_->n_rows * (uint64_t) PLE_ROW_BYTES;
+    if (impl_->n_rows > (std::numeric_limits<uint64_t>::max)() / (uint64_t) impl_->row_bytes) {
+        err = "PLE table byte size overflows uint64";
+        close();
+        return false;
+    }
+    const uint64_t need = impl_->n_rows * (uint64_t) impl_->row_bytes;
     const uint64_t have = impl_->file->file_size() - impl_->file->data_start();
     const bool alone = impl_->file->tensors().size() == 1;
-    if (alone ? need != have : t->offset + need > have) {
+    if (alone ? need != have : (t->offset > have || need > have - t->offset)) {
         char buf[256];
         std::snprintf(buf, sizeof buf,
                       "PLE table size mismatch: %llu rows x %d B = %llu at offset %llu, but the file holds %llu from "
                       "data_start %llu",
-                      (unsigned long long) impl_->n_rows, PLE_ROW_BYTES, (unsigned long long) need,
+                      (unsigned long long) impl_->n_rows, impl_->row_bytes, (unsigned long long) need,
                       (unsigned long long) t->offset, (unsigned long long) have,
                       (unsigned long long) impl_->file->data_start());
         err = buf;
@@ -189,7 +253,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         delete impl_->file;
         impl_->file = nullptr;
         impl_->data = nullptr;
-        if (!impl_->reader.open(gguf_path, table_offset, n_rows, io.max_inflight, io.cache_rows, err, io.io_thread)) {
+        if (!impl_->reader.open(gguf_path, table_offset, n_rows, io.max_inflight, io.cache_rows, err,
+                                io.io_thread, (uint32_t) impl_->row_bytes)) {
             close();
             return false;
         }
@@ -207,6 +272,9 @@ void PleTable::close() {
     impl_->file = nullptr;
     impl_->data = nullptr;
     impl_->n_rows = 0;
+    impl_->table_type = 0;
+    impl_->row_bytes = PLE_ROW_BYTES;
+    impl_->raw.clear();
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
@@ -216,30 +284,36 @@ uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
 
 void PleTable::read_row(uint32_t row, float* out160) const {
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
-        uint8_t raw[PLE_ROW_BYTES];
+        uint8_t raw[PLE_MAX_ROW_BYTES];
         std::string err;
         const auto t = impl_->reader.issue(&row, 1, raw);
         if (!impl_->reader.collect(t, err)) {
             std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
             return;
         }
-        iq4nl_dequant_row(raw, out160);
-        impl_->bytes_read += PLE_ROW_BYTES;
+        if (!ple_dequant_row(impl_->table_type, raw, out160)) {
+            std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+            return;
+        }
+        impl_->bytes_read += (uint64_t) impl_->row_bytes;
         return;
     }
     if (impl_->data == nullptr || row >= impl_->n_rows) {
         std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
         return;
     }
-    iq4nl_dequant_row(impl_->data + (size_t) row * PLE_ROW_BYTES, out160);
-    impl_->bytes_read += PLE_ROW_BYTES;
+    if (!ple_dequant_row(impl_->table_type, impl_->data + (size_t) row * impl_->row_bytes, out160)) {
+        std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+        return;
+    }
+    impl_->bytes_read += (uint64_t) impl_->row_bytes;
 }
 
 bool PleTable::issue(const uint32_t* rows16) {
     std::memcpy(impl_->rows, rows16, sizeof impl_->rows);
     if (impl_->mode == PleIo::Direct) {
         if (impl_->pending) return false;              // one token in flight per table
-        impl_->ticket = impl_->reader.issue(impl_->rows, PLE_N_HEADS, impl_->raw);
+        impl_->ticket = impl_->reader.issue(impl_->rows, PLE_N_HEADS, impl_->raw.data());
         impl_->pending = true;
         return true;
     }
@@ -249,8 +323,8 @@ bool PleTable::issue(const uint32_t* rows16) {
         ULONG_PTR n = 0;
         for (int h = 0; h < PLE_N_HEADS; ++h) {
             if (rows16[h] >= impl_->n_rows) continue;
-            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * PLE_ROW_BYTES);
-            ranges[n].NumberOfBytes = PLE_ROW_BYTES;
+            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->row_bytes);
+            ranges[n].NumberOfBytes = (SIZE_T) impl_->row_bytes;
             ++n;
         }
         if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
@@ -265,9 +339,14 @@ bool PleTable::collect(float* out2560, std::string& err) {
     impl_->pending = false;
     if (impl_->mode == PleIo::Direct) {
         if (!impl_->reader.collect(impl_->ticket, err)) return false;
-        for (int h = 0; h < PLE_N_HEADS; ++h)
-            iq4nl_dequant_row(impl_->raw + (size_t) h * PLE_ROW_BYTES, out2560 + (size_t) h * PLE_HEAD_DIM);
-        impl_->bytes_read += (uint64_t) PLE_N_HEADS * PLE_ROW_BYTES;
+        for (int h = 0; h < PLE_N_HEADS; ++h) {
+            if (!ple_dequant_row(impl_->table_type, impl_->raw.data() + (size_t) h * (size_t) impl_->row_bytes,
+                                 out2560 + (size_t) h * PLE_HEAD_DIM)) {
+                err = "PleTable::collect: unsupported table encoding";
+                return false;
+            }
+        }
+        impl_->bytes_read += (uint64_t) PLE_N_HEADS * (uint64_t) impl_->row_bytes;
         return true;
     }
     for (int h = 0; h < PLE_N_HEADS; ++h) read_row(impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
@@ -276,13 +355,27 @@ bool PleTable::collect(float* out2560, std::string& err) {
 
 bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err) {
     if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
+    if (n_tokens > (std::numeric_limits<size_t>::max)() / (size_t) PLE_N_HEADS) {
+        err = "PleTable::gather_batch: token count overflows row count";
+        return false;
+    }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
     if (impl_->mode == PleIo::Direct) {
-        std::vector<uint8_t> raw(n * PLE_ROW_BYTES);
+        if (n > (std::numeric_limits<size_t>::max)() / (size_t) impl_->row_bytes) {
+            err = "PleTable::gather_batch: raw row buffer size overflows address space";
+            return false;
+        }
+        std::vector<uint8_t> raw(n * (size_t) impl_->row_bytes);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
         if (!impl_->reader.collect(ticket, err)) return false;
-        for (size_t i = 0; i < n; ++i) iq4nl_dequant_row(raw.data() + i * PLE_ROW_BYTES, out + i * PLE_HEAD_DIM);
-        impl_->bytes_read += (uint64_t) n * PLE_ROW_BYTES;
+        for (size_t i = 0; i < n; ++i) {
+            if (!ple_dequant_row(impl_->table_type, raw.data() + i * (size_t) impl_->row_bytes,
+                                 out + i * PLE_HEAD_DIM)) {
+                err = "PleTable::gather_batch: unsupported table encoding";
+                return false;
+            }
+        }
+        impl_->bytes_read += (uint64_t) n * (uint64_t) impl_->row_bytes;
         return true;
     }
     for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
@@ -320,8 +413,8 @@ void PleTable::gather(const uint32_t* rows16, float* out2560) const {
     //
     // **THIS COST 2.10-2.61 ms PER TOKEN AND HAD NEVER BEEN IN THE PLAN'S BUDGET AT ALL.**  The round-309
     // `token host phases` line put it second behind the layer loop among avoidable terms, and the arithmetic
-    // says why: the table is 320,001,536 rows of `PLE_ROW_BYTES` = 90 B in a 26.8 GB mapping, so the sixteen
-    // rows a token needs are 1,440 B - **0.5 MB/s**.  That is not bandwidth, it is latency: sixteen reads into
+    // says why: the table is 320,001,536 rows (90 B Q4 or 120 B Q5_1) in a large mapping, so the sixteen
+    // rows a token needs are 1,440 B for Q4 and 1,920 B for Q5_1. That is not bandwidth, it is latency: sixteen reads into
     // sixteen different 4 KB pages scattered across 26.8 GB, taken ONE AT A TIME, and on this machine the PLE
     // shard is 26.8 GB against 63 GB of RAM that the 31.6 GB expert arena is also competing for, so they are
     // not in the OS cache.  Sixteen serial NVMe reads at ~150 us is 2.4 ms, which is the measurement.
@@ -336,8 +429,8 @@ void PleTable::gather(const uint32_t* rows16, float* out2560) const {
         for (int h = 0; h < PLE_N_HEADS; ++h) {
             // Out-of-range rows are handled by `read_row` as zeros and have no address to prefetch.
             if (rows16[h] >= impl_->n_rows) continue;
-            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * PLE_ROW_BYTES);
-            ranges[n].NumberOfBytes = PLE_ROW_BYTES;
+            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->row_bytes);
+            ranges[n].NumberOfBytes = (SIZE_T) impl_->row_bytes;
             ++n;
         }
         if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
