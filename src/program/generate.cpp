@@ -299,11 +299,12 @@ struct Options {
     std::string kv_nvme;
     long long kv_nvme_max_gb = 100;
     /// The delta tier (docs/nvme-delta-cache-handoff.md): --kv-delta 1 appends content-addressed sealed chunks +
-    /// a per-turn State record at every DONE instead of rewriting a whole v3 snapshot - the write volume becomes
-    /// the NEW tokens (~16 KB each), not the total session.  Promote picks the longest match across BOTH tiers;
-    /// the snapshot format stays v3 and the v3 dump remains the fallback path.  Default 0 (Phase 4 wiring; the
-    /// default-on flip is Phase 6, after the soak).
-    long long kv_delta = 0;
+    /// a per-turn State record at every DONE instead of rewriting a whole v3 snapshot - the write volume's KV
+    /// part becomes the NEW tokens (~16 KB each), not the total session.  Promote picks the longest match across
+    /// BOTH tiers; the snapshot format stays v3 and the v3 dump remains the fallback path.  DEFAULT ON (Phase 6,
+    /// after the oracles and the suite were green with it on): the tier only acts beside --kv-nvme, which is
+    /// itself opt-in, so a plain engine runs nothing new; --kv-delta 0 returns the pure-v3 cascade.
+    long long kv_delta = 1;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
@@ -4071,6 +4072,11 @@ int main(int argc, char** argv) {
                         live_imgs = best->imgs;
                         std::fprintf(stderr, "strata serve: nvme promote: resumed %lld tokens from %s\n",
                                      (long long) best->L, best->path.c_str());
+                        // the same fingerprint the --nvme-restore startup path prints straight after its load
+                        // (STRATA_NVME_HASH): the delta oracle's bit-exactness pair is THIS hash against the v3
+                        // tier's restore of the same boundary - the two tiers must restore identical sessions
+                        if (std::getenv("STRATA_NVME_HASH") != nullptr)
+                            std::fputs(state_hash_line(ss, mtp, g, best->L).c_str(), stderr);
                     }
                 }
             }
