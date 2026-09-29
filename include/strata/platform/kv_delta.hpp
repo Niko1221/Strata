@@ -279,9 +279,13 @@ public:
     /// previous head of THIS process is superseded (its manifest unlinked after the new one is durable).  The
     /// caller pre-checks the delta path's own conditions (not split, T <= mtp max_cells) and routes everything
     /// else to the v3 store; a false return here means NOT CACHED THIS TURN (§5.13), never a correctness event.
+    /// `act`, when given, reports what THIS call did (docs/nvme-kv-cache-web-design.md §3): `skipped` on the
+    /// exact-match head refresh, `written` = the same turn's write volume the `appended N chunks` line prints
+    /// (manifest + State + only the chunks THIS turn sealed), and `dropped`/`dropped_bytes` ONLY on a real
+    /// supersede - a fork left the previous head on disk, so it reports no drop it did not make.
     bool dump(const SessionState& ss, const QsaState& mtp_state, const ModelGeometry& g,
               const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
-              const ConversationCheckpoint* at, std::string& err);
+              const ConversationCheckpoint* at, std::string& err, TierActivity* act = nullptr);
     /// Reads `e` back (see delta_restore for the failure contract), plus the store's own TOCTOU check: the
     /// reassembled image disagreeing with the entry the scan built is `invalid` - same rule as the v3 store's.
     strata::core::ConversationRestore restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
@@ -291,8 +295,8 @@ public:
     void drop(const NvmeEntry& e);
     /// Mark-and-sweep (§5.12): unlink every chunks/states file no live manifest references.  Run at open and at
     /// cap pressure, after eviction - the union of references is computed BEFORE any unlink, so a chunk shared
-    /// with a live manifest is never reclaimed.
-    void sweep();
+    /// with a live manifest is never reclaimed.  Returns what it reclaimed (and still prints the operator's line).
+    TierActivity sweep();
     const std::vector<NvmeEntry>& entries() const { return entries_; }
     uint64_t total_bytes() const { return total_; }   ///< chunks + states + manifests, this tier
     size_t size() const { return entries_.size(); }
@@ -315,6 +319,7 @@ private:
 /// summed bytes fit (never emptying the store), then sweep the delta tier once - eviction of a delta
 /// conversation is just its manifest's unlink, and the sweep is what reclaims its exclusive chunks.  A free
 /// function so the serve loop's rule is host-testable; with the delta tier off it is simply never called.
-void kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes);
+/// Returns the combined activity: the evictions from BOTH tiers' entry lists plus the sweep's numbers.
+TierActivity kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes);
 
 }  // namespace strata::platform

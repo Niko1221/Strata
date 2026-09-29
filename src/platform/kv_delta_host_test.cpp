@@ -887,6 +887,35 @@ int count_real(const std::string& dir) {
     return n;
 }
 
+/// THE DISK'S OWN ANSWER to what a sweep did: every record under `delta_dir`'s chunks/ and states/, counted and
+/// summed.  A `TierActivity` sweep report is checked against the DIFFERENCE of two calls to this, so the counter
+/// is measured against the records that actually left the store rather than against arithmetic restated here.
+std::pair<int, uint64_t> delta_records(const std::string& delta_dir) {
+    int n = 0;
+    uint64_t bytes = 0;
+    std::error_code ec;
+    for (const char* sub : {"/chunks", "/states"})
+        for (const fs::directory_entry& de : fs::directory_iterator(delta_dir + sub, ec)) {
+            if (ec) break;
+            if (!de.is_regular_file()) continue;
+            ++n;
+            bytes += (uint64_t) de.file_size(ec);
+        }
+    return {n, bytes};
+}
+
+/// Bytes the files directly under `dir` hold: used to name the chunk files a grown dump REUSES, which are
+/// therefore NOT that turn's write.
+uint64_t dir_bytes(const std::string& dir) {
+    uint64_t bytes = 0;
+    std::error_code ec;
+    for (const fs::directory_entry& de : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (de.is_regular_file()) bytes += (uint64_t) de.file_size(ec);
+    }
+    return bytes;
+}
+
 // ================================ fixture: the store (Phase 4) ================================
 
 void fixture_store(const std::string& root) {
@@ -923,13 +952,31 @@ void fixture_store(const std::string& root) {
         ck(delta.open(root + "/supersede", S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
            "the store opens");
         const ConversationCheckpoint cp10 = boundary_checkpoint(S, 10, 8);
-        ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &cp10, err), "dump at 10");
+        strata::platform::TierActivity a10;
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &cp10, err, &a10), "dump at 10");
+        ck(!a10.skipped, "a first dump is not a skip");
+        ck_eq(a10.dropped, 0, "with no previous head to supersede");
+        ck_eq((int64_t) a10.written, (int64_t) delta.entries()[0].bytes,
+              "written is the whole conversation this turn put on disk");
         const std::string first_head = delta.entries()[0].path;
+        const uint64_t first_bytes = delta.entries()[0].bytes;
+        const uint64_t reused_bytes = dir_bytes(dir + "/chunks");   // the chunks the grown dump must NOT re-count
         const ConversationCheckpoint cp18 = boundary_checkpoint(S, 18, 16);
-        ck(delta.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &cp18, err), "dump at 18");
+        strata::platform::TierActivity a18;
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &cp18, err, &a18), "dump at 18");
         ck_eq((int64_t) delta.size(), 1, "still one conversation");
         ck(!fs::exists(first_head), "the old head's manifest was unlinked");
         ck_eq(count_files(root + "/supersede/delta/chunks", ""), 4, "and the chunks accumulated (2 + 2 new)");
+        // THE REPORT, against the books and the disk: `dropped` is the head the writer really superseded, and
+        // `written` is THIS turn's write - the same number the "appended N chunks" line prints - not the size of
+        // the conversation the turn produced.
+        ck_eq(a18.dropped, 1, "the grown dump superseded this process's previous head");
+        ck_eq((int64_t) a18.dropped_bytes, (int64_t) first_bytes, "and reports that entry's own bytes");
+        ck_eq((int64_t) a18.written,
+              (int64_t) delta.entries()[0].bytes - (int64_t) reused_bytes,
+              "written is the new manifest + State + ONLY the chunks this turn sealed");
+        ck((int64_t) a18.written < (int64_t) delta.entries()[0].bytes,
+           "so one turn's write is smaller than the conversation it belongs to");
     }
     {   // THE P2-2 TEST: fork sharing survives eviction.  Two conversations share most of their chunks (a cross-
         // restart fork: the second store instance's head tracking is empty); evicting the first must NOT delete
@@ -957,8 +1004,16 @@ void fixture_store(const std::string& root) {
             ck(second.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 2 opens");
             ck_eq((int64_t) second.size(), 1, "the scan sees A");
             const ConversationCheckpoint fb = boundary_checkpoint(S, 14, 12);
-            ck(second.dump(S.ss, S.draft, S.g, forked, {}, true, &fb, err), "B dumps");
+            strata::platform::TierActivity ab;
+            ck(second.dump(S.ss, S.draft, S.g, forked, {}, true, &fb, err, &ab), "B dumps");
             ck_eq((int64_t) second.size(), 2, "A and B are BOTH live now");
+            // THE P2-2 RULE ON THE REPORT, not just on the byte totals: a fork superseded nothing, so it must not
+            // claim a drop it did not make (the same rule that keeps A's entry in the store's index).
+            ck_eq(ab.dropped, 0, "a fork's dump reports NO supersede");
+            ck_eq((int64_t) ab.dropped_bytes, 0, "and no bytes dropped with it");
+            ck(!ab.skipped, "it is not a skip either: it wrote a new head");
+            ck_eq((int64_t) ab.written, (int64_t) second.entries()[1].bytes,
+                  "written is all of B's records: with no previous head there is nothing to reuse");
         }
         strata::platform::KvDeltaStore both;
         ck(both.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "both reopen");
@@ -968,9 +1023,18 @@ void fixture_store(const std::string& root) {
         for (const strata::platform::NvmeEntry& e : both.entries()) if (e.ids.size() == 10) a = &e;
         ck(a != nullptr, "A is in the store");
         const uint64_t cap = both.total_bytes() - a->bytes;
-        kv_delta_enforce_cap(nov3, both, (int64_t) cap);
+        const uint64_t a_bytes = a->bytes;   // the victim's bytes, read BEFORE the eviction erases the entry
+        const auto rec_before = delta_records(dir + "/delta");
+        const strata::platform::TierActivity ev = kv_delta_enforce_cap(nov3, both, (int64_t) cap);
+        const auto rec_after = delta_records(dir + "/delta");
         ck_eq((int64_t) both.size(), 1, "A was evicted, B stands");
-        both.sweep();
+        ck_eq(ev.evicted, 1, "the cap reports exactly one eviction");
+        ck_eq((int64_t) ev.evicted_bytes, (int64_t) a_bytes, "with the victim entry's own bytes");
+        ck_eq(ev.swept, rec_before.first - rec_after.first,
+              "and the sweep it ran reports the records that actually left the disk");
+        ck_eq((int64_t) ev.swept_bytes, (int64_t) (rec_before.second - rec_after.second), "with their bytes");
+        ck_eq(ev.swept, 1, "A's State record is the only orphan: both of its chunks are shared with B");
+        ck_eq((int64_t) both.sweep().swept, 0, "and a second sweep reclaims nothing new");
         for (const std::string& name : shared_names)
             ck(fs::exists(dir + "/delta/chunks/" + name),
                ("the shared chunk " + name + " SURVIVED A's eviction (B references it)").c_str());
@@ -978,10 +1042,23 @@ void fixture_store(const std::string& root) {
             const ConversationCheckpoint fc = boundary_checkpoint(S, 20, 16);
             std::vector<int32_t> third = ids_of(20);
             for (int64_t i = 14; i < 20; ++i) third[(size_t) i] = 800 + (int32_t) i;   // extends nothing live
-            ck(both.dump(S.ss, S.draft, S.g, third, {}, true, &fc, err), "C dumps");
-            kv_delta_enforce_cap(nov3, both, 1);   // 1 byte: evict everything evictable
+            strata::platform::TierActivity ac;
+            ck(both.dump(S.ss, S.draft, S.g, third, {}, true, &fc, err, &ac), "C dumps");
+            ck_eq(ac.dropped, 0, "C extends no live head, so it supersedes nothing");
+            const strata::platform::NvmeEntry* b = nullptr;
+            for (const strata::platform::NvmeEntry& e : both.entries()) if (e.ids.size() == 14) b = &e;
+            ck(b != nullptr, "B is still in the store");
+            const uint64_t b_bytes = b->bytes;
+            const auto rec2_before = delta_records(dir + "/delta");
+            const strata::platform::TierActivity ev2 = kv_delta_enforce_cap(nov3, both, 1);   // 1 byte: evict all
+            const auto rec2_after = delta_records(dir + "/delta");
             ck_eq((int64_t) both.size(), 1, "B evicted (C stands: the policy keeps the last entry)");
-            both.sweep();
+            ck_eq(ev2.evicted, 1, "one eviction, reported");
+            ck_eq((int64_t) ev2.evicted_bytes, (int64_t) b_bytes, "counted with B's bytes");
+            ck_eq(ev2.swept, rec2_before.first - rec2_after.first,
+                  "and the sweep's count is the records it reclaimed from the disk");
+            ck_eq((int64_t) ev2.swept_bytes, (int64_t) (rec2_before.second - rec2_after.second), "with their bytes");
+            ck_eq(ev2.swept, 1, "that record is B's State record: every chunk B sealed is below C's boundary too");
             ck_eq((int64_t) count_files(dir + "/delta/chunks", ""), 5,
                   "and with A and B gone, only C's own five chunks survive the sweep (sealed(20) = 20 = 5)");
         }
@@ -1002,10 +1079,15 @@ void fixture_store(const std::string& root) {
         ::sleep(1);   // mtime resolution is seconds: make the age order real
         ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &t10, err), "delta dumps");
         const uint64_t total = v3.total_bytes() + delta.total_bytes();
-        kv_delta_enforce_cap(v3, delta, (int64_t) total - 1);   // force exactly one eviction
+        const uint64_t v3_bytes = v3.entries()[0].bytes;   // the victim: the globally oldest entry
+        const strata::platform::TierActivity ev = kv_delta_enforce_cap(v3, delta, (int64_t) total - 1);
         ck_eq((int64_t) (v3.size() + delta.size()), 1, "one conversation was evicted across the two tiers");
         ck_eq((int64_t) delta.size(), 1, "and it was the V3 one (the globally oldest mtime)");
         ck_eq((int64_t) v3.size(), 0, "(the delta entry stands)");
+        ck_eq(ev.evicted, 1, "the combined cap reports one eviction");
+        ck_eq((int64_t) ev.evicted_bytes, (int64_t) v3_bytes,
+              "counted from the tier the victim came from (the v3 snapshot's bytes)");
+        ck_eq(ev.swept, 0, "and the sweep reclaimed nothing: no delta manifest was unlinked");
     }
     {   // BOUNDARY: a cap smaller than one conversation empties down to the last entry, and the store still opens
         const std::string dir = root + "/boundary";
@@ -1024,8 +1106,10 @@ void fixture_store(const std::string& root) {
         }
         strata::platform::KvDeltaStore d;
         ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store reopens");
-        kv_delta_enforce_cap(nov3, d, 1);   // 1 byte: evict everything evictable
+        const strata::platform::TierActivity ev = kv_delta_enforce_cap(nov3, d, 1);   // 1 byte: evict everything
         ck_eq((int64_t) d.size(), 1, "down to the last entry (never empty)");
+        ck_eq(ev.evicted, 0, "reported as NO eviction: the never-empty policy removed nothing, it did not empty");
+        ck_eq(ev.swept, 0, "and the sweep it ran had nothing left to reclaim (open already swept the supersede)");
         strata::platform::KvDeltaStore again;
         ck(again.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
            "and the store still opens and scans clean");
@@ -1045,11 +1129,25 @@ void fixture_store(const std::string& root) {
         ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &r10, err), "A (will go stale)");
         ::sleep(1);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err), "B (the active one)");
-        ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err), "B re-dumped (idempotent)");
+        strata::platform::TierActivity rid;
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err, &rid), "B re-dumped (idempotent)");
+        ck(rid.skipped, "the re-dump reports the exact-match skip");
+        ck_eq((int64_t) rid.written, 0, "and wrote ZERO bytes - it only refreshed recency");
+        ck_eq(rid.dropped, 0, "and superseded nothing");
         const uint64_t total = d.total_bytes();
-        kv_delta_enforce_cap(nov3, d, (int64_t) total - 1);
+        const auto rec_before = delta_records(dir + "/delta");
+        const strata::platform::TierActivity ev = kv_delta_enforce_cap(nov3, d, (int64_t) total - 1);
+        const auto rec_after = delta_records(dir + "/delta");
         ck_eq((int64_t) d.size(), 1, "one was evicted");
         ck_eq((int64_t) d.entries()[0].L, 18, "and it was A: the re-dump kept B's mtime fresh");
+        // What the cap was ALLOWED to do here: B's dump superseded A's manifest, so the store already held the
+        // one entry it must keep - the report says zero evictions rather than pretending otherwise.  The sweep,
+        // though, has work: A's State record is the orphan its supersede left behind.
+        ck_eq(ev.evicted, 0, "no eviction: the last entry is kept even over the cap");
+        ck_eq(ev.swept, rec_before.first - rec_after.first,
+              "and the sweep's count is the record it actually reclaimed");
+        ck_eq((int64_t) ev.swept_bytes, (int64_t) (rec_before.second - rec_after.second), "with its bytes");
+        ck_eq(ev.swept, 1, "that record is A's orphan State record");
     }
     {   // P7 AT THE STORE LEVEL: an externally deleted chunk degrades to refuse-and-drop, and drop() works
         const std::string dir = root + "/p7";

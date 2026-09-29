@@ -237,6 +237,23 @@ inline const NvmeEntry* kv_nvme_match(const std::vector<NvmeEntry>& entries, con
     return best;
 }
 
+/// WHAT A TIER DID, reportable without a log line (docs/nvme-kv-cache-web-design.md §3).  Every field is a fact
+/// the tier already knew and only ever printed: `enforce_cap` and `sweep` counted their removals for a stderr
+/// line, and `KvDeltaStore::dump` already summed this turn's write volume for its `appended N chunks` line.
+/// This struct makes those facts RETURNABLE - it changes no decision the tiers make, and a caller that passes no
+/// out-param behaves exactly as before.  Shared by both tiers (it lives here because `kv_delta.hpp` already
+/// includes this header); `swept` / `swept_bytes` are the delta tier's only.
+struct TierActivity {
+    bool skipped = false;          // an idempotent dump: nothing was written, recency refreshed
+    uint64_t written = 0;          // bytes this call wrote (delta: only the chunks THIS turn sealed)
+    int64_t dropped = 0;           // entries this call superseded
+    uint64_t dropped_bytes = 0;
+    int64_t evicted = 0;           // LRU cap evictions caused by this call
+    uint64_t evicted_bytes = 0;
+    int64_t swept = 0;             // orphan records reclaimed (delta only)
+    uint64_t swept_bytes = 0;
+};
+
 class KvNvmeStore {
 public:
     /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry/format tag
@@ -248,10 +265,14 @@ public:
     /// `at` takes the snapshot at a turn boundary (see nvme_dump_at): its `ids` are the key, its `imgs` the
     /// pictures below that boundary, and its blobs the running state there.  Without it the snapshot is the full
     /// consumed state at DONE, and `imgs` are the pictures below the whole consumed prefix.
+    /// `act`, when given, reports what THIS call did (docs/nvme-kv-cache-web-design.md §3): `skipped` on the
+    /// exact-match skip, `written` the new snapshot's bytes, `dropped`/`dropped_bytes` the supersede, and the
+    /// evictions the call's own `enforce_cap()` caused.  Defaulted, so every existing caller is untouched.
     bool dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
-              const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err());
+              const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err(),
+              TierActivity* act = nullptr);
     /// Reads `e` back into the live arena (see nvme_restore for the failure contract).  The caller then sets
     /// `live` from `e`.
     /// The one failure this class adds is a TOCTOU: the file disagreed with its own digest and applied cleanly,
@@ -272,7 +293,8 @@ public:
 
 private:
     static std::string& dummy_err() { static std::string s; return s; }
-    void enforce_cap();                                      ///< evict by oldest mtime until under the cap
+    /// evict by oldest mtime until under the cap; reports how many entries it removed and their bytes
+    TierActivity enforce_cap();
     std::string dir_;
     std::vector<NvmeEntry> entries_;
     int64_t cap_ = 0;
