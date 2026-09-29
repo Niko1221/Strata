@@ -521,6 +521,22 @@ __device__ void dq_iq4_nl(const void* vx, int64_t ibs, dst_t* yy, int tid) {
         y[j + 16] = cvt<dst_t>(d * kvalues_iq4nl[q4[j] >> 4]);
     }
 }
+// Q2_K (IQ2_XS file's token_embd): llama.cpp's 64-thread dequantizer folded onto 32.
+template<typename dst_t>
+__device__ void dq_q2_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+    const block_q2_K* x = (const block_q2_K*) vx + ibs;
+    const float dall = __low2half(x->dm);
+    const float dmin = __high2half(x->dm);
+    for (int tt = tid; tt < 64; tt += 32) {
+        const int n = tt / 32, l = tt % 32, is = 8 * n + l / 16;
+        const uint8_t q = x->qs[32 * n + l];
+        dst_t* y = yy + 128 * n;
+        y[l +  0] = cvt<dst_t>(dall * (x->scales[is + 0] & 0xf) * ((q >> 0) & 3) - dmin * (x->scales[is + 0] >> 4));
+        y[l + 32] = cvt<dst_t>(dall * (x->scales[is + 2] & 0xf) * ((q >> 2) & 3) - dmin * (x->scales[is + 2] >> 4));
+        y[l + 64] = cvt<dst_t>(dall * (x->scales[is + 4] & 0xf) * ((q >> 4) & 3) - dmin * (x->scales[is + 4] >> 4));
+        y[l + 96] = cvt<dst_t>(dall * (x->scales[is + 6] & 0xf) * ((q >> 6) & 3) - dmin * (x->scales[is + 6] >> 4));
+    }
+}
 // Q3_K (the Q2_0 file's token_embd): llama.cpp's dequantize_block_q3_K, its 64 threads folded onto 32
 template<typename dst_t>
 __device__ void dq_q3_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
@@ -579,6 +595,7 @@ __device__ __forceinline__ void dq_dispatch(int ty, const void* vx, int64_t ibs,
         case 22: dq_iq2_s(vx, ibs, y, tid); break;
         case 29: dq_iq1_m(vx, ibs, y, tid); break;
         case 23: dq_iq4_xs(vx, ibs, y, tid); break;
+        case 10: dq_q2_k(vx, ibs, y, tid); break;
         case 11: dq_q3_k(vx, ibs, y, tid); break;
         case 42: dq_q2_0(vx, ibs, y, tid); break;
         default: break;
@@ -602,9 +619,13 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
 
 bool is_iq(int t) { return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11; }
 
+bool is_dequant(int t) { return is_iq(t) || t == 10; }  // Q2_K dequantizes for the embedding; MMVQ does not claim it
+
 }  // namespace
 
 bool iq_supported(int t) noexcept { return is_iq(t); }
+
+bool iq_dequant_supported(int t) noexcept { return is_dequant(t); }
 
 size_t iq_row_bytes(int t, int64_t n) noexcept {
     switch (t) {
@@ -616,6 +637,7 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 22: return (size_t) (n / 256) * sizeof(block_iq2_s);
         case 29: return (size_t) (n / 256) * sizeof(block_iq1_m);
         case 23: return (size_t) (n / 256) * sizeof(block_iq4_xs);
+        case 10: return (size_t) (n / 256) * sizeof(block_q2_K);
         case 11: return (size_t) (n / 256) * sizeof(block_q3_K);
         case 42: return (size_t) (n / 64) * sizeof(block_q2_0);
         default: return 0;
@@ -651,7 +673,7 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
 }
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {
-    if (n % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
+    if (n % 256 != 0 || !is_dequant(t)) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
     dequant_flat_kernel<__half><<<(unsigned) (n / 256), 32, 0, (cudaStream_t) stream>>>(t, src, (__half*) dst);
     check("iq_dequant_f16");
 }
@@ -669,14 +691,14 @@ __global__ void embed_rows_kernel(int ty, const uint8_t* __restrict__ table, siz
 void iq_embed_rows(int t, const void* table, size_t row_bytes, const int32_t* tokens, int64_t n_tok, int64_t n_embd,
                    float* out, void* stream) {
     if (n_tok <= 0) return;
-    if (n_embd % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_embed_rows: bad arguments\n"); std::exit(1); }
+    if (n_embd % 256 != 0 || !is_dequant(t)) { std::fprintf(stderr, "iq_embed_rows: bad arguments\n"); std::exit(1); }
     embed_rows_kernel<<<dim3((unsigned) (n_embd / 256), (unsigned) n_tok), 32, 0, (cudaStream_t) stream>>>(
         t, (const uint8_t*) table, row_bytes, tokens, n_embd, out);
     check("iq_embed_rows");
 }
 
 void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream) {
-    if (n % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_f32: bad arguments\n"); std::exit(1); }
+    if (n % 256 != 0 || !is_dequant(t)) { std::fprintf(stderr, "iq_dequant_f32: bad arguments\n"); std::exit(1); }
     dequant_flat_kernel<float><<<(unsigned) (n / 256), 32, 0, (cudaStream_t) stream>>>(t, src, dst);
     check("iq_dequant_f32");
 }
