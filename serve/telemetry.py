@@ -256,6 +256,8 @@ class Telemetry:
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
+                          # the extra() in server.py's start_telemetry is the other end of this contract: a key
+                          # here without a producer (or vice versa) silently records nothing (hist is a defaultdict)
                           "disk_read_mb", "tok_s", "prompt_tok_s"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)

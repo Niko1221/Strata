@@ -485,6 +485,21 @@ def engine_args(cfg: dict) -> list[str]:
     return args
 
 
+def _capture(path: str, body: bytes) -> None:
+    """STRATA_CAPTURE_DIR=<dir>: append every API request verbatim, one JSON object per line with its time
+    and path - the exact prompt sequences a client sent, replayable against any build (cache work:
+    the stream IS the test). Off unless the variable is set; never reads back."""
+    d = os.environ.get("STRATA_CAPTURE_DIR")
+    if not d:
+        return
+    try:
+        Path(d).mkdir(parents=True, exist_ok=True)
+        with open(Path(d) / "requests.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": time.time(), "path": path, "body": json.loads(body)}) + "\n")
+    except (OSError, ValueError):
+        pass   # capture must never break a request
+
+
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -615,6 +630,10 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
+            # the series keys recorded from here must match telemetry.py's history whitelist (the tuple in
+            # its _loop) - a name on one side only silently records nothing
+            # the series keys recorded from here must match telemetry.py's history whitelist (the tuple in
+            # its _loop) - a name on one side only silently records nothing
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
                                                        "prompt_tok_s": self._prompt_tok_s()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
@@ -1371,7 +1390,9 @@ def make_handler(svc: Service):
                 self._settings()
                 return
             try:
-                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}"
+                _capture(path, body)   # STRATA_CAPTURE_DIR: record requests verbatim, for replay tests
+                req = json.loads(body)
                 if path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":

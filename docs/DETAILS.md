@@ -202,9 +202,12 @@ Then it downloads and prepares everything (the model is 66-76 GB, so the first s
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
-  images are on, and sampling and thinking-level settings. Chats stay in your browser.
-- **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
-  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
+  images are on, and sampling and thinking-level settings. A context gauge by the input shows the window in use, and
+  the fold button compacts the older turns into a summary (the page keeps them; the API sees the summary). Chats stay
+  in your browser.
+- **Monitor:** what the model is doing (reading the prompt, with progress and its tokens/s, or writing, at how many
+  tokens/s); GPU load, VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last
+  requests (with the read and write speed of each).
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
