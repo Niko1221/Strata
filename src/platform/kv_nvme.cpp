@@ -687,7 +687,7 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
 bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                        const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                        const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
-                       const strata::core::ConversationCheckpoint* at, std::string& err) {
+                       const strata::core::ConversationCheckpoint* at, std::string& err, TierActivity* act) {
     // the KEY is the matchable prefix (the turn boundary) when one is given - that is what the next request
     // replays; the full consumed state includes the model's hidden reasoning tokens, which a chat client
     // re-sending history will never reproduce.  The boundary and its running state arrive as ONE shared
@@ -707,6 +707,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
         if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == stored.size() &&
             std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(stored.begin(), stored.end(), e.imgs.begin())) {
             e.mtime = (int64_t) ::time(nullptr);
+            if (act) act->skipped = true;   // the store's bytes are unchanged: this call wrote nothing
             return true;
         }
     // Supersede: only THIS process's previous dump, and only when it is a strict prefix of the new key (the same
@@ -719,6 +720,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
             if (entries_[i].path == last_path_) {
                 std::error_code ec;
                 fs::remove(last_path_, ec);
+                if (act) { ++act->dropped; act->dropped_bytes += entries_[i].bytes; }
                 total_ -= entries_[i].bytes;
                 entries_.erase(entries_.begin() + (long) i);
                 break;
@@ -743,11 +745,13 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     e.imgs = stored;   // the entry must carry what the file holds, or the match loops compare against nothing
     e.bytes = (uint64_t) fs::file_size(path, ec);
     e.mtime = (int64_t) ::time(nullptr);
+    if (act) act->written = e.bytes;   // the snapshot this call wrote, as the file on disk sizes it
     total_ += e.bytes;
     last_ids_ = key;
     last_path_ = path;
     entries_.push_back(std::move(e));
-    enforce_cap();
+    const TierActivity cap = enforce_cap();
+    if (act) { act->evicted += cap.evicted; act->evicted_bytes += cap.evicted_bytes; }
     return true;
 }
 
@@ -786,7 +790,8 @@ void KvNvmeStore::drop(const NvmeEntry& e) {
         }
 }
 
-void KvNvmeStore::enforce_cap() {
+TierActivity KvNvmeStore::enforce_cap() {
+    TierActivity act;
     // The last entry is kept even over the cap (never empty the store); documented policy, see the review notes.
     while (cap_ > 0 && total_ > (uint64_t) cap_ && entries_.size() > 1) {
         size_t oldest = 0;
@@ -795,10 +800,13 @@ void KvNvmeStore::enforce_cap() {
         const std::string path = entries_[oldest].path;
         std::error_code ec;
         fs::remove(path, ec);
+        ++act.evicted;
+        act.evicted_bytes += entries_[oldest].bytes;
         total_ -= entries_[oldest].bytes;
         if (path == last_path_) { last_ids_.clear(); last_path_.clear(); }
         entries_.erase(entries_.begin() + (long) oldest);
     }
+    return act;
 }
 
 }  // namespace strata::platform
