@@ -11,7 +11,9 @@ not the new base. The Windows admission test is @midhatn's `32cf918`, retained a
 After separating the general benchmark tooling and merging 0.1.27, all 47 tool
 tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
 rejection now clears its diagnostic error before the new batched draft-prefill
-path runs. The NVMe-enabled engine builds on the new base; final model validation
+path runs. The core-only and NVMe-enabled engines build on the new base. The
+core passes five host CTests with GPU visibility disabled (policy, admission,
+checkpoint retention, validation and injected transfers). Final model validation
 remains outstanding, and Python passes do not establish it. No benchmark server or GPU
 was used for these checks.
 
@@ -42,7 +44,13 @@ key export. The linked NVMe-enabled engine and snapshot/host test binaries also
 build with GCC 15.2, CUDA 13.4, SM89 and portable AVX2. Linked host validation and
 injected-transfer CTests pass with GPU visibility disabled; 26 CLI rejection cases
 pass without creating a cache directory. Build/CLI logs are in
-`logs/review-0.1.27/`. The dependent frontend suite passes 68 tests
+`logs/review-0.1.27/`. The disk-disabled variant also builds, has no OpenSSL
+runtime dependency, and rejects disk-cache requests before model loading. The
+final enabled engine SHA-256 is
+`0b75cce86436e63cd1ba50c89565c3ddd0564fb724ae0135c50dc3ef94df3ce9`;
+the core engine is
+`f3eda68ad0dce9a1604345743ba5432ed73f2efeaf6b4f84f435317d7f2ba9ff`.
+These binaries include the final draft-residency diagnostic. The dependent frontend suite passes 68 tests
 (three skipped), including tokenizer/template forwarding from the actual frontend
 paths. Full-model NVMe promotion, restart, output parity and state hashes are still
 unverified; no running benchmark server or GPU was used for these checks.
