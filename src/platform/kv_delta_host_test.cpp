@@ -56,6 +56,7 @@ extern "C" cudaError_t __wrap_cudaGetLastError() {
 }
 
 #include <algorithm>
+#include <random>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -866,6 +867,7 @@ void fixture_reader(const std::string& root) {
     }
 }
 
+
 int count_files(const std::string& dir, const char* prefix) {
     int n = 0;
     std::error_code ec;
@@ -883,6 +885,548 @@ int count_real(const std::string& dir) {
         if (name.rfind(".tmp-", 0) != 0) ++n;
     }
     return n;
+}
+
+// ================================ fixture: the store (Phase 4) ================================
+
+void fixture_store(const std::string& root) {
+    {   // MIXED-DIR SCAN: v3 snapshots and delta manifests coexist; each store scans its own family into the
+        // shared NvmeEntry vocabulary with the right kind
+        const std::string dir = root + "/mixed";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        const ConversationCheckpoint cp = boundary_checkpoint(S, 10, 8);
+        strata::platform::KvNvmeStore v3;
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        ck(v3.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the v3 store opens");
+        ck(v3.dump(S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err), "the v3 half dumps");
+        strata::platform::KvDeltaStore delta;
+        ck(delta.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+           ("the delta store opens beside it: " + err).c_str());
+        ck(delta.dump(S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err), "the delta half dumps");
+        ck_eq((int64_t) v3.size(), 1, "one v3 entry");
+        ck_eq((int64_t) delta.size(), 1, "one delta entry");
+        ck_eq((int64_t) v3.entries()[0].kind, 0, "the snapshot's kind is 0");
+        ck_eq((int64_t) delta.entries()[0].kind, 1, "the manifest's kind is 1");
+        ck(delta.entries()[0].path.find("/delta/") != std::string::npos, "the delta entry lives under delta/");
+    }
+    {   // SUPERSEDE: a growing conversation stays ONE head - the old manifest unlinked, chunks kept
+        const std::string dir = root + "/supersede/delta";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        strata::platform::KvDeltaStore delta;
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        ck(delta.open(root + "/supersede", S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+           "the store opens");
+        const ConversationCheckpoint cp10 = boundary_checkpoint(S, 10, 8);
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &cp10, err), "dump at 10");
+        const std::string first_head = delta.entries()[0].path;
+        const ConversationCheckpoint cp18 = boundary_checkpoint(S, 18, 16);
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &cp18, err), "dump at 18");
+        ck_eq((int64_t) delta.size(), 1, "still one conversation");
+        ck(!fs::exists(first_head), "the old head's manifest was unlinked");
+        ck_eq(count_files(root + "/supersede/delta/chunks", ""), 4, "and the chunks accumulated (2 + 2 new)");
+    }
+    {   // THE P2-2 TEST: fork sharing survives eviction.  Two conversations share most of their chunks (a cross-
+        // restart fork: the second store instance's head tracking is empty); evicting the first must NOT delete
+        // the shared chunks - the naive "evict = delete the conversation's chunks" bug dies here.
+        const std::string dir = root + "/forkshare";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        {
+            strata::platform::KvDeltaStore first;   // "process 1"
+            ck(first.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 1 opens");
+            const ConversationCheckpoint fa = boundary_checkpoint(S, 10, 8);
+            ck(first.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &fa, err), "A dumps at 10");
+        }
+        std::vector<std::string> shared_names;
+        for (const auto& de : fs::directory_iterator(dir + "/delta/chunks"))
+            shared_names.push_back(de.path().filename().string());
+        ck_eq((int64_t) shared_names.size(), 2, "A sealed two chunks");
+        std::vector<int32_t> forked = ids_of(14);          // B: A's prefix, then a different tail
+        for (int64_t i = 10; i < 14; ++i) forked[(size_t) i] = 700 + (int32_t) i;
+        {
+            strata::platform::KvDeltaStore second;   // "process 2": a restart - nothing superseded
+            ck(second.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 2 opens");
+            ck_eq((int64_t) second.size(), 1, "the scan sees A");
+            const ConversationCheckpoint fb = boundary_checkpoint(S, 14, 12);
+            ck(second.dump(S.ss, S.draft, S.g, forked, {}, true, &fb, err), "B dumps");
+            ck_eq((int64_t) second.size(), 2, "A and B are BOTH live now");
+        }
+        strata::platform::KvDeltaStore both;
+        ck(both.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "both reopen");
+        ck_eq((int64_t) both.size(), 2, "both manifests scanned");
+        // evict A: cap = A's bytes exactly (A is the oldest mtime)
+        const strata::platform::NvmeEntry* a = nullptr;
+        for (const strata::platform::NvmeEntry& e : both.entries()) if (e.ids.size() == 10) a = &e;
+        ck(a != nullptr, "A is in the store");
+        const uint64_t cap = both.total_bytes() - a->bytes;
+        kv_delta_enforce_cap(nov3, both, (int64_t) cap);
+        ck_eq((int64_t) both.size(), 1, "A was evicted, B stands");
+        both.sweep();
+        for (const std::string& name : shared_names)
+            ck(fs::exists(dir + "/delta/chunks/" + name),
+               ("the shared chunk " + name + " SURVIVED A's eviction (B references it)").c_str());
+        {   // evict B too: a THIRD conversation gives the never-empty policy something to keep
+            const ConversationCheckpoint fc = boundary_checkpoint(S, 20, 16);
+            std::vector<int32_t> third = ids_of(20);
+            for (int64_t i = 14; i < 20; ++i) third[(size_t) i] = 800 + (int32_t) i;   // extends nothing live
+            ck(both.dump(S.ss, S.draft, S.g, third, {}, true, &fc, err), "C dumps");
+            kv_delta_enforce_cap(nov3, both, 1);   // 1 byte: evict everything evictable
+            ck_eq((int64_t) both.size(), 1, "B evicted (C stands: the policy keeps the last entry)");
+            both.sweep();
+            ck_eq((int64_t) count_files(dir + "/delta/chunks", ""), 5,
+                  "and with A and B gone, only C's own five chunks survive the sweep (sealed(20) = 20 = 5)");
+        }
+    }
+    {   // TWO-TIER SINGLE CAP: eviction order is global oldest-mtime; the accounting counts both tiers
+        const std::string dir = root + "/twotier";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        strata::platform::KvNvmeStore v3;
+        strata::platform::KvDeltaStore delta;
+        ck(v3.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "v3 opens");
+        ck(delta.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "delta opens");
+        const ConversationCheckpoint t10 = boundary_checkpoint(S, 10, 8);
+        ck(v3.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &t10, err), "v3 dumps (oldest)");
+        ::sleep(1);   // mtime resolution is seconds: make the age order real
+        ck(delta.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &t10, err), "delta dumps");
+        const uint64_t total = v3.total_bytes() + delta.total_bytes();
+        kv_delta_enforce_cap(v3, delta, (int64_t) total - 1);   // force exactly one eviction
+        ck_eq((int64_t) (v3.size() + delta.size()), 1, "one conversation was evicted across the two tiers");
+        ck_eq((int64_t) delta.size(), 1, "and it was the V3 one (the globally oldest mtime)");
+        ck_eq((int64_t) v3.size(), 0, "(the delta entry stands)");
+    }
+    {   // BOUNDARY: a cap smaller than one conversation empties down to the last entry, and the store still opens
+        const std::string dir = root + "/boundary";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        {
+            strata::platform::KvDeltaStore d;
+            ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+            const ConversationCheckpoint b10 = boundary_checkpoint(S, 10, 8);
+            const ConversationCheckpoint b18 = boundary_checkpoint(S, 18, 16);
+            ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &b10, err), "A");
+            ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &b18, err), "B");
+        }
+        strata::platform::KvDeltaStore d;
+        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store reopens");
+        kv_delta_enforce_cap(nov3, d, 1);   // 1 byte: evict everything evictable
+        ck_eq((int64_t) d.size(), 1, "down to the last entry (never empty)");
+        strata::platform::KvDeltaStore again;
+        ck(again.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+           "and the store still opens and scans clean");
+        ck_eq((int64_t) again.size(), 1, "with the survivor as an entry");
+    }
+    {   // RECENCY: an idempotent re-dump refreshes mtime, so the ACTIVE conversation is never the eviction victim
+        const std::string dir = root + "/recency";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        strata::platform::KvDeltaStore d;
+        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        const ConversationCheckpoint r10 = boundary_checkpoint(S, 10, 8);
+        const ConversationCheckpoint r18 = boundary_checkpoint(S, 18, 16);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &r10, err), "A (will go stale)");
+        ::sleep(1);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err), "B (the active one)");
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(18), {}, true, &r18, err), "B re-dumped (idempotent)");
+        const uint64_t total = d.total_bytes();
+        kv_delta_enforce_cap(nov3, d, (int64_t) total - 1);
+        ck_eq((int64_t) d.size(), 1, "one was evicted");
+        ck_eq((int64_t) d.entries()[0].L, 18, "and it was A: the re-dump kept B's mtime fresh");
+    }
+    {   // P7 AT THE STORE LEVEL: an externally deleted chunk degrades to refuse-and-drop, and drop() works
+        const std::string dir = root + "/p7";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        strata::platform::KvDeltaStore d;
+        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        const ConversationCheckpoint p10 = boundary_checkpoint(S, 10, 8);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &p10, err), "dumped");
+        const strata::platform::NvmeEntry e = d.entries()[0];
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        std::vector<strata::platform::DeltaChunkRef> refs;
+        strata::platform::DeltaManifestHeader m;
+        ck(strata::platform::delta_read_manifest(e.path, m, ids, imgs, refs, err), "the manifest reads");
+        fs::remove(dir + "/delta/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin");
+        Session R;
+        ck(d.restore(e, R.ss, R.draft, R.g, err) == strata::core::ConversationRestore::invalid,
+           "the externally-deleted chunk refuses the restore");
+        d.drop(e);
+        ck_eq((int64_t) d.size(), 0, "and the store drops the dead entry");
+    }
+}
+
+// ================================ the differential fuzz (the playback workhorse) ================================
+//
+// ops = {extend, fork at a random prefix, new conversation, re-dump same T, crash@Ck (random), evict to a random
+// fraction, external-delete a random file, restart}; a reference model tracks the live manifests and each one's
+// EXPECTED reassembly bytes (the v3 dump of the same boundary, taken when the model last saw it).  After EVERY
+// op: (a) the on-disk conversation set is the model's live set; (b) every manifest whose referenced records all
+// exist reassembles byte-identically, and one whose records were externally deleted refuses (P7); (c) after a
+// sweep, the files are EXACTLY the referenced set.
+//
+// BUDGET: the ctest default is 25 seeds x 40 ops (~20 s); the handoff's full sweep - 1000 seeds x 200 ops,
+// 37,899,123 checks - was run green with KV_DELTA_FUZZ_SEEDS=1000 KV_DELTA_FUZZ_OPS=200 and is the form to run
+// before touching the writer or the sweep again.
+//
+// WHAT IT CANNOT PROVE: the SSD actually persisted on fsync (a power-cut property - the posture degrades, never
+// corrupts: a torn chunk fails its digest to invalid -> refuse -> re-prefill); and the wrapped-CUDA limits the
+// kv_nvme_host_test header states.
+
+struct FuzzConv {
+    std::vector<int32_t> ids;
+    std::vector<ConversationImageKey> imgs;
+    std::vector<uint8_t> expected;   // the v3 image bytes the reassembly must produce
+    bool defective = false;          // an external delete broke a record under it: restore must refuse (P7)
+};
+
+void fixture_fuzz(const std::string& root) {
+    const long seeds = std::getenv("KV_DELTA_FUZZ_SEEDS") ? (long) std::atoll(std::getenv("KV_DELTA_FUZZ_SEEDS")) : 25;
+    const long ops_n = std::getenv("KV_DELTA_FUZZ_OPS") ? (long) std::atoll(std::getenv("KV_DELTA_FUZZ_OPS")) : 40;
+    Session S;   // ONE static session: the arrays never change, so a boundary's checkpoint (and the expected v3
+                 // image for its ids) is a deterministic function of the boundary length
+    S.seed_indexer(987654.0f, 6, 555.0f);
+    S.tag_kv();
+    strata::platform::KvNvmeStore nov3;   // the enforce helper needs an lvalue; the fuzz's cap is delta-only
+    const uint64_t sfp = strata::platform::kv_delta_weights_fp({"model.gguf"});   // the STORE's fingerprint (the
+    // model file does not exist here, so the fp is the path+size hash - the same value the manifests carry)
+
+    std::vector<FuzzConv> live;
+    strata::platform::KvDeltaStore store;
+    std::string dir, err;
+    auto checkpoint_for = [&](int64_t T) {
+        return boundary_checkpoint(S, T, (int32_t) ((T / SHP.idx_block) * SHP.idx_block));
+    };
+    // the reference v3 image for a conversation state (deterministic, computed independently by the tier)
+    auto reference_image = [&](const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs) {
+        const std::string v3 = dir + "/.ref-v3";
+        ConversationCheckpoint cp = checkpoint_for((int64_t) ids.size());
+        cp.ids = ids;   // THE ENGINE'S CONTRACT: the dump keys on the CHECKPOINT's ids - they are one thing
+        ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, ids, imgs, true, &cp, err),
+           "the reference v3 dump succeeds");
+        return slurp(v3);
+    };
+    // sync the model to a store's scanned entries: survivors keep their expected bytes; new (post-crash) ones
+    // get them computed; the crash's lost in-memory state is exactly what a relaunch re-derives from disk
+    auto sync_model = [&](const strata::platform::KvDeltaStore& st) {
+        std::vector<FuzzConv> next;
+        for (const strata::platform::NvmeEntry& e2 : st.entries()) {
+            bool found = false;
+            for (const FuzzConv& f : live)
+                if ((size_t) e2.L == f.ids.size() && std::equal(f.ids.begin(), f.ids.end(), e2.ids.begin())) {
+                    next.push_back(f);
+                    found = true;
+                    break;
+                }
+            if (!found) {
+                FuzzConv f;
+                f.ids = e2.ids;
+                f.imgs = e2.imgs;
+                f.expected = reference_image(e2.ids, e2.imgs);
+                next.push_back(std::move(f));
+            }
+        }
+        live = std::move(next);
+    };
+
+    // THE PROCESS MODEL of the store's head: the previous dump of THIS store instance, and the supersede rule
+    // it applies (the previous head whose ids the new key extends is unlinked; a fork from a non-head survives).
+    std::vector<int32_t> last_dump_ids;
+    auto do_dump = [&](FuzzConv f) {
+        ConversationCheckpoint cp = checkpoint_for((int64_t) f.ids.size());
+        cp.ids = f.ids;   // the checkpoint IS the boundary: its ids are the conversation's ids (a fork's tail
+        f.imgs = cp.imgs; // lives in the ids; a checkpoint disagreeing with its key is a caller bug)
+        // mirror the store's IDEMPOTENT SKIP: an exact match refreshes recency and returns BEFORE the supersede
+        // bookkeeping - the process's previous dump (the supersede hint) is untouched, because the skip never
+        // became a dump.  The model's hint must follow, or the model supersedes a manifest the store kept.
+        bool idempotent = false;
+        for (const strata::platform::NvmeEntry& e2 : store.entries())
+            if (e2.L == (int64_t) f.ids.size() && e2.cvec && e2.imgs == f.imgs &&
+                std::equal(f.ids.begin(), f.ids.end(), e2.ids.begin()))
+                idempotent = true;
+        ck(store.dump(S.ss, S.draft, S.g, f.ids, f.imgs, true, &cp, err), "the fuzz dump succeeds");
+        f.expected = reference_image(f.ids, f.imgs);
+        // defective STAYS: a re-dump REUSES the shared chunks - a record an external delete removed is still
+        // gone, the new manifest references it just the same, and the tier's refuse is still the right answer
+        if (!idempotent) {
+            // the supersede: the previous head whose ids the new key extends loses its manifest
+            if (!last_dump_ids.empty() && last_dump_ids.size() <= f.ids.size() &&
+                std::equal(last_dump_ids.begin(), last_dump_ids.end(), f.ids.begin())) {
+                std::vector<FuzzConv> kept;
+                for (const FuzzConv& g2 : live)
+                    if (!(g2.ids.size() == last_dump_ids.size() &&
+                          std::equal(last_dump_ids.begin(), last_dump_ids.end(), g2.ids.begin())))
+                        kept.push_back(g2);
+                live = std::move(kept);
+            }
+            last_dump_ids = f.ids;
+        }
+        // upsert by ids
+        bool replaced = false;
+        for (FuzzConv& g2 : live)
+            if (g2.ids.size() == f.ids.size() && std::equal(f.ids.begin(), f.ids.end(), g2.ids.begin())) {
+                g2 = f;
+                replaced = true;
+            }
+        if (!replaced) live.push_back(f);
+    };
+
+    const char* crash_opts[] = {"C1", "C2", "C3", "C4", "C5"};
+    for (long seed = 0; seed < seeds; ++seed) {
+        std::mt19937 rng((unsigned) (seed + 1));
+        auto rnd = [&](int64_t lo, int64_t hi) { return (int64_t) (rng() % (uint64_t) (hi - lo + 1)) + lo; };
+        dir = root + "/fuzz/" + std::to_string(seed);
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        store = strata::platform::KvDeltaStore();
+        ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the fuzz store opens");
+        live.clear();
+
+        for (long op = 0; op < ops_n; ++op) {
+            const int kind = (int) (rng() % 8);
+            if (kind == 0 && !live.empty()) {   // EXTEND a random live conversation
+                const size_t c = (size_t) rnd(0, (int64_t) live.size() - 1);
+                FuzzConv f = live[c];
+                if ((int64_t) f.ids.size() + 8 > 28) continue;   // the delta path's gate: T <= the drafter ring
+                const int64_t grow = rnd(1, 8);
+                for (int64_t i = 0; i < grow; ++i) f.ids.push_back(700 + (int32_t) ((f.ids.size() * 13 + i) % 500));
+                do_dump(f);
+            } else if (kind == 1 && !live.empty()) {   // FORK at a random prefix of a random conversation
+                const size_t c = (size_t) rnd(0, (int64_t) live.size() - 1);
+                const int64_t p = rnd(1, (int64_t) live[c].ids.size());
+                FuzzConv f;
+                f.ids.assign(live[c].ids.begin(), live[c].ids.begin() + (int) p);
+                const int64_t tail = rnd(0, 28 - p > 8 ? 8 : 28 - p);   // keep the fork inside the ring too
+                for (int64_t i = 0; i < tail; ++i) f.ids.push_back(900 + (int32_t) ((p * 7 + i) % 400));
+                if (f.ids.empty()) continue;
+                do_dump(f);   // an in-epoch fork that extended the process's head REPLACED it (§5.14)
+            } else if (kind == 2) {   // a NEW conversation: ids that extend nothing
+                FuzzConv f;
+                const int64_t n = rnd(5, 28);
+                for (int64_t i = 0; i < n; ++i) f.ids.push_back(100 + (int32_t) ((seed * 31 + op * 7 + i) % 900));
+                do_dump(std::move(f));
+            } else if (kind == 3 && !live.empty()) {   // RE-DUMP the same T (idempotent)
+                const size_t c = (size_t) rnd(0, (int64_t) live.size() - 1);
+                do_dump(live[c]);
+            } else if (kind == 4) {   // CRASH at a random point, then relaunch
+                setenv("STRATA_DELTA_FAIL_AT", crash_opts[rng() % 5], 1);
+                {
+                    FuzzConv f;
+                    f.ids = ids_of(rnd(5, 28));
+                    const ConversationCheckpoint cp = checkpoint_for((int64_t) f.ids.size());
+                    f.imgs = cp.imgs;
+                    std::string derr;
+                    const bool ok = store.dump(S.ss, S.draft, S.g, f.ids, f.imgs, true, &cp, derr);
+                    if (ok) {
+                        // nothing new to write (all chunks reused) AND the hook fired late: the dump committed.
+                        // Model it exactly like a successful dump (C1/C2 only fire on a NEW chunk).
+                        do_dump(f);
+                    } else {
+                        ck(derr.find("STRATA_DELTA_FAIL_AT") != std::string::npos, "the crash hook reported itself");
+                    }
+                }
+                unsetenv("STRATA_DELTA_FAIL_AT");
+                store = strata::platform::KvDeltaStore();   // the relaunch
+                last_dump_ids.clear();                      // a new process has no previous dump of its own
+                ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                   "the relaunched store opens clean");
+                sync_model(store);   // C4's both-heads row included: the scan sees whatever the disk holds
+            } else if (kind == 5 && !live.empty()) {   // EVICT to a random fraction of the current bytes
+                const uint64_t total = store.total_bytes();
+                kv_delta_enforce_cap(nov3, store, (int64_t) (total * (uint64_t) rnd(1, 90) / 100));
+                // if the eviction dropped the process's HEAD entry, the store's supersede hint went with it
+                // (drop() clears last_ids_/last_path_) - the model's hint must follow
+                if (!last_dump_ids.empty()) {
+                    bool head_there = false;
+                    for (const strata::platform::NvmeEntry& e2 : store.entries())
+                        if ((size_t) e2.L == last_dump_ids.size() &&
+                            std::equal(last_dump_ids.begin(), last_dump_ids.end(), e2.ids.begin()))
+                            head_there = true;
+                    if (!head_there) last_dump_ids.clear();
+                }
+                sync_model(store);
+            } else if (kind == 6) {   // EXTERNAL DELETE of a random record file (P7's disk-level form)
+                std::vector<fs::path> files;
+                for (const char* sub : {"/delta/chunks", "/delta/states"})
+                    for (const fs::directory_entry& de : fs::directory_iterator(dir + sub, ec))
+                        if (de.is_regular_file() && de.path().filename().string().rfind(".tmp-", 0) != 0)
+                            files.push_back(de.path());
+                for (const fs::directory_entry& de : fs::directory_iterator(dir + "/delta", ec))
+                    if (de.is_regular_file() && de.path().filename().string().rfind("log-", 0) == 0)
+                        files.push_back(de.path());
+                if (files.empty()) continue;
+                const fs::path victim = files[rng() % files.size()];
+                const std::string key = victim.filename().string().rfind("log-", 0) == 0
+                                            ? std::string()
+                                            : victim.filename().string().substr(0, victim.filename().string().size() - 4);
+                fs::remove(victim, ec);
+                if (key.empty()) {   // a manifest: its conversation is gone from the disk
+                    store = strata::platform::KvDeltaStore();
+                    last_dump_ids.clear();
+                    ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                       "the store reopens after a manifest delete");
+                    sync_model(store);
+                } else {   // a chunk or state: every manifest referencing it becomes defective (restore refuses, P7)
+                    for (FuzzConv& f : live) {
+                        bool touches = false;
+                        for (const strata::platform::NvmeEntry& e2 : store.entries())
+                            if ((size_t) e2.L == f.ids.size() && std::equal(f.ids.begin(), f.ids.end(), e2.ids.begin())) {
+                                std::vector<int32_t> ids2;
+                                std::vector<ConversationImageKey> imgs2;
+                                std::vector<strata::platform::DeltaChunkRef> refs2;
+                                strata::platform::DeltaManifestHeader m2;
+                                if (strata::platform::delta_read_manifest(e2.path, m2, ids2, imgs2, refs2, err) &&
+                                    (strata::platform::delta_key_name(m2.state_key) == key ||
+                                     std::any_of(refs2.begin(), refs2.end(), [&](const strata::platform::DeltaChunkRef& r) {
+                                         return strata::platform::delta_key_name(r.key) == key;
+                                     })))
+                                    touches = true;
+                            }
+                        if (touches) f.defective = true;
+                    }
+                }
+            } else {   // RESTART: a fresh store instance on the same dir (the head tracking resets)
+                store = strata::platform::KvDeltaStore();
+                last_dump_ids.clear();
+                ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                   "the restarted store opens clean");
+            }
+
+            // ---- the per-op assertions ----
+            std::vector<std::string> on_disk;
+            for (const fs::directory_entry& de : fs::directory_iterator(dir + "/delta", ec))
+                if (de.path().filename().string().rfind("log-", 0) == 0) on_disk.push_back(de.path().string());
+
+            // two manifests may hold the SAME ids (two processes each dumped this boundary - the store admits
+            // both; they are interchangeable); the conversation SET is what must agree
+            {
+                std::map<std::string, int> disk_set, live_set;
+                for (const std::string& mp2 : on_disk) {
+                    strata::platform::DeltaManifestHeader m2;
+                    std::vector<int32_t> ids2;
+                    std::vector<ConversationImageKey> imgs2;
+                    std::vector<strata::platform::DeltaChunkRef> refs2;
+                    if (!strata::platform::delta_read_manifest(mp2, m2, ids2, imgs2, refs2, err)) continue;
+                    disk_set[std::string((const char*) ids2.data(), ids2.size() * 4)]++;
+                }
+                for (const FuzzConv& f2 : live)
+                    live_set[std::string((const char*) f2.ids.data(), f2.ids.size() * 4)]++;
+                ck_eq((int64_t) disk_set.size(), (int64_t) live_set.size(),
+                      "the fuzz: on-disk conversations == live conversations");
+                for (const auto& kv2 : live_set)
+                    ck(disk_set.count(kv2.first) != 0, "the fuzz: every live conversation has a head on disk");
+            }
+            for (const std::string& mp : on_disk) {
+                strata::platform::DeltaManifestHeader m;
+                std::vector<int32_t> ids2;
+                std::vector<ConversationImageKey> imgs2;
+                std::vector<strata::platform::DeltaChunkRef> refs2;
+                ck(strata::platform::delta_read_manifest(mp, m, ids2, imgs2, refs2, err), "the fuzz manifest reads");
+                bool matched = false;
+                for (FuzzConv& f : live)
+                    if ((size_t) m.L == f.ids.size() && std::equal(f.ids.begin(), f.ids.end(), ids2.begin())) {
+                        matched = true;
+                        // BROKEN is a property of the DISK, computed fresh each op: an external delete removed a
+                        // record this manifest references.  (A flag carried on the model would go wrong in both
+                        // directions: a superseded manifest stops referencing the deleted record, while a re-dump
+                        // REUSES the hole - the referenced-but-missing set is the only truth.)
+                        bool broken = !fs::exists(dir + "/delta/states/" +
+                                                  strata::platform::delta_key_name(m.state_key) + ".bin");
+                        for (const strata::platform::DeltaChunkRef& r : refs2)
+                            broken = broken ||
+                                     !fs::exists(dir + "/delta/chunks/" +
+                                                 strata::platform::delta_key_name(r.key) + ".bin");
+                        if (!broken) {   // (b) the reassembly is byte-identical to the model's expected image
+                            const std::vector<uint8_t> got = reassemble(S, dir + "/delta", mp, sfp);
+                            ck(got == f.expected, "the fuzz: a live manifest reassembles byte-identically");
+                        } else {   // P7: the broken record degrades to refuse-and-drop
+                            strata::platform::NvmeEntry e2;
+                            e2.path = mp;
+                            e2.kind = 1;
+                            Session R;
+                            std::vector<int32_t> rids;
+                            std::vector<ConversationImageKey> rimgs;
+                            bool rc = false;
+                            int64_t rl = 0;
+                            std::string rerr;
+                            const strata::core::ConversationRestore got2 =
+                                strata::platform::delta_restore(e2, R.ss, R.draft, R.g, sfp, rids, rimgs, rc, rl, rerr);
+                            ck(got2 == strata::core::ConversationRestore::invalid,
+                               "the fuzz: a broken conversation refuses (never converts, never corrupts)");
+                        }
+                    }
+                ck(matched, "the fuzz: every on-disk manifest is a live conversation");
+            }
+            // (c) every chunk/state file is either referenced by a live manifest or REMOVABLE BY SWEEP - the
+            // disjunction the doc states.  Supersede garbage between sweeps is the second disjunct, so the
+            // property with content is (d): after a sweep, the files are EXACTLY the referenced set.
+            // (d) a sweep removes EXACTLY the unreferenced set - checked on a THROWAWAY COPY of the directory,
+            // so the check itself never disturbs the process's own head tracking (the sweep at open is the real
+            // store's behaviour; here the copy's sweep is the assertion)
+            {
+                const std::string copy = dir + ".sweepcheck";
+                fs::remove_all(copy, ec);
+                fs::copy(dir, copy, fs::copy_options::recursive, ec);
+                strata::platform::KvDeltaStore sw;
+                ck(sw.open(copy, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                   "the fuzz: the sweep-check copy opens");
+                std::map<std::string, bool> referenced;
+                for (const strata::platform::NvmeEntry& e2 : sw.entries()) {
+                    strata::platform::DeltaManifestHeader m;
+                    std::vector<int32_t> ids2;
+                    std::vector<ConversationImageKey> imgs2;
+                    std::vector<strata::platform::DeltaChunkRef> refs2;
+                    ck(strata::platform::delta_read_manifest(e2.path, m, ids2, imgs2, refs2, err),
+                       "the fuzz: the sweep's manifests read");
+                    referenced[strata::platform::delta_key_name(m.state_key)] = true;
+                    for (const strata::platform::DeltaChunkRef& r : refs2)
+                        referenced[strata::platform::delta_key_name(r.key)] = true;
+                }
+                for (const char* sub : {"/chunks", "/states"})
+                    for (const fs::directory_entry& de : fs::directory_iterator(copy + "/delta" + sub, ec)) {
+                        const std::string name = de.path().filename().string();
+                        ck(referenced.count(name.substr(0, name.size() - 4)) != 0,
+                           "the fuzz: after a sweep, every file is referenced - exactly the orphans were removed");
+                    }
+                fs::remove_all(copy, ec);
+            }
+            if (live.size() > 6) {   // keep the model small: drop the oldest when the store grows past 6
+                const strata::platform::NvmeEntry* oldest = &store.entries()[0];
+                for (const strata::platform::NvmeEntry& e2 : store.entries())
+                    if (e2.mtime < oldest->mtime) oldest = &e2;
+                const bool was_head = !last_dump_ids.empty() &&
+                                      (size_t) oldest->L == last_dump_ids.size() &&
+                                      std::equal(last_dump_ids.begin(), last_dump_ids.end(), oldest->ids.begin());
+                store.drop(*oldest);
+                if (was_head) last_dump_ids.clear();   // the store's hint went with the dropped head
+                sync_model(store);
+            }
+        }
+        fs::remove_all(dir, ec);
+    }
+    std::fprintf(stderr, "fuzz: %ld seeds x %ld ops clean\n", seeds, ops_n);
 }
 
 // ================================ fixture: THE byte-identity oracle (§5.2) ================================
@@ -1166,6 +1710,8 @@ int main() {
     fixture_byte_identity(root);
     fixture_writer_semantics(root);
     fixture_reader(root);
+    fixture_store(root);
+    fixture_fuzz(root);
 
     fs::remove_all(root, ec);
     std::printf("kv_delta_host_test: %d checks passed; no CUDA context, no model\n", checks);

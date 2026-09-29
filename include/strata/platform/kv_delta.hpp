@@ -257,4 +257,64 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, strata::core
                                                 std::vector<ConversationImageKey>& imgs, bool& cvec, int64_t& L,
                                                 std::string& err);
 
+/// THE WEIGHT-SET FINGERPRINT (§5.8): FNV-1a over each model file's resolved path bytes, its size (int64), and
+/// its first and last 64 KiB - two sequential reads per file at startup, no false positives across
+/// same-geometry-different-weights models.  Recorded in every manifest and checked at MATCH time (a delta entry
+/// whose fingerprint differs is not a candidate - the same treatment as cvec), never per chunk.  `files` is the
+/// resolved model shard list; a single-file model matches the §5.8 formula exactly.
+uint64_t kv_delta_weights_fp(const std::vector<std::string>& model_files);
+
+/// The delta tier's automatic layer: a `delta/` directory beside the v3 store's snapshots, scanned at startup
+/// into the SAME NvmeEntry vocabulary (kind = 1), appended to at every DONE by the §5.9 writer, promoted through
+/// the same kv_nvme_match, and garbage-collected by mark-and-sweep (§5.12) - no refcounts on the write path.
+class KvDeltaStore {
+public:
+    /// Creates `v3_dir + "/delta"` and its subdirectories on demand; a missing delta dir is not an error (the
+    /// tier simply starts empty).  Scans the manifests, skipping (never converting) any whose geometry, format
+    /// or weight-set fingerprint does not match the live engine.  `model_files` is the resolved shard list for
+    /// the §5.8 fingerprint, computed ONCE per process here.
+    bool open(const std::string& v3_dir, const ModelGeometry& g, int kv_format,
+              const std::vector<std::string>& model_files, std::string& err);
+    /// Dumps the live session at a turn boundary (§5.9).  Idempotent (an exact match refreshes recency); the
+    /// previous head of THIS process is superseded (its manifest unlinked after the new one is durable).  The
+    /// caller pre-checks the delta path's own conditions (not split, T <= mtp max_cells) and routes everything
+    /// else to the v3 store; a false return here means NOT CACHED THIS TURN (§5.13), never a correctness event.
+    bool dump(const SessionState& ss, const QsaState& mtp_state, const ModelGeometry& g,
+              const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
+              const ConversationCheckpoint* at, std::string& err);
+    /// Reads `e` back (see delta_restore for the failure contract), plus the store's own TOCTOU check: the
+    /// reassembled image disagreeing with the entry the scan built is `invalid` - same rule as the v3 store's.
+    strata::core::ConversationRestore restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
+                                              const ModelGeometry& g, std::string& err);
+    /// Forgets an entry: unlinks its manifest (its exclusive chunks are reclaimed by the next sweep).  A
+    /// transfer failure is NOT a reason to drop one - the caller stops the engine on that path anyway.
+    void drop(const NvmeEntry& e);
+    /// Mark-and-sweep (§5.12): unlink every chunks/states file no live manifest references.  Run at open and at
+    /// cap pressure, after eviction - the union of references is computed BEFORE any unlink, so a chunk shared
+    /// with a live manifest is never reclaimed.
+    void sweep();
+    const std::vector<NvmeEntry>& entries() const { return entries_; }
+    uint64_t total_bytes() const { return total_; }   ///< chunks + states + manifests, this tier
+    size_t size() const { return entries_.size(); }
+
+private:
+    std::string dir_;                                  ///< the delta directory (the v3 store's + "/delta")
+    std::vector<NvmeEntry> entries_;
+    std::vector<std::vector<uint64_t>> entry_chunks_;  ///< parallel: each entry's chunk keys (the sweep's marks)
+    std::vector<uint64_t> entry_states_;               ///< parallel: each entry's State key
+    uint64_t weights_fp_ = 0;
+    uint64_t total_ = 0;
+    std::vector<int32_t> last_ids_;                    ///< this process's previous dump (the supersede hint)
+    std::string last_path_;
+    long seq_base_ = 0;                                ///< this instance's manifest-number block: two opens in
+    long seq_ = 0;                                     ///< ONE process (a test, a restart-less re-open) must not
+                                                       ///< overwrite another's manifest by renaming over its name
+};
+
+/// ONE byte cap across BOTH tiers (§5.12): evict by oldest mtime across the combined entry lists until the
+/// summed bytes fit (never emptying the store), then sweep the delta tier once - eviction of a delta
+/// conversation is just its manifest's unlink, and the sweep is what reclaims its exclusive chunks.  A free
+/// function so the serve loop's rule is host-testable; with the delta tier off it is simply never called.
+void kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes);
+
 }  // namespace strata::platform

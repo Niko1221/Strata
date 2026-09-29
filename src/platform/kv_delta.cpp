@@ -11,9 +11,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <numeric>
 
 #include <filesystem>
+#include <sys/stat.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -147,6 +149,15 @@ bool write_record(const std::string& path, const void* header, size_t header_byt
 /// The footer is the plain FNV-1a over the payload - the same hash the v3 payload footer uses, seeded the same.
 inline uint64_t payload_footer(const void* payload, size_t n) {
     return nvme_fnv1a(kNvmeFnvBasis, payload, n);
+}
+
+/// seconds since the epoch (the LRU clock) - kv_nvme.cpp's file_mtime, which the anon namespace there does not
+/// export; the delta tier's mtime must be the SAME clock the v3 entries use for the cross-tier LRU to mean one
+/// thing, and it is: seconds, from stat.
+int64_t file_mtime_of(const std::string& path) {
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) return 0;
+    return (int64_t) st.st_mtime;
 }
 
 }  // namespace
@@ -859,6 +870,291 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     // ---- step 4: the EXISTING validation+apply pass, unchanged - layout walk, drift diagnostics, digest,
     // apply, the STATE_HASH gate; the failure classes are its own (§5.10 step 4)
     return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+}
+
+
+// ================================ the store (§5.11-§5.12) ================================
+
+uint64_t kv_delta_weights_fp(const std::vector<std::string>& model_files) {
+    // path bytes || size (int64) || first 64 KiB || last 64 KiB, per file, in the order the engine loads them
+    uint64_t h = kNvmeFnvBasis;
+    for (const std::string& file : model_files) {
+        h = nvme_fnv1a(h, file.data(), file.size());
+        std::error_code ec;
+        const uint64_t size = (uint64_t) fs::file_size(file, ec);
+        h = nvme_fnv1a(h, &size, sizeof size);
+        FILE* f = std::fopen(file.c_str(), "rb");
+        if (!f) continue;   // an unreadable shard fingerprints as path+size only - still unique enough to refuse
+        char window[1 << 16];
+        const size_t head = (size_t) std::fread(window, 1, sizeof window, f);
+        h = nvme_fnv1a(h, window, head);
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long long sz = ftello(f);
+            const long long tail_start = sz > (long long) sizeof window ? sz - (long long) sizeof window : (long long) head;
+            if (sz > 0 && std::fseek(f, tail_start, SEEK_SET) == 0) {
+                const size_t tail = (size_t) std::fread(window, 1, (size_t) (sz - tail_start), f);
+                h = nvme_fnv1a(h, window, tail);
+            }
+        }
+        std::fclose(f);
+    }
+    return h;
+}
+
+bool KvDeltaStore::open(const std::string& v3_dir, const ModelGeometry& g, int kv_format,
+                        const std::vector<std::string>& model_files, std::string& err) {
+    dir_ = v3_dir + "/delta";
+    // each open claims a block of manifest numbers, so two instances in ONE process never rename a manifest
+    // over another instance's file (across processes the pid already separates them)
+    static long instances = 0;
+    seq_base_ = ++instances * 1000000;
+    seq_ = 0;
+    weights_fp_ = kv_delta_weights_fp(model_files);
+    const DeltaShapes sh = delta_shapes();
+    std::error_code ec;
+    fs::create_directories(dir_ + "/chunks", ec);
+    fs::create_directories(dir_ + "/states", ec);
+    if (ec) { err = "kv-delta: create " + dir_ + ": " + ec.message(); return false; }
+    // one pass over chunks/ and states/: file sizes by key, and the tier's total byte count (including garbage
+    // the coming sweep will remove - the cap must not lie about the disk)
+    std::map<std::string, uint64_t> chunk_bytes, state_bytes;
+    total_ = 0;
+    for (const char* sub : {"/chunks", "/states"}) {
+        std::map<std::string, uint64_t>& map = std::string(sub) == "/chunks" ? chunk_bytes : state_bytes;
+        for (const fs::directory_entry& de : fs::directory_iterator(dir_ + sub, ec)) {
+            if (ec) break;
+            if (!de.is_regular_file()) continue;
+            const std::string name = de.path().filename().string();
+            const uint64_t sz = (uint64_t) de.file_size(ec);
+            total_ += sz;
+            if (name.rfind(".tmp-", 0) == 0) continue;      // a crash's residue: counted (then swept), never a record
+            if (name.size() > 4) map[name.substr(0, name.size() - 4)] = sz;   // strip .bin
+        }
+    }
+    size_t foreign = 0, other_weights = 0;
+    for (const fs::directory_entry& de : fs::directory_iterator(dir_, ec)) {
+        if (ec) break;
+        const std::string name = de.path().filename().string();
+        if (!de.is_regular_file() || name.rfind("log-", 0) != 0) continue;
+        DeltaManifestHeader h;
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        std::vector<DeltaChunkRef> refs;
+        if (!delta_read_manifest(de.path().string(), h, ids, imgs, refs, err)) { ++foreign; continue; }
+        // the same refuse-never-convert rule the v3 scan applies: another format/shape is left on disk and
+        // skipped - and a weight-set mismatch is said OUT LOUD, once, because every conversation in it will
+        // re-prefill for as long as this binary serves (§5.8)
+        if (h.geometry != strata::core::conversation_geometry_key(g) || h.kv_format != kv_format ||
+            h.page_size != sh.shapes.page_size || h.idx_block != sh.shapes.idx_block || h.block != sh.block) {
+            ++foreign; continue;
+        }
+        if (h.weights_fp != weights_fp_) { ++other_weights; continue; }
+        NvmeEntry e;
+        e.path = de.path().string();
+        e.ids = std::move(ids);
+        e.imgs = std::move(imgs);
+        e.L = h.L;
+        e.cvec = h.cvec != 0;
+        e.kind = 1;
+        e.mtime = file_mtime_of(e.path);
+        e.bytes = (uint64_t) fs::file_size(de.path(), ec);
+        if (state_bytes.count(delta_key_name(h.state_key))) e.bytes += state_bytes.at(delta_key_name(h.state_key));
+        std::vector<uint64_t> keys;
+        keys.reserve(refs.size());
+        for (const DeltaChunkRef& r : refs) {
+            keys.push_back(r.key);
+            auto it = chunk_bytes.find(delta_key_name(r.key));
+            if (it != chunk_bytes.end()) e.bytes += it->second;
+        }
+        total_ += e.bytes;
+        entry_chunks_.push_back(std::move(keys));
+        entry_states_.push_back(h.state_key);
+        entries_.push_back(std::move(e));
+    }
+    if (foreign)
+        std::fprintf(stderr, "strata serve: kv-delta: %zu unreadable/foreign manifest(s) skipped in %s\n",
+                     foreign, dir_.c_str());
+    if (other_weights)
+        std::fprintf(stderr,
+                     "strata serve: kv-delta: %zu stored conversations belong to a different weight set - skipped\n",
+                     other_weights);
+    sweep();   // §5.12: sweep at open, after the scan
+    return true;
+}
+
+bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const ModelGeometry& g,
+                        const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
+                        const ConversationCheckpoint* at, std::string& err) {
+    if (!at || at->ids.empty()) { err = "kv-delta: the delta tier dumps turn boundaries only"; return false; }
+    const std::vector<int32_t>& key = at->ids;
+    const std::vector<ConversationImageKey>& stored = at->imgs;
+    // idempotent: this exact state is already the head - refresh recency, write nothing
+    for (NvmeEntry& e : entries_)
+        if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == stored.size() &&
+            std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(stored.begin(), stored.end(), e.imgs.begin())) {
+            e.mtime = (int64_t) ::time(nullptr);
+            return true;
+        }
+    // this process's previous head, if the new ids extend it (a fork or a rewrite reuses none - the writer
+    // checks; the store's bookkeeping below may only drop the old ENTRY when the writer really superseded)
+    DeltaHead prev;
+    bool superseded = false;
+    if (!last_ids_.empty() && last_ids_.size() <= key.size() &&
+        std::equal(last_ids_.begin(), last_ids_.end(), key.begin())) {
+        prev.L = (int64_t) last_ids_.size();
+        prev.ids = last_ids_;
+        prev.path = last_path_;
+        superseded = true;
+    }
+    const int64_t prev_T = prev.L;
+    const int64_t reused = prev_T / delta_shapes().block;
+    const long seq = seq_base_ + seq_++;
+    const std::string path = dir_ + "/log-" + std::to_string(pid_of()) + "-" + std::to_string(seq) + ".manifest";
+    if (!delta_dump_at(prev.L ? &prev : nullptr, dir_, ss, mtp_state, g, key, stored, cvec, at, weights_fp_,
+                       pid_of(), seq, err)) {
+        return false;   // no manifest move happened; the only residue is content-addressed garbage (§5.13)
+    }
+    // register the entry, with the byte count the ON-DISK records actually have (manifest + state + its chunks)
+    DeltaManifestHeader h;
+    std::vector<int32_t> rids;
+    std::vector<ConversationImageKey> rimgs;
+    std::vector<DeltaChunkRef> refs;
+    if (!delta_read_manifest(path, h, rids, rimgs, refs, err)) {
+        err = "kv-delta: the manifest the writer just committed does not read back: " + err;
+        return false;
+    }
+    NvmeEntry e;
+    e.path = path;
+    e.ids = key;
+    e.imgs = stored;
+    e.L = (int64_t) key.size();
+    e.cvec = cvec;
+    e.kind = 1;
+    e.mtime = (int64_t) ::time(nullptr);
+    std::error_code ec;
+    e.bytes = (uint64_t) fs::file_size(path, ec);
+    uint64_t appended = e.bytes;
+    {
+        std::error_code ec2;
+        e.bytes += (uint64_t) fs::file_size(dir_ + "/states/" + delta_key_name(h.state_key) + ".bin", ec2);
+    }
+    appended += e.bytes - (uint64_t) fs::file_size(path, ec);   // + the state record
+    for (size_t j = 0; j < refs.size(); ++j) {
+        std::error_code ec2;
+        const uint64_t sz = (uint64_t) fs::file_size(dir_ + "/chunks/" + delta_key_name(refs[j].key) + ".bin", ec2);
+        if (ec2) continue;
+        e.bytes += sz;
+        if ((int64_t) j >= reused) appended += sz;   // only the chunks THIS turn sealed are this turn's write cost
+    }
+    // the supersede: the writer unlinked the previous head's manifest; drop its entry and bytes from the books.
+    // ONLY on a real supersede - a fork's (or rewrite's) dump left the previous head's manifest ON DISK, and its
+    // entry must stay: the store's list is the index of what the disk holds, not of what this process dumped last.
+    if (superseded) {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (entries_[i].path == last_path_) {
+                total_ -= entries_[i].bytes;
+                entries_.erase(entries_.begin() + (long) i);
+                entry_chunks_.erase(entry_chunks_.begin() + (long) i);
+                entry_states_.erase(entry_states_.begin() + (long) i);
+                break;
+            }
+    }
+    total_ += e.bytes;
+    last_ids_ = key;
+    last_path_ = path;
+    {
+        std::vector<uint64_t> keys;
+        keys.reserve(refs.size());
+        for (const DeltaChunkRef& r : refs) keys.push_back(r.key);
+        entry_chunks_.push_back(std::move(keys));
+        entry_states_.push_back(h.state_key);
+    }
+    entries_.push_back(std::move(e));
+    // the instrumentation line the oracles (and the endurance report) read: this turn's write volume
+    std::fprintf(stderr, "strata serve: nvme delta: appended %lld chunks (%.1f MiB) T %lld->%lld\n",
+                 (long long) ((int64_t) refs.size() - reused), (double) appended / (double) (1 << 20),
+                 (long long) prev_T, (long long) e.L);
+    return true;
+}
+
+strata::core::ConversationRestore KvDeltaStore::restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
+                                                        const ModelGeometry& g, std::string& err) {
+    std::vector<int32_t> ids;
+    std::vector<ConversationImageKey> imgs;
+    bool cvec = false;
+    int64_t L = 0;
+    const strata::core::ConversationRestore r =
+        delta_restore(e, ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err);
+    if (r != strata::core::ConversationRestore::restored) return r;
+    if (L != e.L || cvec != e.cvec || imgs != e.imgs || ids != e.ids) {
+        // the file disagreed with the index the scan built - the v3 store's TOCTOU rule, same class: the image
+        // applied cleanly and the final sync succeeded, which IS the proof a clean reset needs
+        err = "kv-delta: entry changed under us";
+        return strata::core::ConversationRestore::invalid;
+    }
+    return strata::core::ConversationRestore::restored;
+}
+
+void KvDeltaStore::drop(const NvmeEntry& e) {
+    for (size_t i = 0; i < entries_.size(); ++i)
+        if (entries_[i].path == e.path) {
+            std::error_code ec;
+            fs::remove(entries_[i].path, ec);
+            total_ -= entries_[i].bytes;
+            if (entries_[i].path == last_path_) { last_ids_.clear(); last_path_.clear(); }
+            entries_.erase(entries_.begin() + (long) i);
+            entry_chunks_.erase(entry_chunks_.begin() + (long) i);
+            entry_states_.erase(entry_states_.begin() + (long) i);
+            return;
+        }
+}
+
+void KvDeltaStore::sweep() {
+    // mark: the union of everything the live manifests reference.  Computed BEFORE any unlink - a chunk shared
+    // with a live manifest is never garbage, which is the property that makes eviction safe with forks around.
+    std::map<std::string, bool> mark;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        mark[delta_key_name(entry_states_[i])] = true;
+        for (uint64_t k : entry_chunks_[i]) mark[delta_key_name(k)] = true;
+    }
+    size_t swept = 0;
+    uint64_t bytes = 0;
+    std::error_code ec;
+    for (const char* sub : {"/chunks", "/states"}) {
+        for (const fs::directory_entry& de : fs::directory_iterator(dir_ + sub, ec)) {
+            if (ec) break;
+            if (!de.is_regular_file()) continue;
+            const std::string name = de.path().filename().string();
+            const bool temp = name.rfind(".tmp-", 0) == 0;
+            const std::string key = (!temp && name.size() > 4) ? name.substr(0, name.size() - 4) : name;
+            if (temp || !mark[key]) {
+                bytes += (uint64_t) de.file_size(ec);
+                fs::remove(de.path(), ec);
+                ++swept;
+            }
+        }
+    }
+    total_ -= bytes;
+    if (swept)
+        std::fprintf(stderr, "strata serve: kv-delta: swept %zu orphan chunks (%.2f GiB)\n",
+                     swept, (double) bytes / (double) (1LL << 30));
+}
+
+void kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes) {
+    // the last entry is kept even over the cap (never empty the store) - the v3 store's own documented policy
+    while (cap_bytes > 0 && v3.total_bytes() + delta.total_bytes() > (uint64_t) cap_bytes &&
+           v3.size() + delta.size() > 1) {
+        const NvmeEntry* oldest = nullptr;
+        bool from_delta = false;
+        for (const NvmeEntry& e : v3.entries())
+            if (!oldest || e.mtime < oldest->mtime) { oldest = &e; from_delta = false; }
+        for (const NvmeEntry& e : delta.entries())
+            if (!oldest || e.mtime < oldest->mtime) { oldest = &e; from_delta = true; }
+        if (!oldest) break;
+        if (from_delta) delta.drop(*oldest);
+        else v3.drop(*oldest);
+    }
+    delta.sweep();   // §5.12: at cap pressure, AFTER eviction
 }
 
 }  // namespace strata::platform
