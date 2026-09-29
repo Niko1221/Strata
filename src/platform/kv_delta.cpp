@@ -704,7 +704,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
 strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
                                                 const ModelGeometry& g, uint64_t weights_fp,
                                                 std::vector<int32_t>& ids, std::vector<ConversationImageKey>& imgs,
-                                                bool& cvec, int64_t& L, std::string& err) {
+                                                bool& cvec, int64_t& L, std::string& err, uint64_t* image_bytes) {
     using Restore = strata::core::ConversationRestore;
     ids.clear();
     imgs.clear();
@@ -807,6 +807,9 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                                  (size_t) arr_total +   // the drafter: T <= max_cells, so the ring covers the prefix
                                  sizeof(uint64_t);
     std::vector<uint8_t> buf(payload_bytes, 0);
+    // the RAM this promote stages, for the record (the KV line's staging_bytes).  Reported from the size of the
+    // buffer, which is what the C10 cost IS; nothing here changes what the buffer holds.
+    if (image_bytes) *image_bytes = payload_bytes;
 
     NvmeHeader v3;
     v3.L = T;
@@ -1088,8 +1091,9 @@ strata::core::ConversationRestore KvDeltaStore::restore(const NvmeEntry& e, Sess
     std::vector<ConversationImageKey> imgs;
     bool cvec = false;
     int64_t L = 0;
+    last_image_bytes_ = 0;   // a refusal before step 3 staged nothing
     const strata::core::ConversationRestore r =
-        delta_restore(e, ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err);
+        delta_restore(e, ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err, &last_image_bytes_);
     if (r != strata::core::ConversationRestore::restored) return r;
     if (L != e.L || cvec != e.cvec || imgs != e.imgs || ids != e.ids) {
         // the file disagreed with the index the scan built - the v3 store's TOCTOU rule, same class: the image

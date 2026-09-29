@@ -125,6 +125,12 @@ grep "NVMe KV store" "$OUT/proc4.err" | head -1
 
 echo "== VERDICT =="
 FAIL=0
+# THE KV LINE (docs/nvme-kv-cache-web-design.md §3): the store's state straight after READY, then one per request
+KVSTART=$(grep -c "^KV start=1 entries=" "$OUT/proc1.out" 2>/dev/null); KVSTART=${KVSTART:-0}
+[ "$KVSTART" = "1" ] || { echo "FAIL: no 'KV start=1 entries=' line after READY"; FAIL=1; }
+NKV=$(grep -c "^KV src=" "$OUT/proc1.out" 2>/dev/null); NKV=${NKV:-0}
+NDONE=$(grep -c "^DONE" "$OUT/proc1.out" 2>/dev/null); NDONE=${NDONE:-0}
+[ "$NKV" = "$NDONE" ] || { echo "FAIL: $NKV KV lines for $NDONE DONE lines (one per request, before DONE)"; FAIL=1; }
 [ "$N1" = "1" ] || { echo "FAIL step1: expected 1 file after process 1, got $N1"; FAIL=1; }
 if [ -n "$S1" ] && [ -n "$S3" ] && [ "$S3" -gt "$S1" ]; then echo "PASS step1 supersede: one growing file ($S1 -> $S3 bytes)"
 else echo "FAIL step1 supersede: sizes r1=$S1 r3=$S3"; FAIL=1; fi
@@ -134,6 +140,10 @@ RES=$(grep -o "^RESUME [0-9]*" "$OUT/proc2.out" | head -1)
 FR=$(echo "$PROM_MS" | sed -E 's/.*reused \+ ([0-9]+) read.*/\1/')
 if [ -n "$FR" ] && [ "$FR" -lt 100 ]; then echo "PASS step2 ttft: only $FR fresh tokens read"; else echo "FAIL step2 ttft: fresh read = '$FR'"; FAIL=1; fi
 if [ "$N3" -lt 7 ]; then echo "PASS step3 cap: $N3 files remain (evicted)"; else echo "FAIL step3: cap did not evict ($N3 files)"; FAIL=1; fi
+# the capped process must SAY it evicted: a KV line with evict >= 1 and the bytes it dropped
+KEV=$(grep -cE "^KV src=.* evict=[1-9][0-9]* evict_bytes=[1-9]" "$OUT/proc3.out" 2>/dev/null); KEV=${KEV:-0}
+if [ "$KEV" -ge 1 ]; then echo "PASS step3 KV: the cap turn reported $(grep -oE 'evict=[0-9]+ evict_bytes=[0-9]+' "$OUT/proc3.out" | head -1)"
+else echo "FAIL step3 KV: no KV line with evict>=1 in the capped process"; FAIL=1; fi
 GB=$(grep "NVMe KV store" "$OUT/proc4.err" | grep -oE "[0-9.]+ GiB" | head -1 | cut -d' ' -f1)
 if [ -n "$GB" ] && .venv/bin/python -c "import sys; sys.exit(0 if float('$GB') <= 1.05 else 1)"; then
   echo "PASS step3 cap bytes: $GB GiB <= cap"
