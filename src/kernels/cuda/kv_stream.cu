@@ -209,6 +209,14 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
         std::fprintf(stderr, "kv_stream: a block's scale run must be a multiple of 16 bytes\n");
         std::exit(1);
     }
+    // one sweep step looks at RT consecutive slots `(hand + thread) % n_slots`; with fewer slots than RT two
+    // threads see the same slot and may both take it for two different misses.  The engine never streams with fewer
+    // than qsa_kv_resident_min() / page_size = 5,120 slots, so this is a guard, not a limit.
+    if (m.n_slots < RT) {
+        std::fprintf(stderr, "kv_stream: %lld slots is fewer than the resolve block (%d): the clock sweep would take a "
+                             "slot twice\n", (long long) m.n_slots, RT);
+        std::exit(1);
+    }
     resolve_kernel<<<1, RT, 0, (cudaStream_t) stream>>>(m, ids, steps, (int) n_q, (int) cap, (int) s.page_size);
     check("resolve");
     copy_kernel<<<96, 128, 0, (cudaStream_t) stream>>>(m, runs_of(slots, host, fmt, s));

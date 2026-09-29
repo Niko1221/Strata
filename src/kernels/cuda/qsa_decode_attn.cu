@@ -113,14 +113,16 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         if (t < n_here) {
             const int cell = ids[c0 + t];
             const long long page = (long long) p.page_table[cell / page_size];
-            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
+            // (score -FLT_MAX, weight 0) instead of being read from before the pool.
+            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
         srow[t] = r;
     }
     __syncthreads();
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
-        if (c >= n_here) {
+        if (c >= n_here || srow[c] < 0) {
             if (lane < G) sp[lane][c] = -FLT_MAX;
             continue;
         }
@@ -141,8 +143,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
         const float m = warp_max(fmaxf(a, b));
-        const float ea = (lane < n_here) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here) ? __expf(b - m) : 0.0f;
+        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
         sp[h][lane] = ea;
         sp[h][lane + 32] = eb;
         const float l = warp_sum(ea + eb);
@@ -154,6 +156,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
     for (int c = 0; c < n_here; ++c) {
+        if (srow[c] < 0) continue;   // masked above, weight 0
         float v;
         if constexpr (KV_MODE == 0) {
             v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
