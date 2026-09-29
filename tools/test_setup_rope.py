@@ -1,6 +1,7 @@
-"""Tests for setup.py's automatic rope configuration (the §6 flow): the setup resolves the method and the
-factor for a context past the trained 262144, keeps explicit choices, refuses an explicit none there, and
-adds nothing inside the trained range.  Pure functions - no GPU, no downloads, no prompts.
+"""Tests for setup.py's automatic rope configuration (§4 + §6): the factor derives from the FINAL context
+actually served - RAM reductions first, then final / trained 262144 clamped at 1 - explicit
+--rope-scaling/--rope-scale choices win verbatim, an explicit none is refused past the trained range, and
+nothing turns on by itself inside it.  Pure functions - no GPU, no downloads, no prompts.
 
     python -m unittest tools.test_setup_rope
 """
@@ -15,30 +16,30 @@ sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
 
 
-class CoveringFactor(unittest.TestCase):
-    def test_the_menu_contexts(self):
-        self.assertEqual(setup.covering_factor(393216), 1.5)       # 262144 * 1.5 covers 384K exactly
-        self.assertEqual(setup.covering_factor(524288), 2.0)       # 262144 * 2.0 covers 512K exactly
-        self.assertEqual(setup.covering_factor(262144), 1.5)       # the smallest on the safe side
+class DerivedFactor(unittest.TestCase):
+    """The formula itself: max(1.0, final / trained)."""
 
-    def test_the_first_gap_takes_the_bigger_factor(self):
-        self.assertEqual(setup.covering_factor(393217), 2.0)       # one token past 1.5's reach
+    def test_the_task_table(self):
+        self.assertEqual(setup.derived_factor(131072), 1.0)        # below the trained range: clamped at 1
+        self.assertEqual(setup.derived_factor(262144), 1.0)        # exactly the trained range: 1
+        self.assertEqual(setup.derived_factor(393216), 1.5)        # 384K
+        self.assertEqual(setup.derived_factor(524288), 2.0)        # 512K
 
-    def test_a_free_form_context_past_the_menu_gets_the_next_factor(self):
-        self.assertEqual(setup.covering_factor(600000), 3.0)       # --context is not limited to the menu
+    def test_free_form_contexts_get_the_exact_ratio(self):
+        # /262144 = /2**18 is exact in binary floating point, so no dust
+        self.assertEqual(setup.derived_factor(600000), 600000 / 262144)
+        self.assertGreater(setup.derived_factor(600000), 2.0)
 
-    def test_a_context_past_the_whole_ladder_is_a_clean_refusal(self):
-        with self.assertRaises(ValueError) as cm:
-            setup.covering_factor(1048577)                          # 262144 * 4 is the last rung
-        self.assertIn("--rope-scale", str(cm.exception))
+    def test_the_clamp_is_what_keeps_128k_at_one(self):
+        self.assertEqual(setup.derived_factor(131072), 1.0)        # NOT the raw 0.5
 
 
 class ResolveRope(unittest.TestCase):
     # ---- the automatic flow the docs promise (an omitted flag, --yes or the interactive default)
-    def test_omitted_384k_gets_yarn_and_the_covering_factor(self):
+    def test_omitted_384k_gets_yarn_and_1_5(self):
         self.assertEqual(setup.resolve_rope(393216, None, None), ("yarn", 1.5))
 
-    def test_omitted_512k_gets_yarn_and_the_covering_factor(self):
+    def test_omitted_512k_gets_yarn_and_2(self):
         self.assertEqual(setup.resolve_rope(524288, None, None), ("yarn", 2.0))
 
     def test_deterministic_for_yes(self):
@@ -50,13 +51,18 @@ class ResolveRope(unittest.TestCase):
         # --rope-scale alone still expresses the intent to extend: the method defaults, the factor is kept
         self.assertEqual(setup.resolve_rope(393216, None, 1.8), ("yarn", 1.8))
 
-    # ---- explicit selections are respected
-    def test_explicit_method_gets_the_covering_factor(self):
+    # ---- explicit selections are respected, verbatim
+    def test_explicit_method_gets_the_derived_factor(self):
         self.assertEqual(setup.resolve_rope(524288, "linear", None), ("linear", 2.0))
 
     def test_explicit_method_and_factor_are_kept_verbatim(self):
         self.assertEqual(setup.resolve_rope(393216, "linear", 2.0), ("linear", 2.0))
         self.assertEqual(setup.resolve_rope(524288, "yarn", 1.5), ("yarn", 1.5))
+
+    def test_an_explicit_override_survives_a_context_reduction(self):
+        # §4: the RAM check reduced the final context to 128K - a user-supplied factor is NOT recalculated
+        self.assertEqual(setup.resolve_rope(131072, "yarn", 2.0), ("yarn", 2.0))
+        self.assertEqual(setup.resolve_rope(131072, "linear", 1.75), ("linear", 1.75))
 
     # ---- an explicit none past the trained range is refused with an explanation, not overridden
     def test_explicit_none_past_trained_is_refused(self):
@@ -68,7 +74,7 @@ class ResolveRope(unittest.TestCase):
     def test_explicit_none_within_trained_is_the_stock_model(self):
         self.assertEqual(setup.resolve_rope(131072, "none", None), (None, None))
 
-    # ---- inside the trained range nothing turns on by itself
+    # ---- inside the trained range nothing turns on by itself; a chosen method gets factor 1
     def test_omitted_within_trained_adds_nothing(self):
         self.assertEqual(setup.resolve_rope(262144, None, None), (None, None))
         self.assertEqual(setup.resolve_rope(131072, None, None), (None, None))
@@ -77,15 +83,20 @@ class ResolveRope(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.resolve_rope(131072, None, 2.0)
 
-    def test_explicit_method_within_trained_keeps_the_engine_default_factor(self):
-        self.assertEqual(setup.resolve_rope(131072, "yarn", None), ("yarn", 2.0))
+    def test_a_chosen_method_within_trained_gets_factor_1(self):
+        # no more unconditional factor 2: 1 = the trained angles, no automatic expansion
+        self.assertEqual(setup.resolve_rope(131072, "yarn", None), ("yarn", 1.0))
+        self.assertEqual(setup.resolve_rope(262144, "linear", None), ("linear", 1.0))
 
-    # ---- §4 coordination: the RAM reduction lands BEFORE the rope config, so a reduced 384K needs nothing
-    def test_a_reduced_context_resolves_as_the_reduced_one(self):
-        # asked 393216, the RAM check brought it to 131072: the setup must not scale a trained-range context
-        self.assertEqual(setup.resolve_rope(131072, None, None), (None, None))
-        # ...but an explicit selection survives the reduction (the engine's in-range caveat is its own)
-        self.assertEqual(setup.resolve_rope(131072, "yarn", None), ("yarn", 2.0))
+    # ---- §4 coordination: the RAM reduction lands BEFORE the rope config, so the factor matches the
+    # context actually served - the 512K-on-IQ3_S-with-under-90-GB case from the task, end to end
+    def test_512k_on_a_small_ram_machine_resolves_to_128k_factor_1(self):
+        # asked 524288 with --rope-scaling yarn and no factor; the RAM check brings the final context to 131072
+        self.assertEqual(setup.resolve_rope(131072, "yarn", None), ("yarn", 1.0))
+
+    def test_no_reduction_384k_and_512k_resolve_as_documented(self):
+        self.assertEqual(setup.resolve_rope(393216, "yarn", None), ("yarn", 1.5))
+        self.assertEqual(setup.resolve_rope(524288, "yarn", None), ("yarn", 2.0))
 
 
 if __name__ == "__main__":

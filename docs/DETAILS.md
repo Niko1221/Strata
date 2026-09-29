@@ -436,10 +436,13 @@ the attention temperature where training put it. Scaled contexts also need propo
 for the KV cache and the rope tables (~13 KB and ~0.26 KB per token).
 
 - setup: `START-HERE.bat --setup --context 393216` asks nothing extra - it picks the method (yarn; one
-  question when run interactively) and the smallest covering factor for you (`--rope-scaling`/`--rope-scale`
-  override; 393K wants 1.5, 524K wants 2). An explicit `--rope-scaling none` for a context past 262,144 is
-  refused: the setup will not configure a run with the stock angles past the trained range. If the RAM check
-  reduces a chosen 384K/512K back inside the trained range, no scaling is added at all.
+  question when run interactively) and derives the factor from the final context for you (final context /
+  262,144, at least 1: 1.5 at 393K, 2 at 512K, 1 inside the trained range; `--rope-scaling`/`--rope-scale`
+  override, an explicit factor is kept as given). An explicit `--rope-scaling none` for a context past
+  262,144 is refused: the setup will not configure a run with the stock angles past the trained range. If
+  the RAM check reduces a chosen 384K/512K back inside the trained range, an omitted method adds no
+  scaling, and an explicitly chosen one stays at factor 1 - the trained angles, no expansion (not a
+  switch for rope as a whole: explicitly supplied rope settings keep their behavior).
 - engine: `--rope-scaling none|linear|yarn`, `--rope-scale F`, and the raw ggml knobs `--rope-freq-base`,
   `--rope-freq-scale`, `--yarn-orig-ctx` (default 262,144), `--yarn-ext-factor`, `--yarn-attn-factor`,
   `--yarn-beta-fast` (32), `--yarn-beta-slow` (1). The model file's `rope.scaling.*` keys, when a
