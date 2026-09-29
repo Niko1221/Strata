@@ -1,13 +1,15 @@
 # tools/short_tests.py - correctness tests for the NVMe KV tier at short contexts (~3k tokens).
-# /tmp/short_tests.py - correctness tests for the NVMe KV tier at short contexts (~3k tokens).
 # S1 multi-turn chain, S2 branching, S3 corruption fallback, S4 shared-prefix needles,
 # S5 rotation stress, S6 idempotence.  Assertions are delta-based on the store and the engine log.
 import json, os, re, sys, time
 import requests
 
-BASE = "http://127.0.0.1:8080/v1/chat/completions"
-LOG = "/local/strata/strata-iq3_xxs.log"
-STORE = "/local/strata/kvstore"
+# the target server, its log and its store are overridable so the suite can run against a TEST server
+# (e.g. a delta-on engine on another port with a scratch store) without editing the file
+import os
+BASE = os.environ.get("STRATA_TESTS_BASE", "http://127.0.0.1:8080/v1/chat/completions")
+LOG = os.environ.get("STRATA_TESTS_LOG", "/local/strata/strata-iq3_xxs.log")
+STORE = os.environ.get("STRATA_TESTS_STORE", "/local/strata/kvstore")
 sys.path.insert(0, "/local/strata/tools")
 import strata_tokenizer as ST
 
@@ -32,7 +34,38 @@ def log_tail(n0):
     with open(LOG, "rb") as f:
         f.seek(n0); return f.read().decode("utf-8", "replace")
 
-def store_count(): return len([f for f in os.listdir(STORE) if f.startswith("kv-")])
+def store_count():
+    # THE TIER'S RECORDS, whichever family is live: the v3 snapshots (kv-*), or the delta tier's manifests
+    # (log-*) + content-addressed records (chunks/, states/).  The delta tier replaces the per-turn snapshot
+    # FILE with a manifest head move + appended chunks, so "the store grew" counts both families.
+    n = len([f for f in os.listdir(STORE) if f.startswith("kv-")])
+    d = os.path.join(STORE, "delta")
+    if os.path.isdir(d):
+        n += len([f for f in os.listdir(d) if f.startswith("log-")])
+        for sub in ("chunks", "states"):
+            p = os.path.join(d, sub)
+            if os.path.isdir(p): n += len(os.listdir(p))
+    return n
+
+def delta_audit(d):
+    # the delta records' own integrity: the FNV-1a footer over the payload of every chunk (48-byte header),
+    # State record (16-byte header) and manifest (264-byte header, footer over the body)
+    import struct
+    def fnv(b, h=1469598103934665603):
+        for x in b: h = ((h ^ x) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return h
+    tot = bad = 0
+    for f in os.listdir(os.path.join(d, "chunks")):
+        data = open(os.path.join(d, "chunks", f), "rb").read(); tot += 1
+        if len(data) < 56 or fnv(data[48:-8]) != struct.unpack("<Q", data[-8:])[0]: bad += 1
+    for f in os.listdir(os.path.join(d, "states")):
+        data = open(os.path.join(d, "states", f), "rb").read(); tot += 1
+        if len(data) < 24 or fnv(data[16:-8]) != struct.unpack("<Q", data[-8:])[0]: bad += 1
+    for f in os.listdir(d):
+        if not f.startswith("log-"): continue
+        data = open(os.path.join(d, f), "rb").read(); tot += 1
+        if len(data) < 272 or fnv(data[264:-8]) != struct.unpack("<Q", data[-8:])[0]: bad += 1
+    return tot, bad
 
 def chat(messages, max_tokens=500, tag=""):
     t0 = time.time(); mark = log_size()
@@ -93,7 +126,7 @@ check("S1 turn3 avoids prefill", pre(r2), f"reused={r2['reused'].groups() if r2[
 check("S1 turn4 avoids prefill", pre(r3), f"reused={r3['reused'].groups() if r3['reused'] else None}")
 check("S1 needle found (turn2)", hit1, r1["text"][:60])
 check("S1 needle still found (turn4)", hit3, r3["text"][:60])
-check("S1 store grew (per-turn snapshots)", store_count() >= n0 + 3, f"{store_count()} files (delta {store_count()-n0})")
+check("S1 store grew (per-turn writes)", store_count() >= n0 + 3, f"{store_count()} records (delta {store_count()-n0})")
 
 # ---------- S2: branching ----------
 print("== S2 branching ==", flush=True)
@@ -162,12 +195,35 @@ print("== S3 corruption fallback ==", flush=True)
 # target's in-RAM checkpoints are pruned - they are not prefixes of it), then the target's request, whose
 # only match is its (now corrupt) NVMe entry: promote must fail gracefully, the entry dropped, and the
 # request answered by a full re-prefill.
-pre = {f for f in os.listdir(STORE) if f.startswith("kv-")}
+pre = set()
 for f in os.listdir(STORE):
-    if f.startswith("kv-"):
-        p = os.path.join(STORE, f); size = os.path.getsize(p)
-        with open(p, "r+b") as fh:
+    p = os.path.join(STORE, f)
+    if f.startswith("kv-") and os.path.isfile(p):
+        pre.add(f)
+        size = os.path.getsize(p)
+        with open(p, "r+b") as fh:   # the v3 family: one flipped byte mid-payload
             fh.seek(size // 2); b = fh.read(1); fh.seek(size // 2); fh.write(bytes([b[0] ^ 0xFF]))
+corrupt_time = time.time()
+pre_mtime = {}
+ddir0 = os.path.join(STORE, "delta")
+if os.path.isdir(ddir0):
+    for sub in ("", "chunks", "states"):
+        p = os.path.join(ddir0, sub)
+        if not os.path.isdir(p): continue
+        for f in os.listdir(p):
+            fp = os.path.join(p, f)
+            if os.path.isfile(fp): pre_mtime[fp] = os.path.getmtime(fp)
+# the delta family: corrupt every content record (chunks/states) - the scan admits the manifests, so the
+# promote READS the corrupt record and must refuse it by name.  The manifests stay intact: a corrupt manifest
+# is dropped at SCAN time (before any promote), which would make this test a no-op.
+ddir = os.path.join(STORE, "delta")
+if os.path.isdir(ddir):
+    for sub in ("chunks", "states"):
+        sdir = os.path.join(ddir, sub)
+        for f in os.listdir(sdir):
+            p = os.path.join(sdir, f); size = os.path.getsize(p)
+            with open(p, "r+b") as fh:
+                fh.seek(size // 2); b = fh.read(1); fh.seek(size // 2); fh.write(bytes([b[0] ^ 0xFF]))
 n0 = store_count()
 mark = log_size()
 foreign = hists[1][1] + [{"role": "user", "content": "Reply: 'ok'."}]
@@ -182,11 +238,40 @@ import subprocess, shutil
 # corrupt files that are never matched legitimately remain until matched-and-refused or LRU-evicted
 newdir = "/tmp/fnv-new"
 shutil.rmtree(newdir, ignore_errors=True); os.makedirs(newdir)
-for f in os.listdir(STORE):
-    if f.startswith("kv-") and f not in pre:
-        shutil.copy2(os.path.join(STORE, f), os.path.join(newdir, f))
+fresh = [f for f in os.listdir(STORE) if f.startswith("kv-") and f not in pre]
+for f in fresh:
+    shutil.copy2(os.path.join(STORE, f), os.path.join(newdir, f))
 r = subprocess.run(["/tmp/fnvaudit", newdir], capture_output=True, text=True)
-check("S3 fresh dumps verify", r.stdout.strip().endswith(", 0 bad"), r.stdout.strip())
+v3_ok = r.stdout.strip().endswith(", 0 bad")
+# the delta family's fresh records (a re-dump after a refusal REWRITES the corrupted records under the same
+# content keys - the repair the design gives for free); only records newer than the corruption are the new dumps
+ddir = os.path.join(STORE, "delta")
+delta_ok, tot, bad = True, 0, 0
+if os.path.isdir(ddir):
+    # only the FRESH records are the new dumps: a corrupt record never matched legitimately remains until it is
+    # matched-and-refused (the v3 test's own rule) - and a re-dump REPAIRS the corrupted records it re-derives,
+    # writing them fresh under the same content keys.  So: audit what was written after the corruption.
+    fresh_delta = []
+    for sub in ("", "chunks", "states"):
+        p = os.path.join(ddir, sub)
+        if not os.path.isdir(p): continue
+        for f in os.listdir(p):
+            fp = os.path.join(p, f)
+            # strictly after the corruption: the corruption itself refreshes every record's mtime, so the
+            # reference must be the corruption MOMENT - only a REPAIR (a re-dump rewriting the record under its
+            # content key) or a NEW dump is newer
+            if os.path.isfile(fp) and os.path.getmtime(fp) > corrupt_time + 0.5:
+                fresh_delta.append(fp)
+    import struct
+    def fnv(b, h=1469598103934665603):
+        for x in b: h = ((h ^ x) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return h
+    for fp in fresh_delta:
+        data = open(fp, "rb").read(); tot += 1
+        hdr = 48 if "/chunks/" in fp else (16 if "/states/" in fp else 264)
+        if len(data) < hdr + 8 or fnv(data[hdr:-8]) != struct.unpack("<Q", data[-8:])[0]: bad += 1
+    delta_ok = bad == 0
+check("S3 fresh dumps verify", v3_ok and delta_ok, f"v3: {r.stdout.strip()!r}; delta: {tot} fresh records, {bad} bad")
 
 print("== VERDICT ==", flush=True)
 print("ALL PASS" if not FAILS else f"SOME FAILURES: {FAILS}", flush=True)
