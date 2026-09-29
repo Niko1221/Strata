@@ -5,6 +5,8 @@ A background thread samples once a second and keeps the last 60 readings of each
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
+- `rss_used`: the engine process's own resident bytes, from psutil only (no OS fallback for another process's RSS), so
+  it is absent without psutil or without an engine process.
 Anything that cannot be read is None; nothing here can stop the server.
 """
 from __future__ import annotations
@@ -169,10 +171,12 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0):
+    def __init__(self, extra=None, gpu_index=0, pid=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
-        engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus)."""
+        engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus).  `pid`: the engine's process id,
+        an int or a zero-arg callable - see `_rss`."""
         self.extra = extra
+        self.pid = pid
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
@@ -207,6 +211,22 @@ class Telemetry:
         dt = t - prev[0]
         return (c.read_bytes - prev[1]) / dt / 2**20, (c.write_bytes - prev[2]) / dt / 2**20
 
+    def _rss(self):
+        """The engine process's own resident bytes (design §6's RAM transient: a promote stages the whole snapshot
+        there at once).  `pid` is resolved EVERY sample rather than captured: `StrataEngine.restart()` replaces the
+        process, and a transfer failure is exactly the path that restarts it (design §5.2), so a captured int would
+        go stale and read a dead process.  Anything unreadable - no psutil, no engine process, one that is gone -
+        reports NOTHING: a missing reading must not look like a zero."""
+        if not self.ps:
+            return None
+        pid = self.pid() if callable(self.pid) else self.pid
+        if pid is None:
+            return None
+        try:
+            return self.ps.Process(pid).memory_info().rss
+        except (self.ps.Error, OSError, ValueError):
+            return None
+
     def sample(self):
         s = {}
         if self.gpu.ok():
@@ -223,6 +243,9 @@ class Telemetry:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
+        rss = self._rss()
+        if rss is not None:
+            s["rss_used"] = rss                                  # absent, never 0, when it could not be read
         if self.extra:
             try:
                 s.update(self.extra())
@@ -236,7 +259,7 @@ class Telemetry:
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s"):
+                          "disk_read_mb", "rss_used", "tok_s"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
             time.sleep(1.0)

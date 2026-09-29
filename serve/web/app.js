@@ -219,7 +219,7 @@ function render(m) {
     if (tab === "cache") { showTab("monitor"); return; }
   }
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
-  if (tab === "about") renderAbout(eng, hw, st);
+  if (tab === "about") renderAbout(eng, hw, st, cache);
 }
 
 function renderTotals(t) {
@@ -305,13 +305,18 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
+  // the engine's own resident bytes (design §6's RAM transient): the ~2 GB a promote stages shows here as a bump.
+  // The sparkline is auto-scaled - the point is the bump, not the share of the machine.
+  const rss = hw.rss_used;
+  $("eng-ram-text").textContent = rss == null ? (st.psutil ? "–" : "– (needs psutil)") : `${gb(rss, 2)} GB`;
+  spark("sp-eng-ram", rss == null ? [] : h.rss_used);          // no reading: no line, never a flat zero
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
@@ -321,7 +326,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%`;
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+        <td class="num">${fmt(r.reused)}</td><td>${cacheCell(r.cache)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
@@ -331,6 +336,27 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
   $("req-totals").textContent = renderTotals(totals);
+}
+
+// The Monitor's Cache column (design §5): the KV line's `src`, labelled as the operator reads it - did this turn
+// read disk or not.  Deliberately NOT CACHE_TIER's labels below (the events table names the tier: v3 / delta):
+// this column exists because `Reused` cannot tell a 4,107-token RAM resume from a 4,107-token promote.
+const CACHE_SRC = {ram: ["st-badge--reading", "RAM", "the RAM tier"],
+                   nvme: ["st-badge--generating", "NVMe", "v3 snapshot on disk"],
+                   delta: ["st-badge--generating", "disk", "delta tier on disk"],
+                   none: ["", "cold", "nothing stored"]};
+function cacheCell(c) {
+  // no KV line is UNKNOWN, never cold (design §3, note 1): a dash, not a badge
+  if (!c) return `<span class="muted" title="this request reported no KV line: where its KV came from is unknown, not cold">–</span>`;
+  const [cls, label, tier] = CACHE_SRC[c.src] || ["", c.src || "–", "tier this page does not know"];
+  let note;
+  if (c.src === "none") note = "nothing stored to resume from: the whole prompt was read";
+  else if (c.src === "ram") note = `${c.resume ? `resumed ${fmt(c.resume)} tokens from` : "answered by"} the RAM tier - no disk read`;
+  else note = `${c.resume ? `resumed ${fmt(c.resume)} tokens from the ${tier}` : `promoted from the ${tier}`}` +
+              (c.promote_ms == null ? "" : ` in ${dur(c.promote_ms)}`) +
+              (c.promote_bytes ? ` · ${gb(c.promote_bytes, 2)} GB read` : "") +
+              (c.staging_bytes ? ` · ${gb(c.staging_bytes, 2)} GB staged in RAM at once` : "");
+  return `<span class="st-badge ${cls}" title="${esc(note)}">${esc(label)}</span>`;
 }
 
 // ------------------------------------------------------------------ Cache tab (design §5)
@@ -508,7 +534,7 @@ function projectionText(c) {
          `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
-function renderAbout(eng, hw, st) {
+function renderAbout(eng, hw, st, cache) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
     ["Model", eng.model],
@@ -531,6 +557,23 @@ function renderAbout(eng, hw, st) {
     ["Anthropic base URL", base, true],
     ["Model name", eng.model, true],
   ]);
+  // The NVMe cache card (design §5): the `cache` block already inside /metrics - About fetches /cache never and
+  // walks the store never.  No tier -> the whole card is hidden.  What is NOT here is deliberate: a stale-file
+  // count and a weight fingerprint are not fields of KvCache.summary() (the count comes from the /cache walk),
+  // and the page does not state a number it was not given.
+  const c = cache && cache.enabled ? cache : null;
+  $("card-cache").hidden = !c;
+  if (c) {
+    const rt = c.ram_tier || {};
+    facts($("facts-cache"), [
+      ["Store directory", c.dir],
+      ["Cap", c.cap_bytes ? `${gb(c.cap_bytes, 0)} GB (the engine's own limit)` : "none - unlimited"],
+      ["Tier family", c.mode === "delta" ? "delta (chunks + states + manifests), with the v3 snapshot fallback" : "v3 snapshots only"],
+      ["RAM tier", rt.checkpoints == null ? null : `${fmt(rt.checkpoints)} checkpoints, ${fmt(rt.live_tokens)} tokens live - resumable without touching disk`],
+      ["Not cached", "layer-split sessions are not cached"],
+      ["Promote cost", "a promote stages the whole snapshot in RAM at once"],
+    ]);
+  }
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
