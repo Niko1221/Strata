@@ -578,6 +578,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(conv_cache_test src/program/conv_cache_test.cpp)
   target_include_directories(conv_cache_test PRIVATE include)
   add_test(NAME conv_cache_test COMMAND conv_cache_test)
+  # the f32 -> bf16 rounding against ggml's, NaN included, over every f32 bit pattern (header-only, CPU)
+  add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
+  target_include_directories(bf16_bits_test PRIVATE include)
+  add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
