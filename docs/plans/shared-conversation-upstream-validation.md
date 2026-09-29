@@ -1,10 +1,19 @@
 # Conversation cache validation
 
-The core review branch is being brought onto upstream 0.1.26 (`4c68013`). Results
-below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
+The core review branch is based on upstream 0.1.26 (`4c68013`). Recorded model
+results below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
 not the new base. The Windows admission test is @midhatn's `32cf918`, retained as
 `b319d43`. Historical records and the general Pi benchmark remain on local branch
 `feat/conversation-cache-upstream` at `cb8d90c`; they are outside the core patch.
+
+## Current offline checks
+
+After separating the general benchmark tooling and merging 0.1.26, all 47 tool
+tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
+rejection now clears its diagnostic error before the new batched draft-prefill
+path runs. That C++ integration change still needs an engine build and model
+validation; these Python passes do not establish it. No benchmark server or GPU
+was used for these checks.
 
 ## Recorded Linux evidence (2026-09-29)
 
