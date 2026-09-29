@@ -3991,6 +3991,7 @@ int main(int argc, char** argv) {
                                 std::fprintf(stderr, "strata serve: disk cache: invalid or stale candidate (%s)\n", disk_error.c_str());
                                 incoming.reset();
                             } else {
+                                strata::program::conv_cache::rebase_stamps(incoming->checkpoints);
                                 selected = loaded; incoming_from_disk = true;
                                 std::fprintf(stderr, "strata serve: disk cache: loaded %lld tokens bytes=%llu staging=%llu in %.1f ms\n",
                                              (long long) loaded.tokens, (unsigned long long) file_bytes,
