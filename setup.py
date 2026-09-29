@@ -1420,9 +1420,10 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
     say("  Later, closing this window stops the model.")
     say("  " + "-" * 100)
-    if not WIN:
-        # Replace this process instead of spawning a child. In a container the server is then PID 1,
-        # so docker stop's SIGTERM reaches the process that can answer the engine with QUIT.
+    if not WIN and os.environ.get("STRATA_EXECV"):
+        # Replace this process instead of spawning a child. The Docker image sets STRATA_EXECV=1,
+        # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
+        # answer the engine with QUIT. Normal Linux starts keep spawning the server as a child.
         os.execv(cmd[0], cmd)
     return subprocess.call(cmd)
 
