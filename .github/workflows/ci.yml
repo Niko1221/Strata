@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
-      image: rocm/rocm:7.1
+      image: rocm/dev-ubuntu-24.04:7.1-complete
     steps:
       - name: Install build tools
         run: >
