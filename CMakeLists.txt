@@ -300,7 +300,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # both use.  `conversation_cache.hpp` is header-only (its RAM policy is imported dormant) and
     # `conversation_checked.hpp` is internal to these two translation units.
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
-    src/platform/kv_nvme.cpp)
+    src/platform/kv_nvme.cpp src/platform/kv_delta.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
@@ -859,5 +859,16 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
     target_link_libraries(kv_nvme_host_test PRIVATE strata_engine)
     add_test(NAME kv_nvme_host_test COMMAND kv_nvme_host_test)
     set_tests_properties(kv_nvme_host_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+
+    # The delta tier's record family (docs/nvme-delta-cache-handoff.md §6 Phase 1): the static_assert-pinned
+    # structs, the pure byte math that cuts the v3 segments into chunk/State payloads, and the record I/O with
+    # footer verification - all host-side, no CUDA calls at all.
+    add_executable(kv_delta_host_test src/platform/kv_delta_host_test.cpp)
+    target_include_directories(kv_delta_host_test PRIVATE include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_options(kv_delta_host_test PRIVATE
+      -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
+    target_link_libraries(kv_delta_host_test PRIVATE strata_engine)
+    add_test(NAME kv_delta_host_test COMMAND kv_delta_host_test)
+    set_tests_properties(kv_delta_host_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
   endif()
 endif()
