@@ -44,6 +44,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/platform/kv_nvme.hpp"
+#include "strata/platform/kv_delta.hpp"   // the delta tier (docs/nvme-delta-cache-handoff.md)
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -288,6 +289,12 @@ struct Options {
     /// --kv-nvme-max GB evicts the least recently stored snapshots past the cap (0 = unlimited).
     std::string kv_nvme;
     long long kv_nvme_max_gb = 100;
+    /// The delta tier (docs/nvme-delta-cache-handoff.md): --kv-delta 1 appends content-addressed sealed chunks +
+    /// a per-turn State record at every DONE instead of rewriting a whole v3 snapshot - the write volume becomes
+    /// the NEW tokens (~16 KB each), not the total session.  Promote picks the longest match across BOTH tiers;
+    /// the snapshot format stays v3 and the v3 dump remains the fallback path.  Default 0 (Phase 4 wiring; the
+    /// default-on flip is Phase 6, after the soak).
+    long long kv_delta = 0;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
@@ -377,6 +384,9 @@ void usage() {
                  "                       stores the conversation's full state there and a returning prompt is restored\n"
                  "                       from it instead of re-read. Needs streamed KV (forced). --kv-nvme-max GB caps\n"
                  "                       the store, evicting the least recently stored (default 100, 0 = unlimited)\n"
+                 "  --kv-delta N         with --kv-nvme: append content-addressed chunks at DONE instead of whole\n"
+                 "                       snapshots (docs/nvme-delta-cache-handoff.md) - the write cost tracks the NEW\n"
+                 "                       tokens, not the session length; promote matches across both tiers\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
@@ -1090,7 +1100,10 @@ int main(int argc, char** argv) {
         else if (a == "--nvme-dump") o.nvme_dump = next("--nvme-dump");
         else if (a == "--nvme-restore") o.nvme_restore = next("--nvme-restore");
         else if (a == "--kv-nvme") o.kv_nvme = next("--kv-nvme");
-        else if (a == "--kv-nvme-max") {
+        else if (a == "--kv-delta") {
+            o.kv_delta = std::atoll(next("--kv-delta"));
+            if (o.kv_delta < 0 || o.kv_delta > 1) { std::fprintf(stderr, "strata generate: --kv-delta must be 0 or 1\n"); return 2; }
+        } else if (a == "--kv-nvme-max") {
             o.kv_nvme_max_gb = std::atoll(next("--kv-nvme-max"));
             if (o.kv_nvme_max_gb < 0) { std::fprintf(stderr, "strata generate: --kv-nvme-max must be >= 0 (0 = unlimited)\n"); return 2; }
         }
@@ -3181,6 +3194,9 @@ int main(int argc, char** argv) {
         // the NVMe cold tier (Steps 1-3): declared here so the resume selection and the DONE cascade both reach it
         strata::platform::KvNvmeStore kvstore;
         bool have_kvstore = false;
+        // the delta tier beside it (same store dir, one byte cap, one LRU when both are on)
+        strata::platform::KvDeltaStore deltastore;
+        bool have_kvdelta = false;
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         Clock::time_point pp_t0 = Clock::now();
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
@@ -3453,7 +3469,10 @@ int main(int argc, char** argv) {
         // Steps 1-3: open the NVMe cold tier - scan what is already stored, under the byte cap.
         if (!o.kv_nvme.empty()) {
             std::string kerr;
-            kvstore.set_cap_bytes(o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
+            // with the delta tier on, the ONE byte cap is enforced across BOTH tiers (kv_delta_enforce_cap),
+            // so the v3 store's own cap stands down - its self-eviction would evict v3 entries without seeing
+            // the delta tier's bytes or mtimes
+            kvstore.set_cap_bytes(!o.kv_delta && o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
             if (!kvstore.open(o.kv_nvme, g, strata::core::qsa_kv_format(ss.qsa_states[0]), kerr)) {
                 std::fprintf(stderr, "strata serve: kv-nvme: %s\n", kerr.c_str());
                 return 1;
@@ -3462,6 +3481,19 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: NVMe KV store %s: %zu sessions, %.2f GiB (cap %s)\n",
                          o.kv_nvme.c_str(), kvstore.size(), (double) kvstore.total_bytes() / (double) (1LL << 30),
                          o.kv_nvme_max_gb > 0 ? std::to_string(o.kv_nvme_max_gb).append(" GB").c_str() : "unlimited");
+            if (o.kv_delta) {
+                // the resolved model shard list is the §5.8 fingerprint's input (computed ONCE per process at open)
+                std::vector<std::string> files = o.native_dense_gguf;
+                if (files.empty() && !o.native_preset.empty()) files = model_shards(o.native_preset);
+                if (!deltastore.open(o.kv_nvme, g, strata::core::qsa_kv_format(ss.qsa_states[0]), files, kerr)) {
+                    std::fprintf(stderr, "strata serve: kv-delta: %s\n", kerr.c_str());
+                    return 1;
+                }
+                have_kvdelta = true;
+                std::fprintf(stderr, "strata serve: kv-delta store %s/delta: %zu conversations, %.2f GiB\n",
+                             o.kv_nvme.c_str(), deltastore.size(),
+                             (double) deltastore.total_bytes() / (double) (1LL << 30));
+            }
         }
         // NVMe cold tier, Step 0 spike: load a snapshot at startup so the first request resumes from it.
         if (!o.nvme_restore.empty()) {
@@ -3726,12 +3758,22 @@ int main(int argc, char** argv) {
                                          "neither dumped nor promoted (the envelope carries the primary stage only)\n");
                 }
             } else if (have_kvstore) {
-                const strata::platform::NvmeEntry* best =
+                // §5.11: the promote selection is RAM checkpoints -> LONGEST MATCH ACROSS BOTH TIERS -> cold read.
+                // kv_nvme_match is reused verbatim on each tier's entry list (delta entries are scanned into the
+                // same NvmeEntry vocabulary, kind = 1); the longest prefix wins, whichever tier holds it.
+                const strata::platform::NvmeEntry* bd = have_kvdelta
+                    ? strata::platform::kv_nvme_match(deltastore.entries(), ids, req_imgs, cvec_cached, resume)
+                    : nullptr;
+                const strata::platform::NvmeEntry* bs =
                     strata::platform::kv_nvme_match(kvstore.entries(), ids, req_imgs, cvec_cached, resume);
+                const strata::platform::NvmeEntry* best = (bd && (!bs || bd->L > bs->L)) ? bd : bs;
                 if (best != nullptr) {
+                    // restore via the store that owns the entry (the failure handling below is UNCHANGED, §5.13:
+                    // transfer -> stop; invalid -> drop the entry, re-read the prompt), dispatched on kind
                     std::string nerr;
                     const strata::core::ConversationRestore got =
-                        kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
+                        best->kind == 1 ? deltastore.restore(*best, ss, mtp.kv_state_mut(), g, nerr)
+                                        : kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
                     if (got == strata::core::ConversationRestore::transfer_failed) {
                         // **FATAL, BY THE CONTRACT** (docs/nvme-kv-cache-design.md §5).  A CUDA copy or sync
                         // failure happens AT OR AFTER the first write, and the apply pass is a loop: the session is
@@ -3762,7 +3804,8 @@ int main(int argc, char** argv) {
                         // final sync succeeded, which IS the proof a clean reset needs (kv_nvme.cpp).
                         std::fprintf(stderr, "strata serve: nvme promote refused (%s); reading the prompt instead\n",
                                      nerr.c_str());
-                        kvstore.drop(*best);
+                        if (best->kind == 1) deltastore.drop(*best);   // P7: a manifest whose records vanished
+                        else kvstore.drop(*best);                      //      degrades to refuse-and-drop
                         resume = 0;
                         from_live = false;
                     } else {
@@ -4167,12 +4210,27 @@ int main(int argc, char** argv) {
                 // request replays, `at->imgs` the pictures below it, `at->gdn/ple/tails` the running state there.
                 // `live_imgs` covers the whole consumed conversation (it is what the full-state dump needs), so the
                 // store takes the boundary's own list from the checkpoint whenever a boundary is given.
-                if (at != nullptr && !at->ids.empty())
+                // the delta path's own conditions (§5.9/§5.15): a turn boundary, a primary-stage session, and a
+                // boundary the drafter ring can cover - everything else is TODAY'S v3 dump, unchanged
+                const bool delta_path = have_kvdelta && at != nullptr && !at->ids.empty() && at->stage_parts.empty() &&
+                                        (int64_t) at->ids.size() <= mtp.kv_state().max_cells;
+                if (have_kvdelta && at != nullptr && !at->ids.empty() && !delta_path)
+                    std::fprintf(stderr, "strata serve: nvme delta: boundary %lld exceeds the drafter ring (%lld) - whole snapshot\n",
+                                 (long long) at->ids.size(), (long long) mtp.kv_state().max_cells);
+                if (delta_path)
+                    dumped = deltastore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
+                else if (at != nullptr && !at->ids.empty())
                     dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
                 else
                     dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, nullptr, derr);
                 if (!dumped)
                     std::fprintf(stderr, "strata serve: kv-nvme dump failed: %s\n", derr.c_str());
+                if (have_kvdelta) {
+                    // ONE byte cap across BOTH tiers, LRU by mtime; the sweep after eviction reclaims exactly
+                    // the chunks no live manifest references (§5.12)
+                    kv_delta_enforce_cap(kvstore, deltastore,
+                                         o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
+                }
             }
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
