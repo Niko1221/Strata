@@ -1240,6 +1240,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
             ms_predict += ms_since(c);
         }
+        if (rows_in_ != nullptr && k + 1 < g.n_layers * G) rows_in_(rows_user_, l);
     }
     while (late_flag != nullptr && ms_since(late_at) < 50.0) {   // the last layer's (the graph ends after them)
         settle(false);

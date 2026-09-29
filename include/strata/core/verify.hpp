@@ -54,6 +54,8 @@ using WatchFn = bool (*)(void* user, std::string& err);
 using PredictFn = void (*)(void* user, int64_t layer, const int32_t* ids, const float* w, int64_t n_tok, int64_t k);
 /// The window's last CPU rows are in.
 using TailFn = void (*)(void* user);
+/// Layer `layer`'s CPU rows are in (`Verifier::set_rows_in`).
+using RowsFn = void (*)(void* user, int64_t layer);
 
 /// The main GPU's VRAM expert tier.
 struct VerifyHits {
@@ -132,6 +134,10 @@ public:
     /// head, the commit, the drafts).  The main GPU may still run the window then: `window_done` follows its graph.
     /// Set before the first `run`.
     void set_tail(TailFn fn, void* user) { tail_ = fn; tail_user_ = user; }
+    /// `fn` runs once each layer's CPU rows are in and the next layer's prediction has gone out, but the last's (the
+    /// tail's): the main GPU's link then has nothing to carry until the next layer's router writes its rows to the
+    /// host.  Set before the first `run`.
+    void set_rows_in(RowsFn fn, void* user) { rows_in_ = fn; rows_user_ = user; }
     cudaEvent_t window_done() const { return done_; }
     /// The pool gives a second GPU a share of each layer (`GpuPlanSink::gpu2_flag`): it writes its rows into the
     /// pool's rows and raises its token group's flag, and a branch of the window, forked at the ring, takes them
@@ -226,6 +232,8 @@ private:
     bool learn_ = false;
     TailFn tail_ = nullptr;
     void* tail_user_ = nullptr;
+    RowsFn rows_in_ = nullptr;
+    void* rows_user_ = nullptr;
     int32_t* h_pids_ = nullptr;  int32_t* m_pids_ = nullptr;     // 2 x T * k
     float* h_pw_ = nullptr;      float* m_pw_ = nullptr;         // 2 x T * k
     uint32_t* h_pseq_ = nullptr; uint32_t* m_pseq_ = nullptr;
