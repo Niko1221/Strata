@@ -313,18 +313,6 @@ int main() {
         if (!bok) g_fail = 1;
     }
 
-    // The tensor-core prompt path (qsa_prompt_attn, 0.1.22+) supports fp16 and INT8 whole formats only;
-    // hybrid pools must make it refuse (its !v_q check) so the old mode-3 kernel runs - the guarantee the
-    // prefill fallback relies on, as a test (PR review).
-    {
-        float* d_q3 = dalloc<float>((size_t) QH * D);
-        float* d_at3 = dalloc<float>((size_t) QH * D);
-        const bool took = k::qsa_prompt_attn_batch(d_q3, pools, d_ids, d_step, cells, s, d_at3, 1, nullptr);
-        const bool refused = !took;
-        std::printf("[5/5] qsa_prompt_attn refuses hybrid pools: %s\n", refused ? "PASS (falls back)" : "FAIL");
-        if (!refused) g_fail = 1;
-    }
-
     std::vector<float> ref_deq, ref_true;
     host_attn(Kdq, Vdq_un, ref_deq);
     host_attn(K, V, ref_true);
@@ -333,6 +321,31 @@ int main() {
         max_deq = std::max(max_deq, (double) std::fabs(h_attn[i] - ref_deq[i]));
         max_true = std::max(max_true, (double) std::fabs(h_attn[i] - ref_true[i]));
     }
+    // The tensor-core prompt path (qsa_prompt_attn, 0.1.22+) takes hybrid pools as KV_MODE 3: INT8 K, and V
+    // dequantized from its q4_0 blocks to fp16 at gather. Its summation order differs from the old kernel's
+    // (accuracy-level, not bitwise - qsa_prompt_attn.hpp says the same of its int8 mode), so: tolerance check
+    // against the SAME dequant reference, output un-rotated exactly as prefill.cpp does.
+    {
+        float* d_at4 = dalloc<float>((size_t) QH * D);
+        const bool took = k::qsa_prompt_attn_batch(d_q, pools, d_ids, d_step, cells, s, d_at4, 1, nullptr);
+        if (!took) {
+            std::printf("[5/5] qsa_prompt_attn mode 3: FAIL (refused the hybrid pools)\n");
+            g_fail = 1;
+        } else {
+            k::fwht256_inplace_cuda(d_at4, QH, nullptr);
+            ck(cudaDeviceSynchronize(), "at4 sync");
+            std::vector<float> h_at4((size_t) QH * D);
+            ck(cudaMemcpy(h_at4.data(), d_at4, h_at4.size() * 4, cudaMemcpyDeviceToHost), "at4");
+            double max_p = 0.0;
+            for (size_t i = 0; i < h_at4.size(); ++i)
+                max_p = std::max(max_p, (double) std::fabs(h_at4[i] - ref_deq[i]));
+            const bool pok = max_p < 1e-2;
+            std::printf("[5/5] qsa_prompt_attn mode 3 (tensor cores): %s (vs dequant ref %.2e)\n",
+                        pok ? "PASS" : "FAIL", max_p);
+            if (!pok) g_fail = 1;
+        }
+    }
+
     const bool attn_ok = max_deq < 5e-3;   // fp32 kernel math vs fp64-ish host accumulation
     std::printf("[3/3] mode-3 attention + output fwht: %s (vs dequant ref %.2e, vs true fp32 %.2e)\n",
                 attn_ok ? "PASS" : "FAIL", max_deq, max_true);
