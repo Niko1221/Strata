@@ -5,7 +5,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <math_constants.h>
+#include <cmath>
 
 #include <cstdio>
 #include <cstdlib>
@@ -117,7 +117,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         S.qh[h][d] = hi;
         S.ql[h][d] = __float2half_rn(x - __half2float(hi));
     }
-    if (t < 16) { S.mrow[t] = -CUDART_INF_F; S.lsum[t] = 0.0f; }
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
 
     float acc[8][4];
 #pragma unroll
@@ -244,17 +244,17 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 sc[3] = fmaf(tg[3], s1, sc[3]);
             }
             const int c = cb + 2 * tig;
-            S.s[gid][c] = c < nh ? sc[0] * qdown : -CUDART_INF_F;
-            S.s[gid][c + 1] = c + 1 < nh ? sc[1] * qdown : -CUDART_INF_F;
-            S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -CUDART_INF_F;
-            S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -CUDART_INF_F;
+            S.s[gid][c] = c < nh ? sc[0] * qdown : -INFINITY;
+            S.s[gid][c + 1] = c + 1 < nh ? sc[1] * qdown : -INFINITY;
+            S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -INFINITY;
+            S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -INFINITY;
         }
         __syncthreads();
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
             constexpr int PER = CH / 8;
             const int r = t >> 3, sub = t & 7;
-            float x[PER], mx = -CUDART_INF_F;
+            float x[PER], mx = -INFINITY;
 #pragma unroll
             for (int j = 0; j < PER; ++j) { x[j] = S.s[r][sub * PER + j]; mx = fmaxf(mx, x[j]); }
 #pragma unroll
@@ -264,7 +264,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < PER; ++j) {
-                const float e = x[j] == -CUDART_INF_F ? 0.0f : exp2f(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
                 S.s[r][sub * PER + j] = e;
                 sum += e;
             }
@@ -272,7 +272,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
             __syncwarp();
             if (sub == 0) {
-                const float a = m_old == -CUDART_INF_F ? 0.0f : exp2f(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
                 S.alpha[r] = a;
                 S.lsum[r] = fmaf(S.lsum[r], a, sum);
                 S.mrow[r] = m_new;
@@ -419,7 +419,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
     if (lane == 0) S.qmax[warp] = qm;
-    if (t < 16) { S.mrow[t] = -CUDART_INF_F; S.lsum[t] = 0.0f; }
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
     __syncthreads();
     qm = fmaxf(fmaxf(S.qmax[0], S.qmax[1]), fmaxf(S.qmax[2], S.qmax[3]));
     int qe = 0;
@@ -511,12 +511,12 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
             const int r = t >> 3, sub = t & 7;
-            float x[4], mx = -CUDART_INF_F;
+            float x[4], mx = -INFINITY;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
                 const int c = sub * 4 + j;
                 x[j] = c0 + c < n ? (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * qdown
-                                  : -CUDART_INF_F;
+                                  : -INFINITY;
                 mx = fmaxf(mx, x[j]);
             }
 #pragma unroll
@@ -526,7 +526,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
-                const float e = x[j] == -CUDART_INF_F ? 0.0f : exp2f(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
                 S.p[r][sub * 4 + j] = e;
                 sum += e;
             }
@@ -534,7 +534,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
             __syncwarp();
             if (sub == 0) {
-                const float a = m_old == -CUDART_INF_F ? 0.0f : exp2f(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
                 S.alpha[r] = a;
                 S.lsum[r] = fmaf(S.lsum[r], a, sum);
                 S.mrow[r] = m_new;

@@ -167,6 +167,35 @@ class FitMaxTokens(unittest.TestCase):
         self.assertIn("no room to answer", b["error"]["message"])
 
 
+class ImageMarkers(unittest.TestCase):
+    """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
+
+    class FakeVision:
+        def __init__(self, d):
+            self.dir = Path(d)
+            self.rows = self.dir / "img.sve"
+            self.rows.write_bytes(b"rows")
+
+        def encode(self, source):
+            return self.rows, 3
+
+    def test_literal_marker_with_an_image(self):
+        import tempfile
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=self.FakeVision(d))
+            pad = tok.encode("<|image_pad|>", parse_special=True)[0]
+            for text in ("the docs say <|image_pad|> marks an image", "plain"):
+                with self.subTest(text=text):
+                    msgs = [{"role": "user", "content": [{"type": "text", "text": text},
+                                                         {"type": "image", "source": "x.png"}]}]
+                    ids, _, _ = svc.prepare(msgs, None, {})
+                    self.assertEqual(ids.count(pad), 3)          # the image's three rows, nothing else
+                    self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
+            svc.embeddings.path.unlink(missing_ok=True)
+
+
 class ClientShapes(unittest.TestCase):
     """What real clients send: Claude Code posts /v1/messages?beta=true (issue #55) and puts hook context into the
     conversation as a mid-conversation system message (issue #56); some OpenAI clients send a late developer message."""
