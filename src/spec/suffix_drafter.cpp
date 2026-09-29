@@ -17,16 +17,19 @@ uint64_t mix(uint64_t x) {
 
 SuffixDrafter::SuffixDrafter(int min_match, int max_match, size_t capacity_tokens)
     : min_match_(std::max(3, min_match)), max_match_(std::max(min_match, max_match)) {
-    size_t cap = 1;
+    size_t cap = 16;
     while (cap < capacity_tokens * 2) cap <<= 1;          // load factor <= 0.5 at the nominal capacity
     table_.assign(cap, Slot{});
     mask_ = cap - 1;
     hist_.reserve(capacity_tokens);
+    prev_.reserve(capacity_tokens);
 }
 
 void SuffixDrafter::reset() {
     hist_.clear();
+    prev_.clear();
     std::fill(table_.begin(), table_.end(), Slot{});
+    used_ = 0;
     last_match_ = 0;
 }
 
@@ -36,29 +39,58 @@ uint64_t SuffixDrafter::key_at(size_t end) const {
 }
 
 SuffixDrafter::Slot* SuffixDrafter::find_slot(uint64_t key, bool insert) {
-    for (size_t i = key & mask_, probes = 0; probes <= mask_; i = (i + 1) & mask_, ++probes) {
+    for (size_t i = key & mask_;; i = (i + 1) & mask_) {    // never full: rebuilt at half load
         Slot& s = table_[i];
         if (s.key == key) return &s;
         if (s.key == 0) {
             if (!insert) return nullptr;
             s.key = key;
+            ++used_;
             return &s;
         }
     }
-    return nullptr;                                         // table full: the history outgrew its capacity
+}
+
+void SuffixDrafter::link(size_t end) {
+    int32_t before = -1;
+    if (end >= 2) {
+        Slot* s = find_slot(key_at(end), true);
+        before = s->last;
+        s->last = (int32_t) end;
+    }
+    prev_.push_back(before);
+}
+
+// The indexed positions again, without the slots of undone ones, in a table that holds them at a quarter load.
+void SuffixDrafter::rebuild() {
+    const size_t n = prev_.size();
+    size_t cap = table_.size();
+    while (cap < 4 * n) cap <<= 1;
+    table_.assign(cap, Slot{});
+    mask_ = cap - 1;
+    used_ = 0;
+    prev_.clear();
+    for (size_t e = 0; e < n; ++e) link(e);
 }
 
 void SuffixDrafter::append(const int32_t* tokens, size_t n) {
     for (size_t i = 0; i < n; ++i) {
+        if (2 * (used_ + 1) > table_.size()) rebuild();
         hist_.push_back(tokens[i]);
-        const size_t end = hist_.size() - 1;
-        if (end < 2) continue;
-        Slot* s = find_slot(key_at(end), true);
-        if (s == nullptr) continue;
-        for (int w = WAYS - 1; w > 0; --w) s->pos[w] = s->pos[w - 1];
-        s->pos[0] = (uint32_t) end;
-        if (s->n < WAYS) ++s->n;
+        link(hist_.size() - 1);
     }
+}
+
+void SuffixDrafter::assign(const int32_t* tokens, size_t n) {
+    size_t keep = 0;
+    const size_t common = std::min(n, hist_.size());
+    while (keep < common && hist_[keep] == tokens[keep]) ++keep;
+    for (size_t e = hist_.size(); e-- > std::max<size_t>(keep, 2);)   // newest first: each trigram's last goes back
+        if (Slot* s = find_slot(key_at(e), false)) s->last = prev_[e];
+    hist_.resize(keep);
+    prev_.resize(keep);
+    last_match_ = 0;
+    append(tokens + keep, n - keep);
 }
 
 int SuffixDrafter::propose(int max_k, int32_t* out) {
@@ -66,16 +98,14 @@ int SuffixDrafter::propose(int max_k, int32_t* out) {
     const size_t n = hist_.size();
     if (n < 4 || max_k <= 0) return 0;
     const size_t cur = n - 1;
-    const Slot* s = find_slot(key_at(cur), false);
-    if (s == nullptr) return 0;
     size_t best_end = 0;
     int best_len = 0;
-    for (int w = 0; w < s->n; ++w) {
-        const size_t p = s->pos[w];
-        if (p >= cur) continue;                             // the current suffix itself
+    int32_t p = prev_[cur];                                 // the current trigram's earlier occurrences, newest first
+    for (int w = 0; w < WAYS && p >= 0; ++w, p = prev_[(size_t) p]) {
         int len = 0;
-        while (len < max_match_ && len <= (int) p && hist_[p - len] == hist_[cur - len]) ++len;
-        if (len > best_len) { best_len = len; best_end = p; }   // most recent first, so ties keep the newer
+        while (len < max_match_ && len <= p && hist_[(size_t) (p - len)] == hist_[cur - len]) ++len;
+        if (len > best_len) { best_len = len; best_end = (size_t) p; }   // most recent first, so ties keep the newer
+        if (best_len == max_match_) break;
     }
     if (best_len < min_match_) return 0;
     last_match_ = best_len;

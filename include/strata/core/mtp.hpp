@@ -63,6 +63,8 @@ public:
               int64_t window = 32768);
     /// The prompt's length: the prompt's K/V skip the cells the attention window can never reach again.
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
+    /// The draft chain stops after `n` drafts (0: max_t - 1).
+    void set_max_drafts(int n) { max_drafts_ = n; }
     uint64_t vram_bytes() const { return vram_; }
     /// The layer's own K/V cells (the prompt cache stashes them with the model's).
     QsaState& kv_state() { return st_; }
@@ -102,7 +104,7 @@ private:
     const WeightTable* wt_ = nullptr;
     const NativeHead* head_ = nullptr;
     const float* window_R_ = nullptr;
-    int max_t_ = 0;
+    int max_t_ = 0, max_drafts_ = 0;
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;

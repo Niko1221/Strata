@@ -40,12 +40,14 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/prompt_cache.hpp"
 #include "strata/prefill/experts.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/spec/suffix_drafter.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 
@@ -248,6 +250,12 @@ struct Options {
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
+    /// Prompt lookup: when the text's last N+ tokens occurred before and the tokens after that occurrence are more
+    /// drafts than --spec gives the draft layer, the next window verifies up to kVerifyMaxT - 1 of them instead;
+    /// 0 = off.
+    int spec_lookup = 0;
+    /// The verify windows' capacity: --spec, or the kernels' maximum with prompt lookup.
+    int max_window() const { return spec_lookup > 0 ? std::max(spec, strata::kernels::kVerifyMaxT) : spec; }
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
     std::vector<int64_t> eos_ids = {248044, 248046};
@@ -346,6 +354,9 @@ void usage() {
                  "  --spec T             verify windows of up to T tokens: the last one and T-1 MTP drafts (2..8)\n"
                  "  --spec-min-p P       a draft enters the window only while it and the drafts before it have at\n"
                  "                       least probability P under the draft layer (default 0: always T-1 drafts)\n"
+                 "  --spec-lookup N      when the text's last N+ tokens occurred before, the next window verifies\n"
+                 "                       up to 7 of the tokens that followed there instead, if they are more than\n"
+                 "                       --spec allows the draft layer (windows of up to 8 tokens; 0 = off)\n"
                  "  --mtp DIR            the MTP draft layer's runtime files (tools/mtp_rt.py)\n"
                  "  --mtp-window N       the draft layer attends to the last N cells (default 32768; 0 = every cell)\n"
                  "  --main-gpu N         run on CUDA device N of the visible ones, in nvidia-smi's order unless\n"
@@ -808,6 +819,7 @@ int main(int argc, char** argv) {
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
+        else if (a == "--spec-lookup") o.spec_lookup = std::max(0, std::atoi(next("--spec-lookup")));
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--window-profile") o.window_profile = true;
@@ -1308,7 +1320,11 @@ int main(int argc, char** argv) {
             o.mtp.clear();
         }
         if (!o.mtp.empty()) mtp.set_prompt_len((int64_t) o.tokens.size());
-        if (!o.mtp.empty() && !mtp.load(o.mtp, g, ss, o.spec, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+        if (!o.mtp.empty() && !mtp.load(o.mtp, g, ss, o.max_window(), err, o.mtp_window)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        mtp.set_max_drafts(o.spec - 1);
     }
     // --ple-io ram: the table goes into RAM once the SSD has delivered the experts and the draft layer
     if (ple_table.is_open() && !ple_table.start_ram_load(err))
@@ -2119,7 +2135,7 @@ int main(int argc, char** argv) {
         for (int64_t l = 0; l < g.n_layers; ++l) min_blob = std::min<uint64_t>(min_blob, lay0.blob_bytes(l));
         const uint64_t pf_bytes = (uint64_t) (std::max(0.0, o.second_gpu_prefetch_mb) * 1048576.0);
         drive.d.gpu2_prefetch_bytes = pf_bytes;
-        bool ok = gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.spec, ss.k, err) &&
+        bool ok = gpu2.init(o.second_gpu, main_dev, g.n_embd, g.n_ff, o.max_window(), ss.k, err) &&
                   gpu2.init_prefetch((int) std::min<uint64_t>(pf_bytes / min_blob, 64), lay0.max_blob, err);
         const auto& lay = strata::kernels::cpu::expert_layout();
         std::vector<int64_t> sizes;
@@ -2333,7 +2349,7 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();
         vh.slots = xcache.slots();
         vh.blob = thits.blob;
-        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err) ||
+        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.max_window(), err) ||
             !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
@@ -2424,7 +2440,10 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
-        const int S = o.spec;
+        const int S = o.spec, W = o.max_window();   // the draft layer's windows; with prompt lookup's
+        // prompt lookup: the text so far, kept across requests (a conversation's next request shares its prefix)
+        strata::spec::SuffixDrafter lookup(o.spec_lookup, 32, o.spec_lookup > 0 ? (size_t) o.max_context + 16 : 16);
+        std::vector<int32_t> ids32, ldrafts((size_t) W, 0);
         constexpr int64_t kImStart = 248045;   // <|im_start|>: a new turn begins here
         // The vision path (--vision): GENI <max_new> <embeddings file> <id,id,...> carries images.  The file is one
         // or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd floats) in prompt order;
@@ -2551,8 +2570,8 @@ int main(int argc, char** argv) {
             const int64_t reuse = pcache.begin(ids, !geni);
             tr("request", n, reuse);
             mtp.set_prompt_len(n);
-            std::vector<int32_t> drafts((size_t) S, 0), window((size_t) S), outv((size_t) S);
-            std::vector<float> dprob((size_t) S, 0.0f);
+            std::vector<int32_t> drafts((size_t) W, 0), window((size_t) W), outv((size_t) W);
+            std::vector<float> dprob((size_t) W, 0.0f);
             // ---- the rest of the prompt, [reuse, n - 1).  A turn usually shares everything before its prompt's
             // last <|im_start|> with the next one (chat templates re-render the answer, e.g. without its
             // reasoning), so that position gets a checkpoint, and so do the prompt's end (a regenerated answer)
@@ -2635,8 +2654,14 @@ int main(int argc, char** argv) {
             int64_t produced_n = 0;
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
+            int lk = 0;   // the next window's drafts from the lookup (0: the draft layer's)
+            if (o.spec_lookup > 0) {
+                ids32.resize((size_t) n);
+                for (int64_t i = 0; i < n; ++i) ids32[(size_t) i] = (int32_t) ids[(size_t) i];
+                lookup.assign(ids32.data(), ids32.size());
+            }
             mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
-                if (prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
+                if (lk == 0 && prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
             };
             while (produced_n < max_new) {
                 if (stop_req.load()) { finish = "cancel"; break; }   // the client went away
@@ -2645,19 +2670,22 @@ int main(int argc, char** argv) {
                     T = 1;
                     while (T < S && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
                 }
+                if (lk > 0) T = 1 + lk;
                 if (first_window) T = 1;
+                const std::vector<int32_t>& dr = lk > 0 ? ldrafts : drafts;
                 // Never verify past what this request emits: the committed cells then hold exactly the tokens the
                 // client saw, so its next turn continues from them.  So the window stops at the output limit and
                 // at a drafted end-of-turn token.
                 T = (int) std::min<int64_t>(T, max_new - produced_n);
                 for (int i = 1; i < T; ++i)
-                    if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) drafts[(size_t) i - 1]) != o.eos_ids.end()) {
+                    if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) dr[(size_t) i - 1]) !=
+                        o.eos_ids.end()) {
                         T = i + 1;
                         break;
                     }
                 if (p + T > o.max_context) break;
                 window[0] = x;
-                for (int i = 1; i < T; ++i) window[(size_t) i] = drafts[(size_t) i - 1];
+                for (int i = 1; i < T; ++i) window[(size_t) i] = dr[(size_t) i - 1];
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -2685,11 +2713,21 @@ int main(int argc, char** argv) {
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
                     std::printf("T %d\n", (int) outv[(size_t) i]);
+                    if (o.spec_lookup > 0) lookup.append(outv[(size_t) i]);
                     ++produced_n;
                     eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 }
                 std::fflush(stdout);
                 ++rounds;
+                // the next window's drafts: the lookup's when they are more than the draft layer's chain allows (the
+                // chain stops at its first draft then)
+                lk = 0;
+                if (o.spec_lookup > 0 && !eos && produced_n < max_new) {
+                    lk = lookup.propose(W - 1, ldrafts.data());
+                    if (lk < S) lk = 0;
+                    for (int j = 0; j < lk; ++j) ver.ple_ahead(j + 1, ldrafts[(size_t) j]);
+                }
+                mtp.set_max_drafts(lk > 0 ? 1 : S - 1);
                 const bool drafted = (eos || produced_n >= max_new ||
                                       mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) &&
                                      ver.wait_commit(err);
@@ -2706,6 +2744,7 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             mtp.on_draft = nullptr;
+            mtp.set_max_drafts(S - 1);
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             std::printf("DONE %lld %lld %.1f %.1f %s %lld\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
                         finish, (long long) reuse);
@@ -3044,7 +3083,7 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();
         vh.slots = xcache.slots();
         vh.blob = thits.blob;
-        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
+        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.max_window(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -3079,9 +3118,10 @@ int main(int argc, char** argv) {
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
-        std::vector<int32_t> drafts((size_t) o.spec, 0);
-        std::vector<float> dprob((size_t) o.spec, 1.0f);
-        std::vector<int64_t> window_hist((size_t) o.spec + 1, 0);
+        const int W = o.max_window();
+        std::vector<int32_t> drafts((size_t) W, 0);
+        std::vector<float> dprob((size_t) W, 1.0f);
+        std::vector<int64_t> window_hist((size_t) W + 1, 0);
         // plan v0.3 P6: with a native pack the first window is the last prompt token alone (it produces the first
         // generated token and the MTP's first cell); otherwise the token loop already did that.
         bool first_window = native_pack;
@@ -3090,8 +3130,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::vector<int32_t> window((size_t) o.spec), outv((size_t) o.spec);
-        std::vector<uint8_t> fdiff((size_t) o.spec, 0);
+        std::vector<int32_t> window((size_t) W), outv((size_t) W);
+        std::vector<uint8_t> fdiff((size_t) W, 0);
         std::FILE* hashes = o.window_hashes.empty() ? nullptr : std::fopen(o.window_hashes.c_str(), "w");
         if (!o.window_hashes.empty() && hashes == nullptr) {
             std::fprintf(stderr, "strata generate: cannot write %s\n", o.window_hashes.c_str());
@@ -3102,7 +3142,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: cannot write %s\n", o.window_logits.c_str());
             return 1;
         }
-        std::vector<float> wl(wlog != nullptr ? (size_t) o.spec * (size_t) n_vocab : 0);
+        std::vector<float> wl(wlog != nullptr ? (size_t) W * (size_t) n_vocab : 0);
         std::vector<int32_t> wl_ids(wlog != nullptr ? (size_t) n_vocab : 0);
         auto write_logits = [&](int64_t k, int32_t emitted, const float* l) {   // generated token k's line
             constexpr int K = 64;
@@ -3118,15 +3158,25 @@ int main(int argc, char** argv) {
                 std::fprintf(wlog, " %d:%.6f", (int) wl_ids[(size_t) j], (double) l[wl_ids[(size_t) j]] - lse);
             std::fprintf(wlog, "\n");
         };
-        std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
+        std::vector<int64_t> accepted_hist((size_t) W, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
+        // prompt lookup: the text so far, the prompt and then each emitted token
+        strata::spec::SuffixDrafter lookup(o.spec_lookup, 32,
+                                           o.spec_lookup > 0 ? (size_t) (n_prompt + max_new) + 16 : 16);
+        if (o.spec_lookup > 0) {
+            for (int64_t t : o.tokens) lookup.append((int32_t) t);
+            for (int64_t t : produced) lookup.append((int32_t) t);
+        }
+        std::vector<int32_t> ldrafts((size_t) W, 0);
+        int lk = 0;   // the next window's drafts from the lookup (0: the draft layer's)
+        int64_t lookup_rounds = 0, lookup_drafts = 0, lookup_ok = 0;
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
         const uint32_t sleeps0 = pool.sleeps();
         if (o.stats) drive.d.routed.assign((size_t) (g.n_layers * g.n_expert), 0);
         if (use_mtp)
             mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
-                if (prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
+                if (lk == 0 && prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
             };
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
@@ -3135,6 +3185,7 @@ int main(int argc, char** argv) {
                 T = 1;
                 while (T < o.spec && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
             }
+            if (lk > 0) T = 1 + lk;
             if (first_window) T = 1;
             ++window_hist[(size_t) T];
             if (p + T > o.max_context) {
@@ -3144,7 +3195,8 @@ int main(int argc, char** argv) {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = use_mtp ? drafts[(size_t) i - 1] : at < oracle.size() ? (int32_t) oracle[at] : 0;
+                int32_t d = lk > 0 ? ldrafts[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                          : at < oracle.size() ? (int32_t) oracle[at] : 0;
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
                 window[(size_t) i] = d;
             }
@@ -3189,6 +3241,11 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            if (lk > 0) {
+                ++lookup_rounds;
+                lookup_drafts += lk;
+                lookup_ok += a;
+            }
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
@@ -3211,6 +3268,7 @@ int main(int argc, char** argv) {
                 if (wlog != nullptr)
                     write_logits((int64_t) produced.size(), outv[(size_t) i], wl.data() + (size_t) i * (size_t) n_vocab);
                 produced.push_back(outv[(size_t) i]);
+                if (o.spec_lookup > 0) lookup.append(outv[(size_t) i]);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
             }
@@ -3223,6 +3281,15 @@ int main(int argc, char** argv) {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
+            // the next window's drafts: the lookup's when they are more than the draft layer's chain allows (the
+            // chain stops at its first draft then)
+            lk = 0;
+            if (o.spec_lookup > 0 && (int64_t) produced.size() < max_new) {
+                lk = lookup.propose(W - 1, ldrafts.data());
+                if (lk < o.spec) lk = 0;
+                for (int j = 0; j < lk; ++j) ver.ple_ahead(j + 1, ldrafts[(size_t) j]);
+            }
+            mtp.set_max_drafts(lk > 0 ? 1 : o.spec - 1);
             const bool drafted = (!use_mtp || (int64_t) produced.size() >= max_new ||
                                   mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) &&
                                  ver.wait_commit(err);
@@ -3258,6 +3325,9 @@ int main(int argc, char** argv) {
         std::printf("%-24s", "accepted per round");
         for (size_t i = 0; i < accepted_hist.size(); ++i) std::printf(" %zu:%lld", i, (long long) accepted_hist[i]);
         std::printf("\n");
+        if (o.spec_lookup > 0)
+            std::printf("%-24s %lld windows of its drafts, %lld of %lld accepted\n", "prompt lookup",
+                        (long long) lookup_rounds, (long long) lookup_ok, (long long) lookup_drafts);
         if (rounds > 0)
             std::printf("%-24s wait for rings %.3f  pool %.3f  host %.3f  commit %.3f ms/round; CPU experts %.2f "
                         "distinct / %.2f routed per layer\n",

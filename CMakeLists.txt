@@ -256,7 +256,7 @@ if(STRATA_ENABLE_CUDA)
 
   add_executable(strata src/program/generate.cpp)
   target_include_directories(strata PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-  target_link_libraries(strata PRIVATE strata_engine strata_prefill CUDA::cudart)
+  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec CUDA::cudart)
 
   add_executable(dequant_s2_parity src/kernels/dequant_s2_parity.cpp)
   # The tests are HOST C++ files that call cudaMalloc/cudaMemcpy themselves, so they need the toolkit headers
@@ -440,10 +440,10 @@ endif()
 # Plan v0.3 P6: speculation components that need no GPU.
 add_library(strata_spec STATIC src/spec/suffix_drafter.cpp src/spec/controller.cpp)
 target_include_directories(strata_spec PUBLIC include)
+add_executable(suffix_drafter_test src/spec/suffix_drafter_test.cpp)
+target_link_libraries(suffix_drafter_test PRIVATE strata_spec)
+add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)
 if(STRATA_BUILD_TESTS)
-  add_executable(suffix_drafter_test src/spec/suffix_drafter_test.cpp)
-  target_link_libraries(suffix_drafter_test PRIVATE strata_spec)
-  add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)
   add_executable(controller_test src/spec/controller_test.cpp)
   target_link_libraries(controller_test PRIVATE strata_spec)
   add_test(NAME controller_test COMMAND controller_test)

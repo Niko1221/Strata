@@ -351,7 +351,8 @@ test images.
   as the GPU works on the cached ones (AVX-512 / AVX2 kernels, ggml's for the i-quants).
 - **SSD:** the 28.8 GB n-gram table, read a few rows per token through the OS cache.
 - **Speculation:** the model's own MTP layer drafts up to 3 tokens; one pass over all 48 layers checks them. 2.4-3.2
-  tokens per pass on average.
+  tokens per pass on average. Where the answer repeats earlier text for 16+ tokens (a file returned with an edit), the
+  pass checks up to 7 tokens that followed it there instead.
 - **Prompts** are processed in 2,048-token chunks with the experts streamed to the GPU over PCIe.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.

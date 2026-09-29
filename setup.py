@@ -814,7 +814,7 @@ def main() -> int:
         fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(ple),
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "auto",
-            "--prefill", "2048", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--prefill", "2048", "--spec", "4", "--spec-min-p", "0.5", "--spec-lookup", "16", "--mtp", str(rt),
             "--max-context", str(ctx)]
     if ctx > 8192:
         args += ["--kv", "int8"]

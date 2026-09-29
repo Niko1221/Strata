@@ -540,7 +540,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     if (on_draft) on_draft(0, drafts[0], pj);
     int n = 1;
     // the chain continues while the last draft is likely enough to be verified
-    for (int j = 1; j < max_t_ - 1 && pj >= min_p; ++j) {
+    const int chain = max_drafts_ > 0 ? std::min(max_drafts_, max_t_ - 1) : max_t_ - 1;
+    for (int j = 1; j < chain && pj >= min_p; ++j) {
         if (!capture_step(j, err)) return false;
         put(max_t_ + j - 1, p + a + j);
         std::atomic_thread_fence(std::memory_order_seq_cst);
