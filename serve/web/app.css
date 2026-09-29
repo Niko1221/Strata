@@ -163,3 +163,8 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+/* the request-detail row the chat meta's chevron opens: one muted line, the same rhythm as the meta */
+.st-msg__detail { font-size: 12px; opacity: .7; padding: 0 12px 6px; }
+[data-msg-detail] .st-icon { transition: transform .15s ease; }
+[data-msg-detail].open .st-icon { transform: rotate(180deg); }

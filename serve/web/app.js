@@ -110,6 +110,7 @@ async function loadHealth() {
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "tok/s", series: "tok_s"},
+  {key: "prefill", label: "Prefill", icon: "clock", unit: "tok/s", series: "prompt_tok_s", tone: "info"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
@@ -207,7 +208,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%` +
+               (live.prompt_tok_s ? ` · ${fmt(live.prompt_tok_s)} tok/s` : "");
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }
@@ -218,7 +220,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
   } else if (last) {
     delete prog.dataset.tone;
-    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}` +
+             (last.prompt_tok_s ? ` · read ${fmt(last.prompt_tokens - (last.reused || 0))} @ ${fmt(last.prompt_tok_s)} tok/s` : "");
   }
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
@@ -228,6 +231,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "tok/s", live.state === "generating" ? "now" : last ? "last request" : "");
   spark("sp-speed", h.tok_s);
+  const prefill = live.state === "reading" ? live.prompt_tok_s : last ? last.prompt_tok_s : null;
+  setMetric("prefill", prefill == null ? null : fmt(prefill, 1), "tok/s",
+            live.state === "reading" ? "now" : last ? "last request" : "");
+  spark("sp-prefill", h.prompt_tok_s);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
@@ -499,7 +506,9 @@ function msgEl(m, i) {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-detail hidden aria-label="Request details" title="Details">${icon("chevron")}</button>` +
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>` +
+      `<div class="st-msg__detail" hidden></div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -577,6 +586,23 @@ function updateAssistant(el, m, streaming) {
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  const dbtn = el.querySelector("[data-msg-detail]");
+  if (dbtn) {
+    dbtn.hidden = streaming || !m.timings;
+    dbtn.classList.toggle("open", !!m.detailOpen);
+    const drow = el.querySelector(".st-msg__detail");
+    if (drow && m.timings && m.detailOpen) {
+      const t = m.timings;
+      const read = t.prompt_n != null ? t.prompt_n : null;
+      const parts = [];
+      if (read != null) parts.push(`read ${fmt(read)} tokens${t.prompt_per_second ? ` @ ${fmt(t.prompt_per_second)} tok/s` : ""}`);
+      if (t.cache_n) parts.push(`${fmt(t.cache_n)} reused`);
+      if (t.prompt_ms != null) parts.push(`TTFT ${fmt(t.prompt_ms / 1000, 1)} s`);
+      if (t.draft_n != null) parts.push(`drafts ${fmt(t.draft_n_accepted)} of ${fmt(t.draft_n)} accepted`);
+      drow.textContent = parts.join(" · ");
+      drow.hidden = false;
+    } else if (drow) drow.hidden = true;
+  }
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
 function renderChat() {
@@ -592,6 +618,14 @@ function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const md = e.target.closest("[data-msg-detail]");
+  if (md) {
+    const el = md.closest(".st-msg"), m = messages[+el.dataset.i];
+    if (!m) return;
+    m.detailOpen = !m.detailOpen;
+    updateAssistant(el, m, !!busy && busy.msg === m);
+    return;
+  }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
@@ -710,6 +744,7 @@ async function send() {
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || "the engine reported an error");
         if (j.usage) usage = j.usage;
+        if (j.timings) m.timings = j.timings;
         if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool

@@ -615,7 +615,8 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean()},
+            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
+                                                       "prompt_tok_s": self._prompt_tok_s()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None))
 
@@ -632,6 +633,20 @@ class Service:
         if newest and oldest and newest[0] - oldest[0] >= RATE_MIN_SPAN_S:
             return max(0.0, (newest[1] - oldest[1]) / (newest[0] - oldest[0]))
         return s["generated"] / max(RATE_MIN_SPAN_S, now - s["first_token"])
+
+    def _prompt_tok_s(self):
+        """Prompt-reading tok/s while a prompt is read: the cumulative mean since the request started, from the
+        engine's per-chunk progress (the same PP lines the Monitor's progress bar reads). A window rate would
+        jump between 0 and the per-chunk burst rate - a chunk is 8,192 tokens at once - and the mean is what
+        the finished request's history entry shows anyway. 0.0 while no prompt is being read."""
+        with self.status_lock:
+            s = dict(self.status)
+        if not s.get("busy") or s.get("first_token") or not s.get("started"):
+            return 0.0
+        progress = getattr(self.engine, "progress", None)
+        if not progress or not progress[0]:
+            return 0.0
+        return progress[0] / max(RATE_MIN_SPAN_S, time.time() - s["started"])
 
     def _tok_s_mean(self):
         """The whole-request mean since the first token (the old formula), kept so the two can be compared."""
@@ -663,7 +678,8 @@ class Service:
                 "elapsed_s": round(now - s["started"], 1) if s.get("busy") and s.get("started") else None,
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
-                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None,
+                "prompt_tok_s": round(self._prompt_tok_s(), 1) if state == "reading" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
@@ -891,6 +907,8 @@ class Service:
                         "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                         "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                         if n and last.get("generated") and last.get("decode_ms") else None,
+                        "prompt_tok_s": round((len(ids) - (last.get("reused") or 0)) / (last["prompt_ms"] / 1000), 1)
+                        if last.get("prompt_ms") and len(ids) > (last.get("reused") or 0) else None,
                         "hit_rate": hit_rate})
                     t = self.totals
                     t["requests"] += 1
