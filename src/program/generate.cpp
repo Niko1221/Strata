@@ -2064,6 +2064,7 @@ int main(int argc, char** argv) {
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
+        int zero_reads = 0;
         for (int attempt = 0;; ++attempt) {
             bool ok = false;
             if (fake_fails > 0) {
@@ -2107,10 +2108,11 @@ int main(int argc, char** argv) {
             cudaMemGetInfo(&free_b, &total_b);
             const int64_t want = (int64_t) o.vram_reserve_mib << 20;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
-            // short by (want - free); a figure of 0 only says "at least", so then give back 1 GiB per retry (a
-            // quarter left ~4 GiB idle: under WDDM the free figure read before the allocation runs ~0.7 GiB high)
+            // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
+            // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
             int64_t give = want - (int64_t) free_b + (64ll << 20);
-            if (free_b < ((size_t) 16 << 20)) give = std::max<int64_t>(give, 1ll << 30);
+            if (free_b < ((size_t) 16 << 20))
+                give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
             const int64_t keep_bytes = xcache.bytes() - give;
             std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
                                  "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
