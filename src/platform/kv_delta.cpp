@@ -129,7 +129,13 @@ bool write_record(const std::string& path, const void* header, size_t header_byt
               std::fwrite(&footer, 1, sizeof footer, f) == sizeof footer;
     if (ok && !leave_temp_only) ok = std::fflush(f) == 0;
 #ifndef _WIN32
-    if (ok && !leave_temp_only) ok = ::fsync(::fileno(f)) == 0;   // crash consistency: a record under its real name is durable
+    // fdatasync, NOT fsync: the record's PAYLOAD is what the digest (and so the crash posture) needs durable;
+    // the rename that publishes it is ordered by the manifest's own sync (§5.9: chunks before the manifest).
+    // A full fsync per record forces an XFS journal commit per 61 KB chunk - measured on the live store at
+    // 263 fsyncs/s with the device 87% utilized while a big turn's ~2,000-chunk append drained, stalling the
+    // serve loop for the length of the dump. fdatasync keeps the crash contract (a torn record fails its
+    // digest to `invalid` -> refuse -> re-prefill) at a fraction of the journal traffic.
+    if (ok && !leave_temp_only) ok = ::fdatasync(::fileno(f)) == 0;
 #else
     if (ok && !leave_temp_only) ok = ::_commit(::fileno(f)) == 0;
 #endif
