@@ -1,6 +1,8 @@
 # NVMe KV cache in the web interface — design
 
-**Status: design only. Nothing here is implemented.** This is the C11 item of
+**Status: built.** Plan steps 1-7 are shipped on this branch (engine counters, the `KV` line, `serve/kvcache.py`,
+the server wiring, `/cache` + `/metrics`, the Cache tab, the Monitor column and About card); step 8 — `setup.py`'s
+cache knob and closing C11 in the tier doc — is the last one. This is the C11 item of
 `docs/nvme-kv-cache-design.md` §7 / §9.2 ("Metrics: the three failure classes, promotes, refusals and dump results
 are stderr-only; `serve/telemetry.py` parses nothing NVMe-related") turned into a buildable design, plus the
 web page that consumes it.
@@ -385,9 +387,11 @@ one is set.
 
 **Phase 4 — the smaller surfaces and the record.**
 The Monitor "Cache" column, the About card, the engine-RSS series in `telemetry.py`, and the design doc's §7
-bullet closed (C11 settled: "a log reader is no longer the only way"). `setup.py` gets a `--kv-nvme` / cap / delta
-prompt so the tier is reachable without hand-editing `args` — today it is only reachable that way, which is why
-the page must handle "configured but invisible" gracefully.
+bullet closed (C11 settled: "a log reader is no longer the only way"). `setup.py` got its `--kv-nvme` / cap / delta
+prompt (step 8): `<root>/kvstore`, a 100 GB cap clamped to the volume's free space, the delta tier on, and no
+offer at all — with a printed reason — under a layer split or where KV streaming was just refused. Before that the
+tier was reachable only by hand-editing `args`, which is why the page must handle "configured but invisible"
+gracefully.
 
 ---
 
