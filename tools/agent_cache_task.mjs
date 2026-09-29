@@ -24,6 +24,12 @@ async function makeSession() {
   const loader = new DefaultResourceLoader({cwd, agentDir, settingsManager, noExtensions: true,
     noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [pi => {
+      pi.on('before_provider_request', event => {
+        const payload = {...event.payload, temperature: 0, max_tokens: 2048,
+          chat_template_kwargs: {enable_thinking: false}};
+        delete payload.max_completion_tokens;
+        return payload;
+      });
       pi.on('tool_call', event => {
         if (++budget.calls > 12) {
           budget.limited = true;

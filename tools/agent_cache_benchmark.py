@@ -157,9 +157,16 @@ def main():
                 children = Path(f'/proc/{server.pid}/task/{server.pid}/children').read_text().split()
                 record['child_memory_kib'] = {}
                 for pid in children:
-                    status = Path(f'/proc/{pid}/status').read_text().splitlines()
+                    try:
+                        if Path(f'/proc/{pid}/comm').read_text().strip() != 'strata':
+                            continue
+                        status = Path(f'/proc/{pid}/status').read_text().splitlines()
+                    except FileNotFoundError:
+                        continue
                     record['child_memory_kib'][pid] = {s.split(':')[0]: int(s.split()[1])
                         for s in status if s.startswith(('VmHWM:', 'VmRSS:'))}
+                if not record['child_memory_kib']:
+                    raise RuntimeError('Missing engine high-water memory sample')
                 shutil.copytree(work, run/'artifacts')
             finally:
                 if server.poll() is None:
