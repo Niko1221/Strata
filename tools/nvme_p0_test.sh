@@ -12,11 +12,14 @@
 #      DONE STATE_HASH at the same L - bit-exact dump/restore, before any new token.
 #   2. (end-to-end) B's final STATE_HASH + greedy continuation must equal A's.
 set -u
+# ROOT comes FIRST, before any cd: BASH_SOURCE is whatever the caller typed, so resolving it after
+# `cd /local/strata` made ROOT the checkout being cd'd INTO whenever the script was invoked by a relative
+# path - sourcing the wrong tree's header constants while testing that tree's engine (found on first run).
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 cd /local/strata
 # The engine and the model files live in the checkout; the HEADER these scripts must agree with is the one in
 # the tree the scripts live in (tools/nvme_header_layout.sh reads kNvmeHeaderBytes / kNvmeFormatVersion from it,
 # and nvme_snapshot_ids refuses a snapshot whose version field disagrees).
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$ROOT/tools/nvme_header_layout.sh"
 # The engine is overridable so the oracles can validate a DIFFERENT build than the one in this checkout's
 # build/ - which is the whole point when the tree under test is a worktree (NVME_ENGINE=/path/to/strata).

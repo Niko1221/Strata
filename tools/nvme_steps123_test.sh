@@ -6,10 +6,13 @@
 #           automatically (no client call): "nvme promote: resumed L tokens" + RESUME L + a fast prompt read.
 #   Step 3: --kv-nvme-max caps the store; the least recently stored snapshots are evicted.
 set -u
+# ROOT comes FIRST, before any cd: BASH_SOURCE is whatever the caller typed, so resolving it after
+# `cd /local/strata` made ROOT the checkout being cd'd INTO whenever the script was invoked by a relative
+# path - sourcing the wrong tree's header constants while testing that tree's engine (found on first run).
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 cd /local/strata
 # See tools/nvme_header_layout.sh: the snapshot offset and format version come from the header in THIS tree, not
 # from a number written into this script by whoever last changed the header.
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$ROOT/tools/nvme_header_layout.sh"
 # The engine is overridable so the oracles can validate a DIFFERENT build than the one in this checkout's
 # build/ - which is the whole point when the tree under test is a worktree (NVME_ENGINE=/path/to/strata).
