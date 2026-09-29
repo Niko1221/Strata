@@ -283,6 +283,15 @@ Two smaller additions, both cheap and both high-value:
 `shutil.disk_usage(dir)`. The cap is a policy the user set; free space is what actually stops the tier. Showing
 only the cap would let a 100 GB cap on a 120 GB volume look healthy at 99 GB.
 
+**The engine's byte totals are cap accounting, not a footprint** (found while building step 1). The delta store's
+`total_` sums every `chunks/` + `states/` file once — shared records included — and *then* adds each entry's own
+`bytes` (its manifest + its State + its chunks), so a chunk shared by three manifests is counted four times
+(`kv_delta.cpp:921-970`, deliberately: "the cap must not lie about the disk"). Consequence for the page: the
+engine's `delta_bytes` and the directory walk's bytes are **different quantities measuring different things**, and
+the page must label them — *cap accounting* (what the LRU compares against the cap) vs *on disk* (what the volume
+actually holds). Reconciling them into one "cache size" number would be wrong in both directions: the accounting
+over-counts shared chunks, and the walk includes records the engine refuses to promote.
+
 **Written per turn** = `dump_bytes` (and its mean over the last 60 turns). **Read per promote** = `promote_bytes`.
 
 **Overhead**, stated as three separate costs rather than one number:
