@@ -22,22 +22,34 @@ constexpr int CH = D1_CH;         // cells per chunk
 constexpr int THREADS = 128;      // 4 warps: scores by cell (8 each), p.v by dimension (64 each = one int8 scale group)
 constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free fragment loads)
 
-// The MMA and cp.async below need sm_80. Builds for older cards (the experimental sm_75 one) compile them to a trap;
-// qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs there.
+// The instruction shapes: m16n8k16 needs sm_80; Volta/Turing (sm_70/75) run the same fragments as two m16n8k8
+// MMAs, and cp.async needs sm_80, so the i8 pipeline kernel only runs there (the sync v1 kernel covers < 8).
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 #define STRATA_PA_SM80 1
 #else
 #define STRATA_PA_SM80 0
 #endif
 
+// One m16n8k16 (k = 16 halves) or, on Volta/Turing, two m16n8k8 (k = 8 halves): the k8 A fragment pair {a0,a1} is
+// the k16 fragment's {a0,a1} (rows gid/gid+8, the low 8 k halves) and {a2,a3} its high half, and the k8 B fragment
+// is one of the k16 pair's two registers - the same C accumulator, so the substitution is exact.  The FP32
+// addition tree inside one instruction sums 8 halves at a time instead of 16: FP32-level accuracy, not bitwise.
 __device__ __forceinline__ void mma16816(float* c, const uint32_t* a, const uint32_t* b) {
-#if !STRATA_PA_SM80
-    __trap();
-#else
+#if STRATA_PA_SM80
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+    // Turing: the same fragments split into two k8 MMAs.
+    asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(b[0]));
+    asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[2]), "r"(a[3]), "r"(b[1]));
+#else
+    __trap();   // Volta never calls this shape: the kernel's m8n8k4 branches run instead
 #endif
 }
 
@@ -60,6 +72,7 @@ template <int KV_MODE>
 struct Smem {
     using Elem = typename std::conditional<KV_MODE == 1, int8_t, __half>::type;
     static constexpr int ROW = KV_MODE == 1 ? HD + 16 : HD + 8;   // elements; 16-byte aligned rows, banks spread
+
     __half qh[16][QS];
     __half ql[16][QS];
     Elem k[CH][ROW];
@@ -72,7 +85,59 @@ struct Smem {
     float lsum[16];
     float mrow[16];
     long long row[CH];
+
 };
+
+#if !STRATA_PA_SM80
+// ===== Volta/Turing (sm_70/75): every k16 window is 4x mma.m8n8k4 =====
+// m8n8k4 (PTX ISA 8.5, 9.7.15.4.1) runs four independent 8x8x4 products ("computations"); one instruction
+// covers the tile's four 4-half k chunks if computations 0 and 1 are the two 8-row halves of the 16-row tile
+// (computations 2 and 3 are unused and their lanes' results are discarded).  Fragment maps, validated
+// bit-exactly against an FP64 reference on the V100:
+//   A (row-major): row = (lane%4) + 4*(lane>=16) + 8*comp, k cols = 4c..4c+3 of the window
+//   B (col-major): k rows = 4c..4c+3, col = (lane%4) + 4*(lane>=16)
+//   C (f32): per lane 8 elements i=0..7: row = 8*comp + (lane&1) + 2*((i>>1)&1) + 4*(lane>=16),
+//                                     col = (lane&2) + (i&1) + 4*((i>>2)&1)
+// with comp = lane<16 ? lane>>2 : (lane-16)>>2 (0..3; here only 0,1 are used).  The k-chunk accumulates
+// across the four calls of the window; A and B are re-read from shared memory per call.
+__device__ __forceinline__ void mma_k4(float cc[8], uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) {
+    asm volatile(
+        "mma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7}, {%8,%9}, {%10,%11}, {%0,%1,%2,%3,%4,%5,%6,%7};\n"
+        : "+f"(cc[0]), "+f"(cc[1]), "+f"(cc[2]), "+f"(cc[3]), "+f"(cc[4]), "+f"(cc[5]), "+f"(cc[6]), "+f"(cc[7])
+        : "r"(a0), "r"(a1), "r"(b0), "r"(b1));
+}
+
+// The score tile (16 q rows x 8 cells, one k16 window): accumulates 8 C elements per lane.
+template <int KV_MODE>
+__device__ __forceinline__ void v_score_k16(float cc[8], const __half* qh, const __half* ql, const Smem<KV_MODE>& S,
+                                            int cb, int k0) {
+    const int lane = threadIdx.x & 31;
+    const int comp = lane < 16 ? lane >> 2 : (lane - 16) >> 2;
+    // A row: the comp's 8 rows plus the lane's row within them (comps 2,3 read comp 1's rows: their C is discarded)
+    const int row = 8 * (comp & 1) + (lane & 3) + (lane >= 16 ? 4 : 0);
+    const int col = (lane & 3) + (lane >= 16 ? 4 : 0);
+#pragma unroll
+    for (int c = 0; c < 4; ++c) {
+        const uint32_t ah0 = *reinterpret_cast<const uint32_t*>(&qh[row * QS + k0 + 4 * c]);
+        const uint32_t ah1 = *reinterpret_cast<const uint32_t*>(&qh[row * QS + k0 + 4 * c + 2]);
+        uint32_t b0, b1;
+        if constexpr (KV_MODE == 1) {
+            b0 = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + col][k0 + 4 * c]));
+            b1 = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + col][k0 + 4 * c + 2]));
+        } else {
+            b0 = *reinterpret_cast<const uint32_t*>(&S.k[cb + col][k0 + 4 * c]);
+            b1 = *reinterpret_cast<const uint32_t*>(&S.k[cb + col][k0 + 4 * c + 2]);
+        }
+        mma_k4(cc, ah0, ah1, b0, b1);
+#ifndef D1_NO_QLO
+        const uint32_t al0 = *reinterpret_cast<const uint32_t*>(&ql[row * QS + k0 + 4 * c]);
+        const uint32_t al1 = *reinterpret_cast<const uint32_t*>(&ql[row * QS + k0 + 4 * c + 2]);
+        mma_k4(cc, al0, al1, b0, b1);
+#endif
+    }
+}
+#endif
 
 template <int KV_MODE>
 __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __restrict__ q, QsaAttnPools p,
@@ -112,9 +177,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     }
     if (t < 16) { S.mrow[t] = -CUDART_INF_F; S.lsum[t] = 0.0f; }
 
+#if STRATA_PA_SM80
     float acc[8][4];
 #pragma unroll
     for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
+#else
+    // Volta: the m8n8k4 C frame is 8 elements per lane (2 heads x 4 dims), so the per-dim accumulators span 8
+    float acc8[8][8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+#pragma unroll
+        for (int i = 0; i < 8; ++i) acc8[j][i] = 0.0f;
+#endif
 
     for (int c0 = 0; c0 < n; c0 += CH) {
         const int nh = min(CH, n - c0);
@@ -165,6 +239,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         }
         __syncthreads();
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per 64-dim scale group
+#if STRATA_PA_SM80
+        // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per 64-dim scale group
 #pragma unroll
         for (int nt = 0; nt < CH / 32; ++nt) {
             const int cb = (warp + 4 * nt) * 8;
@@ -208,6 +284,37 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -CUDART_INF_F;
             S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -CUDART_INF_F;
         }
+#else
+        // scores as m8n8k4 tiles: warps still take cells 8w..8w+7; each lane's C frame is 2 heads x 4 cells
+        // (head = 8*comp + (lane&1) + 2*((i>>1)&1) + 4*(lane>=16), cell = cb + (lane&2) + (i&1) + 4*((i>>2)&1),
+        // comp = lane<16 ? lane>>2 : (lane-16)>>2; comps 2 and 3 are unused: their stores are skipped)
+        {
+            const int comp = lane < 16 ? lane >> 2 : (lane - 16) >> 2;
+#pragma unroll
+            for (int nt = 0; nt < CH / 32; ++nt) {
+                const int cb = (warp + 4 * nt) * 8;
+                float sc8[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                for (int g = 0; g < 4; ++g) {
+                    float tg8[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                    for (int kk = 0; kk < 4; ++kk)
+                        v_score_k16<KV_MODE>(tg8, &S.qh[0][0], &S.ql[0][0], S, cb, (g * 4 + kk) * 16);
+#pragma unroll
+                    for (int i = 0; i < 8; ++i) {
+                        const int cell_i = cb + (lane & 2) + (i & 1) + 4 * ((i >> 2) & 1);
+                        sc8[i] = fmaf(tg8[i], S.ks[cell_i][g], sc8[i]);
+                    }
+                }
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    const int head_i = 8 * comp + (lane & 1) + 2 * ((i >> 1) & 1) + (lane >= 16 ? 4 : 0);
+                    const int cell_i = cb + (lane & 2) + (i & 1) + 4 * ((i >> 2) & 1);
+                    if (comp < 2) S.s[head_i][cell_i] = cell_i < nh ? sc8[i] * qdown : -CUDART_INF_F;
+                }
+            }
+        }
+#endif
         __syncthreads();
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
@@ -248,6 +355,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
+#if STRATA_PA_SM80
             float tmp[8][4];
 #pragma unroll
             for (int j = 0; j < 8; ++j) tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
@@ -302,9 +410,76 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 acc[j][2] = fmaf(acc[j][2], a1, tmp[j][2] * vdown);
                 acc[j][3] = fmaf(acc[j][3], a1, tmp[j][3] * vdown);
             }
+#else
+            // Volta: the k16 p.v window (16 cells) is 4x m8n8k4; C frame per lane = 2 heads x 4 dims, with the
+            // A row (a head of its comp's 8) and B col (a dim of the warp's 64) per the m8n8k4 fragment maps.
+            const int comp = lane < 16 ? lane >> 2 : (lane - 16) >> 2;
+            const int prow = 8 * (comp & 1) + (lane & 3) + (lane >= 16 ? 4 : 0);
+            const int dcol = (lane & 3) + (lane >= 16 ? 4 : 0);
+            float tmp[8][8];
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+#pragma unroll
+                for (int i = 0; i < 8; ++i) tmp[j][i] = 0.0f;
+#pragma unroll
+            for (int ks = 0; ks < CH / 16; ++ks) {
+                const int ws = ks * 16;
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    const int d = warp * 64 + j * 8 + dcol;
+                    float t8[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                    for (int c = 0; c < 4; ++c) {
+                        const int cell0 = ws + 4 * c;
+                        const float w0 = S.vs[cell0][warp] * vup, w1 = S.vs[cell0 + 1][warp] * vup,
+                                    w2 = S.vs[cell0 + 2][warp] * vup, w3 = S.vs[cell0 + 3][warp] * vup;
+                        const float p0 = S.s[prow][cell0] * w0, p1 = S.s[prow][cell0 + 1] * w1;
+                        const float p2 = S.s[prow][cell0 + 2] * w2, p3 = S.s[prow][cell0 + 3] * w3;
+                        uint32_t ah[2], al[2];
+                        ah[0] = pack_h2(p0, p1);
+                        ah[1] = pack_h2(p2, p3);
+                        {
+                            const __half2* h = reinterpret_cast<const __half2*>(ah);
+                            float2 f;
+                            f = __half22float2(h[0]); al[0] = pack_h2(p0 - f.x, p1 - f.y);
+                            f = __half22float2(h[1]); al[1] = pack_h2(p2 - f.x, p3 - f.y);
+                        }
+                        uint32_t b[2];
+                        if constexpr (KV_MODE == 1) {
+                            const uint32_t x0 = (uint8_t) S.v[cell0][d] | ((uint32_t) (uint8_t) S.v[cell0 + 1][d] << 8);
+                            const uint32_t x1 = (uint8_t) S.v[cell0 + 2][d] | ((uint32_t) (uint8_t) S.v[cell0 + 3][d] << 8);
+                            b[0] = i8x2_to_h2(x0);
+                            b[1] = i8x2_to_h2(x1);
+                        } else {
+                            const __half2 h0 = __halves2half2(S.v[cell0][d], S.v[cell0 + 1][d]);
+                            const __half2 h1 = __halves2half2(S.v[cell0 + 2][d], S.v[cell0 + 3][d]);
+                            b[0] = *reinterpret_cast<const uint32_t*>(&h0);
+                            b[1] = *reinterpret_cast<const uint32_t*>(&h1);
+                        }
+                        mma_k4(t8, ah[0], ah[1], b[0], b[1]);
+#ifndef D1_NO_PLO
+                        mma_k4(t8, al[0], al[1], b[0], b[1]);
+#endif
+                    }
+                    // element i of the C frame is head h0 + 2*((i>>1)&1), dim d0 + (i&1) + 4*((i>>2)&1)
+#pragma unroll
+                    for (int i = 0; i < 8; ++i) tmp[j][i] += t8[i];
+                }
+            }
+            const int h0 = 8 * comp + (lane & 1) + (lane >= 16 ? 4 : 0);
+            const float a0 = S.alpha[h0], a1 = S.alpha[h0 + 2];
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    const float a = ((i >> 1) & 1) ? a1 : a0;
+                    acc8[j][i] = fmaf(acc8[j][i], a, tmp[j][i] * vdown);
+                }
+#endif
         }
     }
     __syncthreads();
+#if STRATA_PA_SM80
     const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
 #pragma unroll
@@ -314,6 +489,33 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         if (gid + 8 < G)
             *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
     }
+#else
+    // Volta C frame: element i = (head h0 + 2*((i>>1)&1), dim d0 + (i&1) + 4*((i>>2)&1)); comps 2,3 are unused
+    {
+        const int comp = lane < 16 ? lane >> 2 : (lane - 16) >> 2;
+        if (comp < 2) {
+            const int h0 = 8 * comp + (lane & 1) + (lane >= 16 ? 4 : 0);
+            const float i0 = S.lsum[h0] > 0.0f ? 1.0f / S.lsum[h0] : 0.0f;
+            const float i1 = S.lsum[h0 + 2] > 0.0f ? 1.0f / S.lsum[h0 + 2] : 0.0f;
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const int d0 = warp * 64 + j * 8 + (lane & 2);
+                if (h0 < G)
+                    *reinterpret_cast<float2*>(attn + (size_t) h0 * HD + d0) =
+                        make_float2(acc8[j][0] * i0, acc8[j][1] * i0);
+                if (h0 + 2 < G)
+                    *reinterpret_cast<float2*>(attn + (size_t) (h0 + 2) * HD + d0) =
+                        make_float2(acc8[j][2] * i1, acc8[j][3] * i1);
+                if (h0 < G)
+                    *reinterpret_cast<float2*>(attn + (size_t) h0 * HD + d0 + 4) =
+                        make_float2(acc8[j][4] * i0, acc8[j][5] * i0);
+                if (h0 + 2 < G)
+                    *reinterpret_cast<float2*>(attn + (size_t) (h0 + 2) * HD + d0 + 4) =
+                        make_float2(acc8[j][6] * i1, acc8[j][7] * i1);
+            }
+        }
+    }
+#endif
 }
 
 // ---- v2 (int8 KV): warp w owns dims [64w, 64w+64) for both q.k and p.v, which is also int8 scale group w. So a
@@ -625,35 +827,40 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     return true;
 }
 
+// Cached compute-capability major of the device that would run the kernel (0 if it cannot be read).
+int device_cc_major() {
+    static int cc_major[64] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (cc_major[dev] == 0) {
+        int major = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) {
+            cudaGetLastError();
+            return 0;
+        }
+        cc_major[dev] = major;
+    }
+    return cc_major[dev];
+}
+
 }  // namespace
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
-    {   // sm_80 or newer (the MMA and cp.async above); an older card keeps the old kernel
-        static int cc_major[64] = {};
-        int dev = 0;
-        if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
-        if (cc_major[dev] == 0) {
-            int major = 0;
-            if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) {
-                cudaGetLastError();
-                return false;
-            }
-            cc_major[dev] = major;
-        }
-        if (cc_major[dev] < 8) return false;
-    }
+    const int cc_major = device_cc_major();
+    if (cc_major < 7) return false;   // Volta or newer: the m16n8k8 / m16n8k16 MMAs above; an older card keeps the old kernel
     if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids ||
         !steps || !pools.page_table)
         return false;
     cudaStream_t st = (cudaStream_t) stream;
     if (pools.k_q != nullptr) {
         if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
-        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
-        // for how far the model amplifies an FP32-level change
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
-        if (v1) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
+        // for how far the model amplifies an FP32-level change.  cp.async needs sm_80, so Volta and Turing run the
+        // synchronous v1 kernel too.
+        if (v1 || cc_major < 8) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;

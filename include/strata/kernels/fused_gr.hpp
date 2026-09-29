@@ -46,6 +46,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream);
 /// weight pointers and eps must be the same for every t); `xn_scratch` is n_tok * hc * n_embd floats.  Every
 /// token's outputs are bitwise `fused_gr_read(a[t])`.
 constexpr int kFusedGrMaxT = 8;
-void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream);
+void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
+                         unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
 
 }  // namespace strata::kernels

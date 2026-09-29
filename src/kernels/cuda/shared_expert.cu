@@ -135,6 +135,9 @@ __global__ void native_scalar_sigmoid_kernel(float* gate) {
     // compilation flags. The dot product was already reduced by the pinned native MMVF implementation.
     gate[0] = __fdividef(1.0f, 1.0f + __expf(-gate[0]));
 }
+__global__ void native_scalar_sigmoid_multi_kernel(float* gate) {   // thread t = token t, same expression
+    gate[threadIdx.x] = __fdividef(1.0f, 1.0f + __expf(-gate[threadIdx.x]));
+}
 
 /// The MoE block's final combination.  See the header for the two readings it exists to pin.
 __global__ void moe_combine_kernel(const float* __restrict__ parts, const float* __restrict__ weights,
@@ -176,6 +179,11 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
     native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
     native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
+    static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+    if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), one sigmoid launch
+        bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
+        native_scalar_sigmoid_multi_kernel<<<1, n_tok, 0, cs>>>(g);
+    } else
     for (int t = 0; t < n_tok; ++t) {
         if (native_bf16) {
             bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);

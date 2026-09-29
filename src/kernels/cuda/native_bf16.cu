@@ -70,6 +70,54 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
     if (t == 0) y[blockIdx.x] = acc;
 }
 
+// the same kernel for up to 8 activation rows - the weight row is read ONCE and every
+// token keeps its own accumulator with exactly the single-row kernel's order (pairs, two ordered FMAs, the same warp
+// and block reductions), so each output is bit-identical to a bf16_f32_mmvf_kernel launch of its own.
+template <int BLOCK_SIZE, int NT>
+__global__ void bf16_f32_mmvf_multi_kernel(const float* __restrict__ x, int64_t ldx, const uint16_t* __restrict__ w,
+                                          float* __restrict__ y, int64_t ldy, int n_in, int n_tok) {
+    const int t = threadIdx.x;
+    const uint16_t* row = w + (size_t) blockIdx.x * n_in;
+    const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
+    __shared__ float partials[NT][32];
+    if constexpr (BLOCK_SIZE > 32) {
+        if (t < 32)
+#pragma unroll
+            for (int k = 0; k < NT; ++k) partials[k][t] = 0.0f;
+        __syncthreads();
+    }
+    float acc[NT];
+#pragma unroll
+    for (int k = 0; k < NT; ++k) acc[k] = 0.0f;
+    for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
+        const uint32_t weight = weights2[pair];
+        const float w0 = f32_from_bf16((uint16_t) weight), w1 = f32_from_bf16((uint16_t) (weight >> 16));
+#pragma unroll
+        for (int k = 0; k < NT; ++k) {
+            if (k < n_tok) {
+                const float2 input = reinterpret_cast<const float2*>(x + (size_t) k * ldx)[pair];
+                acc[k] = __fmaf_rn(w0, input.x, acc[k]);
+                acc[k] = __fmaf_rn(w1, input.y, acc[k]);
+            }
+        }
+    }
+#pragma unroll
+    for (int k = 0; k < NT; ++k) acc[k] = mmvf_warp_sum(acc[k]);
+    if constexpr (BLOCK_SIZE > 32) {
+        if ((t & 31) == 0)
+#pragma unroll
+            for (int k = 0; k < NT; ++k) partials[k][t / 32] = acc[k];
+        __syncthreads();
+        if (t < 32)
+#pragma unroll
+            for (int k = 0; k < NT; ++k) acc[k] = mmvf_warp_sum(partials[k][t]);
+    }
+    if (t == 0)
+#pragma unroll
+        for (int k = 0; k < NT; ++k)
+            if (k < n_tok) y[(size_t) k * ldy + blockIdx.x] = acc[k];
+}
+
 int mmvf_block_size(int64_t n_in) {
     int best = 32;
     int64_t best_iterations = (n_in + 63) / 64;
@@ -84,6 +132,26 @@ int mmvf_block_size(int64_t n_in) {
 }
 
 }  // namespace
+
+void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
+                               int64_t n_in, int64_t n_out, int n_tok, void* stream) {
+    if (n_tok == 1 && ldy >= n_out) { bf16_gemv_fp32_mmvf(x, w, y, n_in, n_out, stream); return; }
+    if (n_tok < 1 || n_tok > 8 || n_in <= 0 || (n_in & 1) != 0 || n_out <= 0 || (ldx & 1) != 0 || x == nullptr ||
+        w == nullptr || y == nullptr || (reinterpret_cast<uintptr_t>(x) & 7u) != 0)
+        throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: 1..8 rows, even n_in/ldx, aligned pointers");
+    const cudaStream_t st = (cudaStream_t) stream;
+#define STRATA_MMVF_M(N) case N: \
+    if (n_tok <= 4) bf16_f32_mmvf_multi_kernel<N, 4><<<(unsigned) n_out, N, 0, st>>>(x, ldx, w, y, ldy, (int) n_in, n_tok); \
+    else bf16_f32_mmvf_multi_kernel<N, 8><<<(unsigned) n_out, N, 0, st>>>(x, ldx, w, y, ldy, (int) n_in, n_tok); break
+    switch (mmvf_block_size(n_in)) {
+        STRATA_MMVF_M(32); STRATA_MMVF_M(64); STRATA_MMVF_M(96); STRATA_MMVF_M(128);
+        STRATA_MMVF_M(160); STRATA_MMVF_M(192); STRATA_MMVF_M(224); STRATA_MMVF_M(256);
+    }
+#undef STRATA_MMVF_M
+    const cudaError_t result = cudaGetLastError();
+    if (result != cudaSuccess)
+        throw std::runtime_error(std::string("bf16_gemv_fp32_mmvf_multi launch: ") + cudaGetErrorString(result));
+}
 
 void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
                          int64_t n_in, int64_t n_out, void* stream) {

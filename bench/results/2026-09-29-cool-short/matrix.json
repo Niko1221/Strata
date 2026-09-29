@@ -1,0 +1,58 @@
+[
+ {
+  "label": "~4K",
+  "target": 4156,
+  "prompt_tokens": 4142,
+  "reused": 0,
+  "prompt_ms": 3860.0,
+  "prompt_tok_s": 1073.1,
+  "output_tokens": 64,
+  "decode_ms": 1125.2,
+  "decode_tok_s": 56.9,
+  "hit_rate": 0.864,
+  "duration_s": 5.0,
+  "wall_s": 5.0
+ },
+ {
+  "label": "~4K",
+  "target": 4390,
+  "prompt_tokens": 4375,
+  "reused": 0,
+  "prompt_ms": 3986.0,
+  "prompt_tok_s": 1097.6,
+  "output_tokens": 64,
+  "decode_ms": 1170.9,
+  "decode_tok_s": 54.7,
+  "hit_rate": 0.883,
+  "duration_s": 5.2,
+  "wall_s": 5.2
+ },
+ {
+  "label": "~8K",
+  "target": 8801,
+  "prompt_tokens": 8785,
+  "reused": 0,
+  "prompt_ms": 8256.2,
+  "prompt_tok_s": 1064.0,
+  "output_tokens": 64,
+  "decode_ms": 1153.4,
+  "decode_tok_s": 55.5,
+  "hit_rate": 0.89,
+  "duration_s": 9.4,
+  "wall_s": 9.5
+ },
+ {
+  "label": "32K",
+  "target": 29512,
+  "prompt_tokens": 29528,
+  "reused": 0,
+  "prompt_ms": 23228.0,
+  "prompt_tok_s": 1271.2,
+  "output_tokens": 64,
+  "decode_ms": 1265.1,
+  "decode_tok_s": 50.6,
+  "hit_rate": 0.865,
+  "duration_s": 24.5,
+  "wall_s": 24.6
+ }
+]
