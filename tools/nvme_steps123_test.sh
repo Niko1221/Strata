@@ -11,7 +11,10 @@ cd /local/strata
 # from a number written into this script by whoever last changed the header.
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$ROOT/tools/nvme_header_layout.sh"
-E=build/strata
+# The engine is overridable so the oracles can validate a DIFFERENT build than the one in this checkout's
+# build/ - which is the whole point when the tree under test is a worktree (NVME_ENGINE=/path/to/strata).
+# Default stays this checkout's binary, so the recorded v2-format results keep meaning what they meant.
+E=${NVME_ENGINE:-build/strata}
 OUT=/tmp/nvme-s123
 STORE=$OUT/store
 rm -rf "$OUT"; mkdir -p "$OUT"
