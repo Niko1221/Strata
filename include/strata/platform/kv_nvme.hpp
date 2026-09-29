@@ -45,7 +45,7 @@ inline constexpr uint64_t kNvmeHeaderBytes = 208;
 /// the tag below IS the shared core's `conversation_geometry_key`, so the two tiers refuse the same mismatch, and
 /// the static_asserts under it pin the layout the file depends on (every field fixed-width, the struct
 /// padding-free) because the integrity footer cannot see the header that describes the layout.
-/// See docs/nvme-kv-cache-convergence.md ("Where step 2 leaves NvmeHeader").
+/// See docs/nvme-kv-cache-design.md ("Where step 2 leaves NvmeHeader").
 struct NvmeHeader {
     uint32_t magic = 0x5E564D45;   // "^VME"
     // v3: the running-state `dead` / `block_pos` segments hold the TURN-BOUNDARY checkpoint's copies, not the
@@ -94,7 +94,7 @@ static_assert(sizeof(strata::core::conversation_geometry_key(strata::core::Model
 /// by the generation that followed), and the drafter copy covers [0, min(T, max_cells)).  This is the snapshot the
 /// NEXT REQUEST can match: a chat client re-sends the prompt but not the model's hidden reasoning tokens, so a
 /// full-L snapshot (which includes them) can never full-prefix-match the next turn.
-/// `at` is the SHARED core's checkpoint type (docs/nvme-kv-cache-convergence.md step 2): its `ids` are the
+/// `at` is the SHARED core's checkpoint type (docs/nvme-kv-cache-design.md step 2): its `ids` are the
 /// boundary, and its blobs are validated against `conversation_state_sizes` before a byte of them is written.
 /// `imgs` are the images BELOW that boundary - the checkpoint's own list, not the live conversation's pictures.
 /// An image at or past `L` describes a token the snapshot does not hold, and the dump refuses one: the resume

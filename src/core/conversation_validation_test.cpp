@@ -1,5 +1,5 @@
 // The SHARED CORE's own host-only validation fixtures (issue #57, verbatim from
-// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-convergence.md step 4).
+// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-design.md step 4).
 // CUDA is LINKED and never initialised: every case is a refusal that returns before the first CUDA call, plus the
 // overflow checks on the core's checked byte arithmetic (`conversation_checked.hpp` - "running-state arithmetic
 // overflow rejected", "zero layer interval rejected before division", "KV byte overflow rejected").  The target is

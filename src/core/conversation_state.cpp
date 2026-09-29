@@ -1,11 +1,11 @@
 // src/core/conversation_state.cpp - the SHARED CONVERSATION-CACHE CORE's running state (issue #57, verbatim from
-// `jrich/feat/conversation-cache-shared-core@3657b8f`; docs/nvme-kv-cache-convergence.md step 2).
+// `jrich/feat/conversation-cache-shared-core@3657b8f`; docs/nvme-kv-cache-design.md step 2).
 //
 // THE ONE THING OUR NVME TIER READS HERE is `conversation_state_sizes`: it is now the only source of the
 // gdn/ple/tail/dead/block_pos byte counts (generate.cpp's `conv_state_sizes` and kv_nvme.cpp's segment walk both
 // go through it).  The pooled-row count is NOT here - it lives in `conversation_snapshot.cpp`, and the disk
 // adapter now uses that same formula (collision C4, settled in step 3: `L / idx_block + 1`).
-// THE ONE GEOMETRY IDENTITY (docs/nvme-kv-cache-convergence.md, C9 and step 3): `conversation_geometry_key` was
+// THE ONE GEOMETRY IDENTITY (docs/nvme-kv-cache-design.md, C9 and step 3): `conversation_geometry_key` was
 // an internal helper of this translation unit in their import, and is now declared in `conversation_snapshot.hpp`
 // because the NVMe disk adapter keys its files on this same array instead of carrying a second, derived tag.
 // Its 18 fields and their order are unchanged - the only edit to this imported file is that the function left the
@@ -103,7 +103,7 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
 }
 } // namespace
 
-// THE ONE GEOMETRY IDENTITY (docs/nvme-kv-cache-convergence.md, C9 and step 3).  In their import this was a
+// THE ONE GEOMETRY IDENTITY (docs/nvme-kv-cache-design.md, C9 and step 3).  In their import this was a
 // helper inside this translation unit's anonymous namespace; it is now the function `conversation_snapshot.hpp`
 // advertises, because the NVMe disk adapter keys its files on this same array instead of carrying a second,
 // derived tag.  Its 18 fields and their order are theirs, verbatim - the only edit to this imported file is that

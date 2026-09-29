@@ -1,5 +1,5 @@
 #!/bin/bash
-# C10 evidence: the whole-file staging buffer, measured (docs/nvme-kv-cache-convergence.md C10).
+# C10 evidence: the whole-file staging buffer, measured (docs/nvme-kv-cache-design.md C10).
 # nvme_restore reads the ENTIRE snapshot into one std::vector before validating anything, so peak RSS during a
 # restore should exceed the engine's steady-state RSS by roughly the file size.  This script measures it.
 set -u

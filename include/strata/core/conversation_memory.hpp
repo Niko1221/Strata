@@ -1,5 +1,5 @@
 // The SHARED CONVERSATION-CACHE CORE's physical-RAM admission guard (issue #57).  Imported as the DECLARED
-// boundary only (docs/nvme-kv-cache-convergence.md step 2): nothing in the engine calls it.  Step 4 added its
+// boundary only (docs/nvme-kv-cache-design.md step 2): nothing in the engine calls it.  Step 4 added its
 // implementation (`src/core/conversation_memory.cpp`) for `conversation_memory_test` to link - a fixture target,
 // not `strata_engine` - so the guard is still declared-and-unwired in the engine, and C10 (admitting a restore
 // against physical RAM) stays open.

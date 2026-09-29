@@ -1,5 +1,5 @@
 // The SHARED CORE's own CPU-only RAM-admission fixture (issue #57, verbatim from
-// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-convergence.md step 4).
+// `jrich/feat/conversation-cache-shared-core@3657b8f`; ported by docs/nvme-kv-cache-design.md step 4).
 // It needs `conversation_memory.cpp`, which this branch imports for THIS fixture only - the engine still calls
 // nothing in it, because C10 (admitting a restore against physical RAM) is still open.
 #include "strata/core/conversation_memory.hpp"

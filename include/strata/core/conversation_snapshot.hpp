@@ -1,5 +1,5 @@
 // The SHARED CONVERSATION-CACHE CORE's capture/restore primitives (issue #57).  Imported verbatim by the NVMe
-// convergence branch (docs/nvme-kv-cache-convergence.md, step 2): these are the primitives our NVMe tier is now
+// convergence branch (docs/nvme-kv-cache-design.md, step 2): these are the primitives our NVMe tier is now
 // built on top of, and the only home for the running-state byte counts (`ConversationStateSizes`).
 #pragma once
 
@@ -12,7 +12,7 @@
 
 namespace strata::core {
 
-/// THE ONE GEOMETRY IDENTITY the two tiers share (docs/nvme-kv-cache-convergence.md, C9 and step 3): the 18 raw
+/// THE ONE GEOMETRY IDENTITY the two tiers share (docs/nvme-kv-cache-design.md, C9 and step 3): the 18 raw
 /// `ModelGeometry` fields, in this order.  The RAM core stores it in `SavedConversation::geometry` and refuses a
 /// mismatch; the NVMe adapter writes it into its header and refuses a mismatch.  Neither keeps its own derived
 /// projection any more.  It is model identity, not a runtime shape: the shapes a disk reader also needs

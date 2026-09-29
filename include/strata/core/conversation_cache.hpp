@@ -1,5 +1,5 @@
 // The SHARED CONVERSATION-CACHE CORE's ownership types (issue #57, `jrich/feat/conversation-cache-shared-core`).
-// Imported verbatim by the NVMe convergence branch (docs/nvme-kv-cache-convergence.md, step 2) so our serve loop
+// Imported verbatim by the NVMe convergence branch (docs/nvme-kv-cache-design.md, step 2) so our serve loop
 // and our disk adapter speak ONE checkpoint type.  The types are live; the RAM POLICY below them
 // (`ConversationCache`: byte budget, slots, LRU eviction, `conversation_prefix` matching) is imported DORMANT -
 // nothing in this tree calls it yet, and wiring it into the serve loop is a later decision.

@@ -1,5 +1,5 @@
 // The SHARED CONVERSATION-CACHE CORE's overflow-checked byte arithmetic (issue #57).  Internal to the core's
-// .cpp files; see docs/nvme-kv-cache-convergence.md step 2.
+// .cpp files; see docs/nvme-kv-cache-design.md step 2.
 #pragma once
 
 #include <cstddef>
