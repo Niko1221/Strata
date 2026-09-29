@@ -702,8 +702,13 @@ class Service:
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
     def metrics(self, all_requests=False) -> dict:
-        """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
-        the hardware (with a minute of history per series)."""
+        """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, the
+        hardware (with a minute of history per series), and the cache tier's cheap summary.
+
+        The `cache` block is KvCache.summary() and nothing more: no directory walk, no stat, no read (the walk is
+        KvCache.scan(), and GET /cache is the only route that asks for it).  A server with no tier - no KvCache, or
+        one built without --kv-nvme - reports {"enabled": False} in the same shape, so the web app can hide its
+        Cache tab from /metrics alone (design §4, §5)."""
         with self.status_lock:
             s = dict(self.status)
             hist = list(self.history)
@@ -730,10 +735,13 @@ class Service:
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+        cache = self.cache
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"],
+                "cache": cache.summary() if cache is not None and cache.enabled else {"enabled": False},
+                "time": now}
 
     def v1_status(self) -> dict:
         """GET /v1/status: what this server is and does, for a client that would rather ask than guess (a front-end
@@ -1375,6 +1383,15 @@ def make_handler(svc: Service):
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
+                return
+            if path == "/cache":
+                # the cache tiers in full: this is where the throttled store walk happens (design §4), so an
+                # unwatched Cache page costs nothing.  Read-only - there is no POST route (design §8): the serve
+                # protocol has no store-mutation command, and a web-side one would re-derive the drop/sweep
+                # contract from the wrong side of the pipe.
+                if self._authorized():
+                    c = svc.cache
+                    self._json(200, c.detail() if c is not None and c.enabled else {"enabled": False})
                 return
             if path == "":
                 body = (ROOT / "serve" / "web" / "index.html").read_bytes()
