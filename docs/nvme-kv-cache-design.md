@@ -314,6 +314,43 @@ Results:
   request falls back to a full re-prefill and still answers correctly.  **Read that last result as §5.1, not as
   §5.2**: a corrupt file is refused before the tier writes anything, so this suite has never exercised a
   transfer failure - which is why the never-running fallback §5.0 describes survived all of it.
+- **The `KV` line on a live server - WRITTEN, NOT RUN** (web-plan step 2, C11's engine half):
+  `tools/nvme_steps123_test.sh` asserts one `KV start=1 entries=` line after `READY`, one `KV src=` line per
+  `DONE` line, and that the capped process prints a `KV` line with `evict>=1` and non-zero `evict_bytes`;
+  `tools/nvme_failure_contract_test.sh` asserts the refused promote reports `src=none refused=1 transfer=0`, and
+  that a dying engine's `KV … transfer=1` lands on stdout strictly BEFORE its `ERR` line and the exit 1.  Neither
+  script has been executed: both need a GPU and this machine's GPU holds the production engine.  They are
+  assertions on the record, not results - the host fixtures (step 1) prove the counters, not the line.
+- **Why `tools/short_tests.py` cannot be a `KV` gate**: the server hands the engine's **stderr** to the log file
+  (`serve/server.py:159-160`) and keeps **stdout** on a pipe, so a log tail never sees a `KV` line.  The two shell
+  oracles above capture engine stdout directly; the serve-side assertions live in `serve/test_server.py` (79 host
+  tests), which read the facts off `/metrics` and `/cache` instead of off a log.
+
+### The page's metric definitions (so the page and these oracles count the same things)
+
+The Cache tab is the consumer of these numbers, so its definitions (`docs/nvme-kv-cache-web-design.md` §6) are
+binding here too - a number on the page must be a number an oracle already measures:
+
+- **"Warm" is two numbers and the page names both.** *Stored prefixes* = `entries + delta_entries` - snapshots,
+  not conversations (§7: no cross-restart identity, so one five-turn conversation is five prefixes).  *RAM tier*
+  = `checkpoints` + `live`.
+- **`entries_bytes` / `delta_bytes` are CAP ACCOUNTING, not a disk footprint.** The delta store sums every
+  `chunks/` and `states/` file once - including the residue a coming sweep will remove, because "the cap must not
+  lie about the disk" - and then adds each entry's own `bytes` (manifest + State + its chunks), so a chunk shared
+  by three manifests is counted four times (`kv_delta.cpp:921-970`, deliberately).  The serve-side walk
+  (`serve/kvcache.py scan()`) reports what the volume actually holds, including files this engine refuses to
+  promote.  The page labels the two *cap accounting* and *on disk* and never merges them into one "cache size".
+- **Store fill** = `(entries_bytes + delta_bytes) / cap`, shown beside `disk_free_bytes` from
+  `shutil.disk_usage(dir)`: the cap is a policy the user set, free space is what actually stops the tier.
+- **Overhead is three costs, not one**: `dump_ms` (server occupancy at `DONE`), `promote_ms` (the TTFT price paid
+  instead of a re-prefill), and `staging_bytes` plus the engine's own process RSS (the ~2 GiB transient measured
+  above, now visible as a bump in the hardware series).
+- **Endurance** is cumulative bytes written since the engine started, quoted with §10.2's ratio -
+  `(total_tokens × 16 KB + 118 MB) / (new_tokens × 16 KB + 118 MB)`, ~6.5× at the production average turn - **not**
+  the handoff's 33×.
+- **Time saved** is derived and labelled as derived: `saved_s ≈ resume_from_disk / fresh_prefill_tok_s −
+  promote_ms`, with `fresh_prefill_tok_s` measured from this server's own cold turns, not from the 110 s figure
+  above.
 
 ## 7. Known limitations / follow-ups
 
@@ -327,11 +364,16 @@ Results:
 - **The v2 originals of the converted store live in `/local/strata/kvstore-v2-backup/`** (106 files,
   ~200 GiB) until deleted. Delete only after a few days of production promotes from converted files; the
   converter and its verification are in the branch history if they are ever needed again.
-- **Metrics (issue #57's C11)**: the three failure classes, promotes, refusals and dump results are
-  stderr-only; `serve/telemetry.py` parses nothing NVMe-related. A log reader - not a metric - is currently
-  the only way to tell the failure classes apart. The design that would close it (an engine `KV` line per request,
-  a serve-side store reader, and a web Cache page) is `docs/nvme-kv-cache-web-design.md` - design only, nothing
-  of it built.
+- **Metrics (issue #57's C11) - closed as a build** (web-plan steps 1-7, `docs/nvme-kv-cache-web-design.md`):
+  the tiers return what they did (`TierActivity`, step 1); the serve loop prints one `KV key=value` line per
+  request before `DONE`, plus the store's own `KV start=1` state after `READY` (step 2); `serve/kvcache.py`
+  parses it, walks the store directory and feeds `GET /cache` and the `cache` block of `/metrics` (steps 3-5);
+  the web Cache tab, the Monitor's Cache column and the About card render it (steps 6-7). A log reader is no
+  longer the only way to tell the three failure classes apart - though the live-server `KV` assertions are still
+  unrun (§6). What the page does **not** do: it cannot mutate the store - `/cache` is a GET, the only POST paths
+  are `/settings` and the two chat routes, and the engine's stdin takes `QUIT`/`STOP`/`GEN`/`GENI` only - and it
+  has no conversation identity across a restart, so its "stored prefixes" are prefixes, not conversations - the
+  next bullet.
 - **Per-turn snapshot accumulation** (no cross-restart supersession) - bounded by the cap; a
   conversation identity would enable per-conversation supersession.
 - **Sparsity** (Step 4, default skip): only the blocks the QSA selection can reach need storing;
@@ -420,7 +462,10 @@ Each item below was a real incompatibility between the two designs when the work
 - **C10 - physical-RAM admission**: NOT settled. The restore still reads the whole file (§7, measured ~2 GiB
   transient); the core's `conversation_available_memory` / `conversation_memory_admit` are imported dormant
   (`conversation_memory.cpp` builds only the memory fixture, not the engine).
-- **C11 - metrics**: NOT settled (§7).
+- **C11 - metrics**: settled as a build (§7): `TierActivity` out-params, the per-request `KV` line and the
+  `KV start=1` store state, `serve/kvcache.py`'s parse + store walk behind `GET /cache` and `/metrics`, and the
+  web Cache tab. The page reads and never mutates (`/cache` is a GET; no POST path reaches the store), and it
+  still has no conversation identity across a restart. Its live-server gates are written and unrun (§6).
 
 ### Where step 2 leaves NvmeHeader
 
