@@ -24,6 +24,7 @@ import argparse
 import collections
 import base64
 import hashlib
+import codecs
 import json
 import os
 import queue
@@ -456,13 +457,32 @@ class Vision:
             self.proc.kill()
 
 
+def gpu_list(cfg: dict) -> list[int]:
+    """The config's "gpu": one card (2), or several for a layer split ([0, 2] or "0,2"), numbered as nvidia-smi
+    numbers them; [] when it names none."""
+    g = cfg.get("gpu")
+    if g is None or g == "":
+        return []
+    items = g if isinstance(g, (list, tuple)) else str(g).split(",")
+    return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+
+
+def engine_args(cfg: dict) -> list[str]:
+    """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
+    config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
+    args = list(cfg["args"])
+    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
+        args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    return args
+
+
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
-    if cfg.get("gpu") is not None:                   # issue #51: the GPU to run on, numbered as nvidia-smi does; CUDA's
+    if gpu_list(cfg):                                # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
-        env["CUDA_VISIBLE_DEVICES"] = str(cfg["gpu"])
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -496,13 +516,19 @@ class ByteTokenizer:
 
 # ------------------------------------------------------------------------------------------------ core
 class Detokenizer:
-    """Incremental decode: re-decode the generated ids and emit only the new, complete suffix (a multi-byte
-    character split across tokens is held until complete)."""
+    """Incremental decode: each token's bytes go through an incremental UTF-8 decoder, which emits the complete
+    characters and holds a multi-byte character split across tokens until it is complete (invalid bytes become
+    U+FFFD, as a whole decode with errors="replace" makes them).  Constant time per token - the old re-decode of
+    every generated id cost 2 ms per token after 8K tokens and 4 ms after 16K (perf-review F-1).  A tokenizer
+    without `token_bytes` (the tests' byte tokenizer) keeps the re-decode."""
 
     def __init__(self, tok):
         self.tok, self.ids, self.sent = tok, [], 0
+        self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace") if hasattr(tok, "token_bytes") else None
 
     def push(self, t: int) -> str:
+        if self.inc is not None:
+            return self.inc.decode(self.tok.token_bytes(t))
         self.ids.append(t)
         text = self.tok.decode(self.ids)
         if text.endswith("�"):
@@ -573,7 +599,8 @@ class Service:
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s()},
-                                       gpu_index=int(getattr(self, "gpu_index", 0) or 0))
+                                       gpu_index=int(getattr(self, "gpu_index", 0) or 0),
+                                       gpu_indices=getattr(self, "gpu_indices", None))
 
     def _tok_s(self):
         with self.status_lock:
@@ -1463,7 +1490,8 @@ def main() -> int:
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
     ap.add_argument("--port", type=int, default=8095)
-    ap.add_argument("--gpu", type=int, help="the GPU to run on, as nvidia-smi numbers them (also \"gpu\" in the config)")
+    ap.add_argument("--gpu", help="the GPU to run on, as nvidia-smi numbers them, or several for a layer split "
+                                  "(\"0,2\"; also \"gpu\" in the config)")
     ap.add_argument("--tokenizer", default=str(ROOT / "pack/full/tokenizer"),
                     help="pack tokenizer directory (falls back to a byte tokenizer if absent)")
     ap.add_argument("--open", action="store_true", help="open the local page in the browser once the model is ready")
@@ -1478,7 +1506,7 @@ def main() -> int:
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
-        cfg["gpu"] = a.gpu
+        cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
@@ -1515,7 +1543,9 @@ def main() -> int:
             vision = Vision(cfg["vision"], log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=env)
         print("loading the model (the first start takes a minute or two) ...", flush=True)
-        engine = StrataEngine(cfg["exe"], cfg["args"], cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
+        if len(gpu_list(cfg)) > 1:
+            print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({cfg.get('layer_split') or 'auto'})", flush=True)
+        engine = StrataEngine(cfg["exe"], engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
         warn_tight_ram(engine.info.get("arena_mib"))
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
@@ -1527,7 +1557,8 @@ def main() -> int:
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
     svc.api_key = a.api_key or cfg.get("api_key", "")
-    svc.gpu_index = cfg.get("gpu") or 0                 # the Monitor reads the card the engine runs on (issue #51)
+    svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
+    svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:

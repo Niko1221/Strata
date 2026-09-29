@@ -18,6 +18,7 @@
 
 namespace strata::kernels {
 
+/// The table of the CURRENT device (a layer split sets one per device; null = the identity).
 void mrope_table_set(const int32_t* device_table);
 const int32_t* mrope_table();
 

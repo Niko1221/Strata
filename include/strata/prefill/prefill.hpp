@@ -72,6 +72,12 @@ public:
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
 
+    /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
+    /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
+    /// earlier stage is a chunk or more ahead of the last one by the time `on_chunk` runs, so this is where a
+    /// mid-prompt checkpoint takes each stage's part.  Runs on that stage's thread, with its device current.
+    std::function<bool(int64_t done, std::string& err)> on_stage_chunk;
+
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
 
@@ -79,7 +85,19 @@ public:
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;
 
+    /// LAYER SPLIT (multi-GPU): this prompt path runs layers [layer_begin, layer_end) (-1: to the last) on the
+    /// device `init` runs on.  A stage that does not start at layer 0 reads each chunk's residual rows from the
+    /// previous stage instead of embedding the tokens; a stage that does not end at the last layer copies its rows
+    /// to pinned host buffers (two, allocated by `init`) and runs `next` on them - on a thread, so the next stage
+    /// reads chunk c while this one reads chunk c + 1.  `on_chunk` belongs on the last stage.  Set before `init`.
+    void set_stage(int64_t layer_begin, int64_t layer_end, Prefill* next) {
+        stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
+    }
+
 private:
+    int64_t stage_lb_ = 0, stage_le_ = -1;
+    Prefill* next_ = nullptr;
+    const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     struct Impl;
     std::unique_ptr<Impl> impl_;

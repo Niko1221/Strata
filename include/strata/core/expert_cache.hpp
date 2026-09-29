@@ -126,6 +126,10 @@ public:
     /// against a `cudaStreamNonBlocking` one.  The first version used the async form and `verify_slot` refused
     /// the whole run with "slot 0 differs from the arena at byte 0" - which is the check doing its job.
     bool fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    /// perf-review D-4: `fill_slot_blocking`'s copy on the same (legacy) stream, but queued: many slots are refilled
+    /// with one `sync_queued` at the end instead of a wait per slot. Same ordering against earlier work, same bytes.
+    bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    bool sync_queued(std::string& err);
 
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
     /// THE CACHE HOLDS THE EXPERT IT CLAIMS TO.**  A slot table that is right about indices and wrong about

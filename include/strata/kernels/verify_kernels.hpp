@@ -39,6 +39,22 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 /// outstanding at once (the split verify window keeps two).
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
 
+// ---- perf-review E-6: a layer whose routed experts are all in VRAM needs nothing from the host
+/// One group's plan, built on the device when every routed expert of its n*k entries is resident: the host pool's
+/// layout (counts | start | dst | tok | pad | ptr | ptr2 | start2, `capx` entries) and order (distinct experts in
+/// routing order, their entries ascending), no PCIe groups.  *skip = ring when it did, else 0.
+void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
+                   const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
+                   long long capx, uint32_t* skip, uint32_t ring, void* stream);
+/// wait_flag_ge that also returns when *skip == value (device memory).
+void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream);
+/// copy_i32_from_mapped unless *skip == value.
+void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, const uint32_t* skip, uint32_t value,
+                                 void* stream);
+/// copy_from_mapped, or zeros when *skip == value (n a multiple of 4, 16-byte aligned).
+void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
+                              void* stream);
+
 /// Rows of the S2/S4/S8 embedding for T token ids read from DEVICE memory; out (T, n).  Bitwise `embedding_gather`.
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,
                           int n_tok, int64_t n, int code_bits, int code_bias, int group_elems, uint64_t row_codes,

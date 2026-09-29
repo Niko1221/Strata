@@ -428,6 +428,93 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
 }
 }  // namespace
 
+namespace {
+__global__ void resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
+                                     int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
+                                     long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
+                                     uint32_t ring) {
+    // one thread: at most kVerifyMaxT * 10 entries, the host's exact loop
+    for (int i = 0; i < n; ++i) {
+        const int32_t e = ids[i];
+        if (e < 0 || e >= n_expert || res[e] < 0) { *skip = 0; return; }
+    }
+    int32_t* counts = pl;
+    int32_t* start = pl + 4;
+    int32_t* dst = start + capx + 1;
+    int32_t* tok = dst + capx;
+    const long long ptr_off = ((4 + (capx + 1) + 2 * capx) + 1) & ~1ll;
+    unsigned long long* ptr = (unsigned long long*) (pl + ptr_off);
+    int32_t* start2 = pl + ptr_off + 4 * capx;
+    int groups = 0, entries = 0;
+    for (int i0 = 0; i0 < n; ++i0) {
+        bool first = true;
+        for (int j = 0; j < i0; ++j) if (ids[j] == ids[i0]) { first = false; break; }
+        if (!first) continue;
+        const int32_t slot = res[ids[i0]];
+        ptr[groups] = (unsigned long long) (cache_base + (slot_off ? (size_t) slot_off[slot] : (size_t) slot * (size_t) blob));
+        start[groups] = entries;
+        for (int i = i0; i < n; ++i)
+            if (ids[i] == ids[i0]) {
+                // an entry belongs to i0's group when its first occurrence is i0: the same expert id
+                dst[entries] = i;
+                tok[entries] = i / k;
+                ++entries;
+            }
+        ++groups;
+    }
+    start[groups] = entries;
+    start2[0] = entries;
+    counts[0] = groups;
+    counts[1] = entries;
+    counts[2] = 0;
+    __threadfence();
+    *skip = ring;
+}
+__global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip) {
+    if (*skip == value) return;
+    while (*flag < value) __nanosleep(100);
+    __threadfence_system();
+}
+__global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int n,
+                                       const uint32_t* skip, uint32_t value) {
+    if (*skip == value) return;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+}
+__global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile float4* src, long long n4,
+                                    const uint32_t* skip, uint32_t value) {
+    const bool zero = *skip == value;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x)
+        dst[i] = zero ? make_float4(0.f, 0.f, 0.f, 0.f) : const_cast<const float4*>(src)[i];
+}
+}  // namespace
+
+void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
+                   const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
+                   long long capx, uint32_t* skip, uint32_t ring, void* stream) {
+    resident_plan_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                             blob, plan, capx, skip, ring);
+    check("resident_plan");
+}
+void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
+    wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip);
+    check("wait_flag_ge_or");
+}
+void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, const uint32_t* skip, uint32_t value,
+                                 void* stream) {
+    if (n <= 0) return;
+    copy_i32_unless_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(dst, (const volatile int32_t*) src, (int) n, skip, value);
+    check("copy_i32_from_mapped_unless");
+}
+void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
+                              void* stream) {
+    if (n <= 0) return;
+    const long long n4 = n / 4;
+    const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
+    copy_or_zero_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, (const volatile float4*) src, n4, skip,
+                                                                    value);
+    check("copy_or_zero_from_mapped");
+}
+
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");

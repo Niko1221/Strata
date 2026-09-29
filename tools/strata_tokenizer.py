@@ -194,17 +194,24 @@ class Tokenizer:
         """
         return self._encode_matching(text, self._special_re if parse_special else self._always_re)
 
-    def decode(self, ids: list[int], errors: str = "replace") -> str:
-        raw = bytearray()
-        for i in ids:
+    def token_bytes(self, i: int) -> bytes:
+        """The raw bytes of one token (a multi-byte character can be split across tokens)."""
+        cache = self.__dict__.setdefault("_bytes_cache", {})
+        b = cache.get(i)
+        if b is None:
             if i < 0 or i >= len(self.tokens):
                 raise IndexError("token id %d is outside the vocabulary (%d)" % (i, len(self.tokens)))
+            raw = bytearray()
             for ch in self.tokens[i]:
-                b = UNICODE_TO_BYTE.get(ch)
-                if b is None:
+                v = UNICODE_TO_BYTE.get(ch)
+                if v is None:
                     raise KeyError("token %d contains a character outside the byte alphabet: %r" % (i, ch))
-                raw.append(b)
-        return raw.decode("utf-8", errors=errors)
+                raw.append(v)
+            b = cache[i] = bytes(raw)
+        return b
+
+    def decode(self, ids: list[int], errors: str = "replace") -> str:
+        return b"".join(self.token_bytes(i) for i in ids).decode("utf-8", errors=errors)
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory

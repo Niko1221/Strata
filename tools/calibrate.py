@@ -119,7 +119,10 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    return measure(cfg["args"], ids_list, start_engine, say)
+    args = list(cfg["args"])
+    if isinstance(cfg.get("gpu"), list) and "--layer-split" not in args:   # several cards: measured as it runs
+        args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    return measure(args, ids_list, start_engine, say)
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:

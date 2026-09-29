@@ -151,13 +151,15 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
 }  // namespace
 
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
-                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream) {
+                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
     if (nq <= 0) return;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535) {
         std::fprintf(stderr, "qsa_block_scores: unsupported indexer geometry\n");
         std::exit(1);
     }
-    const dim3 grid((unsigned) ((max_blocks + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
+    // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
+    const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+    const dim3 grid((unsigned) ((reach + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
     block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, max_blocks,
                                                                               scores);
     const cudaError_t e = cudaGetLastError();

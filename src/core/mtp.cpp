@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -82,6 +83,8 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 MtpDrafter::~MtpDrafter() {
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
+    for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
+    if (pf_dev_) cudaFree(pf_dev_);
     for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
     if (cs_) cudaStreamDestroy(cs_);
@@ -111,6 +114,7 @@ const void* MtpDrafter::q8(const char* name) const {
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window) {
+    cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
     max_t_ = max_t;
@@ -131,7 +135,15 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         }
         std::vector<uint8_t> blob;
         if (!read_file(rt_dir + "/dense.bin", blob)) { err = "mtp: cannot read dense.bin"; return false; }
-        if (cudaMalloc((void**) &dense_, blob.size()) != cudaSuccess) { err = "mtp: dense weights do not fit"; return false; }
+        const cudaError_t alloc = cudaMalloc((void**) &dense_, blob.size());
+        if (alloc != cudaSuccess) {
+            size_t free_bytes = 0, total_bytes = 0;
+            const cudaError_t info = cudaMemGetInfo(&free_bytes, &total_bytes);
+            err = "mtp: dense weights allocation failed (" + std::string(cudaGetErrorString(alloc)) +
+                  "), requested " + std::to_string(blob.size() >> 20) + " MiB, CUDA0 free " +
+                  (info == cudaSuccess ? std::to_string(free_bytes >> 20) + " MiB" : "unknown");
+            return false;
+        }
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
@@ -243,6 +255,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
 }
 
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
+    const OnDevice on_device(device_);
     wt_ = &wt;
     head_ = head;
     window_R_ = window_R;
@@ -469,6 +482,13 @@ bool MtpDrafter::capture_prefill(int T, std::string& err) {
     return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
 }
 
+bool MtpDrafter::capture_prefill_dev(int T, std::string& err) {
+    if (prefill_dev_exec_[T]) return true;
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
+    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
+    return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
+}
+
 bool MtpDrafter::capture_round(int T, std::string& err) {
     if (round_exec_[T]) return true;
     using namespace strata::kernels;
@@ -511,6 +531,7 @@ bool MtpDrafter::capture_step(int j, std::string& err) {
 }
 
 void MtpDrafter::kv_restore(int64_t upto) {
+    const OnDevice on_device(device_);
     if (st_.kv_mode != 2 || upto <= 0) return;
     // the ring's blocks below `upto`, from the host copy: a checkpoint resume may have left later cells in them
     const strata::kernels::QsaShapes s = shapes_of(*g_);
@@ -520,10 +541,69 @@ void MtpDrafter::kv_restore(int64_t upto) {
 }
 
 bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+    const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
     // cells the window can never reach again need no K/V
     const int64_t first_needed = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
+    // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
+    // graph on the one stream, with a single sync at the end (a group of <= max_t rows used to be staged in mapped
+    // memory and synced before the next: ~5,500 host round trips on a 32K prompt).  The same work in the same
+    // order.  STRATA_MTP_PREFILL_SYNC=1 keeps the old loop.
+    static const bool per_group_sync = std::getenv("STRATA_MTP_PREFILL_SYNC") != nullptr;
+    const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
+    if (!per_group_sync && n > 0) {
+        if (pf_cap_ < n * per_row) {
+            if (pf_dev_) cudaFree(pf_dev_);
+            pf_dev_ = nullptr;
+            pf_cap_ = 0;
+            if (cudaMalloc((void**) &pf_dev_, (size_t) (n * per_row) * sizeof(int32_t)) != cudaSuccess) {
+                err = "mtp prefill: the input records do not fit";
+                return false;
+            }
+            pf_cap_ = n * per_row;
+        }
+        std::vector<int32_t> rec((size_t) (n * per_row));
+        int32_t* tk = rec.data();
+        int32_t* stp = tk + n;
+        int32_t* ps = stp + 4 * n;
+        for (int64_t i = 0; i < n; ++i) {
+            const int64_t cell = cell0 + i;
+            tk[i] = next_tokens[i];
+            stp[i * 4 + 0] = (int32_t) cell;
+            stp[i * 4 + 1] = (int32_t) (cell + 1);
+            stp[i * 4 + 2] = (int32_t) ((cell + 1) / 4);
+            stp[i * 4 + 3] = (int32_t) (cell + 1);
+            for (int64_t h = 0; h < NHp; ++h) ps[i * NHp + h] = (int32_t) cell;
+        }
+        if (cudaMemcpyAsync(pf_dev_, rec.data(), rec.size() * sizeof(int32_t), cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
+            err = "mtp prefill: the input records upload failed";
+            return false;
+        }
+        const int32_t* d_tk = pf_dev_;
+        const int32_t* d_stp = d_tk + n;
+        const int32_t* d_ps = d_stp + 4 * n;
+        for (int64_t c = 0; c < n; c += max_t_) {
+            const int T = (int) std::min<int64_t>(max_t_, n - c);
+            if (cell0 + c + T <= first_needed) continue;
+            if (!capture_prefill_dev(T, err)) return false;
+            if (cudaMemcpyAsync(tok_, d_tk + c, (size_t) T * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
+                cudaMemcpyAsync(step_, d_stp + c * 4, (size_t) T * 16, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
+                cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
+                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
+                                cs_) != cudaSuccess ||
+                cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
+                err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        ms_prefill += ms_since(t0);
+        return true;
+    }
     for (int64_t c = 0; c < n; c += max_t_) {
         const int T = (int) std::min<int64_t>(max_t_, n - c);
         if (cell0 + c + T <= first_needed) continue;
@@ -551,6 +631,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts) {
+    const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
     if (!capture_round(T, err)) return false;
     const Clock::time_point t0 = Clock::now();
@@ -601,6 +682,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                              float* probs, float min_p, int* n_drafts) {
+    const OnDevice on_device(device_);
     // row 0 is the real pair; rows 1.. repeat it and only write cells the next round overwrites
     const int64_t HCN = g_->hc * g_->n_embd;
     for (int t = 0; t < T; ++t)

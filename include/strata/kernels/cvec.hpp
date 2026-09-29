@@ -43,7 +43,12 @@ const Cvec& cvec();
 bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int mode, int first, int last,
                  int64_t n_embd, int64_t hc, std::string& err);
 
-/// The per-request switch.  Synchronizes the device when it changes, so call it between requests.
+/// A layer split: put the loaded vector's tables on the CURRENT device too (cvec_apply uses the tables of the device
+/// it runs on).  No-op without a vector or when this device has them already.
+bool cvec_replicate(std::string& err);
+
+/// The per-request switch, on every device that holds the vector.  Synchronizes them when it changes, so call it
+/// between requests.
 void cvec_set_enabled(bool on);
 bool cvec_enabled();
 

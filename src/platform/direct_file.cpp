@@ -1,10 +1,14 @@
 // src/platform/direct_file.cpp - see include/strata/platform/direct_file.hpp.
 #include "strata/platform/direct_file.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -47,6 +51,26 @@ void DirectFile::free_aligned(void* p) {
 #endif
 }
 
+namespace {
+/// A queued read: `submit` only queues it; the pool's threads issue it (perf-review C-4 / F-2).  One thread
+/// issuing every read was the limit of the n-gram table's prompt reads: ~12 us of kernel time per read, ~80K
+/// reads/s, while an NVMe drive serves several times that at depth.
+struct Pending {
+    uint64_t offset;
+    void* buffer;
+    uint32_t length;
+    uint64_t tag;
+};
+
+/// The number of issuing threads: STRATA_IO_THREADS, else 4 (Windows: overlapped submits) / 16 (Linux: each
+/// thread does one blocking pread, so the thread count is the queue depth).
+int io_threads(int dflt) {
+    const char* v = std::getenv("STRATA_IO_THREADS");
+    const int n = v ? std::atoi(v) : dflt;
+    return std::clamp(n, 1, 64);
+}
+}  // namespace
+
 #if defined(_WIN32)
 // ------------------------------------------------------------------------------------------------ Windows
 namespace {
@@ -62,9 +86,14 @@ struct DirectFile::Impl {
     HANDLE file = INVALID_HANDLE_VALUE;
     HANDLE port = nullptr;
     uint64_t size = 0;
+    std::mutex mu;                      // everything below
     std::deque<Req*> free_reqs;
     std::vector<Req*> all_reqs;
-    std::deque<Completion> immediate;   // requests that failed after being counted as queued
+    std::deque<Completion> immediate;   // requests that completed without a port packet (EOF) or failed
+    std::deque<Pending> queue;          // submitted, not yet issued
+    std::condition_variable cv;
+    bool stop = false;
+    std::vector<std::thread> pool;
 
     Req* take() {
         if (free_reqs.empty()) {
@@ -75,6 +104,52 @@ struct DirectFile::Impl {
         Req* r = free_reqs.front();
         free_reqs.pop_front();
         return r;
+    }
+
+    void issue(const Pending& p) {
+        Req* r;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            r = take();
+        }
+        std::memset(&r->ov, 0, sizeof r->ov);
+        r->ov.Offset = (DWORD) (p.offset & 0xFFFFFFFFull);
+        r->ov.OffsetHigh = (DWORD) (p.offset >> 32);
+        r->tag = p.tag;
+        if (!ReadFile(file, p.buffer, p.length, nullptr, &r->ov)) {
+            const DWORD e = GetLastError();
+            if (e != ERROR_IO_PENDING) {
+                std::lock_guard<std::mutex> lk(mu);
+                free_reqs.push_back(r);
+                // at or past end of file: a zero-byte completion; anything else: a failed one
+                immediate.push_back(Completion{p.tag, 0, e == ERROR_HANDLE_EOF});
+                PostQueuedCompletionStatus(port, 0, 0, nullptr);   // wake a waiter to collect it
+            }
+        }
+    }
+
+    void worker() {
+        std::unique_lock<std::mutex> lk(mu);
+        for (;;) {
+            cv.wait(lk, [&] { return stop || !queue.empty(); });
+            if (stop && queue.empty()) return;
+            const Pending p = queue.front();
+            queue.pop_front();
+            lk.unlock();
+            issue(p);
+            lk.lock();
+        }
+    }
+
+    void stop_pool() {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            stop = true;
+        }
+        cv.notify_all();
+        for (std::thread& t : pool) t.join();
+        pool.clear();
+        stop = false;
     }
 };
 
@@ -111,18 +186,22 @@ bool DirectFile::open(const std::string& path, std::string& err) {
         close();
         return false;
     }
-    // Completions of reads that finish synchronously must still be queued to the port, so every submit
-    // produces exactly one packet and `wait` is the only completion path.
+    // Completions of reads that finish synchronously are still queued to the port, so every issued read
+    // produces exactly one packet; `wait` is the only completion path.
+    const int n = io_threads(4);
+    for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
     return true;
 }
 
 void DirectFile::close() {
+    impl_->stop_pool();
     if (impl_->port != nullptr) CloseHandle(impl_->port);
     if (impl_->file != INVALID_HANDLE_VALUE) CloseHandle(impl_->file);
     impl_->port = nullptr;
     impl_->file = INVALID_HANDLE_VALUE;
     impl_->size = 0;
     impl_->immediate.clear();
+    impl_->queue.clear();
 }
 
 bool DirectFile::is_open() const { return impl_->file != INVALID_HANDLE_VALUE; }
@@ -134,31 +213,22 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
         err = "DirectFile: unaligned request";
         return false;
     }
-    Req* r = impl_->take();
-    std::memset(&r->ov, 0, sizeof r->ov);
-    r->ov.Offset = (DWORD) (offset & 0xFFFFFFFFull);
-    r->ov.OffsetHigh = (DWORD) (offset >> 32);
-    r->tag = tag;
-    if (!ReadFile(impl_->file, buffer, length, nullptr, &r->ov)) {
-        const DWORD e = GetLastError();
-        if (e != ERROR_IO_PENDING) {
-            impl_->free_reqs.push_back(r);
-            if (e == ERROR_HANDLE_EOF) {           // at or past end of file: a zero-byte completion
-                impl_->immediate.push_back(Completion{tag, 0, true});
-                return true;
-            }
-            err = "DirectFile: ReadFile failed (error " + std::to_string(e) + ")";
-            return false;
-        }
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->queue.push_back(Pending{offset, buffer, length, tag});
     }
+    impl_->cv.notify_one();
     return true;
 }
 
 int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     int n = 0;
-    while (n < max && !impl_->immediate.empty()) {
-        out[n++] = impl_->immediate.front();
-        impl_->immediate.pop_front();
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        while (n < max && !impl_->immediate.empty()) {
+            out[n++] = impl_->immediate.front();
+            impl_->immediate.pop_front();
+        }
     }
     if (n == max || !is_open()) return n;
     OVERLAPPED_ENTRY entries[64];
@@ -166,9 +236,14 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     ULONG got = 0;
     const DWORD t = timeout_ms < 0 ? INFINITE : (DWORD) timeout_ms;
     if (!GetQueuedCompletionStatusEx(impl_->port, entries, want, &got, n > 0 ? 0 : t, FALSE)) return n;
+    std::lock_guard<std::mutex> lk(impl_->mu);
     for (ULONG i = 0; i < got; ++i) {
-        if (entries[i].lpOverlapped == nullptr) {          // a wake() packet, not a read
-            out[n++] = Completion{WAKE_TAG, 0, true};
+        if (entries[i].lpOverlapped == nullptr) {          // a wake() packet (or an immediate completion's nudge)
+            while (n < max && !impl_->immediate.empty()) {
+                out[n++] = impl_->immediate.front();
+                impl_->immediate.pop_front();
+            }
+            if (n < max) out[n++] = Completion{WAKE_TAG, 0, true};
             continue;
         }
         Req* r = (Req*) entries[i].lpOverlapped;
@@ -206,6 +281,7 @@ struct DirectFile::Impl {
     int fd = -1;
     uint64_t size = 0;
     std::deque<Completion> done;          // completions of the synchronous fallback path
+    std::mutex done_mu;
     // io_uring (best effort; `uring` false runs the fallback)
     bool uring = false;
     int ring_fd = -1;
@@ -222,13 +298,24 @@ struct DirectFile::Impl {
     unsigned* cq_tail = nullptr;
     unsigned* cq_mask = nullptr;
     unsigned entries = 0;
+    std::mutex submit_mu;                 // serializes SQ producers and pending submission
+
+    bool flush() {
+        while (pending > 0) {
+            const int submitted = uring_enter(ring_fd, pending, 0, 0);
+            if (submitted > 0) {
+                pending -= (unsigned) submitted;
+                continue;
+            }
+            if (submitted < 0 && errno == EINTR) continue;
+            return false;
+        }
+        return true;
+    }
 
     void teardown() {
         if (uring) {
-            while (pending > 0) {           // never leave SQEs that nobody will reap
-                uring_enter(ring_fd, pending, 0, 0);
-                pending = 0;
-            }
+            flush();                        // best effort while closing
             if (sq_ring) munmap(sq_ring, sq_ring_sz);
             if (cq_ring) munmap(cq_ring, cq_ring_sz);
             if (sqes) munmap(sqes, sqes_sz);
@@ -285,6 +372,7 @@ void DirectFile::close() {
     if (impl_->fd >= 0) ::close(impl_->fd);
     impl_->fd = -1;
     impl_->size = 0;
+    std::lock_guard<std::mutex> lk(impl_->done_mu);
     impl_->done.clear();
 }
 
@@ -299,9 +387,11 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
     Impl& m = *impl_;
     if (!m.uring) {
         const ssize_t got = pread(m.fd, buffer, length, (off_t) offset);
+        std::lock_guard<std::mutex> lk(m.done_mu);
         m.done.push_back(Completion{tag, got < 0 ? 0u : (uint32_t) got, got >= 0});
         return true;
     }
+    std::lock_guard<std::mutex> lk(m.submit_mu);
     const unsigned tail = __atomic_load_n(m.sq_tail, __ATOMIC_RELAXED);
     const unsigned idx = tail & *m.sq_mask;
     struct io_uring_sqe* sqe = &m.sqes[idx];
@@ -318,11 +408,33 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
     return true;
 }
 
-void DirectFile::wake() {}   // completions arrive on their own; a blocked wait re-arms after every batch
+void DirectFile::wake() {
+    Impl& m = *impl_;
+    if (!m.uring) {
+        std::lock_guard<std::mutex> lk(m.done_mu);
+        m.done.push_back(Completion{WAKE_TAG, 0, true});
+        return;
+    }
+    std::lock_guard<std::mutex> lk(m.submit_mu);
+    // Submit queued reads first. This frees their SQ slots before the wake NOP is appended, including at the
+    // supported maximum of 1024 in-flight reads.
+    if (!m.flush()) return;
+    const unsigned tail = __atomic_load_n(m.sq_tail, __ATOMIC_RELAXED);
+    const unsigned idx = tail & *m.sq_mask;
+    struct io_uring_sqe* sqe = &m.sqes[idx];
+    std::memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = IORING_OP_NOP;
+    sqe->user_data = WAKE_TAG;
+    m.sq_array[idx] = idx;
+    __atomic_store_n(m.sq_tail, tail + 1, __ATOMIC_RELEASE);
+    m.pending = 1;
+    m.flush();                            // best effort: a later wait retries if submission fails
+}
 
 int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     Impl& m = *impl_;
     if (!m.uring) {
+        std::lock_guard<std::mutex> lk(m.done_mu);
         int n = 0;
         while (n < max && !m.done.empty()) {
             out[n++] = m.done.front();
@@ -330,15 +442,16 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
         }
         return n;
     }
-    if (m.pending > 0) {
-        const unsigned n = m.pending;
-        m.pending = 0;
-        if (uring_enter(m.ring_fd, n, 0, 0) < 0) {
-            // Enter failed: nothing will ever complete.  Report the reads as failed so the caller errors out
-            // instead of waiting forever.
-            int written = 0;
-            for (unsigned i = 0; i < n && written < max; ++i) out[written++] = Completion{~0ull, 0, false};
-            return written;
+    {
+        std::lock_guard<std::mutex> lk(m.submit_mu);
+        if (m.pending > 0) {
+            const unsigned pending = m.pending;
+            if (!m.flush()) {
+                // Enter failed: report the reads as failed so the caller errors out instead of waiting forever.
+                const int written = std::min<int>((int) pending, max);
+                for (int i = 0; i < written; ++i) out[i] = Completion{~0ull, 0, false};
+                return written;
+            }
         }
     }
     unsigned head = __atomic_load_n(m.cq_head, __ATOMIC_ACQUIRE);

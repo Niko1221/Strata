@@ -58,9 +58,18 @@ __global__ void apply(const float* x, float* out, int rows, int width,
     out[start + pair + n_rot / 2] = a * s + b * c;
 }
 }
-namespace { std::atomic<const int32_t*> mrope_tab{nullptr}; }
-void mrope_table_set(const int32_t* device_table) { mrope_tab.store(device_table, std::memory_order_relaxed); }
-const int32_t* mrope_table() { return mrope_tab.load(std::memory_order_relaxed); }
+// one table per device (a layer split runs the rope kernels on several): set and read for the current device
+namespace {
+constexpr int kMropeDevices = 64;
+std::atomic<const int32_t*> mrope_tab[kMropeDevices] = {};
+int mrope_dev() {
+    int d = 0;
+    if (cudaGetDevice(&d) != cudaSuccess || d < 0 || d >= kMropeDevices) d = 0;
+    return d;
+}
+}  // namespace
+void mrope_table_set(const int32_t* device_table) { mrope_tab[mrope_dev()].store(device_table, std::memory_order_relaxed); }
+const int32_t* mrope_table() { return mrope_tab[mrope_dev()].load(std::memory_order_relaxed); }
 void native_rope_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 bool native_rope_enabled() { return enabled.load(std::memory_order_relaxed); }
 void native_rope_apply(const float* x, float* out, int rows, int head_dim,

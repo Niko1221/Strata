@@ -169,14 +169,19 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
-        engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus)."""
+        engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
+        the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
+        PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own."""
         self.extra = extra
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
-        self.gpu = _Nvml(gpu_index)
+        idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
+        self.gpus = [(i, _Nvml(i)) for i in idx]
+        self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
+        self.gpu = self.gpus[0][1]
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
@@ -184,7 +189,8 @@ class Telemetry:
             self.ps = None
         self.fallback = _CpuRamFallback()
         self.static = {
-            "gpu_name": self.gpu.name() if self.gpu.ok() else None,
+            "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
+            "gpu_count": len(self.gpus),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
@@ -210,7 +216,21 @@ class Telemetry:
     def sample(self):
         s = {}
         if self.gpu.ok():
-            g = self.gpu.read()
+            reads = [(i, g.read()) for i, g in self.gpus]
+            g = dict(reads[0][1])
+            if len(reads) > 1:
+                def vals(k):
+                    return [r[k] for _, r in reads if r.get(k) is not None]
+                for k in ("mem_used", "mem_total", "power", "power_limit", "pcie_rx_mb", "pcie_tx_mb"):
+                    v = vals(k)
+                    g[k] = sum(v) if v else None
+                u = vals("util")
+                g["util"] = sum(u) / len(u) if u else None
+                t = vals("temp")
+                g["temp"] = max(t) if t else None
+                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
+                             for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:
