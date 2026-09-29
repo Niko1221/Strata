@@ -1420,6 +1420,10 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
     say("  Later, closing this window stops the model.")
     say("  " + "-" * 100)
+    if not WIN:
+        # Replace this process instead of spawning a child. In a container the server is then PID 1,
+        # so docker stop's SIGTERM reaches the process that can answer the engine with QUIT.
+        os.execv(cmd[0], cmd)
     return subprocess.call(cmd)
 
 

@@ -28,6 +28,7 @@ import codecs
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1759,9 +1760,7 @@ def main() -> int:
     if a.open:
         import webbrowser
         webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
-    try:
-        threading.Event().wait()
-    except KeyboardInterrupt:
+    def stop():
         httpd.shutdown()
         if hasattr(engine, "close"):
             engine.close()
@@ -1769,6 +1768,22 @@ def main() -> int:
             vision.close()
         if hub is not None:
             hub.close()
+
+    # Ctrl-C is the only signal Python handles by default, so the container's PID 1 would drop
+    # docker stop's SIGTERM and be killed after the grace period. Handle it here: this process is
+    # the one that owns the engine's stdin, so it is the only one that can end it with QUIT.
+    def on_signal(signum, frame):
+        raise SystemExit(0)
+
+    for s in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(s, on_signal)
+        except (ValueError, OSError, AttributeError):   # not the main thread, or no SIGTERM (Windows)
+            pass
+    try:
+        threading.Event().wait()
+    except (KeyboardInterrupt, SystemExit):
+        stop()
     return 0
 
 
