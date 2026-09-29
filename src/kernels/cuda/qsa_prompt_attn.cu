@@ -24,7 +24,7 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 
 // The MMA and cp.async below need sm_80. Builds for older cards (the experimental sm_75 one) compile them to a trap;
 // qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs there.
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#if !defined(__HIP__) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800)
 #define STRATA_PA_SM80 1
 #else
 #define STRATA_PA_SM80 0
@@ -32,7 +32,7 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 
 __device__ __forceinline__ void mma16816(float* c, const uint32_t* a, const uint32_t* b) {
 #if !STRATA_PA_SM80
-    __trap();
+    __builtin_trap();
 #else
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
@@ -338,7 +338,7 @@ __device__ __forceinline__ int swz(int cell, int byte) {   // byte offset of (ce
 }
 __device__ __forceinline__ void cp_async16(void* smem, const void* gmem, bool valid) {
 #if !STRATA_PA_SM80
-    __trap();
+    __builtin_trap();
 #else
     const unsigned sa = (unsigned) __cvta_generic_to_shared(smem);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(sa), "l"(gmem), "r"(valid ? 16 : 0));
@@ -636,6 +636,9 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
+#if defined(STRATA_USE_HIP)
+    return false;   // the MMA/cp.async kernels above are sm_80 CUDA; the old kernel serves the HIP backend
+#endif
     {   // sm_80 or newer (the MMA and cp.async above); an older card keeps the old kernel
         static int cc_major[64] = {};
         int dev = 0;

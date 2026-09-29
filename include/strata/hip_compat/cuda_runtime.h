@@ -34,6 +34,17 @@
 #define cudaGetLastError hipGetLastError
 #define cudaGraphDestroy hipGraphDestroy
 #define cudaGraphExecDestroy hipGraphExecDestroy
+#define cudaGraphGetNodes hipGraphGetNodes
+#define cudaGraphNode_t hipGraphNode_t
+#define cudaGraphNodeType hipGraphNodeType
+#define cudaGraphNodeTypeKernel hipGraphNodeTypeKernel
+#define cudaGraphNodeTypeMemcpy hipGraphNodeTypeMemcpy
+#define cudaGraphNodeTypeMemset hipGraphNodeTypeMemset
+#define cudaGraphNodeGetType hipGraphNodeGetType
+#define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
+#define cudaKernelNodeParams hipKernelNodeParams
+#define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
+#define cudaDevAttrComputeCapabilityMinor hipDeviceAttributeComputeCapabilityMinor
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphGetNodes hipGraphGetNodes
 #define cudaGraphLaunch hipGraphLaunch

@@ -543,8 +543,12 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 
 // a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
 namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
+#if defined(__HIP__)
+    const unsigned long long t = clock64();   // gfx clocks, not wall ns: compare relative spans only
+#else
     unsigned long long t;
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+#endif
     buf[i] = t;
 } }
 void gpu_stamp(unsigned long long* buf, int i, void* stream) {

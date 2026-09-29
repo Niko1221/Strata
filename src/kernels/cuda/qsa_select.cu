@@ -161,7 +161,7 @@ constexpr int TC_QS = IDX_HEADS * IDX_DIM + 4;   // query row stride in floats
 constexpr int TC_KS = IDX_DIM + 4;               // key row stride
 
 // TF32 conversion and MMA need sm_80: below it they compile to a trap and qsa_block_scores_tc refuses the device
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#if !defined(__HIP__) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800)
 #define STRATA_SEL_SM80 1
 #else
 #define STRATA_SEL_SM80 0
@@ -177,7 +177,7 @@ __device__ __forceinline__ uint32_t tf32_hi(float x) {
 }
 __device__ __forceinline__ void mma_tf32(float* c, const uint32_t* a, const uint32_t* b) {
 #if !STRATA_SEL_SM80
-    __trap();
+    __builtin_trap();
 #else
     asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
@@ -449,6 +449,9 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
                          int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
+#if defined(STRATA_USE_HIP)
+    return false;   // no TF32 MMA on gfx1100; the warp kernel (qsa_block_scores) serves the HIP backend
+#endif
     {   // sm_80 or newer (TF32 MMA); an older card keeps the warp kernel
         static int cc_major[64] = {};
         int dev = 0;

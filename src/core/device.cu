@@ -63,7 +63,7 @@ DeviceInfo device_info(int ordinal) {
     // The kernels need sm_80 or newer (tf32 mma in the attention scorer, bf16 math) - the same floor the
     // arch guard in CMakeLists enforces at build time (RTX 30 / 40 / 50).  Anything older is caught here,
     // because a binary can be carried to a machine with an older card and would otherwise silently take
-    whatever path the driver chose.  Pre-Blackwell is untested by the author; trust, then verify.
+// whatever path the driver chose.  Pre-Blackwell is untested by the author; trust, then verify.
     // The HIP backend runs only on its validated target: gfx1100 with 32-thread warps.
 #if defined(STRATA_USE_HIP)
     if (std::strncmp(p.gcnArchName, "gfx1100", 7) != 0 || p.warpSize != 32) {
