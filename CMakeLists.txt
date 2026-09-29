@@ -506,6 +506,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(platform_memory_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME platform_memory_test COMMAND platform_memory_test)
 
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(pinned_shared_test src/core/pinned_shared_test.cpp)
+    target_link_libraries(pinned_shared_test PRIVATE strata_core ${_strata_gpu_runtime_target})
+    add_test(NAME pinned_shared_test COMMAND pinned_shared_test)
+  endif()
+
   # Plan v0.3 P2: the n-gram table read straight from the SSD. The selftest needs only the CPU and a temp file.
   add_executable(ple_reader_test src/ngram/ple_reader_test.cpp)
   target_include_directories(ple_reader_test PRIVATE ${_strata_gpu_include_directories})

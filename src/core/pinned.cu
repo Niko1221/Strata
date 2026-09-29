@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -23,7 +24,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
 #define MAP_HUGE_2MB (21 << 26)
@@ -34,9 +38,31 @@ namespace strata::core {
 
 namespace {
 
+constexpr uint64_t kSharedArenaHeaderBytes = 4096;
+constexpr char kSharedArenaMagic[16] = "STRATA-ARENA-V1";
+
+struct SharedArenaHeader {
+    char magic[16];
+    uint32_t version;
+    uint32_t header_bytes;
+    uint64_t arena_bytes;
+    uint64_t pack_hash;
+    uint64_t reserved[4];
+};
+static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
+
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
-void* reserve(uint64_t bytes, PageBacking& got, std::string& note) {
+// A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
+// are the resident arena.  Keeping the header inside the same mapping also works for tmpfs and hugetlbfs.
+void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+    mapping_base = nullptr;
+    mapping_bytes = 0;
 #ifdef _WIN32
+    if (!shared_file.empty()) {
+        note = "shared-file arena backing is not implemented on Windows";
+        return nullptr;
+    }
     // MEM_LARGE_PAGES needs SeLockMemoryPrivilege.  Having it assigned to the account is not enough: the
     // PROCESS must enable it in its own token (AdjustTokenPrivileges) before VirtualAlloc, or the call fails.
     // An account without the assignment, or a failure to enable, leaves the process as it was: VirtualAlloc
@@ -84,6 +110,94 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note) {
     got = PageBacking::NormalPages;
     return p;
 #else
+    if (!shared_file.empty()) {
+        if (shared_pack_hash == 0) {
+            note = "shared arena requires a nonzero pack hash";
+            return nullptr;
+        }
+        if (bytes > UINT64_MAX - kSharedArenaHeaderBytes) {
+            note = "shared arena size overflows its header";
+            return nullptr;
+        }
+        const uint64_t file_bytes = kSharedArenaHeaderBytes + bytes;
+        const int fd = open(shared_file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            note = "cannot open shared arena " + shared_file + ": " + std::strerror(errno);
+            return nullptr;
+        }
+        struct stat st{};
+        if (fstat(fd, &st) != 0) {
+            const int e = errno;
+            close(fd);
+            note = "cannot stat shared arena " + shared_file + ": " + std::strerror(e);
+            return nullptr;
+        }
+
+        const bool fresh = st.st_size == 0;
+        if (fresh) {
+            if (ftruncate(fd, (off_t) file_bytes) != 0) {
+                const int e = errno;
+                close(fd);
+                note = "cannot size shared arena " + shared_file + ": " + std::strerror(e);
+                return nullptr;
+            }
+            SharedArenaHeader hdr{};
+            std::memcpy(hdr.magic, kSharedArenaMagic, sizeof hdr.magic);
+            hdr.version = 1;
+            hdr.header_bytes = (uint32_t) kSharedArenaHeaderBytes;
+            hdr.arena_bytes = bytes;
+            hdr.pack_hash = shared_pack_hash;
+            const ssize_t written = pwrite(fd, &hdr, sizeof hdr, 0);
+            if (written != (ssize_t) sizeof hdr) {
+                const int e = errno;
+                close(fd);
+                note = "cannot write shared arena header " + shared_file + ": " +
+                       (written < 0 ? std::string(std::strerror(e)) : std::string("short write"));
+                return nullptr;
+            }
+        } else {
+            if (st.st_size < 0 || (uint64_t) st.st_size != file_bytes) {
+                close(fd);
+                note = "shared arena " + shared_file + " is " +
+                       std::to_string((unsigned long long) st.st_size) + " B, expected " +
+                       std::to_string((unsigned long long) file_bytes) + " B including its header";
+                return nullptr;
+            }
+            SharedArenaHeader hdr{};
+            const ssize_t got_header = pread(fd, &hdr, sizeof hdr, 0);
+            if (got_header != (ssize_t) sizeof hdr ||
+                std::memcmp(hdr.magic, kSharedArenaMagic, sizeof hdr.magic) != 0 ||
+                hdr.version != 1 || hdr.header_bytes != kSharedArenaHeaderBytes || hdr.arena_bytes != bytes) {
+                close(fd);
+                note = "shared arena " + shared_file + " has an incompatible or missing header";
+                return nullptr;
+            }
+            if (hdr.pack_hash != shared_pack_hash) {
+                close(fd);
+                char b[256];
+                std::snprintf(b, sizeof b,
+                              "shared arena %s was written for pack hash %016llx, expected %016llx",
+                              shared_file.c_str(), (unsigned long long) hdr.pack_hash,
+                              (unsigned long long) shared_pack_hash);
+                note = b;
+                return nullptr;
+            }
+        }
+
+        void* map = mmap(nullptr, (size_t) file_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        const int e = errno;
+        close(fd);
+        if (map == MAP_FAILED) {
+            note = "cannot map shared arena " + shared_file + ": " + std::strerror(e);
+            return nullptr;
+        }
+        mapping_base = map;
+        mapping_bytes = file_bytes;
+        got = PageBacking::NormalPages;
+        note = "MAP_SHARED file " + shared_file + " (pack hash checked)";
+        return (uint8_t*) map + kSharedArenaHeaderBytes;
+    }
+
     void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
     if (p != MAP_FAILED) {
@@ -138,9 +252,14 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
-                         uint64_t max_pinned_bytes) : capacity(bytes) {
+                         uint64_t max_pinned_bytes, const std::string& shared_file,
+                         uint64_t shared_pack_hash) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
@@ -218,8 +337,10 @@ PinnedArena::~PinnedArena() {
         } else {
             cudaHostUnregister(base);
         }
-        release(base, capacity);
+        release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
+        mapping_base = nullptr;
+        mapping_bytes = 0;
     }
 }
 

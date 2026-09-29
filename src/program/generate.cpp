@@ -182,6 +182,7 @@ struct Options {
     /// is reserved for a host thread that has nothing to do while the drain runs.
     bool no_host_worker = false;
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
@@ -435,6 +436,9 @@ void usage() {
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
+                 "  --shared-expert-arena FILE  Linux: back the resident arena with one MAP_SHARED file.\n"
+                 "                       Put this file on /dev/shm or hugetlbfs, not ordinary SSD storage.\n"
+                 "                       A small header binds an existing backing file to the same pack.\n"
                  "  --resident-cpu-experts  with mmap and a static profile, keep CPU misses resident in ordinary RAM.\n"
                  "                       Borrowed GPU-cache entries may read from mmap during prompt prefill.\n");
 }
@@ -1070,6 +1074,7 @@ int main(int argc, char** argv) {
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = true;
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
@@ -1139,6 +1144,10 @@ int main(int argc, char** argv) {
         }
     }
     const bool multi_gpu = !split_devs.empty() && !split_same;
+    if (o.mmap_experts && !o.shared_expert_arena.empty()) {
+        std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
+        return 2;
+    }
     if (o.resident_cpu_experts && (!o.mmap_experts || o.expert_profile.empty() || o.adapt_every != 0)) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts requires --mmap-experts, a static --expert-profile and --adapt-every 0\n");
         return 2;
@@ -1787,7 +1796,8 @@ int main(int argc, char** argv) {
         // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
         // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail)
         const uint64_t pin_limit = (o.expert_cache_remote[0] > 0 || multi_gpu) ? (8ull << 30) : 0;
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit)) {
+        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+                            o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

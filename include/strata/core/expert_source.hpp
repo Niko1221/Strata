@@ -385,7 +385,7 @@ public:
     /// Allocates and loads `<pack_dir>/experts.bin`.  Prints nothing; the caller reports `note()` and the load
     /// rate, because those are the two numbers that say whether the arena is the one that was asked for.
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads, std::string& err,
-              uint64_t max_pinned_bytes = 0);
+              uint64_t max_pinned_bytes = 0, const std::string& shared_arena_file = {});
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's shard 1.
     void set_gguf(const std::string& shard1) { gguf_ = shard1; }
     void close();

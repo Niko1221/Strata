@@ -1086,6 +1086,111 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
 
 // ================================ THE RESIDENT ARENA (R2.1) ================================
 
+namespace {
+
+void hash_u64(uint64_t& h, uint64_t v) {
+    h = fnv1a64((const uint8_t*) &v, sizeof v, h);
+}
+
+void hash_text(uint64_t& h, const std::string& s) {
+    h = fnv1a64((const uint8_t*) s.data(), (uint64_t) s.size(), h);
+}
+
+bool hash_small_file(const std::filesystem::path& path, uint64_t& h, std::string& err) {
+    hash_text(h, path.filename().string());
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        hash_u64(h, 0);
+        return true;
+    }
+    hash_u64(h, 1);
+    std::vector<uint8_t> buf(64u << 10);
+    for (;;) {
+        f.read((char*) buf.data(), (std::streamsize) buf.size());
+        const std::streamsize n = f.gcount();
+        if (n > 0) h = fnv1a64(buf.data(), (uint64_t) n, h);
+        if (f.eof()) break;
+        if (!f) {
+            err = "ArenaExpertSource: cannot hash pack metadata " + path.string();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hash_sampled_file(const std::filesystem::path& path, uint64_t& h, std::string& err) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) {
+        err = "ArenaExpertSource: cannot sample pack source " + path.string();
+        return false;
+    }
+    const std::streamoff end = f.tellg();
+    if (end < 0) {
+        err = "ArenaExpertSource: cannot size pack source " + path.string();
+        return false;
+    }
+    const uint64_t bytes = (uint64_t) end;
+    hash_text(h, path.filename().string());
+    hash_u64(h, bytes);
+    constexpr uint64_t sample = 64u << 10;
+    const uint64_t starts[3] = {0, bytes / 2, bytes > sample ? bytes - sample : 0};
+    std::vector<uint8_t> buf((size_t) std::min<uint64_t>(sample, bytes));
+    for (uint64_t off : starts) {
+        if (buf.empty()) break;
+        const uint64_t at = std::min<uint64_t>(off, bytes - (uint64_t) buf.size());
+        f.clear();
+        f.seekg((std::streamoff) at);
+        f.read((char*) buf.data(), (std::streamsize) buf.size());
+        if ((size_t) f.gcount() != buf.size()) {
+            err = "ArenaExpertSource: short read while hashing pack source " + path.string();
+            return false;
+        }
+        hash_u64(h, at);
+        h = fnv1a64(buf.data(), (uint64_t) buf.size(), h);
+    }
+    return true;
+}
+
+bool shared_arena_pack_hash(const std::string& pack_dir, const std::string& experts_path,
+                            const std::string& gguf, const strata::kernels::cpu::ExpertLayout& lay,
+                            uint64_t& out, std::string& err) {
+    uint64_t h = 1469598103934665603ull;
+    hash_text(h, "strata-shared-expert-arena-pack-v1");
+    hash_u64(h, (uint64_t) lay.n_layers);
+    hash_u64(h, (uint64_t) lay.n_expert);
+    hash_u64(h, lay.total);
+    hash_u64(h, lay.max_blob);
+    hash_u64(h, lay.native ? 1 : 0);
+
+    const std::filesystem::path pack(pack_dir);
+    for (const char* name : {"manifest.json", "index.txt", "native_experts.txt"}) {
+        if (!hash_small_file(pack / name, h, err)) return false;
+    }
+
+    if (std::filesystem::exists(experts_path)) {
+        if (!hash_sampled_file(experts_path, h, err)) return false;
+    } else if (!gguf.empty()) {
+        // Native packs may read experts straight from one or more GGUF shards.  Sample every distinct source
+        // file named by native_experts.txt; this keeps the fingerprint cheap while still tying it to the model
+        // bytes rather than only to an equal-size layout.
+        const std::filesystem::path first(gguf);
+        std::vector<std::filesystem::path> sources{first};
+        for (const std::string& name : lay.gguf_file) {
+            if (name.empty()) continue;
+            const std::filesystem::path p = first.parent_path() / name;
+            if (std::find(sources.begin(), sources.end(), p) == sources.end()) sources.push_back(p);
+        }
+        for (const auto& p : sources) {
+            if (!hash_sampled_file(p, h, err)) return false;
+        }
+    }
+
+    out = h == 0 ? 1 : h;
+    return true;
+}
+
+}  // namespace
+
 // Plan v0.3 P6: the arena from the model's shard 1.  Each layer's gate, up and down tensors hold the 512 experts
 // one after another; they are read in chunks and each expert's slice lands at its place in the blob
 // [gate rows | up rows | down rows] - the layout tools/iq_pack.py would have written to experts.bin.
@@ -1158,7 +1263,8 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
 ArenaExpertSource::~ArenaExpertSource() { close(); }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
-                             std::string& err, uint64_t max_pinned_bytes) {
+                             std::string& err, uint64_t max_pinned_bytes,
+                             const std::string& shared_arena_file) {
     close();
     const std::string path = pack_dir + "/experts.bin";
     // plan v0.3 P6: the layout (canonical, or a native pack's per-layer blobs) was loaded by the driver
@@ -1190,6 +1296,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         }
     }
 
+    uint64_t pack_hash = 0;
+    if (!shared_arena_file.empty() &&
+        !shared_arena_pack_hash(pack_dir, path, gguf_, lay, pack_hash, err)) return false;
+
     // one layer per registration slice, so no expert straddles two registrations.  The arena is one blob
     // longer than the file: a copy of a whole VRAM slot (the largest blob) may then start at any expert.
     std::vector<uint64_t> bounds, loff, lbytes;
@@ -1199,10 +1309,14 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         lbytes.push_back(lay.blob_bytes(l) * (uint64_t) n_expert);
     }
     bounds.push_back(want);
-    PinnedArena* a = new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes);
+    PinnedArena* a = new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
+                                     shared_arena_file, pack_hash);
     if (!a->valid()) {
+        const std::string why = a->note;
         delete a;
-        err = "ArenaExpertSource: the arena could not be reserved (" + std::to_string(want) + " B)";
+        err = "ArenaExpertSource: the arena could not be reserved (" +
+              std::to_string(want + (uint64_t) blob) + " B)" +
+              (why.empty() ? std::string{} : ": " + why);
         return false;
     }
     const LoadStats st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, threads)
