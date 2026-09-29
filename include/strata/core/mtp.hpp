@@ -73,6 +73,19 @@ public:
     double ms_draft = 0, ms_prefill = 0;
     int64_t rounds = 0;
 
+    /// E-9: the prompt path computes this layer's prompt K/V in batches (Prefill::draft_kv): its tensors, its K/V
+    /// state, the first cell a round can still read, its device, and a wait for its own stream.
+    const float* tensor_f32(const char* name) const { return f32(name); }
+    const uint16_t* tensor_bf16(const char* name) const { return bf16(name); }
+    const void* tensor_q8(const char* name) const { return q8(name); }
+    QsaState& kv_state_rw() { return st_; }
+    int64_t first_needed() const { return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0; }
+    int device() const { return device_; }
+    bool idle(std::string& err) {
+        if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "mtp: its stream failed"; return false; }
+        return true;
+    }
+
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
     bool capture_prefill(int T, std::string& err);

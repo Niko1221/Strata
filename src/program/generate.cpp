@@ -85,6 +85,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -1756,9 +1757,14 @@ int main(int argc, char** argv) {
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
     if (o.mmap_experts) {
-        if (native_pack) {   // FileExpertSource maps the canonical pack's experts.bin; a native pack has none
-            std::fprintf(stderr, "strata generate: --mmap-experts needs a canonical pack (experts.bin); %s is a native "
-                                 "(IQ) pack, whose experts are loaded into the arena\n", o.pack.c_str());
+        // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
+        // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
+        // mode: the experts come from the file through the OS cache instead of a pinned copy in RAM, for a PC whose
+        // GPU holds most of them but whose RAM cannot hold them all.
+        if (native_pack && !std::filesystem::exists(std::filesystem::path(o.pack) / "experts.bin")) {
+            std::fprintf(stderr, "strata generate: --mmap-experts needs the pack's experts.bin; %s is a native (IQ) pack "
+                                 "built without it: python tools/iq_pack.py --gguf <shard 1> --out %s --experts-bin\n",
+                         o.pack.c_str(), o.pack.c_str());
             return 2;
         }
         if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
@@ -3306,7 +3312,9 @@ int main(int argc, char** argv) {
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
             for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
-            if (!mtp.prefill(R_rows, nxt.data(), T, p0, e)) return false;
+            // E-9: batched through the prompt path when it can (one GPU: a layer split's drafter is on the last stage)
+            const bool batched = !multi_gpu && sp.draft_kv(mtp, R_rows, nxt.data(), T, p0, e);
+            if (!e.empty() || (!batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e))) return false;
             // progress for the server window: PP <position reached> <prompt tokens> <ms> <fresh tokens/s>
             const int64_t done = p0 + T;
             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
@@ -4451,7 +4459,8 @@ int main(int argc, char** argv) {
                 // cell i pairs R_i with the token at i + 1 (every such token is in the prompt)
                 std::vector<int32_t> nxt((size_t) T);
                 for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) o.tokens[(size_t) (p0 + t + 1)];
-                return mtp.prefill(R_rows, nxt.data(), T, p0, e);
+                if (prefill.draft_kv(mtp, R_rows, nxt.data(), T, p0, e)) return true;   // E-9
+                return e.empty() && mtp.prefill(R_rows, nxt.data(), T, p0, e);
             };
         }
         const Clock::time_point tp0 = Clock::now();

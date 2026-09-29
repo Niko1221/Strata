@@ -58,7 +58,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 25)                # v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 26)                # v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
@@ -1043,6 +1043,26 @@ def build_engine(gpu, vision, yes, llama) -> Path:
 DATA_ITEMS = ("models", "packs", "mtp")
 
 
+LOW_RAM_HEADROOM_GB = 10   # RAM beside the experts: the OS, the engine's other buffers, the server
+
+
+def low_ram_needed(model, ram) -> bool:
+    """The model's experts do not fit this PC's RAM with room left for the rest: they are then mapped from the pack's
+    experts.bin instead of copied into RAM (the low-RAM mode)."""
+    return ram < MODELS[model]["arena_gb"] + LOW_RAM_HEADROOM_GB
+
+
+def low_ram_gpu_share(model, vram_gb) -> float:
+    """About how much of the model's experts the GPU holds (VRAM minus ~5 GB for the dense weights, KV, buffers)."""
+    return max(0.0, min(1.0, (vram_gb - 5) / MODELS[model]["arena_gb"]))
+
+
+def low_ram_fits(model, ram, vram_gb) -> bool:
+    """In the low-RAM mode: the experts the GPU does not hold fit the RAM left beside the rest (as file cache)."""
+    arena = MODELS[model]["arena_gb"]
+    return ram - 6 + max(0.0, vram_gb - 5) >= arena
+
+
 def settings_path() -> Path:
     if WIN:
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
@@ -1456,6 +1476,9 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
+    ap.add_argument("--low-ram", choices=["auto", "on", "off"], default="auto",
+                    help="map the model's experts from its folder instead of copying them into RAM (for a PC with a big "
+                         "GPU and little RAM); auto: when the experts would not fit the RAM")
     ap.add_argument("--backend", choices=["cuda", "hip"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 XT/XTX on Linux (experimental; chosen by itself "
                          "when the PC has no NVIDIA card Strata can use)")
@@ -1530,8 +1553,20 @@ def main() -> int:
     step(1, "checking your PC")
     found = gpus()
     amd = [] if WIN else amd_gpus()
-    hip = a.backend == "hip" or (a.backend is None and not any(gpu_problem(g) is None for g in found)
-                                 and any(amd_problem(g) is None for g in amd))
+    nv_ok = any(gpu_problem(g) is None for g in found)
+    amd_ok = [g for g in amd if amd_problem(g) is None]
+    hip = a.backend == "hip" or (a.backend is None and not nv_ok and bool(amd_ok))
+    if a.backend is None and nv_ok and amd_ok:
+        # both kinds of card: asked (a first run on such a PC used to take NVIDIA without mentioning the Radeon)
+        say()
+        say("  This PC has NVIDIA and AMD cards Strata can use:")
+        say("  1) NVIDIA: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in found if gpu_problem(g) is None)
+            + "   (recommended)")
+        say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in amd_ok)
+            + "   (experimental: compiled here, one GPU, no images - docs/AMD_HIP.md)")
+        hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
+        if a.check and not hip:
+            say("  (the AMD card: ./setup.sh --backend hip)")
     if hip:                                            # AMD (experimental): one card, compiled here
         if WIN:
             fail("Strata's AMD backend runs on Linux only", "use an NVIDIA RTX 30 series or newer card on Windows")
@@ -1578,13 +1613,15 @@ def main() -> int:
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values())
-    if ram < need - 4 and not a.check:
+    low_ok = low_ram_fits("IQ1_M", ram, gpu["vram_gb"]) and a.low_ram != "off"   # the smallest model, mapped
+    if ram < need - 4 and not a.check and not low_ok:
         # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
         # bigger GPU does not lower this
         fail(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
              "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a copy "
              "of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model)")
-    ok(f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)")
+    ok(f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
+       + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so "
@@ -1597,6 +1634,9 @@ def main() -> int:
         say()
         for m, d in MODELS.items():
             verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+            if low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}% "
+                           "of its experts)")
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
         say("\nThis PC can run Strata. Run it again without --check to install.")
         return 0
@@ -1622,10 +1662,23 @@ def main() -> int:
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        if low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+            fit = f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}%)"
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
-    if ram < MODELS[model]["ram_gb"] - 4:
+    low_ram = a.low_ram == "on" or (a.low_ram == "auto" and low_ram_needed(model, ram))
+    if low_ram and multi:
+        warn("the low-RAM mode runs on one GPU: using " + gpu_name(gpu) + " only")
+        multi, sel, chosen = [], [gpu["index"]], [gpu]
+    if low_ram:
+        share = low_ram_gpu_share(model, gpu["vram_gb"])
+        ok(f"low-RAM mode: {model}'s experts ({MODELS[model]['arena_gb']:.0f} GB) are read from the model folder "
+           f"through the OS file cache instead of a copy in RAM ({ram:.0f} GB); the GPU holds ~{100 * share:.0f}% of them")
+        if share < 0.6:
+            warn("most of the experts are read from the SSD while it answers: expect it to be much slower than with "
+                 "enough RAM (a faster SSD and a smaller size help)")
+    elif ram < MODELS[model]["ram_gb"] - 4:
         # #125: a warning and a question, not a stop: the user may accept paging (asked, "no" by default, so an
         # unattended --yes install still stops here)
         need_gb, arena = MODELS[model]["ram_gb"], MODELS[model]["arena_gb"]
@@ -1708,7 +1761,8 @@ def main() -> int:
                 break
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
-        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
+        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
+        (MODELS[model]["arena_gb"] + 1 if low_ram and not (model == "Q2_0" and avx512 and family == "qwen") else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
 
@@ -1779,6 +1833,10 @@ def main() -> int:
     elif not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
         # every tensor as the GGUF stores it; the experts are read from the GGUF at start (seconds to build)
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack)], env=env)
+    if low_ram and not (pack / "experts.bin").exists():
+        say(f"  Writing the experts into one file for the low-RAM mode (one time, {MODELS[model]['arena_gb']:.0f} GB) ...")
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
+             "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
     mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
@@ -1807,6 +1865,8 @@ def main() -> int:
             "--max-context", str(ctx)]
     if ctx > 8192:
         args += ["--kv", kv]
+    if low_ram:
+        args += ["--mmap-experts"]   # the experts from the pack's experts.bin, not copied into RAM
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.
