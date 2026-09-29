@@ -3829,9 +3829,10 @@ int main(int argc, char** argv) {
                         std::printf("ERR verifying restored draft KV: %s\n", err.c_str());
                         return 1;
                     }
-                    std::fprintf(stderr, "strata serve: SNAPSHOT_VERIFY draft=%016llx cells=%lld mode=%d source=%s\n",
+                    std::fprintf(stderr, "strata serve: SNAPSHOT_VERIFY draft=%016llx cells=%lld mode=%d source=%s resident=%lld\n",
                                  (unsigned long long) draft_hash, (long long) incoming->kv.back().cells,
-                                 mtp.kv_state().kv_mode, "ram");
+                                 mtp.kv_state().kv_mode, "ram",
+                                 (long long) (mtp.kv_state().n_slots * strata::kernels::qsa_real_shapes().page_size));
                 }
                 live = std::move(incoming->live.ids);
                 live_imgs = std::move(incoming->live.imgs);
