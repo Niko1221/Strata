@@ -171,7 +171,7 @@ struct Probe {
             throw std::runtime_error("snapshot metadata exceeds staging bound");
         allocation_remaining -= n * width;
     }
-    int64_t checkpoint(const std::vector<int32_t>& prompt, const std::vector<ConversationImageKey>& images) {
+    int64_t checkpoint(const std::vector<int64_t>& prompt, const std::vector<ConversationImageKey>& images) {
         const uint64_t count = integer(); account(count, sizeof(int32_t));
         bool equal = count != 0 && count < prompt.size();
         if (equal) {
@@ -257,6 +257,27 @@ bool conversation_file_write(std::ostream& stream, const SavedConversation& imag
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+bool conversation_file_size(const SavedConversation& image, uint64_t& bytes, std::string& error) {
+    try {
+        // Header, geometry, steering, checkpoint/KV counts and integrity footer.
+        uint64_t total = 8 + 32 + 8 + 18 * 8 + 8 + 8 + 8 + 32;
+        auto checkpoint = [&](const ConversationCheckpoint& c) {
+            if (!c.stage_parts.empty()) throw std::runtime_error("layer-split snapshots are unsupported");
+            add(total, 8 * 8); // token/image counts, retention counter, five blob lengths
+            add(total, c.ids.size(), 4); add(total, c.imgs.size(), 16);
+            for (const auto* v : {&c.gdn, &c.ple, &c.tails, &c.dead, &c.block_pos}) add(total, v->size());
+        };
+        checkpoint(image.live);
+        for (const auto& c : image.checkpoints) checkpoint(c);
+        for (const auto& kv : image.kv) {
+            add(total, 12 * 8); // format, six dimensions, five blob lengths
+            for (const auto* v : {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled}) add(total, v->size());
+        }
+        bytes = total;
+        return true;
+    } catch (const std::exception& e) { error = e.what(); return false; }
+}
+
 bool conversation_file_read(std::istream& stream, const ConversationIdentity& identity,
                             uint64_t staging_limit, std::optional<uint64_t> available, uint64_t floor,
                             SavedConversation& output, std::string& error) {
@@ -301,7 +322,7 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
 }
 
 bool conversation_file_match(std::istream& stream, const ConversationIdentity& identity,
-                             uint64_t staging_limit, const std::vector<int32_t>& prompt,
+                             uint64_t staging_limit, const std::vector<int64_t>& prompt,
                              const std::vector<ConversationImageKey>& images, bool cvec,
                              ConversationFileMatch& match, std::string& error) {
     try {

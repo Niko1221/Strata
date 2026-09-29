@@ -15,8 +15,8 @@ path runs. That C++ integration change still needs an engine build and model
 validation; these Python passes do not establish it. No benchmark server or GPU
 was used for these checks.
 
-On the dependent NVMe branch, three CPU-only CTest targets pass: RAM policy,
-memory admission and file codec. The codec also passes 6,718 checks under
+On the dependent NVMe branch, four CPU-only CTest targets pass: RAM policy,
+memory admission, file codec and disk store. The codec also passes 6,721 checks under
 ASan/UBSan, compiled with `-Wall -Wextra -Werror`. Coverage includes every
 single-byte mutation and truncation of a fixture, foreign identities, missing
 assets, middle-of-file asset changes, staging/floor rejection, all encoded KV
@@ -24,10 +24,20 @@ formats and checkpoint buffers, and metadata-only matching against the RAM
 policy. Codec format coverage does not establish model compatibility or disk
 restart/promotion correctness. No GPU or benchmark endpoint was used.
 
+The store tests cover reopening, foreign identities, corruption, LRU/byte/entry
+retention, no I/O when disabled, eviction-only callbacks, failed spills and protected
+promotion candidates under tight RAM/disk budgets. Linux syscall wrappers inject
+write, file-sync, rename and directory-sync failures and observe quota usage during
+writes. Child processes exit during writing and immediately after rename to verify
+lock release, temporary-file cleanup and complete-file discovery after restart.
+These are host lifecycle tests, not power-loss simulation or full-model restoration.
+The latest ASan/UBSan results are 137 store, 47 RAM-policy and 23 admission checks.
+Local commands and logs are in `logs/nvme-host-20260929/` on the NVMe worktree.
+
 ```sh
 cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
-cmake --build build-conversation-host --target conversation_file_test conversation_cache_test conversation_memory_test -j 1
-ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_cache_test|conversation_memory_test)$' --output-on-failure
+cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test -j 1
+ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_store_test|conversation_cache_test|conversation_memory_test)$' --output-on-failure
 ```
 
 ## Recorded Linux evidence (2026-09-29)

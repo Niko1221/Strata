@@ -125,6 +125,9 @@ int main() {
     for (size_t i = 0; i < id.size(); ++i) id[i] = uint8_t(i);
     const auto source = fixture();
     const auto bytes = encode(source, id);
+    uint64_t measured = 0;
+    std::string sizing_error;
+    check(conversation_file_size(source, measured, sizing_error) && measured == bytes.size(), "quota reservation equals encoded fixture length");
     const auto bound = integer(bytes, 40);
     check(bytes.substr(0, 8) == std::string("STRSNAP\1", 8), "versioned magic");
     check(integer(bytes, 48) == uint64_t(-8), "geometry signed bits are little endian");
@@ -165,6 +168,7 @@ int main() {
     broken.setstate(std::ios::badbit);
     check(!conversation_file_read(broken, id, bound, bound, 0, decoded, error), "read failure is reported");
     const auto empty = encode({}, id);
+    check(conversation_file_size({}, measured, sizing_error) && measured == empty.size(), "empty envelope reservation includes framing");
     std::istringstream empty_input(empty);
     check(conversation_file_read(empty_input, id, 1 << 20, 1 << 21, 0, decoded, error), "empty envelope round trip");
     check(same(decoded, {}), "empty image replaces earlier output");
@@ -181,7 +185,7 @@ int main() {
     auto ram_copy = indexed;
     check(ram.put(std::move(ram_copy)), "RAM reference accepts prefix fixture");
     for (size_t length = 0; length < 9; ++length) {
-        std::vector<int32_t> prompt;
+        std::vector<int64_t> prompt;
         for (size_t i = 0; i < length; ++i) prompt.push_back(int32_t(i + 1));
         for (bool steering : {false, true}) {
             for (const auto& images : std::vector<std::vector<ConversationImageKey>>{
@@ -208,6 +212,9 @@ int main() {
     }
     std::istringstream foreign_file(indexed_bytes);
     ConversationFileMatch match;
+    std::istringstream wide_token_file(indexed_bytes);
+    check(conversation_file_match(wide_token_file, id, indexed_bound, {INT64_MAX, 2, 3}, {}, false, match, error) &&
+          match.tokens == 0, "64-bit request tokens are compared without narrowing");
     check(!conversation_file_match(foreign_file, foreign, indexed_bound, {1, 2, 3}, {}, false, match, error),
           "foreign identity is declined during selection");
     std::istringstream over_budget(indexed_bytes);

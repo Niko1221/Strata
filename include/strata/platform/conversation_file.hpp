@@ -26,6 +26,7 @@ bool conversation_identity(const std::vector<ConversationAsset>& assets, const s
 // This format deliberately refuses the experimental #52 v3/native-struct files.
 bool conversation_file_write(std::ostream& stream, const core::SavedConversation& image,
                              const ConversationIdentity& identity, std::string& error);
+bool conversation_file_size(const core::SavedConversation& image, uint64_t& bytes, std::string& error);
 // Reads directly into one staged image; no second whole-file buffer. Budget covers
 // vector payload/capacity and a fixed codec allowance, not allocator/RSS overhead.
 // Unknown RAM telemetry declines admission; failure leaves output unchanged.
@@ -42,7 +43,7 @@ struct ConversationFileMatch {
 // candidate is untrusted until file_read and the shared core validate it.
 // Requires a seekable stream positioned at its beginning.
 bool conversation_file_match(std::istream& stream, const ConversationIdentity& identity,
-                             uint64_t staging_limit, const std::vector<int32_t>& prompt,
+                             uint64_t staging_limit, const std::vector<int64_t>& prompt,
                              const std::vector<core::ConversationImageKey>& images, bool cvec,
                              ConversationFileMatch& match, std::string& error);
 

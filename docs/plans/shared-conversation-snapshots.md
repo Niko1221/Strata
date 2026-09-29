@@ -66,8 +66,8 @@ entries. A failed spill may drop the already-evicted entry; it must not exceed
 RAM limits or stop inference. Eviction-only persistence does not promise that
 the latest active turn survives a crash. Files contain conversation content.
 
-The adapter is being integrated from @maedoc's #52; disk restart/corruption,
-staging-budget, compatibility and eviction/promotion tests remain required.
+The adapter is being integrated from @maedoc's #52; full-model disk restart,
+compatibility and eviction/promotion tests remain required.
 Windows admission coverage includes @midhatn's contribution, preserved with its
 original authorship. See the [validation record](shared-conversation-upstream-validation.md)
 for results, commands, and hardware limits.
@@ -81,9 +81,23 @@ candidate, which must be decoded, integrity-checked and core-validated before us
 The codec follows the streaming-envelope approach contributed by Marmaduke
 Woodman (@maedoc); his original branch remains preserved for attribution.
 
-Build this optional component with `STRATA_ENABLE_CONVERSATION_DISK=ON` (requires
-OpenSSL Crypto); default builds have no new dependency. This currently enables
-the codec and its tests only. Atomic publication, quotas, eviction callbacks,
-runtime identity collection and promotion wiring are still pending, so this
-branch does not yet provide a usable disk cache. Its staging bound covers vector
-storage and a 64 KiB codec allowance, not allocator or process RSS overhead.
+`ConversationStore` owns `strata-conversations-v1` inside the configured directory.
+An exclusive process-held lock prevents concurrent writers and releases on crash.
+Files are flushed and synced before atomic rename; Linux also syncs the directory.
+Byte and entry quotas cover all identities, including the in-progress file.
+Oldest-use eviction makes room before writing, while a selected promotion candidate
+can be protected from eviction. Failed spills are dropped. Reopening removes
+interrupted temporary files and applies changed quotas. Unmanaged files are left
+alone. Linux creates owner-only files/directories; Windows inherits directory ACLs
+and its implementation remains untested here.
+
+The RAM policy provides a synchronous eviction callback and a staging reservation
+that shares its byte budget without consuming a parked slot. Neither promotion nor
+cache destruction calls the spill callback. A protected disk hit may cause a spill
+to be declined when disk space is tight; RAM eviction must still proceed.
+
+Build these optional components with `STRATA_ENABLE_CONVERSATION_DISK=ON` (requires
+OpenSSL Crypto); default builds have no new dependency. Runtime identity collection
+and serve-loop promotion wiring are still pending, so this branch does not yet
+provide a usable disk cache. The staging bound covers vector storage and a 64 KiB
+codec allowance, not allocator or process RSS overhead.
