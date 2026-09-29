@@ -113,6 +113,23 @@ public:
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    /// Row t's head logits, n_vocab floats on the device, of the last `run` - the same distribution `out[t]`
+    /// was sampled from (`--dump-logits`'s rows under `--spec`).  Valid until the next `run`.
+    const float* window_logits() const { return next_ ? next_->window_logits() : head_logits_; }
+
+    /// Capture the residual ladder inside every verify window graph. Row 0 is the embedding broadcast;
+    /// row l+1 is the residual BEFORE layer l+1 folds layer l's pending hyper-connection write (the next
+    /// fused read consumes exactly those numbers). This is the native decode layout, not the canonical
+    /// unfused ladder, so compare verify-ladder rows against verify-ladder rows or against the fused read's
+    /// own fold; llama-debug's `l_last` nodes need a canonical pack's ladder. Refused on a layer-split stage.
+    /// Valid only between `run` returning and the next `run`.
+    void set_layer_dump() { want_ladder_ = true; }
+    /// Row (`layer`, `t`), where layer in [0, n_layers] and t in [0, T). Row 0 is the embedding broadcast.
+    const float* ladder_row(int64_t layer, int t) const {
+        return ldump_host_ + ((size_t) layer * (size_t) max_t_ + (size_t) t) * (size_t) ladder_floats_per_row();
+    }
+    bool ladder() const { return ldump_host_ != nullptr; }
+    int64_t ladder_floats_per_row() const { return g_ != nullptr ? g_->hc * g_->n_embd : 0; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -231,6 +248,8 @@ private:
     uint16_t* sh_bf16_ = nullptr;
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
+    bool want_ladder_ = false;                                ///< set_layer_dump: capture the residual ladder
+    float* ldump_host_ = nullptr;                             ///< (n_layers + 1) * max_t * hc * n_embd, pinned mapped
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
 };
 

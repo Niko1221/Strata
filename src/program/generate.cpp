@@ -687,13 +687,6 @@ void mem_mark(const char* where) {
     std::fprintf(stderr, "strata trace: %lld MiB free after %s\n", (long long) (free_b >> 20), where);
 }
 
-int argmax(const std::vector<float>& v) {
-    int best = 0;
-    for (size_t i = 1; i < v.size(); ++i)
-        if (v[i] > v[best]) best = (int) i;
-    return best;
-}
-
 // ---- --serve's conversation cache.  A chat or an agent sends the whole conversation again with every request, and
 // reading it again is what made a long session wait minutes for every turn.  What a sequence leaves behind splits in
 // two, and only one half needs copying:
@@ -1249,6 +1242,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --logits-stride > 1 requires --max-new 1 and --dump-logits\n");
         return 2;
     }
+    if (!o.dump_halves.empty() && o.spec > 0) {
+        // Half-level ladder copies belong to the captured canonical block path. Under --spec the actual
+        // decode runs in verify windows, so the half dump would be empty or stale on a native pack.
+        std::fprintf(stderr, "strata generate: --dump-halves cannot follow --spec: the half-level copies live "
+                             "in the captured canonical block path, and a --spec run verifies in windows that "
+                             "do not carry them. Use --dump-layers (the verify window captures the residual "
+                             "ladder) or run without --spec.\n");
+        return 2;
+    }
     if (o.no_ple && !o.ple_gguf.empty()) {
         std::fprintf(stderr, "strata generate: --no-ple and --ple-gguf are mutually exclusive\n");
         return 2;
@@ -1426,14 +1428,16 @@ int main(int argc, char** argv) {
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
-    // Plan v0.3 P3: the fused hyper-connection read rides the native (FP32-activation) contract; the per-stage
-    // and dump measurements need the unfused layout of R, so they keep the old kernels.
+    // Plan v0.3 P3: the fused hyper-connection read is the native-path contract. Per-stage and dump
+    // measurements keep the unfused layout, so a canonical run with dumps disables fused_gr. A native
+    // pack has no ordinary decode path; its verify windows require the fused read, and its ladder is
+    // captured by Verifier::set_layer_dump, so fused_gr stays enabled there.
     strata::core::layer_set_fast_attn(!o.no_fast_attn);
     strata::core::layer_set_publish_kernel(!o.no_publish_kernel);
     strata::core::layer_set_fused_gdn(!o.no_fused_gdn);
     strata::core::layer_set_fast_select(!o.no_fast_select);
-    strata::core::layer_set_fused_gr(o.gr_native_mmvf && !o.no_fused_gr && !o.gpu_stages && o.dump_layers.empty() &&
-                                     o.dump_halves.empty() && !o.stage_timing);
+    strata::core::layer_set_fused_gr(o.gr_native_mmvf && !o.no_fused_gr && !o.gpu_stages && !o.stage_timing &&
+                                     (native_pack || (o.dump_layers.empty() && o.dump_halves.empty())));
     strata::core::layer_set_native_bf16(o.native_bf16);
     strata::core::layer_set_native_flash_attn_short(o.native_flash_attn_short);
     strata::kernels::ple_set_native_bf16(o.native_bf16_extra);
@@ -1514,6 +1518,17 @@ int main(int argc, char** argv) {
     if (strata::core::session_init(g, o.max_context, K, sbuf, ss) == 0) {
         std::fprintf(stderr, "strata generate: session_init failed\n");
         return 1;
+    }
+    // Generate mode always starts from an empty sequence, so the session state must be zeroed. The
+    // canonical path does this from put_input at position 0, but a native pack breaks out before the
+    // first put_input and runs verify windows instead, leaving cudaMalloc'd state uninitialized. That
+    // produced NaN/overflow and degenerate identical-token output once the allocation was reused.
+    if (native_pack) {
+        strata::core::session_zero(ss, g, nullptr, main_cs);
+        if (cudaDeviceSynchronize() != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: zeroing the session state failed\n");
+            return 1;
+        }
     }
     if (g.n_qsa_layers() > 0 && ss.qsa_states[0].kv_mode == 1)
         std::fprintf(stderr, "strata generate: KV streaming: %lld of %lld cells per QSA layer in VRAM, the K/V in "
@@ -2550,6 +2565,8 @@ int main(int argc, char** argv) {
     }
 
     std::FILE* dump = nullptr;
+    int64_t logits_rows_written = 0;   // the real row count, for the close-time header rewrite (see below)
+    int64_t logits_first_row = -1;     // the position the first row belongs to (a native pack starts at n_prompt-1)
     const int64_t dump_positions = (int64_t) o.tokens.size() - 1 + o.max_new;
     if (!o.dump_logits.empty()) {
         if (dump_positions > INT32_MAX || n_vocab > INT32_MAX) {
@@ -2583,6 +2600,8 @@ int main(int argc, char** argv) {
     // would otherwise be staged through a pageable bounce buffer on the critical path.
     std::FILE* layer_dump = nullptr;
     float* layer_stage = nullptr;
+    int64_t layer_frames = 0;   // frames actually written (ordinary loop + verify windows)
+    int64_t layer_first_row = -1;   // the first frame's position (echoed in the summary so a reader can align)
     const size_t layer_floats = (size_t) (g.n_layers + 1) * (size_t) g.hc * (size_t) g.n_embd;
     if (!o.dump_layers.empty()) {
         layer_dump = std::fopen(o.dump_layers.c_str(), "wb");
@@ -2884,7 +2903,13 @@ int main(int argc, char** argv) {
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
     const bool graph_hits = hit_fn != nullptr && !profile.empty() && !o.no_pool;
-    if (graph_hits && !o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr) {
+    // The expert tier's residency table is needed by the token graph and by verify windows. Keep the
+    // original gate for --no-capture / --no-token-graph to avoid changing their CPU/GPU expert split; stage
+    // it additionally when --spec needs verify windows, because those windows read the same table.
+    const bool stage_device_table = (graph_hits && !o.no_capture && !o.no_token_graph &&
+                                     layer_dump == nullptr && half_dump == nullptr) ||
+                                    (graph_hits && o.spec > 0);
+    if (stage_device_table) {
         host_res.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
         int64_t resident = 0;
         for (int64_t l = 0; l < g.n_layers; ++l)
@@ -2921,7 +2946,7 @@ int main(int argc, char** argv) {
         thits.scratch = drive.d.hit_scratch;
         thits.hit_out = drive.d.hit_out;
         drive.d.host_res = host_res.data();
-        std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
+        std::fprintf(stderr, "strata generate: resident experts: %lld in the VRAM tier, decided on the device\n",
                      (long long) resident);
     }
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
@@ -4513,7 +4538,15 @@ int main(int argc, char** argv) {
             tp = n;
         }
         // ---- the ladder for THIS position, in the order `session_loop` filled it: layer 0 first.
-        if (layer_dump != nullptr) std::fwrite(layer_stage, sizeof(float), layer_floats, layer_dump);
+        if (layer_dump != nullptr) {
+            if (layer_first_row < 0) layer_first_row = pos;
+            if (std::fwrite(layer_stage, sizeof(float), layer_floats, layer_dump) != layer_floats) {
+                std::fprintf(stderr, "strata generate: cannot write the layer ladder at position %lld\n", (long long) pos);
+                std::fclose(layer_dump);
+                return 1;
+            }
+            ++layer_frames;
+        }
         if (half_dump != nullptr) {
             std::fwrite(half_stage, sizeof(float), (size_t) g.n_layers * (size_t) half_stride, half_dump);
         }
@@ -4556,6 +4589,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: cannot write logits at position %lld\n", (long long) pos);
             std::fclose(dump);
             return 1;
+        }
+        if (emit_logits) {
+            if (logits_first_row < 0) logits_first_row = pos;
+            ++logits_rows_written;
         }
         {
             // **993 KB OF SYNCHRONOUS D2H AND A 248,320-FLOAT HOST SCAN, EVERY TOKEN.**  (The review's notes
@@ -4654,6 +4691,7 @@ int main(int argc, char** argv) {
         }
         mem_mark("the head and the prompt path");
         strata::core::Verifier ver;
+        if (layer_dump != nullptr) ver.set_layer_dump();   // the windows carry the residual ladder (C1, native too)
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
         vh.cache_base = thits.cache_base;
@@ -4833,6 +4871,73 @@ int main(int argc, char** argv) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
             }
+            // ---- C1 oracles per accepted window row. Row t at window start p is the distribution after
+            // token p+t, exactly what the ordinary loop writes at position p+t. Rejected draft rows are
+            // conditioned on tokens the ordinary path never feeds, so they are skipped. Read the per-window
+            // buffers here, before the next ver.run overwrites them and before commit launches its own graph.
+            if (dump != nullptr || o.check_logits || layer_dump != nullptr || final_r != nullptr) {
+                for (int t = 0; t <= a; ++t) {
+                    const int64_t rpos = p + t;
+                    // The dump covers positions [first, n_prompt - 1 + max_new). Windows can run past the
+                    // generation cap because their drafts are still conditioned on committed tokens, but
+                    // those extra rows are not part of the emitted sequence and are not written.
+                    if (rpos >= dump_positions) break;
+                    const bool emit_row = dump != nullptr &&
+                        strata::program::logits_selection::selected(rpos, dump_positions, o.logits_stride);
+                    if (!emit_row && !o.check_logits && layer_dump == nullptr && final_r == nullptr) continue;
+                    if (emit_row || o.check_logits) {
+                        if (cudaMemcpy(logits.data(), ver.window_logits() + (size_t) t * (size_t) n_vocab,
+                                       (size_t) n_vocab * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess ||
+                            cudaDeviceSynchronize() != cudaSuccess) {
+                            std::fprintf(stderr, "strata generate: reading the verify logits back failed\n");
+                            return 1;
+                        }
+                        int bad = 0;
+                        for (float v : logits) if (!std::isfinite(v)) ++bad;
+                        if (bad != 0) {
+                            std::fprintf(stderr, "strata generate: %d of %lld logits are not finite at position %lld\n",
+                                         bad, (long long) n_vocab, (long long) rpos);
+                            return 1;
+                        }
+                        if (emit_row) {
+                            if (logits_first_row < 0) logits_first_row = rpos;
+                            if (std::fwrite(logits.data(), sizeof(float), (size_t) n_vocab, dump) != (size_t) n_vocab) {
+                                std::fprintf(stderr, "strata generate: cannot write logits at position %lld\n",
+                                             (long long) rpos);
+                                std::fclose(dump);
+                                return 1;
+                            }
+                            ++logits_rows_written;
+                        }
+                    }
+                    if (layer_dump != nullptr) {
+                        const size_t HCN = (size_t) g.hc * (size_t) g.n_embd;
+                        if (layer_first_row < 0) layer_first_row = rpos;
+                        for (int64_t l = 0; l <= g.n_layers; ++l)
+                            std::memcpy(layer_stage + l * HCN, ver.ladder_row(l, t), HCN * sizeof(float));
+                        if (std::fwrite(layer_stage, sizeof(float), layer_floats, layer_dump) != layer_floats) {
+                            std::fprintf(stderr, "strata generate: cannot write the layer ladder at position %lld\n",
+                                         (long long) rpos);
+                            std::fclose(layer_dump);
+                            return 1;
+                        }
+                        ++layer_frames;
+                    }
+                    if (final_r != nullptr) {
+                        const int64_t posrec[2] = {rpos, (int64_t) window[(size_t) t]};
+                        if (std::fwrite(posrec, sizeof posrec, 1, final_r) != 1 ||
+                            cudaMemcpy(final_r_host.data(), ver.final_R(t), final_r_host.size() * sizeof(float),
+                                       cudaMemcpyDeviceToHost) != cudaSuccess ||
+                            std::fwrite(final_r_host.data(), sizeof(float), final_r_host.size(), final_r) !=
+                                final_r_host.size()) {
+                            std::fprintf(stderr, "strata generate: cannot write the final residual at position %lld\n",
+                                         (long long) rpos);
+                            std::fclose(final_r);
+                            return 1;
+                        }
+                    }
+                }
+            }
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
             std::thread adapt_thr;
@@ -4923,15 +5028,29 @@ int main(int argc, char** argv) {
                         (double) mtp.vram_bytes() / 1048576.0);
     }
 
-    if (dump != nullptr && std::fclose(dump) != 0) {
-        std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
-        return 1;
+    if (dump != nullptr) {
+        // The header written at open time estimates n_prompt - 1 + max_new (filtered by stride), but that
+        // only matches the file when the ordinary token loop runs every position. Batched prefill, --spec,
+        // and EOS early-stop all emit fewer rows. Rewrite the header with the actual row count before close
+        // so readers such as tools/logits_identical.py see the size the file really holds.
+        std::rewind(dump);
+        const int32_t hdr[2] = {(int32_t) n_vocab, (int32_t) logits_rows_written};
+        if (std::fwrite(hdr, sizeof hdr, 1, dump) != 1) {
+            std::fprintf(stderr, "strata generate: cannot rewrite the logits header\n");
+            std::fclose(dump);
+            return 1;
+        }
+        if (std::fflush(dump) != 0 || std::fclose(dump) != 0) {
+            std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
+            return 1;
+        }
     }
     if (layer_dump != nullptr) {
         std::fclose(layer_dump);
         cudaFreeHost(layer_stage);
-        std::printf("%-24s %s (%lld layers + the input x %d streams x %lld per position)\n", "layers dumped",
-                    o.dump_layers.c_str(), (long long) g.n_layers, (int) g.hc, (long long) g.n_embd);
+        std::printf("%-24s %s (%lld frames: %lld layers + the input x %d streams x %lld per position; first frame "
+                    "is position %lld)\n", "layers dumped", o.dump_layers.c_str(), (long long) layer_frames,
+                    (long long) g.n_layers, (int) g.hc, (long long) g.n_embd, (long long) layer_first_row);
     }
     if (half_dump != nullptr) {
         std::fclose(half_dump);
@@ -5093,7 +5212,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (dump != nullptr) std::printf("%-24s %s\n", "logits dumped", o.dump_logits.c_str());
+    if (dump != nullptr)
+        std::printf("%-24s %s (%lld rows for positions [%lld, %lld), %lld floats per row)\n", "logits dumped",
+                    o.dump_logits.c_str(), (long long) logits_rows_written,
+                    (long long) (logits_first_row < 0 ? 0 : logits_first_row),
+                    (long long) (logits_first_row < 0 ? 0 : logits_first_row + logits_rows_written),
+                    (long long) n_vocab);
 
     strata::core::session_graphs_free(gr);
     strata::core::doorbell_free(db);
