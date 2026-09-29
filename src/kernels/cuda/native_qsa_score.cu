@@ -32,6 +32,7 @@ constexpr int D=128, HEADS=4, R=4, ROWS=32, WARPS=2, STRIDE=36, COMBINE=68;
 struct TileA { uint32_t x[4]; };
 struct TileB { uint32_t x[2]; };
 struct TileC { float x[4]={0.0f,0.0f,0.0f,0.0f}; };
+#if !defined(__HIPCC__)
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 __device__ __forceinline__ void load_a(TileA& a,const float* p) {
     const float* src=p+(threadIdx.x%16)*STRIDE+(threadIdx.x/16)*4;
@@ -139,6 +140,42 @@ __global__ __launch_bounds__(64,1) void score_kernel(
     }
 #endif
 }
+#else
+// gfx1100 has no CUDA ldmatrix/mma instruction sequence. Keep the same entry point and
+// score contract with an ordered scalar F32 dot for each indexer head. The four heads
+// run independently; their ReLU'd scores are then added in the documented head order.
+// This path favors a well-defined fallback over pretending the CUDA PTX is portable.
+__global__ void scalar_score_kernel(
+        const float* __restrict__ pooled,const float* __restrict__ query,
+        const float* __restrict__ bias,const int32_t* __restrict__ step,
+        int max_cells,float* __restrict__ cells) {
+    const int n=step[kStepNKv],full=step[kStepNBid];
+    if(n<1||n>max_cells||step[kStepPos]!=n-1||full!=n/R||
+       step[kStepWidth]!=(n<2051?n:2051))return;
+    const int row=blockIdx.x;
+    if(row>full)return;
+    __shared__ float head_score[HEADS];
+    const int head=threadIdx.x;
+    if(head<HEADS){
+        float dot=0.0f;
+#pragma unroll
+        for(int d=0;d<D;++d)
+            dot=__fmaf_rn(pooled[size_t(row)*D+d],query[size_t(head)*D+d],dot);
+        head_score[head]=dot>0.0f?dot:0.0f;
+    }
+    __syncthreads();
+    if(head==0){
+        float sum=__fadd_rn(0.0f,head_score[0]);
+        sum=__fadd_rn(sum,head_score[1]);
+        sum=__fadd_rn(sum,head_score[2]);
+        sum=__fadd_rn(sum,head_score[3]);
+        if(bias)sum=__fadd_rn(sum,bias[row]);
+        sum=__fadd_rn(sum,row==full&&n%R?1e9f:0.0f);
+        sum=__fadd_rn(sum,0.0f);
+        for(int i=row*R;i<n&&i<(row+1)*R;++i)cells[i]=sum;
+    }
+}
+#endif
 struct Span{const void* p;size_t n;};
 void validate(Span s){
     const auto p=reinterpret_cast<uintptr_t>(s.p);
@@ -163,8 +200,13 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
     for(int i=0;i<count;++i)validate(spans[i]);
     for(int i=0;i<count;++i)for(int j=i+1;j<count;++j)
         if(overlaps(spans[i],spans[j]))throw std::invalid_argument("native QSA score spans overlap");
+#if defined(__HIPCC__)
+    scalar_score_kernel<<<unsigned(max_blocks),128,0,static_cast<cudaStream_t>(stream)>>>(
+        pooled,query,bias,step,int(max_cells),cells);
+#else
     score_kernel<<<unsigned((max_blocks+ROWS-1)/ROWS),dim3(32,WARPS),0,static_cast<cudaStream_t>(stream)>>>(
         pooled,query,bias,step,int(max_cells),cells);
+#endif
     const auto error=cudaGetLastError();
     if(error!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(error));
 }

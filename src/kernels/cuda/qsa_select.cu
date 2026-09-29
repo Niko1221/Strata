@@ -161,7 +161,9 @@ constexpr int TC_QS = IDX_HEADS * IDX_DIM + 4;   // query row stride in floats
 constexpr int TC_KS = IDX_DIM + 4;               // key row stride
 
 // TF32 conversion and MMA need sm_80: below it they compile to a trap and qsa_block_scores_tc refuses the device
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the warp kernel (below)
+#define STRATA_SEL_SM80 0
+#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 #define STRATA_SEL_SM80 1
 #else
 #define STRATA_SEL_SM80 0
@@ -463,6 +465,9 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
         }
         if (cc_major[dev] < 8) return false;
     }
+#if defined(__HIPCC__)
+    return false;   // the tensor-core kernel is compiled out on AMD (its major version is not a CUDA sm)
+#endif
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;
     cudaGetDevice(&adev);

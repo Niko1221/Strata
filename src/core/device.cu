@@ -30,7 +30,11 @@ DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
+#if defined(STRATA_USE_HIP)
+        throw CudaError("no HIP device is present; this backend targets gfx1100 wave32", -1);
+#else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU of compute capability 8.0 or newer", -1);
+#endif
     }
     if (ordinal < 0 || ordinal >= count) {
         throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
@@ -59,13 +63,19 @@ DeviceInfo device_info(int ordinal) {
     // The kernels need sm_80 or newer (tf32 mma in the attention scorer, bf16 math) - the same floor the
     // arch guard in CMakeLists enforces at build time (RTX 30 / 40 / 50).  Anything older is caught here,
     // because a binary can be carried to a machine with an older card and would otherwise silently take
-    // whatever path the driver chose.  Pre-Blackwell is untested by the author; trust, then verify.
+    // whatever path the driver chose.  The HIP backend is validated on gfx1100 (wave32) only.
+#if defined(STRATA_USE_HIP)
+    if (std::strncmp(p.gcnArchName, "gfx1100", 7) != 0 || p.warpSize != 32) {
+        throw CudaError("HIP backend requires validated gfx1100 wave32 hardware", -1);
+    }
+#else
     if (d.cc_major < 8) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
                             "." + std::to_string(d.cc_minor) +
                             "; Strata needs an NVIDIA GPU of compute capability 8.0 or newer (RTX 30 / 40 / 50)",
                         -1);
     }
+#endif
     return d;
 }
 

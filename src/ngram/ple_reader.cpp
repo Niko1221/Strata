@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -118,6 +119,14 @@ struct PleReader::Impl {
     uint8_t* slot_buf(uint32_t s) { return slab + (size_t) s * 2 * PAGE; }
     bool busy() const { return free_slots.size() < max_inflight || !delayed.empty(); }
 
+    void cancel_queued() {
+        for (const Job& job : queue) {
+            auto it = tickets.find(job.ticket);
+            if (it != tickets.end() && it->second.pending > 0) --it->second.pending;
+        }
+        queue.clear();
+    }
+
     void record_latency(double us) {
         stats.read_us_sum += us;
         if (stats.read_us.size() < LATENCY_RING) stats.read_us.push_back((float) us);
@@ -132,7 +141,14 @@ struct PleReader::Impl {
             queue.pop_front();
             Job& j = inflight[s];
             j.issued_us = now_us();
-            if (!file.submit(j.offset, slot_buf(s), j.length, s, error)) return false;
+            if (!file.submit(j.offset, slot_buf(s), j.length, s, error)) {
+                j.uses.clear();
+                auto it = tickets.find(j.ticket);
+                if (it != tickets.end() && it->second.pending > 0) --it->second.pending;
+                free_slots.push_back(s);
+                cancel_queued();
+                return false;
+            }
             stats.submit_us += now_us() - j.issued_us;
             ++stats.reads;
         }
@@ -141,9 +157,19 @@ struct PleReader::Impl {
 
     bool finish(const Completion& c) {
         const uint32_t s = (uint32_t) c.tag;
+        if (s >= inflight.size()) {
+            error = "PleReader: invalid table-read completion";
+            cancel_queued();
+            return false;
+        }
         Job& j = inflight[s];
         if (!c.ok) {
             error = "PleReader: a table read failed";
+            cancel_queued();
+            j.uses.clear();
+            auto it = tickets.find(j.ticket);
+            if (it != tickets.end() && it->second.pending > 0) --it->second.pending;
+            free_slots.push_back(s);
             return false;
         }
         record_latency(now_us() - j.issued_us);
@@ -152,8 +178,15 @@ struct PleReader::Impl {
         for (const Use& u : j.uses) {
             if (u.in_page + ROW_BYTES > c.bytes) {
                 error = "PleReader: short read inside the table";
+                cancel_queued();
+                j.uses.clear();
+                auto it = tickets.find(j.ticket);
+                if (it != tickets.end() && it->second.pending > 0) --it->second.pending;
+                free_slots.push_back(s);
                 return false;
             }
+        }
+        for (const Use& u : j.uses) {
             std::memcpy(u.dst, buf + u.in_page, ROW_BYTES);
             cache.insert(u.row, buf + u.in_page);
         }
@@ -161,21 +194,28 @@ struct PleReader::Impl {
         if (it != tickets.end() && it->second.pending > 0) --it->second.pending;
         j.uses.clear();
         free_slots.push_back(s);
-        return pump();
+        return error.empty() ? pump() : true;
     }
 
     /// Completions (or wake packets) just returned by `file.wait`, applying fault injection.
     bool process(const Completion* got, int n) {
+        bool ok = true;
         for (int i = 0; i < n; ++i) {
             if (got[i].tag == DirectFile::WAKE_TAG) continue;
+            if (got[i].tag >= inflight.size()) {
+                error = "PleReader: invalid table-read completion";
+                cancel_queued();
+                ok = false;
+                continue;
+            }
             if (delay_us > 0 && now_us() - inflight[(uint32_t) got[i].tag].issued_us < delay_us) {
                 delayed.push_back(got[i]);
                 ++stats.late_injected;
                 continue;
             }
-            if (!finish(got[i])) return false;
+            if (!finish(got[i])) ok = false;   // drain the rest of this batch so no completed slot is stranded
         }
-        return true;
+        return ok;
     }
 
     bool release_delayed() {
@@ -256,7 +296,19 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
     reset_stats();
     impl_->stop = false;
     impl_->threaded = io_thread;
-    if (io_thread) impl_->worker = std::thread([this] { impl_->worker_loop(); });
+    if (io_thread) {
+        try {
+            impl_->worker = std::thread([this] { impl_->worker_loop(); });
+        } catch (const std::exception& e) {
+            err = std::string("PleReader: cannot create I/O worker: ") + e.what();
+            close();
+            return false;
+        } catch (...) {
+            err = "PleReader: cannot create I/O worker";
+            close();
+            return false;
+        }
+    }
     return true;
 }
 
@@ -341,10 +393,11 @@ PleReader::Ticket PleReader::issue(const uint32_t* rows, size_t n, uint8_t* out_
     // Sorted by offset: prefill chunks then read the SSD in near-sequential order.
     std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) { return a.offset < b.offset; });
     ts.pending = (uint32_t) jobs.size();
+    const bool has_jobs = ts.pending > 0;
     for (Job& j : jobs) m.queue.push_back(std::move(j));
     if (m.threaded) {
         lk.unlock();
-        if (ts.pending > 0) {
+        if (has_jobs) {
             m.cv_work.notify_one();
             m.file.wake();                         // in case the worker is blocked in the port
         }
@@ -361,21 +414,26 @@ bool PleReader::collect(Ticket t, std::string& err) {
         std::unique_lock<std::mutex> lk(m.mu);
         auto it = m.tickets.find(t.id);
         if (it == m.tickets.end()) { err = "PleReader: unknown ticket"; return false; }
-        m.cv_done.wait(lk, [&] { return !m.error.empty() || m.tickets[t.id].pending == 0; });
+        m.cv_done.wait(lk, [&] {
+            const auto current = m.tickets.find(t.id);
+            return current == m.tickets.end() || current->second.pending == 0;
+        });
+        it = m.tickets.find(t.id);
+        if (it == m.tickets.end()) { err = "PleReader: unknown ticket"; return false; }
         if (!m.error.empty()) { err = m.error; return false; }
         m.stats.wait_us += now_us() - start;
-        m.tickets.erase(t.id);
+        m.tickets.erase(it);
         return true;
     }
     auto it = m.tickets.find(t.id);
     if (it == m.tickets.end()) { err = "PleReader: unknown ticket"; return false; }
     while (it->second.pending > 0) {
-        if (!m.error.empty() || !m.drain(-1)) {
-            err = m.error.empty() ? "PleReader: read failed" : m.error;
-            return false;
-        }
+        const bool drained = m.drain(-1);
+        if (!drained && m.error.empty()) m.error = "PleReader: read failed";
         it = m.tickets.find(t.id);
+        if (it == m.tickets.end()) { err = "PleReader: unknown ticket"; return false; }
     }
+    if (!m.error.empty()) { err = m.error; return false; }
     m.stats.wait_us += now_us() - start;
     m.tickets.erase(it);
     return true;

@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <cstring>
 
-#if defined(__CUDACC__)
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_BF16_HD __host__ __device__
 #else
 #define STRATA_BF16_HD
@@ -30,7 +30,11 @@ namespace strata::kernels {
 /// Round-to-nearest-even f32 -> bf16, returned as raw bits in the LOW half of the uint16.
 STRATA_BF16_HD inline uint16_t bf16_from_f32(float f) {
     uint32_t i;
+#if defined(__HIP_DEVICE_COMPILE__)
+    __builtin_memcpy(&i, &f, 4);
+#else
     std::memcpy(&i, &f, 4);
+#endif
     i = (i + ((i >> 16) & 1u) + 0x7FFFu) & 0xFFFF0000u;
     return (uint16_t) (i >> 16);
 }
@@ -39,7 +43,11 @@ STRATA_BF16_HD inline uint16_t bf16_from_f32(float f) {
 STRATA_BF16_HD inline float f32_from_bf16(uint16_t h) {
     const uint32_t i = (uint32_t) h << 16;
     float f;
+#if defined(__HIP_DEVICE_COMPILE__)
+    __builtin_memcpy(&f, &i, 4);
+#else
     std::memcpy(&f, &i, 4);
+#endif
     return f;
 }
 
