@@ -153,6 +153,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     float acc[G];
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
+#pragma unroll 4
     for (int c = 0; c < n_here; ++c) {
         float v;
         if constexpr (KV_MODE == 0) {

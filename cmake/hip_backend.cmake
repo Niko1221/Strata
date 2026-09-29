@@ -3,9 +3,11 @@
 if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
   set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture")
 endif()
-if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx1100")
+# gfx1200 (RDNA4, RX 9060 XT): same wave32 shape and 64 KiB workgroup LDS as gfx1100;
+# no gfx1100-only instructions are used by the backend, so it builds for both.
+if(NOT CMAKE_HIP_ARCHITECTURES MATCHES "^gfx1[12][0-9a-z]*$")
   message(FATAL_ERROR
-    "Strata HIP currently supports only gfx1100 wave32; CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
+    "Strata HIP currently supports gfx1100/gfx1200 wave32; CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
 endif()
 
 enable_language(HIP)
