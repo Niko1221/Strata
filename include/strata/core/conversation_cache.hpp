@@ -28,10 +28,27 @@ struct ConversationCheckpoint {
     std::vector<int32_t> ids;
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
+    /// Last-use stamp for the retention policy (`conv_cache::eviction_victim`): the serve loop bumps it whenever
+    /// a checkpoint is created or mounted through.  RUNTIME ONLY - nothing persists it, and the core's
+    /// save/restore ignore it (0.1.21's layer split added it to the local struct this type replaced).
+    uint64_t used = 0;
+    /// A layer split's later stages: one checkpoint per stage, each saved by the serve loop with its own
+    /// `conversation_checkpoint_save` against that stage's session (0.1.21).  The core's save/restore do not
+    /// walk this - composition is the serve loop's - but the byte count and the disk adapter must know it:
+    /// the NVMe envelope carries the PRIMARY stage only and refuses a split session's snapshot outright.
+    std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {
-        return ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
-               gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity();
+        // The RETAINED PAYLOAD: what the retention policy keeps and what the core's persisted-payload
+        // estimator (conversation_snapshot_bytes) must keep agreeing with - their fixture asserts
+        // estimate == SavedConversation::bytes() (conversation_validation_test.cpp:114).  `used` is a runtime
+        // stamp, not payload, and is excluded for exactly that reason; stage_parts are payload the cache
+        // retains on a split engine and are counted recursively (zero when the vector is empty).
+        size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
+               gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
+               stage_parts.capacity() * sizeof(ConversationCheckpoint);
+        for (const ConversationCheckpoint& s : stage_parts) n += s.bytes();
+        return n;
     }
 };
 
