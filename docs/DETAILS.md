@@ -435,9 +435,11 @@ high-frequency angles and interpolates the low-frequency ones, with the magnitud
 the attention temperature where training put it. Scaled contexts also need proportionally more VRAM/RAM
 for the KV cache and the rope tables (~13 KB and ~0.26 KB per token).
 
-- setup: `START-HERE.bat --setup --context 393216` asks nothing extra - it picks the factor for you
-  (`--rope-scale` overrides; 393K wants 1.5, 524K wants 2). Contexts past 262,144 refuse to start without
-  `--rope-scaling`.
+- setup: `START-HERE.bat --setup --context 393216` asks nothing extra - it picks the method (yarn; one
+  question when run interactively) and the smallest covering factor for you (`--rope-scaling`/`--rope-scale`
+  override; 393K wants 1.5, 524K wants 2). An explicit `--rope-scaling none` for a context past 262,144 is
+  refused: the setup will not configure a run with the stock angles past the trained range. If the RAM check
+  reduces a chosen 384K/512K back inside the trained range, no scaling is added at all.
 - engine: `--rope-scaling none|linear|yarn`, `--rope-scale F`, and the raw ggml knobs `--rope-freq-base`,
   `--rope-freq-scale`, `--yarn-orig-ctx` (default 262,144), `--yarn-ext-factor`, `--yarn-attn-factor`,
   `--yarn-beta-fast` (32), `--yarn-beta-slow` (1). The model file's `rope.scaling.*` keys, when a
@@ -579,7 +581,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `the engine stopped unexpectedly (exit code ...)` | The engine process ended mid-answer - usually out of RAM (Linux ends the biggest program: `sudo dmesg \| grep -i -E 'killed process\|out of memory'`). The next request starts it again by itself. If it repeats: close other programs or pick a smaller size. The server also warns at start when the model's experts leave less than ~6 GB of RAM for everything else. |
 | Slow output, disk light busy | Not enough free RAM: close other programs, or choose Q2_0 / IQ2_XS. |
 | `prompt ... exceeds the context` | The request is longer than the context you chose: run setup again with a bigger `--context`. |
-| `past the model's trained 262144` (setup) / the engine refuses a context over 262,144 | A context past the trained one needs rope scaling (engine 0.1.18+): pass `--rope-scaling linear` or `yarn`, or let setup pick it (`START-HERE.bat --setup --context 393216`). |
+| `the setup refuses --rope-scaling none for a past-trained context` | A context past the trained 262,144 needs the rotary angles rescaled (engine 0.1.18+), and the setup will not configure one with the stock angles there. Let it pick (`START-HERE.bat --setup --context 393216` adds yarn and a covering factor), or pass `--rope-scaling linear` or `yarn` yourself. |
 | Slower than the tables | The monitor plugged into the GPU and other GPU programs take VRAM from the expert cache; RAM running below its rated speed (enable EXPO/XMP in the BIOS) slows the CPU half. |
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |

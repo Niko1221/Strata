@@ -103,8 +103,8 @@ App). Everything else - Python, the engine, the model - is set up for you.
 3. Answer a few questions - or just press Enter each time for the recommended choice:
    - **Which model and size?** The original or Swift 1.5, and Q2_0, IQ2_XS, IQ3_XXS or IQ3_S - see [above](#which-model-should-i-pick)
    - **How much context?** How much text it can keep in mind at once (it suggests one for your card). 384K and
-     512K extend the model past its trained 262K by rope scaling - the setup adds the flag itself
-     ([details](docs/DETAILS.md))
+     512K extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
+     covering factor; `--rope-scaling`/`--rope-scale` override) ([details](docs/DETAILS.md))
    - **Images?** Whether it should also read pictures
    - **Experimental speed projection?** Off unless you say yes - [read what it does](docs/DETAILS.md#experimental-speed-projection-experimental-off-by-default) first
 
