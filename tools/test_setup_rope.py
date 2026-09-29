@@ -98,6 +98,24 @@ class ResolveRope(unittest.TestCase):
         self.assertEqual(setup.resolve_rope(393216, "yarn", None), ("yarn", 1.5))
         self.assertEqual(setup.resolve_rope(524288, "yarn", None), ("yarn", 2.0))
 
+    # ---- the short-context item's own table: no factor-2 fallback inside the trained window, for either
+    # method, with the explicit override column kept verbatim
+    def test_the_short_context_table(self):
+        cases = [
+            (131072, None, "yarn", 1.0),                   # --context 131072 --rope-scaling yarn
+            (262144, None, "yarn", 1.0),                   # --context 262144 --rope-scaling yarn
+            (393216, None, "yarn", 1.5),
+            (524288, None, "yarn", 2.0),
+            (131072, 2.0, "yarn", 2.0),                    # --rope-scale 2 is kept inside the window
+        ]
+        for ctx, scale, method, want in cases:
+            self.assertEqual(setup.resolve_rope(ctx, method, scale), (method, want), f"ctx {ctx}")
+
+    def test_linear_gets_the_same_rule_as_yarn(self):
+        # the old fallback applied to both methods, so the fix must too
+        self.assertEqual(setup.resolve_rope(131072, "linear", None), ("linear", 1.0))
+        self.assertEqual(setup.resolve_rope(393216, "linear", None), ("linear", 1.5))
+
 
 if __name__ == "__main__":
     unittest.main()
