@@ -46,6 +46,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             images_of, openai_to_messages)
+from serve.kvcache import KV_STORE_KEYS, KvCache, parse_kv  # noqa: E402
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 
@@ -175,6 +176,10 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.last_kv = None              # THIS request's KV line (the cache tiers), captured by _pump; None = no line
+        self.store_kv = {}               # the engine's store fields: the start=1 line and every request's
+        self.cache = None                # the service's KvCache (main() attaches it; restart() keeps it)
+        self.in_request = False          # _pump is reading a request's lines: a KV line is that request's event
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -202,9 +207,32 @@ class StrataEngine:
 
     def _pump(self):
         for line in self.proc.stdout:
+            if line.startswith("KV "):
+                self._kv_line(line)                     # the cache tiers: never a token line, never the queue
+                continue
             self.lines.put(line)
         self.ended = True                               # its output closed: it is gone, even before the OS says so
         self.lines.put(None)
+
+    def _kv_line(self, line: str) -> None:
+        """The engine's `KV k=v ...` line, captured on the pump thread rather than in generate(): the early-stop
+        drain (generate's finally) discards queue entries, and the startup `start=1` line arrives after READY.
+        A line with `start=1` or with no `src=` is store state; a `src=` line seen while a request runs is that
+        request's event (Service.run's finally reads `last_kv`).  Nothing here can raise, and nothing here can
+        change what the request path sees: a KV line is dropped, so `DONE` is parsed exactly as before."""
+        try:
+            kv = parse_kv(line)
+            if not kv:
+                return
+            store = {k: v for k, v in kv.items() if k in KV_STORE_KEYS or k == "start"}
+            if store:
+                self.store_kv.update(store)             # store state, never an event (design §3, note 2)
+                if self.cache is not None:
+                    self.cache.store_state(store)       # a startup line before any request still reaches it
+            if "src" in kv and kv.get("start") != 1 and self.in_request:
+                self.last_kv = kv                       # this request's event; Service.run's finally reads it
+        except Exception:  # noqa: BLE001 - the pump must survive anything the engine prints
+            pass
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -244,10 +272,11 @@ class StrataEngine:
             self.proc.kill()
         except OSError:
             pass
-        info = dict(self.info)
+        info, cache = dict(self.info), self.cache
         self.ended = False
-        self.__init__(*self.spawn)
+        self.__init__(*self.spawn)                      # its __init__ resets cache to None: the tiers outlive it
         self.info = {**info, **self.info}
+        self.cache = cache                              # a transfer failure restarts the engine (design §5.2)
 
     def _parse_done(self, line):
         f = line.split()
@@ -319,8 +348,9 @@ class StrataEngine:
         self.progress = None
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        self.last_kv, self.in_request = None, True      # _pump routes this request's KV line to last_kv
+        head = f"GENI {int(max_new)}{self.projection_key(sampling or {})} {embeddings}" if embeddings else \
+            f"GEN {int(max_new)}{self.sampling_keys(sampling or {}) if not embeddings else ''}"
         try:
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
@@ -359,20 +389,23 @@ class StrataEngine:
                     done = True
                     raise ValueError(line[4:].strip())
         finally:
-            if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
-                if self.can_stop:
-                    try:
-                        self.proc.stdin.write("STOP\n")
-                        self.proc.stdin.flush()
-                    except OSError:
-                        pass
-                while True:
-                    line = self.lines.get()
-                    if line is None or line.startswith("ERR"):
-                        break
-                    if line.startswith("DONE"):
-                        self._parse_done(line)
-                        break
+            try:
+                if not done:                              # the consumer stopped early: stop the engine, drain to DONE
+                    if self.can_stop:
+                        try:
+                            self.proc.stdin.write("STOP\n")
+                            self.proc.stdin.flush()
+                        except OSError:
+                            pass
+                    while True:
+                        line = self.lines.get()
+                        if line is None or line.startswith("ERR"):
+                            break
+                        if line.startswith("DONE"):
+                            self._parse_done(line)
+                            break
+            finally:
+                self.in_request = False                   # a KV line that arrives after this is store state
 
     def close(self):
         try:
@@ -577,9 +610,10 @@ class Service:
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
         self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
+        self.cache = None                               # serve/kvcache.py's KvCache for the engine's KV lines
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0}
+                       "prompt_ms": 0.0, "decode_ms": 0.0, "reused_from_disk": 0}
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -627,9 +661,16 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
-                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean()},
-                                       gpu_index=int(getattr(self, "gpu_index", 0) or 0),
+
+            def extra() -> dict:
+                # the cache sparklines are SAMPLED here, so they share telemetry's thread and its clock;
+                # Telemetry._loop records a fixed key list, so the cache series ride in extra()'s dict
+                s = {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
+                     "prefill_tok_s_mean": self._prefill_tok_s_mean()}
+                if getattr(self, "cache", None) is not None:
+                    s.update(self.cache.series() or {})
+                return s
+            self.telemetry = Telemetry(extra=extra, gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None))
 
     def _tok_s(self):
@@ -902,6 +943,10 @@ class Service:
                     started = self.status.get("started", time.time())
                     loaded = str((getattr(self.engine, "info", {}) or {}).get("cvec", 0)) not in ("0", "", "None")
                     hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                    kv = getattr(self.engine, "last_kv", None)
+                    kv = kv if isinstance(kv, dict) and kv else None   # no KV line: UNKNOWN, never "cold" (§3 note 1)
+                    src = kv.get("src") if kv and isinstance(kv.get("src"), str) else None
+                    resume = kv.get("resume") if kv else None
                     self.history.append({
                         "projection": (sampling or {}).get("experimental_speed_projection") is not False
                         if loaded else None,
@@ -911,7 +956,10 @@ class Service:
                         "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                         "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                         if n and last.get("generated") and last.get("decode_ms") else None,
-                        "hit_rate": hit_rate})
+                        "hit_rate": hit_rate,
+                        "cache": None if kv is None else
+                        {"src": src, "resume": resume, "promote_ms": kv.get("promote_ms"),
+                         "promote_bytes": kv.get("promote_bytes"), "staging_bytes": kv.get("staging_bytes")}})
                     t = self.totals
                     t["requests"] += 1
                     t["prompt_tokens"] += len(ids)
@@ -924,6 +972,13 @@ class Service:
                         timings = request_timings(len(ids), n, last)
                         self.last_timings = dict(timings, at=int(time.time())) if timings else None
                     self.last_request_at = time.time()
+                    if src in ("nvme", "delta") and isinstance(resume, int) and not isinstance(resume, bool):
+                        t["reused_from_disk"] += resume     # the tokens the disk tier actually resumed
+                    if self.cache is not None:
+                        try:
+                            self.cache.observe(kv, last)    # event rows + the engine's own cumulative totals
+                        except Exception:  # noqa: BLE001 - the cache can never take a request down
+                            pass
                     now = time.time()
                     el = now - self.status.get("started", now)
                     ft = self.status.get("first_token")
@@ -1761,6 +1816,9 @@ def main() -> int:
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
+    if a.engine == "strata":                            # the cache tiers, from the FINAL engine arguments
+        svc.cache = KvCache(engine_args(cfg), cfg.get("log"))
+        engine.cache = svc.cache                        # _kv_line feeds it the store state as the lines arrive
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:

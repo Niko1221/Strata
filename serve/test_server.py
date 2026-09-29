@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import struct
 import sys
 import tempfile
@@ -1260,6 +1261,245 @@ class KvEvents(unittest.TestCase):
         second = c.series()
         self.assertEqual([len(v) for v in second.values()], [2, 2, 2, 2])
         self.assertEqual(len(c.summary()["series"]["warm"]), 2)   # summary reads them without appending
+
+
+# ------------------------------------------------------------------ the wiring: the KV line into the request path
+# (web plan step 4): _pump captures the line, Service.run's finally records it, main() attaches the KvCache.
+KV_COLD_LINE = ("KV src=none resume=0 promote_ms=0 promote_bytes=0 staging_bytes=0 dump_ms=412 "
+                "dump_bytes=1184923648 evict=0 evict_bytes=0 sweep=0 sweep_bytes=0 refused=1 transfer=0 "
+                "entries=1 entries_bytes=1 delta_entries=0 delta_bytes=0 cap=0 checkpoints=0 live=1 "
+                "total_dump_bytes=1184923648 total_promote_bytes=0 total_refused=1 total_transfer=0 "
+                "total_evict_bytes=0")
+DONE_LINE = "DONE 2 3 1.0 2.0 eos 0 0 0 0 0 0 0"
+
+
+class CacheEngine(MockEngine):
+    """A fake that plays the wiring the way `StrataEngine` does it: `last_kv` is cleared when the request starts
+    and filled after the cascade (where the pump sees the line), `last` is its `DONE` record, `cache` the KvCache
+    the service attached.  A turn with no scripted line leaves `last_kv` None."""
+
+    def __init__(self, tok, script, max_context, kv_lines=()):
+        super().__init__(tok, script, max_context=max_context)
+        self.kv_lines, self.turn = list(kv_lines), 0
+        self.last, self.last_kv, self.cache, self.in_request = {}, None, None, False
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.last_kv, self.in_request = None, True
+        try:
+            for t in super().generate(ids, max_new, sampling, cancel, embeddings):
+                yield t
+            self.last_kv = self.kv_lines[min(self.turn, len(self.kv_lines) - 1)] if self.kv_lines else None
+            self.last = {"generated": 0, "prompt_tokens": len(ids), "prompt_ms": 12.0, "decode_ms": 100.0,
+                         "finish": "eos"}
+        finally:
+            self.in_request = False
+            self.turn += 1
+
+
+class CacheWiring(unittest.TestCase):
+    """What one finished request leaves behind: its `cache` row in the history, the disk-tier tokens in the
+    totals, and the event rows the attached KvCache built.  No line is recorded as cold (design §3, note 1)."""
+
+    def metrics_after_request(self, kv_lines=()):
+        tok = ByteTokenizer()
+        eng = CacheEngine(tok, "</think>\n\nhello", CTX, kv_lines)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.cache = KvCache(["--kv-nvme", "/tmp/unused-store", "--kv-nvme-max", "100", "--kv-delta", "1"])
+        eng.cache = svc.cache                           # what main() does beside svc.gpu_index
+        httpd = serve(svc, port=0)
+        try:
+            body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "max_tokens": 5}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                         data=body, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=30).read()
+            return svc, svc.metrics()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_promote_is_recorded_on_the_request_and_in_the_totals(self):
+        svc, m = self.metrics_after_request([parse_kv(KV_REQUEST_LINE)])
+        self.assertEqual(m["requests"][0]["cache"],
+                         {"src": "delta", "resume": 4107, "promote_ms": 1840.0,
+                          "promote_bytes": 1010893312, "staging_bytes": 1010893312})
+        self.assertEqual(m["totals"]["reused_from_disk"], 4107)      # the tokens the disk tier resumed
+        self.assertEqual(m["requests"][0]["reused"], None)           # the RAM tier's `reused` is still its own
+        rows = svc.cache.summary()["events"]
+        self.assertEqual([r["kind"] for r in rows], ["promote", "cascade", "evict"])
+        self.assertEqual(svc.cache.summary()["totals"]["requests_with_kv_line"], 1)
+        self.assertEqual(svc.cache.summary()["promotable"]["entries"], 104)   # the line's store fields too
+
+    def test_a_cold_request_is_recorded_and_adds_nothing_to_the_disk_total(self):
+        _, m = self.metrics_after_request([parse_kv(KV_COLD_LINE)])
+        self.assertEqual(m["requests"][0]["cache"]["src"], "none")
+        self.assertEqual(m["requests"][0]["cache"]["resume"], 0)
+        self.assertEqual(m["totals"]["reused_from_disk"], 0)
+
+    def test_a_ram_tier_hit_is_not_disk_reuse(self):
+        _, m = self.metrics_after_request([parse_kv("KV src=ram resume=64 promote_ms=0 promote_bytes=0 "
+                                                    "entries=1 entries_bytes=1 cap=0 total_refused=0")])
+        self.assertEqual(m["requests"][0]["cache"]["src"], "ram")
+        self.assertEqual(m["totals"]["reused_from_disk"], 0)
+
+    def test_no_kv_line_is_unknown_never_cold(self):
+        svc, m = self.metrics_after_request([])
+        self.assertIsNone(m["requests"][0]["cache"])
+        self.assertEqual(m["totals"]["reused_from_disk"], 0)
+        self.assertEqual(svc.cache.summary()["events"], [])
+        self.assertEqual(svc.cache.summary()["totals"]["requests"], 1)
+        self.assertEqual(svc.cache.summary()["totals"]["requests_with_kv_line"], 0)
+
+    def test_an_engine_that_never_heard_of_the_tiers_still_answers(self):
+        """MockEngine (and any Engine without the wiring): no `last_kv` attribute at all, and the request path
+        does not care."""
+        tok = ByteTokenizer()
+        svc = Service(RecordingEngine(tok, "</think>\n\nhello", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "max_tokens": 5}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                         data=body, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=30).read()
+            m = svc.metrics()
+            self.assertIsNone(m["requests"][0]["cache"])
+            self.assertEqual(m["totals"]["reused_from_disk"], 0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class StubProc:
+    """A stand-in engine process: `stdout` is a scripted list of lines, `stdin` records what was written.
+    With `gate`, the pump does not outrun the request: no line is printed before `generate()` has written its
+    GEN line (which is what sets `in_request`), so a scripted KV line arrives exactly as a real one does."""
+
+    def __init__(self, lines, gate=False):
+        self.written, self.started = [], threading.Event()
+        self.stdout = self._read(lines, gate)
+
+    def _read(self, lines, gate):
+        for line in lines:
+            if gate:
+                self.started.wait(10)
+            yield line
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        return 0
+
+    @property
+    def stdin(self):
+        return self
+
+    def write(self, s):
+        self.written.append(s)
+        self.started.set()
+
+    def flush(self):
+        pass
+
+
+def scripted_engine(lines, in_request=False, cache=None, pump="sync"):
+    """A `StrataEngine` with no process, so the pump's routing over a scripted stdout is what is under test.
+    `pump="sync"` runs it on this thread (a scripted stdout ends, so it returns with the queue already filled);
+    `pump="thread"` runs it as the real engine does - on its own thread, gated on the request's GEN line."""
+    eng = object.__new__(StrataEngine)
+    eng.proc = StubProc(lines, gate=pump == "thread")
+    eng.lines, eng.can_stop, eng.ended = queue.Queue(), True, False
+    eng.last, eng.last_kv, eng.store_kv, eng.cache = {}, None, {}, cache
+    eng.in_request, eng.progress, eng.spawn = in_request, None, None
+    if pump == "sync":
+        eng._pump()
+    else:
+        threading.Thread(target=eng._pump, daemon=True).start()
+    return eng
+
+
+def queued(eng):
+    """What the request's line queue actually holds (the sentinel that closes the stream is not a line)."""
+    out = []
+    while not eng.lines.empty():
+        line = eng.lines.get_nowait()
+        if line is not None:
+            out.append(line)
+    return out
+
+
+class KvPump(unittest.TestCase):
+    """`_pump` is where the line is captured: the early-stop drain discards queue entries, and the startup line
+    arrives after READY.  A KV line never reaches the request's queue, and nothing it says can raise."""
+
+    def test_the_startup_line_is_store_state_not_an_event(self):
+        cache = KvCache(["--kv-nvme", "/tmp/unused-store", "--kv-nvme-max", "100"])
+        eng = scripted_engine([KV_START_LINE], cache=cache)
+        self.assertIsNone(eng.last_kv)                              # no request was running
+        self.assertEqual((eng.store_kv["entries"], eng.store_kv["cap"]), (104, 107374182400))
+        self.assertEqual(queued(eng), [])                           # never forwarded as a token line
+        self.assertEqual(cache.summary()["promotable"]["entries"], 104)   # a line before any request still lands
+
+    def test_a_request_line_while_in_request_becomes_this_request_s_event(self):
+        eng = scripted_engine(["T 11", KV_REQUEST_LINE, "T 12", DONE_LINE], in_request=True)
+        self.assertEqual((eng.last_kv["src"], eng.last_kv["resume"]), ("delta", 4107))
+        self.assertEqual(queued(eng), ["T 11", "T 12", DONE_LINE])
+        self.assertEqual(eng.store_kv["entries"], 104)              # its store fields are merged too
+
+    def test_a_src_line_outside_a_request_is_store_state(self):
+        eng = scripted_engine([KV_REQUEST_LINE], in_request=False)  # e.g. the drain of a request that already ended
+        self.assertIsNone(eng.last_kv)
+        self.assertEqual(eng.store_kv["delta_entries"], 1)
+
+    def test_a_garbage_line_and_a_huge_value_cannot_break_the_pump(self):
+        huge = "KV src=delta resume=" + "9" * 400
+        eng = scripted_engine(["KV ", "KV resume=abc", "KV " + "x" * 4000, "KV = = =", huge, "T 7", DONE_LINE],
+                              in_request=True)
+        self.assertEqual(queued(eng), ["T 7", DONE_LINE])
+        self.assertEqual(eng.last_kv["src"], "delta")
+        self.assertEqual(eng.last_kv["resume"], int("9" * 400))     # typed, and costs nothing
+
+    def test_a_kv_line_cannot_break_the_request_path(self):
+        """The gate makes the scripted lines arrive while the request runs, as a real engine prints them."""
+        eng = scripted_engine(["T 11", "KV ", "KV resume=abc", KV_REQUEST_LINE, "T 12", DONE_LINE],
+                              pump="thread")
+        out = list(eng.generate([1, 2, 3], 4, {}, threading.Event()))
+        self.assertEqual(out, [11, 12])                             # the tokens, and nothing else
+        self.assertEqual((eng.last["generated"], eng.last["finish"]), (2, "eos"))   # DONE parsed as before
+        self.assertEqual(eng.last_kv["src"], "delta")
+        self.assertEqual(eng.last_kv["resume"], 4107)
+        self.assertFalse(eng.in_request)                            # cleared by generate's finally
+        self.assertTrue(eng.proc.written[0].startswith("GEN "))
+
+
+class RestartKeepsTheCache(unittest.TestCase):
+    """A transfer failure restarts the engine (design §5.2), and the KvCache the service attached must survive
+    it: `restart()` calls `__init__` again, which would otherwise drop it."""
+
+    class Engine(StrataEngine):
+        """The real `restart()` against a stand-in process: only `__init__` is a stand-in, and it resets `cache`
+        to None exactly as the real one does."""
+
+        def __init__(self, exe="strata", args=(), cwd=None, log=None, env=None):
+            self.spawn, self.info, self.cache = (exe, list(args), cwd, log, env), {}, None
+            self.proc, self.ended = StubProc([]), False
+
+    def test_restart_keeps_the_cache_attached_and_informed(self):
+        eng = self.Engine()
+        eng.info = {"kv": 1234}
+        cache = eng.cache = KvCache(["--kv-nvme", "/tmp/unused-store", "--kv-nvme-max", "100"])
+        cache.store_state(parse_kv(KV_START_LINE))
+        eng.restart()
+        self.assertIs(eng.cache, cache)
+        self.assertEqual(eng.info["kv"], 1234)
+        self.assertEqual(eng.cache.summary()["promotable"]["entries"], 104)   # what it knew survives the restart
+        eng._kv_line(KV_START_LINE)                               # the new process re-reports its store
+        self.assertEqual(eng.cache.summary()["promotable"]["entries"], 104)
 
 
 if __name__ == "__main__":
