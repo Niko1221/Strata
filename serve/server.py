@@ -968,6 +968,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
                              "total_tokens": pt + x["completion_tokens"]}
+            last["usage"]["prompt_tokens_details"] = {"cached_tokens": int(x.get("reused") or 0)}
             yield last
 
 
