@@ -145,6 +145,29 @@ class CompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "truncated tensor"):
                 iq_pack.Model(first)
 
+    def test_expert_roles_can_cross_shard_boundary(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            first = root / "model-00001-of-00002.gguf"
+            second = root / "model-00002-of-00002.gguf"
+            expert = np.ones((512, 2, 32), dtype=np.float32)
+            write_gguf(first, [
+                ("blk.0.ffn_gate_inp.weight", np.ones((512, 32), np.float32), Q.BF16),
+                ("blk.0.ffn_gate_exps.weight", expert, Q.Q8_0),
+                ("blk.0.ffn_up_exps.weight", expert, Q.Q8_0),
+            ])
+            write_gguf(second, [("blk.0.ffn_down_exps.weight", expert, Q.Q8_0)])
+            out = root / "pack"
+            (out / "tokenizer").mkdir(parents=True)
+            for name in ("vocab.json", "chat_template.jinja"):
+                (out / "tokenizer" / name).touch()
+            with patch.object(sys, "argv", ["iq_pack.py", "--gguf", str(first), "--out", str(out)]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(iq_pack.main(), 0)
+            line = next(line for line in (out / "native_experts.txt").read_text().splitlines()
+                        if not line.startswith("#"))
+            self.assertEqual(line.split()[8:], [first.name, first.name, second.name])
+
 
 if __name__ == "__main__":
     unittest.main()
