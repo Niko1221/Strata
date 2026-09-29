@@ -47,7 +47,7 @@ asks whether to share the model across them (recommended when two can). An insta
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
 card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
 pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 30 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
 
 ## Which model should I pick?
 
@@ -90,7 +90,7 @@ yet). Details: [AMD HIP](docs/AMD_HIP.md).
 
 ## Install
 
-**You need:** an NVIDIA RTX 30, 40 or 50 card with 12 GB of VRAM or more, enough RAM for the size you pick (above;
+**You need:** an NVIDIA RTX 20, 30, 40 or 50 card with 12 GB of VRAM or more (RTX 20 since 0.1.27), enough RAM for the size you pick (above;
 a big GPU makes up for less RAM - the [low-RAM mode](docs/DETAILS.md)),
 ~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux. The only thing you
 install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
