@@ -132,9 +132,10 @@ struct Options {
     /// THE CONTEXT EXTENSION (rope scaling, rope_scaling.hpp).  These knobs resolve to ONE process config,
     /// set once before `session_init` builds the rope table and the graphs capture the kernels.  There is
     /// deliberately no per-request form: K sits in the cache POST-RoPE, so one cache must never mix two
-    /// scalings.  Precedence: CLI over the model file's rope keys over the struct defaults.
-    std::string rope_scaling = "none";  ///< --rope-scaling none|linear|yarn (llama.cpp's names)
-    double rope_scale = 1.0;            ///< --rope-scale F: the extension factor; 1 = off
+    /// scalings.  Precedence: an EXPLICIT flag over the model file's rope keys over the struct defaults -
+    /// `none` and `1` are explicit values (the opt-outs), the absent flag is not.
+    std::string rope_scaling;           ///< --rope-scaling none|linear|yarn (llama.cpp's names); empty = the flag is absent
+    double rope_scale = 0;              ///< --rope-scale F: the extension factor; 0 = the flag is absent (the model file's, else 1 = off)
     double rope_freq_base = 0;          ///< --rope-freq-base N: 0 = the model's (1e7)
     double rope_freq_scale = 0;         ///< --rope-freq-scale F: the raw ggml knob; 0 = 1/--rope-scale
     double yarn_orig_ctx = 0;           ///< --yarn-orig-ctx N: 0 = the model's, else 262144
@@ -373,10 +374,12 @@ void usage() {
                  "  --expert-cache-cpu-order  experimental GPU expert reduction matching CPU order\n"
                  "  --max-new N          tokens to generate (default 16)\n"
                  "  --max-context N      KV/state capacity (default 4096)\n"
-                 "  --rope-scaling T     extend the context past the trained one: none (default), linear\n"
+                 "  --rope-scaling T     extend the context past the trained one: none, linear\n"
                  "                       (position interpolation) or yarn - llama.cpp's types and names.\n"
-                 "                       Fixed at startup: K in the cache is post-RoPE, so one run one scaling\n"
-                 "  --rope-scale F       the extension factor for linear/yarn (default 1 = off)\n"
+                 "                       Default: the model file's rope keys, else none. Fixed at startup:\n"
+                 "                       K in the cache is post-RoPE, so one run one scaling\n"
+                 "  --rope-scale F       the extension factor for linear/yarn (default: the model file's\n"
+                 "                       factor, else 1 = off)\n"
                  "  --rope-freq-base N   the raw ggml knobs: the frequency base (0 = the model's 1e7) and\n"
                  "  --rope-freq-scale F  the angle shrink (0 = 1/--rope-scale)\n"
                  "  --yarn-orig-ctx N    the trained context the correction targets (0 = 262144)\n"
@@ -1316,15 +1319,18 @@ int main(int argc, char** argv) {
     strata::kernels::RopeScaling rope_cfg;   // type filled here; the rest at the resolution below
     {
         using RST = strata::kernels::RopeScalingType;
+        // an absent --rope-scaling (the empty default) leaves the type to the model file's rope keys,
+        // resolved below; anything present must be one of the three names
         if (o.rope_scaling == "none") rope_cfg.type = RST::None;
         else if (o.rope_scaling == "linear") rope_cfg.type = RST::Linear;
         else if (o.rope_scaling == "yarn") rope_cfg.type = RST::YaRN;
-        else {
+        else if (!o.rope_scaling.empty()) {
             std::fprintf(stderr, "strata generate: --rope-scaling must be none, linear or yarn (got '%s')\n",
                          o.rope_scaling.c_str());
             return 2;
         }
-        if (o.rope_scale < 1.0) {
+        // 0 is the absent default; an explicit factor must extend, not shrink
+        if (o.rope_scale > 0 && o.rope_scale < 1.0) {
             std::fprintf(stderr, "strata generate: --rope-scale %g must be >= 1 (it extends the context, not shrinks it)\n",
                          o.rope_scale);
             return 2;
@@ -1435,6 +1441,79 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
+    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
+    int64_t K = 10;
+    // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
+    // and `session_init` below builds the rope table from it and captures the kernels reading its constants
+    // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats
+    // scanning gigabytes of shards first.  Precedence: an EXPLICIT flag over the model file's rope keys over
+    // the struct defaults.  The empty --rope-scaling and the 0 --rope-scale mean the flag is absent, so the
+    // model file decides; an explicit value - `none` and `1` included, the opt-outs - wins over the model file.
+    {
+        // The model file's rope keys (llama.cpp's names under the arch prefix), when it carries any - the
+        // artifact today ships none, so this is a no-op defaults channel for future fine-tunes.
+        std::string gguf_rope_type;
+        double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
+        if (!o.native_preset.empty()) {
+            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
+            // is the authority on its own MoE shape - everything else in the geometry is unchanged
+            try {
+                strata::GgufFile model_gguf(o.native_preset);
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                    gguf_rope_orig_ctx = v->num();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
+                             o.native_preset.c_str(), e.what());
+                return 1;
+            }
+        }
+        using RST = strata::kernels::RopeScalingType;
+        if (!o.rope_scaling.empty()) {
+            // the early validation pinned the spelling; `none` here is the CLI opting OUT of the model file's keys
+            if (o.rope_scaling == "linear") rope_cfg.type = RST::Linear;
+            else if (o.rope_scaling == "yarn") rope_cfg.type = RST::YaRN;
+            else rope_cfg.type = RST::None;
+        } else if (!gguf_rope_type.empty()) {
+            if (gguf_rope_type == "linear") rope_cfg.type = RST::Linear;
+            else if (gguf_rope_type == "yarn") rope_cfg.type = RST::YaRN;
+            else if (gguf_rope_type != "none") {
+                std::fprintf(stderr, "strata generate: %s carries rope.scaling.type '%s' - none, linear or yarn only\n",
+                             o.native_preset.c_str(), gguf_rope_type.c_str());
+                return 2;
+            }
+        }
+        if (o.rope_scale > 0) rope_cfg.factor = o.rope_scale;            // an explicit factor, 1 included
+        else if (gguf_rope_factor > 1.0) rope_cfg.factor = gguf_rope_factor;
+        if (o.rope_freq_base > 0) rope_cfg.freq_base = o.rope_freq_base;
+        else if (gguf_rope_base > 1.0) rope_cfg.freq_base = gguf_rope_base;
+        if (o.yarn_orig_ctx > 0) rope_cfg.orig_ctx = o.yarn_orig_ctx;
+        else if (gguf_rope_orig_ctx >= 1) rope_cfg.orig_ctx = gguf_rope_orig_ctx;
+        rope_cfg.freq_scale_in = o.rope_freq_scale;
+        rope_cfg.ext_factor = o.yarn_ext_factor >= 0 ? o.yarn_ext_factor
+                                                     : (rope_cfg.type == RST::YaRN ? 1.0 : 0.0);
+        rope_cfg.attn_factor = o.yarn_attn_factor;
+        rope_cfg.beta_fast = o.yarn_beta_fast;
+        rope_cfg.beta_slow = o.yarn_beta_slow;
+        strata::kernels::rope_scaling_set(rope_cfg);
+        if (rope_cfg.type != RST::None) {
+            const char* tn = rope_cfg.type == RST::YaRN ? "yarn" : "linear";
+            std::fprintf(stderr,
+                         "strata generate: rope scaling %s, factor %.6g (freq_scale %.6g, base %.6g, mscale %.6f), "
+                         "--max-context %lld against a trained context of %.0f\n",
+                         tn, rope_cfg.factor, rope_cfg.freq_scale(), rope_cfg.freq_base, rope_cfg.mscale(),
+                         (long long) o.max_context, rope_cfg.orig_ctx);
+            if ((double) o.max_context <= rope_cfg.orig_ctx)
+                std::fprintf(stderr,
+                             "strata generate: note: the context is within the trained %.0f - the angles barely move, "
+                             "but YaRN's magnitude correction applies everywhere\n",
+                             rope_cfg.orig_ctx);
+        }
+    }
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
         if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
@@ -1536,71 +1615,6 @@ int main(int argc, char** argv) {
         strata::kernels::mrope_table_set(d_mrope);
     }
     strata::kernels::ple_set_native_postops(o.native_ple_postops);
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
-    // The model file's rope keys (llama.cpp's names under the arch prefix), when it carries any - the
-    // artifact today ships none, so this is a no-op defaults channel for future fine-tunes.
-    std::string gguf_rope_type;
-    double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
-    if (!o.native_preset.empty()) {
-        // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-        // is the authority on its own MoE shape - everything else in the geometry is unchanged
-        try {
-            strata::GgufFile model_gguf(o.native_preset);
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
-                gguf_rope_orig_ctx = v->num();
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
-                         o.native_preset.c_str(), e.what());
-            return 1;
-        }
-    }
-    // THE ROPE CONFIG RESOLVES HERE - the CLI and the model file have both spoken, and `session_init`
-    // below builds the rope table from it and captures the kernels reading its constants (rope_scaling.hpp).
-    // Precedence: CLI over model file over the struct defaults.  An explicit `--rope-scaling none` and the
-    // untouched default are the same choice: the CLI opt-out wins over the model file too.
-    {
-        using RST = strata::kernels::RopeScalingType;
-        if (rope_cfg.type == RST::None && !gguf_rope_type.empty()) {
-            if (gguf_rope_type == "linear") rope_cfg.type = RST::Linear;
-            else if (gguf_rope_type == "yarn") rope_cfg.type = RST::YaRN;
-            else if (gguf_rope_type != "none") {
-                std::fprintf(stderr, "strata generate: %s carries rope.scaling.type '%s' - none, linear or yarn only\n",
-                             o.native_preset.c_str(), gguf_rope_type.c_str());
-                return 2;
-            }
-        }
-        rope_cfg.factor = (o.rope_scale == 1.0 && gguf_rope_factor > 1.0) ? gguf_rope_factor : o.rope_scale;
-        if (o.rope_freq_base > 0) rope_cfg.freq_base = o.rope_freq_base;
-        else if (gguf_rope_base > 1.0) rope_cfg.freq_base = gguf_rope_base;
-        if (o.yarn_orig_ctx > 0) rope_cfg.orig_ctx = o.yarn_orig_ctx;
-        else if (gguf_rope_orig_ctx >= 1) rope_cfg.orig_ctx = gguf_rope_orig_ctx;
-        rope_cfg.freq_scale_in = o.rope_freq_scale;
-        rope_cfg.ext_factor = o.yarn_ext_factor >= 0 ? o.yarn_ext_factor
-                                                     : (rope_cfg.type == RST::YaRN ? 1.0 : 0.0);
-        rope_cfg.attn_factor = o.yarn_attn_factor;
-        rope_cfg.beta_fast = o.yarn_beta_fast;
-        rope_cfg.beta_slow = o.yarn_beta_slow;
-        strata::kernels::rope_scaling_set(rope_cfg);
-        if (rope_cfg.type != RST::None) {
-            const char* tn = rope_cfg.type == RST::YaRN ? "yarn" : "linear";
-            std::fprintf(stderr,
-                         "strata generate: rope scaling %s, factor %.6g (freq_scale %.6g, base %.6g, mscale %.6f), "
-                         "--max-context %lld against a trained context of %.0f\n",
-                         tn, rope_cfg.factor, rope_cfg.freq_scale(), rope_cfg.freq_base, rope_cfg.mscale(),
-                         (long long) o.max_context, rope_cfg.orig_ctx);
-            if ((double) o.max_context <= rope_cfg.orig_ctx)
-                std::fprintf(stderr,
-                             "strata generate: note: the context is within the trained %.0f - the angles barely move, "
-                             "but YaRN's magnitude correction applies everywhere\n",
-                             rope_cfg.orig_ctx);
-        }
-    }
     // before session_init: every graph captured from here on has the vector's kernels where it applies
     std::string cvec_summary = "0";
     if (!o.cvec_files.empty()) {
