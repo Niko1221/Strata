@@ -15,6 +15,21 @@ path runs. That C++ integration change still needs an engine build and model
 validation; these Python passes do not establish it. No benchmark server or GPU
 was used for these checks.
 
+On the dependent NVMe branch, three CPU-only CTest targets pass: RAM policy,
+memory admission and file codec. The codec also passes 6,718 checks under
+ASan/UBSan, compiled with `-Wall -Wextra -Werror`. Coverage includes every
+single-byte mutation and truncation of a fixture, foreign identities, missing
+assets, middle-of-file asset changes, staging/floor rejection, all encoded KV
+formats and checkpoint buffers, and metadata-only matching against the RAM
+policy. Codec format coverage does not establish model compatibility or disk
+restart/promotion correctness. No GPU or benchmark endpoint was used.
+
+```sh
+cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
+cmake --build build-conversation-host --target conversation_file_test conversation_cache_test conversation_memory_test -j 1
+ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_cache_test|conversation_memory_test)$' --output-on-failure
+```
+
 ## Recorded Linux evidence (2026-09-29)
 
 EPYC 7532, RTX 4090, GCC 15.2, CUDA 13.4, SM89, portable AVX2, IQ3_S. Paired

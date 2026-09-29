@@ -71,3 +71,19 @@ staging-budget, compatibility and eviction/promotion tests remain required.
 Windows admission coverage includes @midhatn's contribution, preserved with its
 original authorship. See the [validation record](shared-conversation-upstream-validation.md)
 for results, commands, and hardware limits.
+
+The dependent NVMe branch now provides `conversation_file.hpp`: a little-endian
+envelope with a SHA-256 footer covering header and payload, and a full-content
+asset/settings identity. It rejects #52's experimental native-struct v3 files.
+It writes the shared image directly and decodes into one admitted image; it has
+no CUDA apply walk. Prefix lookup seeks past payloads and returns an untrusted
+candidate, which must be decoded, integrity-checked and core-validated before use.
+The codec follows the streaming-envelope approach contributed by Marmaduke
+Woodman (@maedoc); his original branch remains preserved for attribution.
+
+Build this optional component with `STRATA_ENABLE_CONVERSATION_DISK=ON` (requires
+OpenSSL Crypto); default builds have no new dependency. This currently enables
+the codec and its tests only. Atomic publication, quotas, eviction callbacks,
+runtime identity collection and promotion wiring are still pending, so this
+branch does not yet provide a usable disk cache. Its staging bound covers vector
+storage and a 64 KiB codec allowance, not allocator or process RSS overhead.
