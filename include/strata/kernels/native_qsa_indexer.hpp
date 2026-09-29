@@ -32,4 +32,10 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                                const QsaIndexerBuffers& buffers, const QsaShapes& shapes,
                                int64_t max_cells, float freq_base, void* stream);
 
+// Prompt path: the same appends for T contiguous cells pos0 .. pos0+T-1 (raw [T,128]) in two launches
+// instead of T; the resulting tail / dead / pooled / block_pos are bit-identical to T single appends.
+void native_qsa_indexer_append_chunk(const float* raw, int64_t T, int64_t pos0, int32_t pos_base,
+                                     const float* gamma, float epsilon, const QsaIndexerBuffers& buffers,
+                                     const QsaShapes& shapes, int64_t max_cells, float freq_base, void* stream);
+
 } // namespace strata::kernels

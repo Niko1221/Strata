@@ -29,11 +29,14 @@ void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
 void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream);
 /// The 4-tap causal conv + SiLU over the chunk (history [C][3] in, updated to the chunk's last three inputs), then
 /// the L2 norm of the q and k heads of every token.  h: [T, C].
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream);
+// mode: -1 = STRATA_PF_CONV_PAR (default parallel over tokens), 0 = the per-channel walk, 1 = parallel
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream,
+              int mode = -1);
 /// The recurrence over the chunk, block per value head, state in registers; y[t] = rmsnorm(o) * gamma * sigmoid(z)
 /// (FP32 and FP16 bits: the out projection is quantized).
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream);
+                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream,
+                    int mode = -1);   // -1: STRATA_PF_REC_SPLIT (default: the column-split kernel), 0: pipelined, 1: split
 
 // ---- MoE
 /// softmax over 512, top-10 (ties to the lower id), weights renormalised over the ten (the native router).

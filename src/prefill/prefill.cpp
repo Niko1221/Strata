@@ -15,6 +15,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/native_head.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/prefill/gemm.hpp"
@@ -83,6 +84,11 @@ inline int ring_slots(size_t T) {
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+// an on-by-default switch; NAME=0 turns it off (the A/B)
+inline bool pf_on(const char* name) {
+    const char* v = std::getenv(name);
+    return v == nullptr || std::atoi(v) != 0;
+}
 
 // Either cudaMalloc (owned, freed with the object) or a bump allocation from a borrowed region; with no base and
 // no region it only counts, which is how `bytes_needed` sizes the region.
@@ -278,6 +284,8 @@ struct Prefill::Impl {
     uint8_t* stage_dev[RING_MAX] = {};
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
+    int32_t* tok_dev = nullptr;              // the chunk's token ids for the batched embedding gather
+    std::vector<int32_t> tok_host;
     cudaEvent_t copied[RING_MAX] = {}, used[RING_MAX] = {};
     bool stage_live[RING_MAX] = {};
     // PLE
@@ -451,6 +459,11 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (!m.stager->init((size_t) MAXBLOB(), std::max(2, std::min(4, hw / 4)))) ok = false;
     }
     m.steps_host.resize(T * strata::kernels::kStepCount);
+    m.tok_host.resize(T);
+    if (m.tok_dev == nullptr) {
+        if (cudaMalloc((void**) &m.tok_dev, T * 4) != cudaSuccess) { cudaGetLastError(); m.tok_dev = nullptr; }
+        else m.owned.push_back(m.tok_dev);
+    }
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
     for (int b = 0; b < 2; ++b) {
         if (!m.ple_emb_host[b] &&
@@ -756,8 +769,20 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         // ---- embeddings, broadcast to the four streams
+        // the GGUF-form table (IQ files) gathers the whole chunk in ONE launch (the same dequantizer as
+        // the per-token path, so the rows are bit-identical); picture rows are uploaded over them afterwards.
+        // STRATA_PF_EMBED_BATCH=0: a launch per token (the A/B).
+        static const bool embed_batch = pf_on("STRATA_PF_EMBED_BATCH");
+        const core::NativeEmbed* nemb = core::native_embed();
+        const bool emb_batched = embed_batch && nemb != nullptr && m.tok_dev != nullptr;
+        if (emb_batched) {
+            for (int64_t t = 0; t < T; ++t) m.tok_host[(size_t) t] = (int32_t) tokens[c0 + t];
+            cudaMemcpyAsync(m.tok_dev, m.tok_host.data(), (size_t) T * 4, cudaMemcpyHostToDevice, m.cs);
+            nemb->gather_dev(m.tok_dev, T, m.emb, m.cs);
+        }
         for (int64_t t = 0; t < T; ++t) {
             const float* row = embd_rows ? embd_rows[p0 + t] : nullptr;
+            if (emb_batched && !row) continue;
             if (row) {
                 if (cudaMemcpyAsync(m.emb + t * N, row, (size_t) N * 4, cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
                     err = "prefill: the image embedding upload failed";
@@ -939,8 +964,64 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV)) return false;
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
-                    gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
-                    gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs);
+                    if (static const bool conv_check = std::getenv("STRATA_PF_CONV_CHECK") != nullptr; conv_check) {
+                        // debug: the per-channel walk and the parallel conv from the same history, every byte compared
+                        const size_t nh = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1), nb = (size_t) T * C;
+                        std::vector<float> pre(nh), ha(nb), hb(nb), sa(nh), sb(nh);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(pre.data(), conv, nh * 4, cudaMemcpyDeviceToHost);
+                        static const int cmode = std::atoi(std::getenv("STRATA_PF_CONV_CHECK"));   // 2: old vs old, 3: new vs new
+                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs, cmode == 3 ? 1 : 0);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(ha.data(), m.hbuf, nb * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(sa.data(), conv, nh * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpyAsync(conv, pre.data(), nh * 4, cudaMemcpyHostToDevice, m.cs);   // (on m.cs: a pageable
+                        cudaStreamSynchronize(m.cs);                                          // cudaMemcpy may land late)
+                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs, cmode == 2 ? 0 : 1);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(hb.data(), m.hbuf, nb * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(sb.data(), conv, nh * 4, cudaMemcpyDeviceToHost);
+                        const bool same = std::memcmp(ha.data(), hb.data(), nb * 4) == 0 && std::memcmp(sa.data(), sb.data(), nh * 4) == 0;
+                        size_t nd = 0, first = nb;
+                        for (size_t i = 0; i < nb; ++i)
+                            if (std::memcmp(&ha[i], &hb[i], 4) != 0) { if (first == nb) first = i; ++nd; }
+                        std::fprintf(stderr, "strata prefill: CONV_CHECK layer %lld p0 %lld T %lld: %s (%zu of %zu differ, "
+                                             "first t %zu c %zu: %.9g vs %.9g; history %s)\n", (long long) l,
+                                     (long long) p0, (long long) T, same ? "IDENTICAL" : "DIFFERENT", nd, nb,
+                                     first == nb ? 0 : first / C, first == nb ? 0 : first % C,
+                                     first == nb ? 0.0 : (double) ha[first], first == nb ? 0.0 : (double) hb[first],
+                                     std::memcmp(sa.data(), sb.data(), nh * 4) == 0 ? "same" : "differs");
+                    } else {
+                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
+                    }
+                    if (static const bool rec_check = std::getenv("STRATA_PF_REC_CHECK") != nullptr; rec_check) {
+                        // debug: the pipelined kernel and the column split from the same state, every byte compared
+                        const size_t ns = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size, ny = (size_t) T * ZV;
+                        std::vector<float> pre(ns), ya(ny), yb(ny), sa(ns), sb(ns);
+                        std::vector<uint16_t> ha(ny), hb(ny);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(pre.data(), state, ns * 4, cudaMemcpyDeviceToHost);
+                        gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs, 0);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(ya.data(), m.y, ny * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(ha.data(), m.y_h, ny * 2, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(sa.data(), state, ns * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpyAsync(state, pre.data(), ns * 4, cudaMemcpyHostToDevice, m.cs);
+                        cudaStreamSynchronize(m.cs);
+                        gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs, 1);
+                        cudaStreamSynchronize(m.cs);
+                        cudaMemcpy(yb.data(), m.y, ny * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(hb.data(), m.y_h, ny * 2, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(sb.data(), state, ns * 4, cudaMemcpyDeviceToHost);
+                        size_t nd = 0;
+                        for (size_t i = 0; i < ny; ++i) nd += std::memcmp(&ya[i], &yb[i], 4) != 0 || ha[i] != hb[i];
+                        const bool same = nd == 0 && std::memcmp(sa.data(), sb.data(), ns * 4) == 0;
+                        std::fprintf(stderr, "strata prefill: REC_CHECK layer %lld p0 %lld T %lld: %s (%zu of %zu outputs differ, state %s)\n",
+                                     (long long) l, (long long) p0, (long long) T, same ? "IDENTICAL" : "DIFFERENT", nd, ny,
+                                     std::memcmp(sa.data(), sb.data(), ns * 4) == 0 ? "same" : "differs");
+                    } else {
+                        gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs);
+                    }
                     if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err)) return false;
                     ++gdn_index;
                 } else if (half == 0) {
@@ -989,13 +1070,67 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
                     const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                     pt.mark(kPfQsaIdx, cs);
-                    for (int64_t t = 0; t < T; ++t) {
-                        const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
+                    auto idx_per_token = [&]() -> bool {
+                        for (int64_t t = 0; t < T; ++t) {
+                            const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
+                            try {
+                                strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
+                                                                           (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                                           (float) strata::kernels::qsa_freq_base(), m.cs);
+                            } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
+                        }
+                        return true;
+                    };
+                    // the chunk's appends in two launches (STRATA_PF_IDX_BATCH=0: token by token, the A/B)
+                    static const bool idx_batch = pf_on("STRATA_PF_IDX_BATCH");
+                    if (idx_batch) {
+                        // STRATA_PF_IDX_CHECK=1 (debug): run both ways from the same state and compare every byte
+                        static const bool idx_check = std::getenv("STRATA_PF_IDX_CHECK") != nullptr;
+                        const size_t prow = (size_t) std::min<int64_t>((p0 + T) / 4 + 2, st.max_cells / 4 + 1) * 128;
+                        std::vector<float> pre_tail, pre_dead, pre_pool;
+                        int32_t pre_bp = 0;
+                        if (idx_check) {
+                            cudaStreamSynchronize(m.cs);
+                            pre_tail.resize(3 * 128); pre_dead.resize(128); pre_pool.resize(prow);
+                            cudaMemcpy(pre_tail.data(), st.idx_tail, 3 * 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(pre_dead.data(), st.idx_dead, 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(pre_pool.data(), st.idx_pooled, prow * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(&pre_bp, st.idx_block_pos, 4, cudaMemcpyDeviceToHost);
+                        }
                         try {
-                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
-                                                                       (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                                                       (float) strata::kernels::qsa_freq_base(), m.cs);
+                            strata::kernels::native_qsa_indexer_append_chunk(m.idx_raw, T, p0, 0, (const float*) wikn->data,
+                                                                             EPS, ib, s, st.max_cells,
+                                                                             (float) strata::kernels::qsa_freq_base(), m.cs);
                         } catch (const std::exception& e) { err = std::string("prefill indexer: ") + e.what(); return false; }
+                        if (idx_check) {
+                            cudaStreamSynchronize(m.cs);
+                            std::vector<float> a_tail(3 * 128), a_dead(128), a_pool(prow);
+                            int32_t a_bp = 0;
+                            cudaMemcpy(a_tail.data(), st.idx_tail, 3 * 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(a_dead.data(), st.idx_dead, 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(a_pool.data(), st.idx_pooled, prow * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(&a_bp, st.idx_block_pos, 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpyAsync(st.idx_tail, pre_tail.data(), 3 * 128 * 4, cudaMemcpyHostToDevice, m.cs);
+                            cudaMemcpyAsync(st.idx_dead, pre_dead.data(), 128 * 4, cudaMemcpyHostToDevice, m.cs);
+                            cudaMemcpyAsync(st.idx_pooled, pre_pool.data(), prow * 4, cudaMemcpyHostToDevice, m.cs);
+                            cudaMemcpyAsync(st.idx_block_pos, &pre_bp, 4, cudaMemcpyHostToDevice, m.cs);
+                            cudaStreamSynchronize(m.cs);
+                            if (!idx_per_token()) return false;
+                            cudaStreamSynchronize(m.cs);
+                            std::vector<float> b_tail(3 * 128), b_dead(128), b_pool(prow);
+                            int32_t b_bp = 0;
+                            cudaMemcpy(b_tail.data(), st.idx_tail, 3 * 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(b_dead.data(), st.idx_dead, 128 * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(b_pool.data(), st.idx_pooled, prow * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(&b_bp, st.idx_block_pos, 4, cudaMemcpyDeviceToHost);
+                            const bool same = std::memcmp(a_tail.data(), b_tail.data(), a_tail.size() * 4) == 0 &&
+                                              std::memcmp(a_dead.data(), b_dead.data(), a_dead.size() * 4) == 0 &&
+                                              std::memcmp(a_pool.data(), b_pool.data(), a_pool.size() * 4) == 0 && a_bp == b_bp;
+                            std::fprintf(stderr, "strata prefill: IDX_CHECK layer %lld p0 %lld T %lld: %s\n", (long long) l,
+                                         (long long) p0, (long long) T, same ? "IDENTICAL" : "DIFFERENT");
+                        }
+                    } else if (!idx_per_token()) {
+                        return false;
                     }
                     pt.mark(kPfQsaSel, cs);
                     for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
