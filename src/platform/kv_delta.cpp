@@ -1111,16 +1111,27 @@ void KvDeltaStore::drop(const NvmeEntry& e) {
 }
 
 void KvDeltaStore::sweep() {
-    // mark: the union of everything the live manifests reference.  Computed BEFORE any unlink - a chunk shared
-    // with a live manifest is never garbage, which is the property that makes eviction safe with forks around.
+    // mark: the union of everything the LIVE MANIFESTS reference - read from the DISK, not from the in-memory
+    // entry list, because the disk can be AHEAD of it: a dump that failed after its manifest was renamed (the
+    // crash matrix's C4/C5) left a committed head this instance never registered, and sweeping against the
+    // stale marks would delete a live conversation's chunks.  The union is computed BEFORE any unlink - a chunk
+    // shared with a live manifest is never garbage, which is what makes eviction safe with forks around.
     std::map<std::string, bool> mark;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        mark[delta_key_name(entry_states_[i])] = true;
-        for (uint64_t k : entry_chunks_[i]) mark[delta_key_name(k)] = true;
+    std::error_code ec;
+    for (const fs::directory_entry& de : fs::directory_iterator(dir_, ec)) {
+        if (ec) break;
+        if (!de.is_regular_file() || de.path().filename().string().rfind("log-", 0) != 0) continue;
+        DeltaManifestHeader h;
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        std::vector<DeltaChunkRef> refs;
+        std::string merr;   // an unreadable manifest is not a mark source; its reason is not this sweep's news
+        if (!delta_read_manifest(de.path().string(), h, ids, imgs, refs, merr)) continue;
+        mark[delta_key_name(h.state_key)] = true;
+        for (const DeltaChunkRef& r : refs) mark[delta_key_name(r.key)] = true;
     }
     size_t swept = 0;
     uint64_t bytes = 0;
-    std::error_code ec;
     for (const char* sub : {"/chunks", "/states"}) {
         for (const fs::directory_entry& de : fs::directory_iterator(dir_ + sub, ec)) {
             if (ec) break;
