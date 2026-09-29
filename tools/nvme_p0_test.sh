@@ -27,7 +27,7 @@ cd /local/strata
 E=${NVME_ENGINE:-build/strata}
 OUT=/tmp/nvme-p0
 mkdir -p "$OUT"; rm -f "$OUT"/*
-export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:${LD_LIBRARY_PATH-}
 export STRATA_STATE_HASH=1 STRATA_NVME_HASH=1
 NVME_PYTHON=.venv/bin/python
 
