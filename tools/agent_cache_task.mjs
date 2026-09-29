@@ -41,9 +41,11 @@ async function makeSession() {
         let left = 16000;
         return {content: event.content.map(part => {
           if (part.type !== 'text') return part;
-          const text = part.text.slice(0, left);
+          const marker = '\n[benchmark output limit]';
+          const text = part.text.length <= left ? part.text
+            : left >= marker.length ? part.text.slice(0, left - marker.length) + marker : '';
           left -= text.length;
-          return {...part, text: text + (text.length < part.text.length ? '\n[benchmark output limit]' : '')};
+          return {...part, text};
         })};
       });
     }],

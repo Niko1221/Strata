@@ -25,19 +25,20 @@ bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
 
 bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index, Layout& l, std::string& error) {
     if (!valid_extent(st, upto, error)) return false;
-    if (st.kv_hybrid && (st.kv_mode != 0 || st.kv_q4 || !st.kv_int8)) {
-        error = "conversation snapshot: hybrid K8V4 requires identity-layout INT8 K";
+    if (st.kv_hybrid && (st.kv_mode != 0 || st.kv_q4 || st.kv_int8)) {
+        error = "conversation snapshot: hybrid K8V4 requires an identity layout and distinct format flags";
         return false;
     }
     const auto s = strata::kernels::qsa_real_shapes();
+    const bool int8_keys = st.kv_int8 || st.kv_hybrid;
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
-        (st.kv_q4 && g.head_dim % 32) || (st.kv_int8 && !st.kv_q4 && g.head_dim % 64)) {
+        (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
-                              : (size_t) g.head_dim * (st.kv_int8 ? 1 : 2);
+                              : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
@@ -46,7 +47,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                           st.kv_int8 && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
+                           int8_keys && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
         !product(l.pooled, {(uint64_t) pooled, (uint64_t) g.idx_key_dim, sizeof(float)})) {
         error = "conversation snapshot: K/V byte count overflow";
         return false;
