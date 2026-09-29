@@ -1591,7 +1591,11 @@ def write_run_script(model, cfg_path, port):
 # ------------------------------------------------------------------------------------------------ the rope config
 def covering_factor(ctx: int, trained: int = 262144) -> float:
     """The smallest extension factor on the safe side that covers a chosen context."""
-    return next(f for f in (1.5, 2.0) if trained * f >= ctx)
+    for f in (1.5, 2.0, 3.0, 4.0):
+        if trained * f >= ctx:
+            return f
+    raise ValueError(f"a {ctx} token context is {ctx / trained:.1f}x the trained 262144 - past anything this "
+                     "setup picks a factor for: pass --rope-scale explicitly if you know what you are asking for")
 
 
 def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
@@ -1910,14 +1914,14 @@ def main() -> int:
              f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest): using 128K")
         ctx = 131072
     scaling = a.rope_scaling
-    if ctx > 262144 and scaling is None:
-        # the automatic path the docs promise: one question when interactive (yarn preselected), the
-        # silent default with --yes - llama.cpp's extension method, recall-tested here at 512K
+    if ctx > 262144 and scaling is None and not a.yes:
+        # the interactive path: one question, yarn preselected (llama.cpp's extension method, recall-tested
+        # here at 512K).  With --yes nothing prints: resolve_rope takes yarn below and the ok() line says so.
         say()
         say(f"  A {ctx // 1024}K context runs the model past its trained 262,144 positions: the rotary angles")
         say("  get rescaled (llama.cpp's RoPE extension). yarn keeps the trained angles on the high-frequency")
         say("  pairs and corrects the magnitudes; linear shrinks every angle. Override any time with")
-        say("  --rope-scaling; with --yes the setup takes yarn without asking.")
+        say("  --rope-scaling.")
         scaling = ask("RoPE extension method?", ["yarn", "linear"], "yarn", a.yes)
     try:
         scaling, rope_scale = resolve_rope(ctx, scaling, a.rope_scale)

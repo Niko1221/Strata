@@ -24,6 +24,14 @@ class CoveringFactor(unittest.TestCase):
     def test_the_first_gap_takes_the_bigger_factor(self):
         self.assertEqual(setup.covering_factor(393217), 2.0)       # one token past 1.5's reach
 
+    def test_a_free_form_context_past_the_menu_gets_the_next_factor(self):
+        self.assertEqual(setup.covering_factor(600000), 3.0)       # --context is not limited to the menu
+
+    def test_a_context_past_the_whole_ladder_is_a_clean_refusal(self):
+        with self.assertRaises(ValueError) as cm:
+            setup.covering_factor(1048577)                          # 262144 * 4 is the last rung
+        self.assertIn("--rope-scale", str(cm.exception))
+
 
 class ResolveRope(unittest.TestCase):
     # ---- the automatic flow the docs promise (an omitted flag, --yes or the interactive default)
