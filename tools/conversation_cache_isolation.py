@@ -7,19 +7,17 @@ kernels. This validates cache correctness, not vision or steering quality.
 import argparse
 import json
 from pathlib import Path
-import re
 import struct
 import sys
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import STATE_KEYS, engine_args, require
+from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
 from gguf_reader import GGUFFile
 from gguf_writer import GGUFWriter
 from serve.server import StrataEngine, child_env
 from serve.frontend import ChatTemplate
-import strata_tokenizer as ST
 import numpy as np
 
 
@@ -86,12 +84,7 @@ def main():
     width = geometry['qwen4exp.embedding_length']
     require(geometry['qwen4exp.block_count'] > 20, 'fixture requires layers 1 and 20')
     p = Path(cfg['tokenizer'])
-    vocab = json.loads((p / 'vocab.json').read_text())
-    tokens = [None] * len(vocab)
-    for token, i in vocab.items():
-        tokens[i] = token
-    tok = ST.Tokenizer(tokens, (p / 'merges.txt').read_text().split('\n'),
-                       json.loads((p / 'token_type.json').read_text()))
+    tok = load_tokenizer(p)
     tpl = ChatTemplate(p / 'chat_template.jinja')
     def encode(text):
         return tok.encode(tpl.render([{'role': 'user', 'content': text}], enable_thinking=False), parse_special=True)
@@ -137,11 +130,7 @@ def main():
                 generate('off-again', A, steering=False)
         finally:
             engine.close()
-        hashes = []
-        for line in log.read_text().splitlines():
-            if 'STATE_HASH L=' in line:
-                fields = dict(re.findall(r'(\w+)=([0-9a-f,-]+)', line))
-                hashes.append({k: fields[k] for k in STATE_KEYS})
+        hashes = state_hashes(log.read_text())
         require(len(hashes) == len(records), 'missing isolation state hashes')
         for record, state in zip(records, hashes):
             record['state'] = state

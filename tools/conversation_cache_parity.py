@@ -22,6 +22,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def load_tokenizer(path):
+    vocab = json.loads((path / 'vocab.json').read_text())
+    tokens = [None] * len(vocab)
+    for token, index in vocab.items():
+        tokens[index] = token
+    return ST.Tokenizer(tokens, (path / 'merges.txt').read_text().split('\n'),
+                        json.loads((path / 'token_type.json').read_text()))
+
+
+def state_hashes(text):
+    # Padding and the drafter's final uncomputed cell aren't main-model state.
+    hashes = []
+    for line in text.splitlines():
+        if 'STATE_HASH L=' in line:
+            fields = dict(re.findall(r'(\w+)=([0-9a-f,-]+)', line))
+            hashes.append({key: fields[key] for key in STATE_KEYS})
+    return hashes
+
+
 def engine_args(cfg, budget, spec):
     # Native IQ packs require verifier capacity >= 2, even for one-token decode.
     return list(cfg['args']) + [
@@ -131,12 +150,7 @@ def main():
         return
     cfg = json.loads(a.config.read_text())
     p = Path(cfg['tokenizer'])
-    vocab = json.loads((p / 'vocab.json').read_text())
-    tokens = [None] * len(vocab)
-    for text, i in vocab.items():
-        tokens[i] = text
-    tok = ST.Tokenizer(tokens, (p / 'merges.txt').read_text().split('\n'),
-                       json.loads((p / 'token_type.json').read_text()))
+    tok = load_tokenizer(p)
     tpl = ChatTemplate(p / 'chat_template.jinja')
     def encode(text):
         return tok.encode(text, parse_special=True)
@@ -181,13 +195,7 @@ def main():
                     generate(continuation, 8, 'A+-checkpoint')
         finally:
             engine.close()
-        hashes = []
-        for line in log.read_text().splitlines():
-            if 'STATE_HASH L=' in line:
-                fields = dict(re.findall(r'(\w+)=([0-9a-f,-]+)', line))
-                # Padding and the drafter's final uncomputed cell aren't used
-                # main-model state; do not gate on their diagnostic hashes.
-                hashes.append({k: fields[k] for k in STATE_KEYS})
+        hashes = state_hashes(log.read_text())
         require(len(hashes) == len(records), 'missing state hashes')
         for record, fingerprint in zip(records, hashes):
             record['state'] = fingerprint

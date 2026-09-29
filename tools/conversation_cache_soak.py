@@ -12,10 +12,9 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import STATE_KEYS, engine_args, require
+from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
 from serve.server import StrataEngine, child_env
 from serve.frontend import ChatTemplate
-import strata_tokenizer as ST
 
 
 def answer_text(text):
@@ -81,12 +80,7 @@ def main():
         return
     cfg = json.loads(args.config.read_text())
     path = Path(cfg['tokenizer'])
-    vocab = json.loads((path / 'vocab.json').read_text())
-    tokens = [None] * len(vocab)
-    for token, index in vocab.items():
-        tokens[index] = token
-    tok = ST.Tokenizer(tokens, (path / 'merges.txt').read_text().split('\n'),
-                       json.loads((path / 'token_type.json').read_text()))
+    tok = load_tokenizer(path)
     template = ChatTemplate(path / 'chat_template.jinja')
     def encode(text):
         return tok.encode(text, parse_special=True)
@@ -124,11 +118,10 @@ def main():
             nonlocal hash_count
             output = [t for t in engine.generate(ids, count, {'temperature': 0}, threading.Event()) if t is not None]
             text = log.read_text()
-            hashes = [dict(re.findall(r'(\w+)=([0-9a-f,-]+)', line))
-                      for line in text.splitlines() if 'STATE_HASH L=' in line]
+            hashes = state_hashes(text)
             require(len(hashes) == hash_count + 1 and int(hashes[-1]['L']) >= len(ids), 'missing current state fingerprint')
             hash_count += 1
-            state = {k: hashes[-1][k] for k in STATE_KEYS}
+            state = hashes[-1]
             occupancy = re.findall(r'parked=\d+ bytes=(\d+)', text)
             rss = None
             try:

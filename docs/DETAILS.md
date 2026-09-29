@@ -383,7 +383,7 @@ moving spare row are preserved, including checkpoint rewinds. These development
 changes and the optional disk-tier boundary are described in the
 [shared-core proposal](plans/shared-conversation-snapshots.md).
 The engine log reports parking, restoration, bytes and evictions. Snapshots are not
-persisted across restarts. See [the design and validation gates](plans/multi-conversation-cache.md).
+persisted across restarts. See [the design and validation gates](plans/shared-conversation-snapshots.md).
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
