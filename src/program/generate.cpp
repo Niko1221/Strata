@@ -3714,7 +3714,18 @@ int main(int argc, char** argv) {
             // prompt.  Promoting reads the snapshot into the live arena, so from here on it IS the live session -
             // automatic, no client call: the key is the prompt the server reads anyway.  The MATCH is the tier's
             // own function (kv_nvme.hpp), so the host fixture asserts the rule this loop applies.
-            if (have_kvstore) {
+            if (have_kvstore && !stages.empty()) {
+                // A split engine cannot promote: the envelope carries the primary stage only (the dump side
+                // refuses a split session outright), so restoring into just this session would leave the later
+                // stages' running state zeroed while `checkpoint_restore`'s caller believes it mounted a whole
+                // conversation.  Once per process is enough - the tier is simply inert under a split.
+                static bool split_logged = false;
+                if (!split_logged) {
+                    split_logged = true;
+                    std::fprintf(stderr, "strata serve: kv-nvme: the layer split is active - stored snapshots are "
+                                         "neither dumped nor promoted (the envelope carries the primary stage only)\n");
+                }
+            } else if (have_kvstore) {
                 const strata::platform::NvmeEntry* best =
                     strata::platform::kv_nvme_match(kvstore.entries(), ids, req_imgs, cvec_cached, resume);
                 if (best != nullptr) {

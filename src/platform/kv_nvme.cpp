@@ -242,6 +242,15 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
         err = "nvme_dump: turn-boundary checkpoint does not fit this engine";
         return false;
     }
+    if (at_boundary && !at->stage_parts.empty()) {
+        // A layer-split session's later stages hold their own running state (0.1.21), and the envelope carries
+        // the PRIMARY stage only: a snapshot written from a split engine could never be restored, because the
+        // later stages' blobs are not in the file and the restore has nothing to put back into them.  Refuse
+        // rather than grow the format for it (docs/nvme-kv-cache-design.md, the layer-split rule).
+        err = "nvme_dump: a layer-split session's later stages are not snapshot-able - the envelope carries the "
+              "primary stage only, so a split engine's snapshot is refused rather than written incomplete";
+        return false;
+    }
     // Every image record must lie INSIDE the prefix this snapshot is keyed by.  The resume match compares the next
     // request's images below `L` against this segment, so a picture at or past `L` describes a token the snapshot
     // does not hold and makes the file unmatchable; a negative one is a caller that never filtered at all.
