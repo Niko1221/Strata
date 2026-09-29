@@ -412,7 +412,7 @@ if(STRATA_ENABLE_CUDA)
   add_test(NAME cvec_parity COMMAND cvec_parity)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
-  if(STRATA_BUILD_TESTS)
+  if(STRATA_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp)
   add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
   target_include_directories(native_mmvq_multi PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   target_link_libraries(native_mmvq_multi PRIVATE strata_kernels CUDA::cudart)
@@ -438,7 +438,8 @@ if(STRATA_ENABLE_CUDA)
   # ---- P2.S5: the GraphRegistry --------------------------------------------------
   # A .cu because the test needs real kernels to capture; it links `strata_core` and not `strata_kernels`,
   # because what it exercises is the capture machinery and not any kernel in it.
-  if(STRATA_BUILD_TESTS)
+  if(STRATA_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/graph_registry_test.cu
+     AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/pinned_capture.cu)
   add_executable(graph_registry_test bench/micro/graph_registry_test.cu)
   target_include_directories(graph_registry_test PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   target_link_libraries(graph_registry_test PRIVATE strata_core CUDA::cudart)
@@ -580,7 +581,7 @@ if(STRATA_NATIVE_EXPERTS)
     if(MSVC)
       target_compile_options(strata_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>)
     endif()
-    target_link_libraries(strata_mmq PUBLIC ggml-base CUDA::cudart)
+    target_link_libraries(strata_mmq PUBLIC ggml-base CUDA::cudart CUDA::cuda_driver)
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1)
   endif()
@@ -591,7 +592,7 @@ if(STRATA_NATIVE_EXPERTS)
   endif()
 endif()
 
-if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS)
+if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/hit_cpu_order_parity.cu)
   add_executable(hit_cpu_order_parity bench/micro/hit_cpu_order_parity.cu)
   target_link_libraries(hit_cpu_order_parity PRIVATE strata_kernels strata_kernels_cpu CUDA::cudart)
 endif()

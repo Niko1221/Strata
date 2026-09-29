@@ -1,0 +1,30 @@
+[
+ {
+  "label": "~8K",
+  "target": 8801,
+  "prompt_tokens": 8786,
+  "reused": 0,
+  "prompt_ms": 7556.3,
+  "prompt_tok_s": 1162.7,
+  "output_tokens": 64,
+  "decode_ms": 1465.0,
+  "decode_tok_s": 43.7,
+  "hit_rate": 0.685,
+  "duration_s": 9.0,
+  "wall_s": 9.1
+ },
+ {
+  "label": "32K",
+  "target": 29512,
+  "prompt_tokens": 29527,
+  "reused": 0,
+  "prompt_ms": 20302.2,
+  "prompt_tok_s": 1454.4,
+  "output_tokens": 64,
+  "decode_ms": 1329.5,
+  "decode_tok_s": 48.1,
+  "hit_rate": 0.818,
+  "duration_s": 21.6,
+  "wall_s": 21.8
+ }
+]
