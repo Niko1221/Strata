@@ -713,6 +713,32 @@ class WebApp(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertIn(want, ctype)
 
+    def test_cache_tab_is_in_the_page(self):
+        """The Cache tab's markup (web plan step 6, design §5): the view, the tab button - hidden until
+        /metrics says cache.enabled - and its sprite glyph."""
+        code, _, body = self.get("/")
+        self.assertEqual(code, 200)
+        for want in (b'id="view-cache"', b'id="tab-btn-cache"', b'data-tab="cache" hidden',
+                     b'aria-controls="view-cache"', b'aria-labelledby="tab-btn-cache"', b"sprite.svg#i-cache"):
+            with self.subTest(want=want):
+                self.assertIn(want, body)
+        self.assertIn(b'id="i-cache"', self.get("/web/sprite.svg")[2])
+
+    def test_cache_tab_files_render(self):
+        """app.js carries the Cache render path and app.css the rows it writes - and /cache is still a JSON
+        route, never a file route under /web/."""
+        code, ctype, body = self.get("/web/app.js")
+        self.assertEqual(code, 200)
+        self.assertIn("javascript", ctype)
+        for want in (b"function renderCache", b"async function loadCache", b"function startCache",
+                     b"function stopCache", b"CACHE_METRICS", b"cache-warn--danger"):
+            with self.subTest(want=want):
+                self.assertIn(want, body)
+        self.assertIn(b".cache-grid", self.get("/web/app.css")[2])
+        for path in ("/web/cache", "/cache/app.js", "/cache/../web/app.js"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path)[0], 404)
+
     def test_only_the_app_files_are_served(self):
         for path in ("/web/..%2Fserver.py", "/web/index.html", "/web/test.py", "/fonts/..%2F..%2Fsetup.py",
                      "/fonts/missing.woff2", "/fonts/x.ttf"):

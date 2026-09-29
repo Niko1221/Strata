@@ -24,6 +24,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-cache" aria-controls="view-cache" aria-selected="false" data-tab="cache" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-cache"/></svg>Cache</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -130,6 +132,69 @@
         <div class="mcp-list" id="mcp-list"></div>
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
           (in this page's chat only; switch it off in Sampling).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ Cache ============================ -->
+  <section class="view view--cache" id="view-cache" role="tabpanel" aria-labelledby="tab-btn-cache" hidden>
+    <div class="cache">
+      <div class="st-card cache-strip">
+        <span class="cache-strip__state" id="cache-state"><span class="cache-strip__dot"></span>NVMe cache</span>
+        <span class="cache-strip__note" id="cache-inert"></span>
+      </div>
+
+      <div class="cache-grid" id="cache-metrics">
+        <!-- filled by app.js: Store used, Written/turn, Read/promote, Warm prefixes, Promoted -->
+      </div>
+
+      <div class="monitor-row">
+        <div class="st-card ctx-card">
+          <span class="card-title">Cache state</span>
+          <div class="ctx-gauge">
+            <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                      stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+              <circle class="st-gauge__fill" id="cache-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
+                      stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+            </svg>
+            <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="cache-pct">0%</span><span class="muted" id="cache-sub">&ndash;</span></div>
+          </div>
+          <div class="bar-row"><span>On disk</span><span class="muted" id="cache-ondisk">&ndash;</span></div>
+          <div id="cache-classes"></div>
+          <div class="bar-row"><span>Disk free</span><span class="muted" id="cache-disk">&ndash;</span></div>
+          <div class="st-progress"><div class="st-progress__bar" id="cache-disk-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>RAM tier</span><span class="muted" id="cache-ram">&ndash;</span></div>
+          <div class="bar-row"><span>Promote staging</span><span class="muted" id="cache-staging">&ndash;</span></div>
+        </div>
+        <div class="st-card req-card">
+          <div class="req-head"><span class="card-title">Cache events</span>
+            <button class="st-btn st-btn--secondary" id="cache-all" hidden>Show all</button></div>
+          <div class="table-wrap" id="cache-wrap">
+            <table class="st-table cache-table">
+              <thead><tr><th>Time</th><th>Event</th><th>Tier</th><th class="num">Tokens</th><th class="num">MB</th><th class="num">Duration</th></tr></thead>
+              <tbody id="cache-events"><tr><td colspan="6" class="muted">No cache activity yet</td></tr></tbody>
+            </table>
+          </div>
+          <p class="muted req-totals" id="cache-totals"></p>
+        </div>
+      </div>
+
+      <div class="st-card cache-prefix-card">
+        <div class="req-head"><span class="card-title">Stored prefixes</span>
+          <span class="muted small" id="cache-prefix-sum"></span></div>
+        <div class="table-wrap">
+          <table class="st-table cache-table">
+            <thead><tr><th class="num">Age</th><th class="num">Tokens</th><th>Tier</th><th>Records</th><th class="num">Bytes</th></tr></thead>
+            <tbody id="cache-prefixes"><tr><td colspan="5" class="muted">Nothing stored yet</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="st-card cache-store-card">
+        <span class="card-title">Store</span>
+        <dl class="facts" id="cache-facts"></dl>
+        <div class="cache-warns" id="cache-warnings"></div>
       </div>
     </div>
   </section>
