@@ -315,11 +315,20 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     m.T = n_tok;
     cudaStream_t st = (cudaStream_t) stream;
     gr_norm_multi_kernel<<<n_tok, THREADS, 0, st>>>(m);
-    static bool attr = false;
-    if (!attr) {
-        cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             (int) (kFusedGrMaxT * TILE * sizeof(float)));
-        attr = true;
+    // the shared-memory opt-in is a per-DEVICE setting: once per device, not once per process (a layer split
+    // runs this kernel on two cards)
+    static bool attr[64] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64 || !attr[dev]) {
+        // at most what the card allows (Turing: 64 KB - enough for windows of up to 6 tokens)
+        int optin = 0;
+        cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+        int want = (int) (kFusedGrMaxT * TILE * sizeof(float));
+        if (optin > 0 && want > optin) want = optin;
+        cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+        cudaGetLastError();
+        if (dev >= 0 && dev < 64) attr[dev] = true;
     }
     gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
     gr_up_multi_kernel<<<UPM_BLOCKS, THREADS, 0, st>>>(m);

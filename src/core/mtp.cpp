@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -111,6 +112,7 @@ const void* MtpDrafter::q8(const char* name) const {
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window) {
+    cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
     max_t_ = max_t;
@@ -131,7 +133,15 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         }
         std::vector<uint8_t> blob;
         if (!read_file(rt_dir + "/dense.bin", blob)) { err = "mtp: cannot read dense.bin"; return false; }
-        if (cudaMalloc((void**) &dense_, blob.size()) != cudaSuccess) { err = "mtp: dense weights do not fit"; return false; }
+        const cudaError_t alloc = cudaMalloc((void**) &dense_, blob.size());
+        if (alloc != cudaSuccess) {
+            size_t free_bytes = 0, total_bytes = 0;
+            const cudaError_t info = cudaMemGetInfo(&free_bytes, &total_bytes);
+            err = "mtp: dense weights allocation failed (" + std::string(cudaGetErrorString(alloc)) +
+                  "), requested " + std::to_string(blob.size() >> 20) + " MiB, CUDA0 free " +
+                  (info == cudaSuccess ? std::to_string(free_bytes >> 20) + " MiB" : "unknown");
+            return false;
+        }
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
@@ -243,6 +253,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
 }
 
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
+    const OnDevice on_device(device_);
     wt_ = &wt;
     head_ = head;
     window_R_ = window_R;
@@ -511,6 +522,7 @@ bool MtpDrafter::capture_step(int j, std::string& err) {
 }
 
 void MtpDrafter::kv_restore(int64_t upto) {
+    const OnDevice on_device(device_);
     if (st_.kv_mode != 2 || upto <= 0) return;
     // the ring's blocks below `upto`, from the host copy: a checkpoint resume may have left later cells in them
     const strata::kernels::QsaShapes s = shapes_of(*g_);
@@ -520,6 +532,7 @@ void MtpDrafter::kv_restore(int64_t upto) {
 }
 
 bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+    const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
     // cells the window can never reach again need no K/V
@@ -551,6 +564,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts) {
+    const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
     if (!capture_round(T, err)) return false;
     const Clock::time_point t0 = Clock::now();
@@ -601,6 +615,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                              float* probs, float min_p, int* n_drafts) {
+    const OnDevice on_device(device_);
     // row 0 is the real pair; rows 1.. repeat it and only write cells the next round overwrites
     const int64_t HCN = g_->hc * g_->n_embd;
     for (int t = 0; t < T; ++t)

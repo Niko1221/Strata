@@ -57,7 +57,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 20)                # v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 21)                # v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
@@ -1085,6 +1085,11 @@ def main() -> int:
     ap.add_argument("--port", type=int, help="the server's port (default: the one the install was set up with, 8080 for a new one)")
     ap.add_argument("--gpu", type=int, help="the GPU to use, numbered as nvidia-smi numbers them (default: the one with the "
                                             "most VRAM; with --setup it is saved, when starting it overrides the saved one)")
+    ap.add_argument("--gpus", help="several GPUs for one model, as nvidia-smi numbers them (\"0,2\"): the layers are "
+                                   "split across them, the first GPU is the main one (saved with --setup; see "
+                                   "docs/MULTI_GPU.md)")
+    ap.add_argument("--layer-split", help="with --gpus: where each later GPU's layers start (\"18\", \"16,32\"); "
+                                          "default auto, placed from each GPU's free VRAM")
     ap.add_argument("--host", help="where the server listens: 127.0.0.1 = this PC only (default), 0.0.0.0 = also other "
                                    "devices on your network (issue #26; set --api-key too)")
     ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0)")
@@ -1128,6 +1133,11 @@ def main() -> int:
                 a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
                 a.yes = True
     global GPU_PICK
+    multi = [int(x) for x in a.gpus.split(",") if x.strip()] if a.gpus else []
+    if multi:
+        if len(multi) < 2 or len(set(multi)) != len(multi):
+            fail("--gpus takes two or more different GPUs, e.g. --gpus 0,2")
+        a.gpu = multi[0]                               # the main GPU: the checks and the sizing below are its
     GPU_PICK = a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
     if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
@@ -1415,6 +1425,14 @@ def main() -> int:
            "lib_dirs": lib_dirs, "port": port}
     if gpu["count"] > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
+    if multi:                                          # a layer split across these cards (the server adds the flag)
+        for i in multi[1:]:
+            x = gpu_info(i)
+            if int(x["arch"]) < 80:
+                fail(f"GPU {i} ({x['name']}) is older than the RTX 30 series (compute capability 8.0 is required)")
+        cfg["gpu"] = multi
+        cfg["layer_split"] = a.layer_split or "auto"
+        ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
     if a.host:
         cfg["host"] = a.host
     if a.api_key:

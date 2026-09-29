@@ -69,6 +69,7 @@ public:
     /// parameters would otherwise be baked forever - so this can change between requests freely.
     void set_sampling(const strata::kernels::SamplerParams& sp) {
         sampling_ = sp;   // row t of a window at pos0 draws Philox(seed, pos0 + t): see run()
+        if (next_) next_->set_sampling(sp);
     }
 
     /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
@@ -80,18 +81,35 @@ public:
     void set_history(const int32_t* history, int history_len) {
         hist_d_ = history;
         hist_len_ = history_len;
+        if (next_) next_->set_history(history, history_len);
     }
     /// Off: `run` skips the request's head sampling and `out` is the recorded greedy pick.  For windows whose
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
-    void set_head_sampling(bool on) { head_sampling_ = on; }
+    void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
+
+    /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
+    /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
+    /// does not end at the last layer writes its residual to `handoff_out` and has no head.  The hand-off holds,
+    /// per token, the residual R (hc x n_embd), the last layer's pending write bo (n_embd) and inject (hc): the next
+    /// stage folds that write into its first read exactly as the unsplit window does, so the split is bit-exact.
+    /// Both pointers must be device-visible (mapped pinned memory, portable when the stages are on two devices).
+    /// Set before `init`.  Default: the whole model, no hand-off.
+    void set_stage(int64_t layer_begin, int64_t layer_end, const float* handoff_in, float* handoff_out) {
+        lb_ = layer_begin; le_ = layer_end; hand_in_ = handoff_in; hand_out_ = handoff_out;
+    }
+    /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
+    /// and `final_R` are the last stage's.
+    void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
+    /// floats per token in a hand-off buffer
+    static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
-    const float* final_R_all() const { return R_; }
+    const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -119,6 +137,13 @@ private:
     const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
+    int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
+    int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
+    const float* hand_in_ = nullptr;
+    float* hand_out_ = nullptr;
+    Verifier* next_ = nullptr;
+    void* next_user_ = nullptr;
+    bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
 
