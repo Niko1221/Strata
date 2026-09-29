@@ -179,7 +179,11 @@ __global__ void __launch_bounds__(THREADS) gr_norm_multi_kernel(GrMulti m) {
     for (int i = t; i < D; i += THREADS) xn[i] *= s_rs[i / N];
 }
 
+#if defined(__HIPCC__)
+constexpr int TILE = 1280;             // eight-token tile fits gfx1100's 64 KiB LDS limit
+#else
 constexpr int TILE = 2560;             // xn floats per token staged at a time: 320 chunks of 8, 10 per lane
+#endif
 constexpr int TQ = TILE / 8 / 32;      // uint4 weight chunks per lane per tile
 
 // Step 2 of `gr_down_kernel` for T tokens.  One warp per row (so each lane accumulates the same chunks in the

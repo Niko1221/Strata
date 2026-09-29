@@ -84,6 +84,9 @@ one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./se
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
 It needs an explicit packing conversion and is not an installer menu option.
 
+For an **experimental RX 7900 XTX (gfx1100) Linux source build**, see the
+[AMD HIP instructions](docs/AMD_HIP.md). The automatic installer below remains NVIDIA-only.
+
 ## Install
 
 **You need:** an NVIDIA RTX 30, 40 or 50 card with 12 GB of VRAM or more, enough RAM for the size you pick (above),

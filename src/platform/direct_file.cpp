@@ -2,11 +2,14 @@
 #include "strata/platform/direct_file.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -260,43 +263,78 @@ void DirectFile::wake() {
 
 #else
 // ------------------------------------------------------------------------------------------------ POSIX
-// perf-review F-2: a pool of threads, each doing blocking O_DIRECT preads, so reads run in parallel (the thread
-// count is the queue depth).  It replaced one synchronous pread inside `submit`, which read the n-gram table's
-// rows one at a time.
+// On Linux, submit queues direct reads to a bounded worker pool. wait() and wake() retain
+// their completion contract while the workers provide the queue depth unavailable to sync pread.
+namespace {
+constexpr unsigned kDefaultIoThreads = 32;
+constexpr unsigned kMaxIoThreads = 128;
+
+bool configured_io_threads(unsigned& count, std::string& err) {
+    const char* text = std::getenv("STRATA_PLE_IO_THREADS");
+    if (text == nullptr) {
+        count = kDefaultIoThreads;
+        return true;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0' || parsed < 1) {
+        err = "DirectFile: STRATA_PLE_IO_THREADS must be a positive integer";
+        return false;
+    }
+    count = parsed > (long) kMaxIoThreads ? kMaxIoThreads : (unsigned) parsed;
+    return true;
+}
+}  // namespace
+
 struct DirectFile::Impl {
+    struct Req { uint64_t offset; void* buffer; uint32_t length; uint64_t tag; };
     int fd = -1;
     uint64_t size = 0;
     std::mutex mu;
-    std::condition_variable cv_work, cv_done;
-    std::deque<Pending> queue;
+    std::condition_variable cv_req, cv_done;
+    std::deque<Req> reqs;
     std::deque<Completion> done;
+    std::vector<std::thread> workers;
+    size_t active = 0;
+    size_t wakes = 0;
     bool stop = false;
-    std::vector<std::thread> pool;
 
-    void worker() {
-        std::unique_lock<std::mutex> lk(mu);
+    void work() {
         for (;;) {
-            cv_work.wait(lk, [&] { return stop || !queue.empty(); });
-            if (stop && queue.empty()) return;
-            const Pending p = queue.front();
-            queue.pop_front();
-            lk.unlock();
-            const ssize_t got = pread(fd, p.buffer, p.length, (off_t) p.offset);
-            lk.lock();
-            done.push_back(Completion{p.tag, got < 0 ? 0u : (uint32_t) got, got >= 0});
+            Req r{};
+            int request_fd = -1;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv_req.wait(lk, [&] { return stop || !reqs.empty(); });
+                if (stop && reqs.empty()) return;
+                r = reqs.front();
+                reqs.pop_front();
+                request_fd = fd;
+                ++active;
+            }
+            uint32_t got = 0;
+            bool ok = true;
+            while (got < r.length) {
+                const uint64_t at = r.offset + got;  // submit validated the full offset range.
+                const ssize_t n = ::pread(request_fd, (uint8_t*) r.buffer + got, r.length - got, (off_t) at);
+                if (n < 0) {
+                    if (errno == EINTR) continue;
+                    ok = false;
+                    break;
+                }
+                if (n == 0) break;                  // end of file: a legal short read at the table's last page
+                const uint32_t remaining = r.length - got;
+                got += (uint32_t) n;
+                if ((uint32_t) n < remaining) break; // Short EOF may not preserve O_DIRECT alignment.
+            }
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                done.push_back(Completion{r.tag, got, ok});
+                --active;
+            }
             cv_done.notify_all();
         }
-    }
-
-    void stop_pool() {
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            stop = true;
-        }
-        cv_work.notify_all();
-        for (std::thread& t : pool) t.join();
-        pool.clear();
-        stop = false;
     }
 };
 
@@ -305,55 +343,168 @@ DirectFile::~DirectFile() { close(); delete impl_; }
 
 bool DirectFile::open(const std::string& path, std::string& err) {
     close();
-    impl_->fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    if (impl_->fd < 0) { err = "DirectFile: cannot open " + path; return false; }
+    unsigned thread_count = 0;
+    if (!configured_io_threads(thread_count, err)) return false;
+
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
+    if (fd < 0) { err = "DirectFile: cannot open " + path; return false; }
     struct stat st;
-    if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
-    impl_->size = (uint64_t) st.st_size;
-    const int n = io_threads(16);
-    for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
+    if (fstat(fd, &st) != 0) {
+        err = "DirectFile: cannot size " + path;
+        ::close(fd);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->fd = fd;
+        impl_->size = (uint64_t) st.st_size;
+        impl_->stop = false;
+        impl_->active = 0;
+        impl_->wakes = 0;
+        impl_->reqs.clear();
+        impl_->done.clear();
+    }
+    try {
+        impl_->workers.reserve(thread_count);
+        for (unsigned i = 0; i < thread_count; ++i)
+            impl_->workers.emplace_back([this] { impl_->work(); });
+    } catch (const std::exception& e) {
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->stop = true;
+        }
+        impl_->cv_req.notify_all();
+        for (std::thread& worker : impl_->workers)
+            if (worker.joinable()) worker.join();
+        impl_->workers.clear();
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->fd = -1;
+            impl_->size = 0;
+            impl_->stop = false;
+            impl_->active = 0;
+            impl_->wakes = 0;
+            impl_->reqs.clear();
+            impl_->done.clear();
+        }
+        ::close(fd);
+        err = std::string("DirectFile: cannot create I/O workers: ") + e.what();
+        return false;
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->stop = true;
+        }
+        impl_->cv_req.notify_all();
+        for (std::thread& worker : impl_->workers)
+            if (worker.joinable()) worker.join();
+        impl_->workers.clear();
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->fd = -1;
+            impl_->size = 0;
+            impl_->stop = false;
+            impl_->active = 0;
+            impl_->wakes = 0;
+            impl_->reqs.clear();
+            impl_->done.clear();
+        }
+        ::close(fd);
+        err = "DirectFile: cannot create I/O workers";
+        return false;
+    }
     return true;
 }
 
 void DirectFile::close() {
-    impl_->stop_pool();
-    if (impl_->fd >= 0) ::close(impl_->fd);
-    impl_->fd = -1;
-    impl_->size = 0;
-    impl_->done.clear();
-    impl_->queue.clear();
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->stop = true;
+    }
+    impl_->cv_req.notify_all();
+    impl_->cv_done.notify_all();
+    for (std::thread& worker : impl_->workers)
+        if (worker.joinable()) worker.join();
+    impl_->workers.clear();
+
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        fd = impl_->fd;
+        impl_->fd = -1;
+        impl_->size = 0;
+        impl_->reqs.clear();
+        impl_->done.clear();
+        impl_->active = 0;
+        impl_->wakes = 0;
+        impl_->stop = false;
+    }
+    if (fd >= 0) ::close(fd);
 }
 
-bool DirectFile::is_open() const { return impl_->fd >= 0; }
-uint64_t DirectFile::size() const { return impl_->size; }
+bool DirectFile::is_open() const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    return impl_->fd >= 0;
+}
+uint64_t DirectFile::size() const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    return impl_->size;
+}
 
 bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t tag, std::string& err) {
-    if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
+    if (buffer == nullptr || offset % alignment() || length % alignment() ||
+        ((uintptr_t) buffer) % alignment() || length == 0) {
         err = "DirectFile: unaligned request";
+        return false;
+    }
+    const uint64_t max_offset = (uint64_t) std::numeric_limits<off_t>::max();
+    if (offset > max_offset || (uint64_t) length - 1 > max_offset - offset) {
+        err = "DirectFile: request offset exceeds POSIX file range";
         return false;
     }
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
-        impl_->queue.push_back(Pending{offset, buffer, length, tag});
+        if (impl_->fd < 0 || impl_->stop) { err = "DirectFile: not open"; return false; }
+        try {
+            impl_->reqs.push_back(Impl::Req{offset, buffer, length, tag});
+        } catch (const std::exception& e) {
+            err = std::string("DirectFile: cannot queue read: ") + e.what();
+            return false;
+        } catch (...) {
+            err = "DirectFile: cannot queue read";
+            return false;
+        }
     }
-    impl_->cv_work.notify_one();
+    impl_->cv_req.notify_one();
     return true;
 }
 
 void DirectFile::wake() {
-    std::lock_guard<std::mutex> lk(impl_->mu);
-    impl_->done.push_back(Completion{WAKE_TAG, 0, true});
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        if (impl_->fd < 0) return;
+        ++impl_->wakes;
+    }
     impl_->cv_done.notify_all();
 }
 
 int DirectFile::wait(Completion* out, int max, int timeout_ms) {
+    if (out == nullptr || max <= 0) return 0;
     std::unique_lock<std::mutex> lk(impl_->mu);
-    if (impl_->done.empty() && timeout_ms != 0) {
-        auto ready = [&] { return !impl_->done.empty(); };
+    const auto ready = [&] {
+        return impl_->fd < 0 || !impl_->done.empty() || impl_->wakes > 0 ||
+               (impl_->stop && impl_->reqs.empty() && impl_->active == 0);
+    };
+    if (!ready()) {
         if (timeout_ms < 0) impl_->cv_done.wait(lk, ready);
-        else impl_->cv_done.wait_for(lk, std::chrono::milliseconds(timeout_ms), ready);
+        else if (timeout_ms > 0) impl_->cv_done.wait_for(lk, std::chrono::milliseconds(timeout_ms), ready);
     }
     int n = 0;
+    if (impl_->wakes > 0 && n < max) {
+        --impl_->wakes;
+        out[n++] = Completion{WAKE_TAG, 0, true};
+    }
     while (n < max && !impl_->done.empty()) {
         out[n++] = impl_->done.front();
         impl_->done.pop_front();
