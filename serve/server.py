@@ -55,6 +55,7 @@ CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > co
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
 RATE_WINDOW_S = 2.0
 RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean so far, with the span floored here
+DRY_SEQUENCE_BREAKERS = ("\n", ":", "\"", "*")  # llama.cpp common_params defaults
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -149,7 +150,7 @@ class StrataEngine:
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
 
     Per-request sampling rides the same line as engine-side keys between max_new and the ids
-    (`temperature=F top_p=F top_k=N seed=N`, the engine's own spelling).  An absent temperature keeps the
+    (`temperature=F top_p=F top_k=N`, token penalties, DRY settings and seed). An absent temperature keeps the
     engine's default, which is greedy; `temperature=0` means the same thing, so it is not forwarded.
     """
 
@@ -284,6 +285,25 @@ class StrataEngine:
                 keys += f" penalty_last_n={pln}"
             else:
                 keys += " penalty_last_n=64"
+        dm = sampling.get("dry_multiplier")
+        db = sampling.get("dry_base", 1.75)
+        da = sampling.get("dry_allowed_length", 2)
+        dn = sampling.get("dry_penalty_last_n", 64)
+        dry_on = (isinstance(dm, (int, float)) and not isinstance(dm, bool) and float(dm) > 0 and
+                  isinstance(db, (int, float)) and not isinstance(db, bool) and float(db) >= 1.0 and
+                  isinstance(da, int) and not isinstance(da, bool) and 0 <= da <= 4096 and
+                  isinstance(dn, int) and not isinstance(dn, bool) and 0 < dn <= 4096)
+        if dry_on:
+            keys += f" dry_multiplier={float(dm)!r} dry_base={float(db)!r}"
+            keys += f" dry_allowed_length={da} dry_penalty_last_n={dn}"
+            breaker_map = sampling.get("_dry_breaker_map")
+            if isinstance(breaker_map, list):
+                # One head token followed by zero or more tail tokens; ';' separates entries and ':' separates
+                # a head from its tail. The compact, whitespace-free form is parsed by the engine's GEN reader.
+                encoded = []
+                for head, tail in breaker_map:
+                    encoded.append(str(int(head)) + (":" + ",".join(str(int(t)) for t in tail) if tail else ""))
+                keys += " dry_breakers=" + ";".join(encoded)
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
@@ -557,6 +577,7 @@ class Service:
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
+        self._dry_breaker_cache = {}
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
@@ -804,6 +825,25 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        sampling = dict(sampling or {})
+        dm = sampling.get("dry_multiplier")
+        db = sampling.get("dry_base", 1.75)
+        dn = sampling.get("dry_penalty_last_n", 64)
+        if (isinstance(dm, (int, float)) and not isinstance(dm, bool) and float(dm) > 0 and
+                isinstance(db, (int, float)) and not isinstance(db, bool) and float(db) >= 1.0 and
+                isinstance(dn, int) and not isinstance(dn, bool) and 0 < dn <= 4096):
+            breakers = sampling.get("dry_sequence_breakers", DRY_SEQUENCE_BREAKERS)
+            if isinstance(breakers, str):
+                breakers = [breakers]
+            if not isinstance(breakers, (list, tuple)) or any(not isinstance(x, str) for x in breakers):
+                raise ValueError("dry_sequence_breakers: expected a list of strings")
+            cache_key = tuple(breakers)
+            breaker_map = self._dry_breaker_cache.get(cache_key)
+            if breaker_map is None:
+                from strata_tokenizer import dry_sequence_breaker_tokens
+                breaker_map = dry_sequence_breaker_tokens(self.tok, list(cache_key))
+                self._dry_breaker_cache[cache_key] = breaker_map
+            sampling["_dry_breaker_map"] = breaker_map
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         timings, before = None, None                    # this request's timings; the engine's `last` before it
@@ -1591,7 +1631,7 @@ def clean_shared_defaults(d) -> dict:
 def sampling_defaults_from_config(cfg: dict) -> dict:
     """The run config's optional `sampling` block: defaults for the sampling fields a request leaves out, so
     a plain client gets configured sampling instead of greedy.  Supported: temperature, top_p, top_k, min_p,
-    presence_penalty, repetition_penalty, frequency_penalty, penalty_last_n, seed.  The request's own fields
+    presence_penalty, repetition_penalty, frequency_penalty, penalty_last_n, DRY settings, seed. The request's own fields
     always win - an explicit temperature=0 still means greedy, a field set to null falls back to the default.
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
@@ -1632,6 +1672,24 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
             if not number or value != int(value) or value < 0:
                 raise SystemExit(f"[strata] config sampling.penalty_last_n={value!r}: expected a non-negative integer")
             out[key] = int(value)
+        elif key == "dry_multiplier":
+            if not number or value < 0:
+                raise SystemExit(f"[strata] config sampling.dry_multiplier={value!r}: expected a number >= 0")
+            out[key] = float(value)
+        elif key == "dry_base":
+            if not number or value < 1:
+                raise SystemExit(f"[strata] config sampling.dry_base={value!r}: expected a number >= 1")
+            out[key] = float(value)
+        elif key in ("dry_allowed_length", "dry_penalty_last_n"):
+            maximum = 4096
+            minimum = 0 if key == "dry_allowed_length" else 0
+            if not number or value != int(value) or not minimum <= value <= maximum:
+                raise SystemExit(f"[strata] config sampling.{key}={value!r}: expected an integer 0..{maximum}")
+            out[key] = int(value)
+        elif key == "dry_sequence_breakers":
+            if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
+                raise SystemExit("[strata] config sampling.dry_sequence_breakers: expected a list of strings")
+            out[key] = value
         elif key == "seed":
             if not number or value != int(value) or value <= 0:
                 raise SystemExit(f"[strata] config sampling.seed={value!r}: expected a positive integer")

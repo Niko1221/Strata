@@ -214,6 +214,65 @@ class Tokenizer:
         return b"".join(self.token_bytes(i) for i in ids).decode("utf-8", errors=errors)
 
 
+def dry_sequence_breaker_tokens(tokenizer, breakers: list[str], max_char_len: int = 40,
+                               max_tail_len: int = 20) -> list[tuple[int, tuple[int, ...]]]:
+    """Map DRY breaker strings to the overlapping token sequences used by llama.cpp.
+
+    A breaker can start or end inside a vocabulary token, so encoding the whole string alone is not enough.
+    Match llama.cpp's `get_overlapping_token_sequences`: walk every token's decoded piece, record a direct
+    match as an empty tail, and tokenize the part of a breaker that continues after a matching token prefix.
+    The result is `(head_token, tail_tokens)`; tails are stored in normal text order.
+    """
+    vocab = getattr(tokenizer, "tokens", None)
+    if vocab is None:
+        vocab_size = 256 + len(getattr(tokenizer, "SPECIALS", ()))
+        special_ids = set()
+    else:
+        vocab_size = len(vocab)
+        special_ids = set(getattr(tokenizer, "special_tokens", {}).values())
+
+    processed: dict[int, set[tuple[int, ...]]] = {}
+    for raw_breaker in breakers:
+        if not isinstance(raw_breaker, str) or not raw_breaker:
+            continue
+        # llama.cpp bounds the UTF-8 string to 40 bytes before tokenizing it.
+        breaker = raw_breaker.encode("utf-8")[:max_char_len].decode("utf-8", "ignore")
+        if not breaker:
+            continue
+        for token_id in range(vocab_size):
+            # A GGUF special token is stored as its printable spelling, not a byte-alphabet BPE piece. llama.cpp's
+            # vocab.detokenize(..., true) renders that spelling directly, so mirror it instead of passing it through
+            # Tokenizer.decode(), which correctly rejects characters outside the byte alphabet. Fall back for other
+            # non-byte vocabulary entries too (for example an UNK or UNUSED token).
+            if token_id in special_ids:
+                word = vocab[token_id]
+            else:
+                try:
+                    word = tokenizer.decode([token_id])
+                except KeyError:
+                    word = vocab[token_id]
+            if breaker in word:
+                processed.setdefault(token_id, set()).add(())
+                continue
+            pos = -1
+            while True:
+                pos = word.find(breaker[0], pos + 1)
+                if pos < 0:
+                    break
+                match = True
+                i = 1
+                while i < len(breaker) and i + pos < len(word):
+                    if word[pos + i] != breaker[i]:
+                        match = False
+                        break
+                    i += 1
+                if match:
+                    tail = tuple(tokenizer.encode(breaker[i:], parse_special=False)[:max_tail_len])
+                    processed.setdefault(token_id, set()).add(tail)
+
+    return [(head, tail) for head in sorted(processed) for tail in sorted(processed[head])]
+
+
 # ------------------------------------------------------------------ the pack's tokenizer/ directory
 def extract(gguf_path, out_dir) -> dict:
     """Write the tokenizer into `<out_dir>/tokenizer/` so the engine never opens the weight shards for it."""

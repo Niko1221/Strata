@@ -1,10 +1,10 @@
 // src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in llama.cpp's order.
 //
-//     penalties -> top_k -> top_p -> min_p -> temperature -> pick
+//     penalties -> DRY -> top_k -> top_p -> min_p -> temperature -> pick
 //
 // THE ORDER IS THE WHOLE CONTENT OF THIS FILE.  llama.cpp builds its chain by walking `params.samplers`, whose
-// default is { PENALTIES, DRY, TOP_N_SIGMA, TOP_K, TYPICAL_P, TOP_P, MIN_P, XTC, TEMPERATURE } (`common/common.h`
-// at 3cf03257) - ONE penalties stage, first, and TEMPERATURE AFTER THE TRUNCATION FILTERS.  (Issue #53: this file
+// default is { PENALTIES, DRY, TOP_N_SIGMA, TOP_K, TYPICAL_P, TOP_P, MIN_P, XTC, TEMPERATURE } (`common/common.h`)
+// - ONE penalties stage, then DRY, and TEMPERATURE AFTER THE TRUNCATION FILTERS. (Issue #53: this file
 // used to apply the penalties a second time after the temperature, and min_p before top_p - both taken from the
 // order of the `case` labels in `common/sampling.cpp`, which is not the order the chain runs.)  Every order
 // produces a valid token, so only a comparison at the distribution level can tell them apart; the parity test
@@ -51,7 +51,7 @@ __device__ __forceinline__ float philox_uniform(uint64_t seed, uint64_t counter)
     return (float) (c0 >> 8) * (1.0f / 16777216.0f);
 }
 
-// `count_in_history` and the penalty application, transcribed from `llama_sampler_penalties_apply`.
+// `count_in_history` and the token-penalty application, transcribed from `llama_sampler_penalties_apply`.
 // The repeat penalty MULTIPLIES for non-positive logits and DIVIDES for positive ones - dividing
 // unconditionally is the natural reading of the source paper and it INVERTS the penalty on half the
 // vocabulary.  The presence penalty is `float(count > 0)`, a boolean, not the count.
@@ -61,11 +61,161 @@ __device__ __forceinline__ int history_count(const int* __restrict__ h, int n, i
     return c;
 }
 
-__device__ __forceinline__ float apply_penalties(float logit, int count, const SamplerParams& p) {
-    if (count <= 0) return logit;
-    if (logit <= 0.0f) logit *= p.penalty_repeat;
-    else               logit /= p.penalty_repeat;
-    logit -= (float) count * p.penalty_freq + (count > 0 ? 1.0f : 0.0f) * p.penalty_present;
+__device__ __forceinline__ bool dry_enabled(const SamplerParams& p) {
+    return p.dry_multiplier > 0.0f && p.dry_base >= 1.0f && p.dry_allowed_length >= 0 &&
+           p.dry_penalty_last_n > 0;
+}
+
+__device__ __forceinline__ int dry_breaker_lower_bound(const DrySequenceBreaker* breakers, int count, int head) {
+    int lo = 0, hi = count;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        if (breakers[mid].head < head) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+__device__ __forceinline__ int dry_breaker_match_length(const int* newest_history, int hlen, int i,
+                                                        int token, const SamplerParams& p) {
+    int longest = -1;
+    if (p.dry_breaker_count <= 0 || p.dry_breakers == nullptr) return longest;
+    const int first = dry_breaker_lower_bound(p.dry_breakers, p.dry_breaker_count, token);
+    for (int b = first; b < p.dry_breaker_count && p.dry_breakers[b].head == token; ++b) {
+        const DrySequenceBreaker entry = p.dry_breakers[b];
+        if (entry.tail_length > i || entry.tail_length <= longest ||
+            (entry.tail_length > 0 && p.dry_breaker_tails == nullptr)) continue;
+        bool match = true;
+        for (int j = 0; j < entry.tail_length; ++j) {
+            // The current head is `i` tokens back from the newest token; its tail continues toward the newest.
+            if (p.dry_breaker_tails[entry.tail_offset + j] != newest_history[hlen - i + j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) longest = entry.tail_length;
+    }
+    return longest;
+}
+
+__device__ __forceinline__ bool dry_single_token_breaker(int token, const SamplerParams& p) {
+    if (p.dry_breaker_count <= 0 || p.dry_breakers == nullptr) return false;
+    const int first = dry_breaker_lower_bound(p.dry_breakers, p.dry_breaker_count, token);
+    for (int b = first; b < p.dry_breaker_count && p.dry_breakers[b].head == token; ++b)
+        if (p.dry_breakers[b].tail_length == 0) return true;
+    return false;
+}
+
+__device__ __forceinline__ void dry_sift_down(unsigned long long* values, int root, int count) {
+    while (root < count / 2) {
+        int child = root * 2 + 1;
+        if (child + 1 < count && values[child] < values[child + 1]) ++child;
+        if (values[root] >= values[child]) break;
+        const unsigned long long tmp = values[root];
+        values[root] = values[child];
+        values[child] = tmp;
+        root = child;
+    }
+}
+
+__device__ int build_dry_map(const int* newest_history, int hlen, const SamplerParams& p,
+                             int* repeat_count, unsigned long long* token_repeats) {
+    if (!dry_enabled(p) || hlen <= p.dry_allowed_length) return 0;
+
+    int rep_limit = hlen;
+    for (int i = 0; i < hlen; ++i) {
+        const int token = newest_history[hlen - 1 - i];
+        const int longest = dry_breaker_match_length(newest_history, hlen, i, token, p);
+        if (longest >= 0) {
+            rep_limit = i - longest;
+            break;
+        }
+    }
+    if (rep_limit < p.dry_allowed_length) return 0;
+
+    for (int i = 0; i < hlen; ++i) repeat_count[i] = 0;
+    // Reverse Z algorithm from llama_sampler_dry_apply. `newest_history` is oldest-to-newest in memory,
+    // so `rat(i)` in llama.cpp is `newest_history[hlen - 1 - i]` here.
+    const int last = hlen - 1;
+    int rt = 0, lt = 0;
+    for (int k = 1; k < hlen; ++k) {
+        if (k > rt) {
+            int n = 0;
+            while (n + k < hlen && newest_history[hlen - 1 - n] == newest_history[hlen - 1 - (n + k)]) ++n;
+            repeat_count[last - k] = n < rep_limit ? n : rep_limit;
+            if (n > 0) { lt = k; rt = k + n - 1; }
+        } else {
+            const int pair = k - lt;
+            const int right_part_len = rt - k + 1;
+            if (repeat_count[last - pair] < right_part_len) {
+                const int n = repeat_count[last - pair] < rep_limit ? repeat_count[last - pair] : rep_limit;
+                repeat_count[last - k] = n;
+            } else {
+                int i = rt + 1;
+                while (i < hlen && newest_history[hlen - 1 - i] == newest_history[hlen - 1 - (i - k)]) ++i;
+                const int n = i - k < rep_limit ? i - k : rep_limit;
+                repeat_count[last - k] = n;
+                lt = k;
+                rt = i - 1;
+            }
+        }
+    }
+
+    int count = 0;
+    for (int i = 0; i < hlen - 1; ++i) {
+        const int repeat_len = repeat_count[i];
+        const int token = newest_history[i + 1];  // llama.cpp: rat(hlen - 2 - i)
+        if (repeat_len >= p.dry_allowed_length && token >= 0) {
+            token_repeats[count++] = ((unsigned long long) (unsigned int) token << 32) |
+                                    (unsigned int) repeat_len;
+        }
+    }
+    // Sort by (token id, repeat length), then retain the maximum repeat length per token. The input is bounded
+    // by the 4096-token DRY window, so an in-place heapsort keeps the shared-memory lookup table compact.
+    for (int root = count / 2; root > 0; --root) dry_sift_down(token_repeats, root - 1, count);
+    for (int end = count - 1; end > 0; --end) {
+        const unsigned long long tmp = token_repeats[0];
+        token_repeats[0] = token_repeats[end];
+        token_repeats[end] = tmp;
+        dry_sift_down(token_repeats, 0, end);
+    }
+    int unique = 0;
+    for (int i = 0; i < count;) {
+        const unsigned int token = (unsigned int) (token_repeats[i] >> 32);
+        int j = i + 1;
+        while (j < count && (unsigned int) (token_repeats[j] >> 32) == token) ++j;
+        token_repeats[unique++] = token_repeats[j - 1];  // largest repeat length in this token's run
+        i = j;
+    }
+    return unique;
+}
+
+__device__ __forceinline__ float dry_penalty_for_token(int token, const unsigned long long* token_repeats,
+                                                       int count, const SamplerParams& p) {
+    if (count <= 0 || dry_single_token_breaker(token, p)) return 0.0f;
+    int lo = 0, hi = count;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        if ((unsigned int) (token_repeats[mid] >> 32) < (unsigned int) token) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo >= count || (unsigned int) (token_repeats[lo] >> 32) != (unsigned int) token) return 0.0f;
+    int exponent = (int) (unsigned int) token_repeats[lo] - p.dry_allowed_length;
+    if (p.dry_base > 1.000001f) {
+        const int max_exponent = (int) (88.7228391f / logf(p.dry_base));
+        if (exponent > max_exponent) exponent = max_exponent;
+    }
+    return p.dry_multiplier * powf(p.dry_base, (float) exponent);
+}
+
+__device__ __forceinline__ float apply_penalties(float logit, int count, float dry_penalty,
+                                                  const SamplerParams& p) {
+    if (count > 0) {
+        if (logit <= 0.0f) logit *= p.penalty_repeat;
+        else               logit /= p.penalty_repeat;
+        logit -= (float) count * p.penalty_freq + p.penalty_present;
+    }
+    if (dry_penalty != 0.0f) logit -= dry_penalty;
     return logit;
 }
 
@@ -94,35 +244,58 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     const int t = blockIdx.x;
     const float* l = logits + (size_t) t * n_vocab;
     (void) pmin;
-    const int* hrow = history ? history + (size_t) t * history_len : nullptr;
-    int hlen = 0;
-    if (hrow) {
-        hlen = plen < history_len ? plen : history_len;
-        if (hlen < 0) hlen = 0;
-        hrow += history_len - hlen;          // the window is the TAIL
-    }
+    const int* row = history ? history + (size_t) t * history_len : nullptr;
+    int penalty_len = row ? (plen < history_len ? plen : history_len) : 0;
+    if (penalty_len < 0) penalty_len = 0;
+    const int dry_last_n = dry_enabled(p) ? (p.dry_penalty_last_n < 4096 ? p.dry_penalty_last_n : 4096) : 0;
+    int dry_len = row ? (dry_last_n < history_len ? dry_last_n : history_len) : 0;
+    if (dry_len < 0) dry_len = 0;
+    const int union_len = penalty_len > dry_len ? penalty_len : dry_len;
+    const int* penalty_history = row && penalty_len > 0 ? row + history_len - penalty_len : nullptr;
+    const int* dry_history = row && dry_len > 0 ? row + history_len - dry_len : nullptr;
+    const int* union_history = row && union_len > 0 ? row + history_len - union_len : nullptr;
 
     // PENALTY MEMBERSHIP AS A BITMAP.  The history touches at most `hlen` tokens of a quarter-million
     // vocabulary, but the naive `history_count` per candidate per argmax round costs O(k x n_vocab x hlen)
     // integer compares (~318 M per token at k=20, hlen=64 - measured 45 -> 31 tok/s on a real workload).
     // A shared bitmap gives an O(1) membership test, and only the (at most hlen) hits pay the count scan;
     // the counts - and therefore every sampled value - are exactly what the per-candidate scan produced.
-    extern __shared__ unsigned int penal_bits[];
+    extern __shared__ unsigned char sampler_shared[];
+    __shared__ int dry_entries_shared;
     const int bits_words = (int) ((n_vocab + 31) / 32);
-    // The gate needs a NON-EMPTY WINDOW (`hlen > 0`): the launch sizes the shared bitmap only when penalties
-    // are on, so a caller handing over a history buffer with `penalty_last_n == 0` must not touch it.
-    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
+    const size_t bits_bytes = (size_t) bits_words * sizeof(unsigned int);
+    unsigned int* penal_bits = (unsigned int*) sampler_shared;
+    const bool use_bits = union_history != nullptr && union_len > 0 && bits_words > 0;
     if (use_bits) {
         for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
         __syncthreads();
-        for (int i = threadIdx.x; i < hlen; i += blockDim.x)
-            if (hrow[i] >= 0 && hrow[i] < n_vocab)   // an id outside the vocabulary is never a candidate
-                atomicOr(&penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
+        for (int i = threadIdx.x; i < union_len; i += blockDim.x)
+            if (union_history[i] >= 0 && union_history[i] < n_vocab)   // an id outside the vocabulary is never a candidate
+                atomicOr(&penal_bits[union_history[i] >> 5], 1u << (union_history[i] & 31));
         __syncthreads();
     }
     auto hit_count = [&](int v) -> int {
         if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0;
-        return history_count(hrow, hlen, v);
+        return history_count(penalty_history, penalty_len, v);
+    };
+    const int dry_workspace_len = dry_len > p.dry_allowed_length ? dry_len : 0;
+    int dry_entries_count = 0;
+    int* dry_repeat_count = nullptr;
+    unsigned long long* dry_token_repeats = nullptr;
+    if (dry_workspace_len > 0) {
+        const size_t repeat_offset = (bits_bytes + 7u) & ~size_t(7u);
+        const size_t pairs_offset = (repeat_offset + (size_t) dry_workspace_len * sizeof(int) + 7u) & ~size_t(7u);
+        dry_repeat_count = (int*) (sampler_shared + repeat_offset);
+        dry_token_repeats = (unsigned long long*) (sampler_shared + pairs_offset);
+        if (threadIdx.x == 0)
+            dry_entries_count = build_dry_map(dry_history, dry_len, p, dry_repeat_count, dry_token_repeats);
+        if (threadIdx.x == 0) dry_entries_shared = dry_entries_count;
+        __syncthreads();
+        dry_entries_count = dry_entries_shared;
+    }
+    auto dry_penalty = [&](int v) -> float {
+        if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0.0f;
+        return dry_penalty_for_token(v, dry_token_repeats, dry_entries_count, p);
     };
 
     // `n_vocab` is the "no candidate" index: it loses every comparison to a real one, so a thread with no
@@ -130,7 +303,7 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
     for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-        const float s = apply_penalties(l[v], hit_count(v), p);
+        const float s = apply_penalties(l[v], hit_count(v), dry_penalty(v), p);
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
@@ -181,33 +354,55 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
     // the truncation filters - the survivors are chosen on the raw logits and only then scaled.
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
 
-    // The penalty window is the last `penalty_last_n` entries of this row's history (disabled at this
-    // launch: `sample_tokens` refuses a non-zero `penalty_last_n` without a history buffer).
-    const int* hrow = history ? history + (size_t) t * history_len : nullptr;
-    int hlen = 0;
-    if (hrow) {
-        hlen = p.penalty_last_n < history_len ? p.penalty_last_n : history_len;
-        if (hlen < 0) hlen = 0;
-        hrow += history_len - hlen;          // the window is the TAIL
-    }
+    // Ordinary token penalties and DRY can use different tails of the same per-row history.
+    const int* row = history ? history + (size_t) t * history_len : nullptr;
+    int penalty_len = row ? (p.penalty_last_n < history_len ? p.penalty_last_n : history_len) : 0;
+    if (penalty_len < 0) penalty_len = 0;
+    const int dry_last_n = dry_enabled(p) ? (p.dry_penalty_last_n < 4096 ? p.dry_penalty_last_n : 4096) : 0;
+    int dry_len = row ? (dry_last_n < history_len ? dry_last_n : history_len) : 0;
+    if (dry_len < 0) dry_len = 0;
+    const int union_len = penalty_len > dry_len ? penalty_len : dry_len;
+    const int* penalty_history = row && penalty_len > 0 ? row + history_len - penalty_len : nullptr;
+    const int* dry_history = row && dry_len > 0 ? row + history_len - dry_len : nullptr;
+    const int* union_history = row && union_len > 0 ? row + history_len - union_len : nullptr;
 
-    // the membership bitmap, as in `sampler_greedy_kernel` - see the cost note there.  The gate needs an
-    // NON-EMPTY WINDOW too: the launch sizes the bitmap only when penalties are on, so a caller that hands over
-    // a stale history buffer with `penalty_last_n == 0` must not touch it.
-    extern __shared__ unsigned int penal_bits[];
+    // The bitmap covers the union of the token-penalty and DRY windows; see the greedy kernel for its cost note.
+    extern __shared__ unsigned char sampler_shared[];
+    __shared__ int dry_entries_shared;
     const int bits_words = (int) ((n_vocab + 31) / 32);
-    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
+    const size_t bits_bytes = (size_t) bits_words * sizeof(unsigned int);
+    unsigned int* penal_bits = (unsigned int*) sampler_shared;
+    const bool use_bits = union_history != nullptr && union_len > 0 && bits_words > 0;
     if (use_bits) {
         for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
         __syncthreads();
-        for (int i = threadIdx.x; i < hlen; i += blockDim.x)
-            if (hrow[i] >= 0 && hrow[i] < n_vocab)   // an id outside the vocabulary is never a candidate
-                atomicOr(&penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
+        for (int i = threadIdx.x; i < union_len; i += blockDim.x)
+            if (union_history[i] >= 0 && union_history[i] < n_vocab)
+                atomicOr(&penal_bits[union_history[i] >> 5], 1u << (union_history[i] & 31));
         __syncthreads();
     }
     auto hit_count = [&](int v) -> int {
         if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0;
-        return history_count(hrow, hlen, v);
+        return history_count(penalty_history, penalty_len, v);
+    };
+    const int dry_workspace_len = dry_len > p.dry_allowed_length ? dry_len : 0;
+    int dry_entries_count = 0;
+    int* dry_repeat_count = nullptr;
+    unsigned long long* dry_token_repeats = nullptr;
+    if (dry_workspace_len > 0) {
+        const size_t repeat_offset = (bits_bytes + 7u) & ~size_t(7u);
+        const size_t pairs_offset = (repeat_offset + (size_t) dry_workspace_len * sizeof(int) + 7u) & ~size_t(7u);
+        dry_repeat_count = (int*) (sampler_shared + repeat_offset);
+        dry_token_repeats = (unsigned long long*) (sampler_shared + pairs_offset);
+        if (threadIdx.x == 0)
+            dry_entries_count = build_dry_map(dry_history, dry_len, p, dry_repeat_count, dry_token_repeats);
+        if (threadIdx.x == 0) dry_entries_shared = dry_entries_count;
+        __syncthreads();
+        dry_entries_count = dry_entries_shared;
+    }
+    auto dry_penalty = [&](int v) -> float {
+        if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0.0f;
+        return dry_penalty_for_token(v, dry_token_repeats, dry_entries_count, p);
     };
 
     // top_k in 1..64 is taken as given; 0 ("off") and anything wider mean the widest shortlist the kernel
@@ -232,7 +427,7 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
             bool taken = false;
             for (int j = 0; j < i; ++j) if (sel_ids[j] == v) { taken = true; break; }
             if (taken) continue;
-            const float s = apply_penalties(l[v], hit_count(v), p);
+            const float s = apply_penalties(l[v], hit_count(v), dry_penalty(v), p);
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -307,20 +502,50 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream) {
     if (n_tokens <= 0 || n_vocab <= 0) return;
-    if (p.penalty_last_n > 0 && (history == nullptr || history_len <= 0)) {
-        std::fprintf(stderr, "sample_tokens: penalty_last_n %d needs a history (got %p, len %d)\n",
-                     p.penalty_last_n, (const void*) history, history_len);
+    const bool dry_on = p.dry_multiplier > 0.0f && p.dry_base >= 1.0f && p.dry_allowed_length >= 0 &&
+                        p.dry_penalty_last_n > 0;
+    if ((p.penalty_last_n > 0 || dry_on) && (history == nullptr || history_len <= 0)) {
+        std::fprintf(stderr, "sample_tokens: token penalties or DRY need a history (got %p, len %d)\n",
+                     (const void*) history, history_len);
         std::exit(1);
     }
-    const unsigned shmem = (history != nullptr && history_len > 0 && p.penalty_last_n > 0)
-                               ? (unsigned) ((n_vocab + 31) / 32) * sizeof(unsigned)   // the penalty bitmap
-                               : 0;
+    const bool have_history_window = history != nullptr && history_len > 0 &&
+                                     (p.penalty_last_n > 0 || (dry_on && p.dry_penalty_last_n > 0));
+    const size_t bits_bytes = have_history_window ? (size_t) ((n_vocab + 31) / 32) * sizeof(unsigned) : 0;
+    const int dry_len = have_history_window && dry_on
+                            ? std::min(4096, std::min(p.dry_penalty_last_n, history_len)) : 0;
+    const int dry_workspace_len = dry_len > p.dry_allowed_length ? dry_len : 0;
+    const size_t repeat_offset = (bits_bytes + 7u) & ~size_t(7u);
+    const size_t pairs_offset = (repeat_offset + (size_t) dry_workspace_len * sizeof(int) + 7u) & ~size_t(7u);
+    const size_t shmem_size = dry_workspace_len > 0 ? pairs_offset + (size_t) dry_workspace_len * sizeof(unsigned long long)
+                                                     : bits_bytes;
+    const unsigned shmem = (unsigned) shmem_size;
     if (p.greedy || p.temperature <= 0.0f) {
+        if (shmem_size > 48u * 1024u) {
+            const cudaError_t attr = cudaFuncSetAttribute(sampler_greedy_kernel,
+                                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                          (int) shmem_size);
+            if (attr != cudaSuccess) {
+                std::fprintf(stderr, "sample_tokens: DRY needs %zu bytes of shared memory: %s\n",
+                             shmem_size, cudaGetErrorString(attr));
+                std::exit(1);
+            }
+        }
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
         sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
             logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else {
+        if (shmem_size > 48u * 1024u) {
+            const cudaError_t attr = cudaFuncSetAttribute(sampler_kernel,
+                                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                          (int) shmem_size);
+            if (attr != cudaSuccess) {
+                std::fprintf(stderr, "sample_tokens: DRY needs %zu bytes of shared memory: %s\n",
+                             shmem_size, cudaGetErrorString(attr));
+                std::exit(1);
+            }
+        }
         // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
         // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
         sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(

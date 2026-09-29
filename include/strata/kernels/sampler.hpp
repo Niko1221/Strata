@@ -1,6 +1,6 @@
 // include/strata/kernels/sampler.hpp - the sampler chain, host-callable (P2.S2).
 //
-//     penalties -> top_k -> top_p -> min_p -> temperature -> pick
+//     penalties -> DRY -> top_k -> top_p -> min_p -> temperature -> pick
 //
 // llama.cpp's default chain (issue #53): ONE penalties stage, first, and temperature AFTER the truncation filters;
 // top_p cuts before min_p.  `src/kernels/cuda/sampler.cu` has the details and `sampler_parity` pins them.
@@ -12,6 +12,14 @@
 
 namespace strata::kernels {
 
+/// A processed DRY sequence breaker. Entries are sorted by `head`; `tail` contains the tokens immediately
+/// following that head in normal text order. The arrays are device pointers when passed to sample_tokens.
+struct DrySequenceBreaker {
+    int32_t head = 0;
+    int32_t tail_offset = 0;
+    int32_t tail_length = 0;
+};
+
 struct SamplerParams {
     int top_k = 20;              // sampled path: 1..64 as given; 0 (off) or more than 64 keep the widest list, 64
     float top_p = 0.95f;         // 1.0 disables the filter
@@ -22,6 +30,13 @@ struct SamplerParams {
     float penalty_repeat = 1.0f;
     float penalty_freq = 0.0f;
     float penalty_present = 0.0f;
+    float dry_multiplier = 0.0f;        // 0 disables DRY; penalty = multiplier * base^(repeat_len - allowed_length)
+    float dry_base = 1.75f;
+    int dry_allowed_length = 2;
+    int dry_penalty_last_n = 64;
+    const DrySequenceBreaker* dry_breakers = nullptr;
+    const int32_t* dry_breaker_tails = nullptr;
+    int dry_breaker_count = 0;
     uint64_t seed = 0;           // drives Philox, which is counter-based on (seed, token index)
     uint64_t counter = 0;        // absolute draw index of row 0; advance across decode calls
     bool greedy = false;
@@ -36,13 +51,14 @@ struct SamplerParams {
 // buffer that has nothing to do with it.  A sticky async fault does not know where it came from.
 //
 // `history` is (n_tokens, history_len) int32 - ONE ROW PER TOKEN ROW, at a stride of `history_len` - the most
-// recent tokens that row's pick follows, with any unused slots set to -1; only the last `p.penalty_last_n` of
-// each row are counted, and ids outside [0, n_vocab) are ignored.  Pass nullptr and 0 when no penalties apply.
+// recent tokens that row's pick follows, with any unused slots set to -1; repeat/frequency/presence penalties
+// and DRY use their own tail windows, and ids outside [0, n_vocab) are ignored. Pass nullptr and 0 when neither
+// kind of penalty applies.
 // A verify window's rows need DIFFERENT histories: row t follows the window's drafts 1..t (`penalty_rows`).
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream);
 
-// The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
+// The sampling-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.
 // `tail` is what the state consumed before the window, `window[0]` the fed-back token and `window[1..]` the
 // drafts: row t is exactly the history plain decode counts when it picks the token after `window[t]`, so drafting

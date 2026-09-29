@@ -476,6 +476,53 @@ bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) 
     return true;
 }
 
+bool parse_dry_breaker_map(const std::string& text, int n_vocab,
+                           std::vector<strata::kernels::DrySequenceBreaker>& breakers,
+                           std::vector<int32_t>& tails, std::string& err) {
+    breakers.clear();
+    tails.clear();
+    size_t start = 0;
+    while (start < text.size()) {
+        const size_t end = text.find(';', start);
+        const size_t stop = end == std::string::npos ? text.size() : end;
+        if (stop == start) { err = "empty DRY breaker entry"; return false; }
+        const size_t colon = text.find(':', start);
+        const size_t head_end = colon != std::string::npos && colon < stop ? colon : stop;
+        int32_t head = -1;
+        const auto parsed_head = std::from_chars(text.data() + start, text.data() + head_end, head);
+        if (parsed_head.ec != std::errc{} || parsed_head.ptr != text.data() + head_end || head < 0 || head >= n_vocab) {
+            err = "invalid DRY breaker head token";
+            return false;
+        }
+        strata::kernels::DrySequenceBreaker item;
+        item.head = head;
+        item.tail_offset = (int32_t) tails.size();
+        if (head_end < stop) {
+            size_t at = head_end + 1;
+            while (at < stop) {
+                const size_t comma = text.find(',', at);
+                const size_t token_end = comma != std::string::npos && comma < stop ? comma : stop;
+                int32_t token = -1;
+                const auto parsed = std::from_chars(text.data() + at, text.data() + token_end, token);
+                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + token_end || token < 0 || token >= n_vocab) {
+                    err = "invalid DRY breaker tail token";
+                    return false;
+                }
+                tails.push_back(token);
+                ++item.tail_length;
+                if (comma == std::string::npos || comma >= stop) break;
+                at = comma + 1;
+            }
+            if (item.tail_length > 20) { err = "DRY breaker tail exceeds 20 tokens"; return false; }
+        }
+        breakers.push_back(item);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    std::sort(breakers.begin(), breakers.end(), [](const auto& a, const auto& b) { return a.head < b.head; });
+    return true;
+}
+
 /// The pool's adapter plus the wall-clock it spent, so the report can say how much of the token was the CPU.
 struct Drive {
     strata::core::ExpertDispatch d;
@@ -3100,19 +3147,20 @@ int main(int argc, char** argv) {
             return 1;
         }
         mem_mark("the head and the prompt path");
-        // the penalty-history buffer: one row per verify-window row (`penalty_rows`), each the last
-        // `penalty_last_n` tokens that row's pick follows, -1 padded in front.  Allocated once at the cap for
-        // the widest window; a request without penalties gets a null buffer and takes the byte-for-byte
-        // neutral path (no upload, no buffer handed to the sampler).
-        constexpr int kPenaltyWindowCap = 4096;
-        constexpr size_t kHistSlots = (size_t) kPenaltyWindowCap * (size_t) strata::kernels::kVerifyMaxT;
+        // The sampler-history buffer: one row per verify-window row (`penalty_rows`), sized for the widest of
+        // the token-penalty and DRY windows. A request without either penalty takes the byte-for-byte neutral
+        // path (no upload, no buffer handed to the sampler).
+        constexpr int kSamplerHistoryCap = 4096;
+        constexpr size_t kHistSlots = (size_t) kSamplerHistoryCap * (size_t) strata::kernels::kVerifyMaxT;
         int32_t* d_hist = nullptr;
         std::vector<int32_t> hist_stage(kHistSlots, -1);
         const int hist_dev = last_st ? last_st->dev : -1;   // with the head: the last stage's device
         if (const strata::core::OnDevice on_h(hist_dev); cudaMalloc(&d_hist, kHistSlots * sizeof(int32_t)) != cudaSuccess) {
-            std::fprintf(stderr, "strata serve: the penalty-history allocation failed\n");
+            std::fprintf(stderr, "strata serve: the sampler-history allocation failed\n");
             return 1;
         }
+        void* d_dry_breaker_buffer = nullptr;   // reused across serial serve requests; allocated on the head's device
+        size_t dry_breaker_buffer_bytes = 0;
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
@@ -3566,14 +3614,16 @@ int main(int argc, char** argv) {
             }
             char* endp = nullptr;
             const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
-            // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
-            // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
-            // only).  Absent keys keep today's behavior: greedy, no penalties.
+            // optional sampling keys between max_new and the ids: temperature/top_p/top_k/min_p, token penalties,
+            // DRY settings and its pre-tokenized breaker map, and seed. Absent keys keep today's behavior.
             float req_temperature = 0.0f, req_top_p = 1.0f;
             int req_top_k = 20;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
+            float req_dry_multiplier = 0.0f, req_dry_base = 1.75f;
+            int req_dry_allowed_length = 2, req_dry_penalty_last_n = 64;
+            std::string req_dry_breaker_text;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
@@ -3599,6 +3649,11 @@ int main(int argc, char** argv) {
                     else if (key == "penalty_repeat") req_penalty_repeat = fv;
                     else if (key == "penalty_freq") req_penalty_freq = fv;
                     else if (key == "penalty_present") req_penalty_present = fv;
+                    else if (key == "dry_multiplier") req_dry_multiplier = fv;
+                    else if (key == "dry_base") req_dry_base = fv;
+                    else if (key == "dry_allowed_length") req_dry_allowed_length = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "dry_penalty_last_n") req_dry_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "dry_breakers") req_dry_breaker_text = tok.substr(eq + 1);
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
@@ -3942,6 +3997,52 @@ int main(int argc, char** argv) {
             req_sp.penalty_repeat = req_penalty_repeat;
             req_sp.penalty_freq = req_penalty_freq;
             req_sp.penalty_present = req_penalty_present;
+            req_sp.dry_multiplier = req_dry_multiplier;
+            req_sp.dry_base = req_dry_base;
+            req_sp.dry_allowed_length = std::max(0, std::min(4096, req_dry_allowed_length));
+            req_sp.dry_penalty_last_n = std::max(0, std::min(kSamplerHistoryCap, req_dry_penalty_last_n));
+            const bool dry_active = req_sp.dry_multiplier > 0.0f && req_sp.dry_base >= 1.0f &&
+                                    req_sp.dry_penalty_last_n > 0;
+            std::vector<strata::kernels::DrySequenceBreaker> dry_breakers;
+            std::vector<int32_t> dry_breaker_tails;
+            if (dry_active && !req_dry_breaker_text.empty()) {
+                std::string dry_err;
+                if (!parse_dry_breaker_map(req_dry_breaker_text, (int) n_vocab, dry_breakers, dry_breaker_tails, dry_err)) {
+                    std::printf("ERR bad DRY sequence breakers: %s\n", dry_err.c_str());
+                    continue;
+                }
+            }
+            if (!dry_breakers.empty()) {
+                const size_t entries_bytes = dry_breakers.size() * sizeof(dry_breakers[0]);
+                const size_t tails_bytes = dry_breaker_tails.size() * sizeof(dry_breaker_tails[0]);
+                const size_t total_bytes = entries_bytes + tails_bytes;
+                if (total_bytes > dry_breaker_buffer_bytes) {
+                    const strata::core::OnDevice on_h(hist_dev);
+                    if (d_dry_breaker_buffer != nullptr) cudaFree(d_dry_breaker_buffer);
+                    d_dry_breaker_buffer = nullptr;
+                    dry_breaker_buffer_bytes = 0;
+                    if (cudaMalloc(&d_dry_breaker_buffer, total_bytes) != cudaSuccess) {
+                        std::printf("ERR DRY sequence-breaker buffer allocation failed\n");
+                        continue;
+                    }
+                    dry_breaker_buffer_bytes = total_bytes;
+                }
+                std::vector<uint8_t> dry_upload(total_bytes);
+                std::memcpy(dry_upload.data(), dry_breakers.data(), entries_bytes);
+                if (tails_bytes > 0)
+                    std::memcpy(dry_upload.data() + entries_bytes, dry_breaker_tails.data(), tails_bytes);
+                {
+                    const strata::core::OnDevice on_h(hist_dev);
+                    if (cudaMemcpy(d_dry_breaker_buffer, dry_upload.data(), total_bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+                        std::printf("ERR DRY sequence-breaker upload failed\n");
+                        continue;
+                    }
+                }
+                req_sp.dry_breakers = (const strata::kernels::DrySequenceBreaker*) d_dry_breaker_buffer;
+                req_sp.dry_breaker_tails = tails_bytes > 0
+                    ? (const int32_t*) ((const uint8_t*) d_dry_breaker_buffer + entries_bytes) : nullptr;
+                req_sp.dry_breaker_count = (int) dry_breakers.size();
+            }
             req_sp.counter = 0;
             ver.set_sampling(req_sp);
             drive.d.pcie_num = std::max(0, std::min(256, (int) (req_pcie_frac * 256.0 + 0.5)));
@@ -3949,7 +4050,8 @@ int main(int argc, char** argv) {
             for (int st = 0; st < split_drive.n; ++st)
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
-            const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
+            const int dry_hist_n = dry_active ? req_sp.dry_penalty_last_n : 0;
+            const int hist_n = std::min(std::max(req_sp.penalty_last_n, dry_hist_n), kSamplerHistoryCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);

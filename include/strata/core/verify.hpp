@@ -67,7 +67,7 @@ public:
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
-    /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
+    /// The sampling the verify window's head applies (token penalties, DRY, temperature / top_p / top_k / seed). Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
     void set_sampling(const strata::kernels::SamplerParams& sp) {
@@ -75,11 +75,11 @@ public:
         if (next_) next_->set_sampling(sp);
     }
 
-    /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
+    /// The histories for the token penalties and DRY sampler: ONE ROW PER WINDOW ROW, T rows of `history_len`
     /// int32 slots at that stride (`strata::kernels::penalty_rows` builds them), most recent token LAST, unused
     /// front slots -1 (the kernel reads only the tail window).  Row t follows the window's drafts 1..t - staging
     /// row 0 alone (before 0.1.19) left the drafted rows with unwritten histories.  Null disables the penalties
-    /// entirely - the neutral run's sampling call is byte-for-byte what it was.  The engine re-uploads the rows
+    /// entirely - the neutral run's sampling call is byte-for-byte what it was. The engine re-uploads the rows
     /// before every window; the buffer must hold kVerifyMaxT rows and stay alive across the request.
     void set_history(const int32_t* history, int history_len) {
         hist_d_ = history;
