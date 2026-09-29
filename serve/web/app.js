@@ -1,4 +1,4 @@
-// serve/web/app.js - the Strata web app: Chat, Monitor, About. No framework, no network beyond this server.
+// serve/web/app.js - the Strata web app: Chat, Monitor, Cache, About. No framework, no network beyond this server.
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
 "use strict";
 
@@ -73,12 +73,13 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "monitor", "cache", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "monitor", "cache", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
+  if (tab === "cache") startCache(); else stopCache();      // the /cache walk costs nothing when nobody is looking
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -118,15 +119,40 @@ const METRICS = [
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
-$("metrics").innerHTML = METRICS.map((m) => `
+const metricCard = (m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+    <span class="st-metric__label"${m.title ? ` title="${esc(m.title)}"` : ""}>${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     <span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
-  </div></div>`).join("");
+  </div></div>`;
+$("metrics").innerHTML = METRICS.map(metricCard).join("");
+
+// The Cache tab's five cards (design §5).  The two byte quantities are named apart on purpose (design §6):
+// "Store used" is the engine's CAP ACCOUNTING, "On disk" (the state card) is the directory's footprint.
+const CACHE_METRICS = [
+  {key: "store", label: "Store used", icon: "cache", series: "store_bytes",
+   title: "What the engine's LRU compares against the cap. A chunk shared by three manifests counts once per manifest, on purpose, so the cap cannot lie about the disk. The footprint the volume actually holds is the \"On disk\" row below - a different quantity, never merged with this one."},
+  {key: "write", label: "Written/turn", icon: "download", unit: "MB", series: "write_mb", tone: "info",
+   title: "What this turn's cascade wrote (dump_bytes), and its mean over the sampled turns."},
+  {key: "read", label: "Read/promote", icon: "disk", unit: "MB", series: "read_mb", tone: "info",
+   title: "What the last promote read (promote_bytes): the price paid instead of a re-prefill."},
+  {key: "warm", label: "Warm prefixes", icon: "clock", series: "warm",
+   title: "Stored prefixes a new request could resume from. Snapshots, not conversations: one conversation that ran five turns holds five prefixes."},
+  {key: "promoted", label: "Promoted", icon: "activity",
+   title: "Turns this server saw a stored snapshot resume from, over the turns it has served since it started."},
+];
+$("cache-metrics").innerHTML = CACHE_METRICS.map(metricCard).join("");
+
+// one duration formatter for the whole page: 412 -> "412 ms", 1840 -> "1.84 s", 180000 -> "3 min", 2 d
+const dur = (ms) => ms == null ? "–"
+  : ms < 1000 ? `${fmt(Math.round(ms))} ms`
+  : ms < 60000 ? `${fmt(ms / 1000, ms < 10000 ? 2 : 1)} s`
+  : ms < 3600000 ? `${fmt(Math.round(ms / 60000))} min`
+  : ms < 86400000 ? `${fmt(ms / 3600000, 1)} h`
+  : `${fmt(ms / 86400000, 1)} d`;
 
 function spark(id, values, max) {
   const svg = $(id);
@@ -183,6 +209,15 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+  // the Cache tab exists only when the tier does (design §5): a server whose engine has no --kv-nvme renders
+  // today's three tabs, and the button appears without a reload because /metrics already carries cache.enabled.
+  const cache = m.cache;
+  if (cache && cache.enabled) { $("tab-btn-cache").hidden = false; if (tab === "cache") renderCache(cache); }
+  else {
+    $("tab-btn-cache").hidden = true;
+    stopCache();
+    if (tab === "cache") { showTab("monitor"); return; }
+  }
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -298,6 +333,168 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("req-totals").textContent = renderTotals(totals);
 }
 
+// ------------------------------------------------------------------ Cache tab (design §5)
+// The cards, the gauge and the totals render from the `cache` block already inside /metrics (KvCache.summary():
+// no filesystem work), so the tab is alive between /cache fetches.  /cache - detail(), the store walk - is what
+// brings the per-class rows, the prefixes and the disk figures, and it is fetched only while this tab is open:
+// an unwatched Cache page costs no directory walk at all (that split is the point of summary() vs detail()).
+const CACHE_KIND = {promote: ["st-badge--generating", "promote"], cascade: ["", "cascade"],
+                    evict: ["", "evict (LRU)"], sweep: ["", "sweep"],
+                    refuse: ["st-badge--queued", "refused → re-read"],
+                    transfer: ["st-badge--error", "transfer failure → engine stopped"]};
+const CACHE_TIER = {none: "none", ram: "RAM", nvme: "v3", delta: "delta"};
+const CACHE_CLASS = {snapshots: "v3 snapshots", manifests: "delta manifests", chunks: "delta chunks",
+                     states: "delta states", residue: "residue (.tmp-)"};
+const RECORD_ONE = {snapshots: "snapshot", manifests: "manifest", chunks: "chunk", states: "state"};
+// design §7's wording, with two honest shortenings: the `<reason>` its invalid row carries is not a field of the
+// KV line, and §7 forbids promising a restart the page cannot observe - so the transfer row stops at "stopped".
+const REFUSED_NOTE = "a stored snapshot was refused; the prompt was read instead and that snapshot was deleted. " +
+                     "The answer was served normally.";
+const TRANSFER_NOTE = "a stored snapshot could not be applied to the GPU. The engine stopped rather than risk " +
+                      "continuing on a half-restored session. The snapshot is still on disk.";
+
+let cacheDetail = null, cacheTimer = null, cacheShowAll = false;
+async function loadCache() {
+  if (tab !== "cache") return;
+  try {
+    const r = await fetch("/cache", {headers: headers()});
+    if (!r.ok) return;
+    cacheDetail = await r.json();
+  } catch (e) { return; }                                  // the 1 s /metrics block keeps the tab alive
+  if (tab === "cache" && cacheDetail && cacheDetail.enabled) renderCache(cacheDetail);
+}
+function startCache() {
+  if (tab !== "cache") return;
+  loadCache();                                             // content at once, then every 2 s while it is visible
+  if (cacheTimer === null) cacheTimer = setInterval(loadCache, 2000);
+}
+function stopCache() { if (cacheTimer !== null) { clearInterval(cacheTimer); cacheTimer = null; } }
+
+function renderCache(c) {
+  const p = c.promotable || {}, t = c.totals || {}, s = c.series || {}, cap = c.cap_bytes || 0;
+  const walk = c.on_disk ? c : (cacheDetail && cacheDetail.on_disk ? cacheDetail : null);
+  const last = (a) => (a && a.length ? a[a.length - 1] : null);
+
+  // the status strip
+  $("cache-state").innerHTML = `<span class="cache-strip__dot"></span>NVMe cache on · ${esc(c.mode)} tier · ` +
+                              `${esc(c.dir)} · cap ${cap ? `${gb(cap, 0)} GB` : "none (unlimited)"}`;
+  $("cache-inert").innerHTML = c.inert_reason ? `<span class="st-badge st-badge--queued">inert: ${esc(c.inert_reason)}</span>` : "";
+
+  // the five cards
+  setMetric("store", p.bytes == null ? null : gb(p.bytes, 2), cap ? `/ ${gb(cap, 0)} GB cap` : "GB", "cap accounting");
+  spark("sp-store", s.store_bytes, cap);
+  const w = last(s.write_mb);
+  setMetric("write", w == null ? null : fmt(w, w < 10 ? 1 : 0), "MB",
+            s.write_mb && s.write_mb.length ? `mean ${fmt(s.write_mb.reduce((x, y) => x + (y || 0), 0) / s.write_mb.length, 1)} MB over ${s.write_mb.length} turns` : "");
+  spark("sp-write", s.write_mb);
+  const rd = last(s.read_mb);
+  setMetric("read", rd == null ? null : fmt(rd, rd < 10 ? 1 : 0), "MB",
+            t.total_promote_bytes ? `${gb(t.total_promote_bytes)} GB read since the server started` : "");
+  spark("sp-read", s.read_mb);
+  setMetric("warm", p.prefixes == null ? null : fmt(p.prefixes), "",
+            p.entries != null ? `${fmt(p.entries)} v3 · ${fmt(p.delta_entries)} delta` : "");
+  spark("sp-warm", s.warm);
+  setMetric("promoted", fmt(t.promotes), `of ${fmt(t.requests)} turns`,
+            t.requests > (t.requests_with_kv_line || 0)
+              ? `${fmt(t.requests - t.requests_with_kv_line)} turns reported no KV line (unknown, never cold)` : "");
+
+  // the store-fill gauge: the same dasharray arithmetic as the context gauge (235.6 of 314.2 is the 270° sweep)
+  const frac = cap && p.bytes != null ? Math.min(1, p.bytes / cap) : 0;
+  $("cache-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
+  $("cache-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";
+  $("cache-pct").textContent = cap ? `${Math.round(frac * 100)}%` : "–";
+  $("cache-sub").textContent = p.bytes == null ? "–" : `${gb(p.bytes)} / ${cap ? `${gb(cap, 0)} GB cap` : "no cap"}`;
+
+  // the state rows: the DISK footprint, named apart from the cap accounting above
+  if (walk) {
+    const od = walk.on_disk || {}, top = Math.max(1, ...Object.values(od).map((r) => r.bytes));
+    $("cache-ondisk").textContent = `${fmt(walk.on_disk_files)} files · ${gb(walk.on_disk_bytes)} GB`;
+    $("cache-classes").innerHTML = Object.keys(CACHE_CLASS).filter((k) => od[k] && od[k].count).map((k) =>
+      `<div class="bar-row"><span>${esc(CACHE_CLASS[k])}</span><span class="muted">${fmt(od[k].count)} · ${gb(od[k].bytes)} GB</span></div>` +
+      `<div class="st-progress"><div class="st-progress__bar" style="width:${((100 * od[k].bytes) / top).toFixed(1)}%"></div></div>`
+    ).join("") || `<div class="bar-row"><span>Nothing on disk yet</span><span class="muted">–</span></div>`;
+    const free = walk.disk_free_bytes, total = walk.disk_total_bytes;
+    $("cache-disk").textContent = free == null ? "–" : `${gb(free, 0)} GB free of ${gb(total, 0)} GB`;
+    $("cache-disk-bar").style.width = free != null && total ? `${Math.min(100, (100 * free) / total)}%` : "0%";
+    const prog = $("cache-disk-bar").parentElement;
+    if (free != null && total && free / total < 0.1) prog.dataset.tone = "danger"; else delete prog.dataset.tone;
+  }
+  const rt = c.ram_tier || {};
+  $("cache-ram").textContent = rt.checkpoints == null && rt.live_tokens == null ? "–"
+    : `${fmt(rt.checkpoints)} checkpoints · ${fmt(rt.live_tokens)} tokens live`;
+  // summary() carries no staging field: it is the last request's KV `staging_bytes` (what the restore staged),
+  // falling back to what the newest promote read when no request reported it.
+  let staging = null;
+  for (const r of (lastMetrics && lastMetrics.requests) || []) {
+    if (r.cache && r.cache.staging_bytes != null) { staging = r.cache.staging_bytes; break; }
+  }
+  if (staging == null) { const pr = (c.events || []).filter((e) => e.kind === "promote").pop(); if (pr) staging = pr.bytes; }
+  $("cache-staging").textContent = staging == null ? "–"
+    : `${staging < 1048576 ? `${fmt(staging / 1048576, 1)} MB` : `${gb(staging, 2)} GB`} staged by the last promote`;
+
+  // the events table (design §7's three classes as badge tones)
+  const evs = cacheShowAll && cacheDetail && cacheDetail.events ? cacheDetail.events : (c.events || []);
+  const body = $("cache-events");
+  if (!evs.length) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">No cache activity yet</td></tr>`;
+  } else {
+    // "Show all" means all: /cache carries every row the server kept, /metrics carries the last 12.
+    const rows = cacheShowAll ? evs.slice().reverse() : evs.slice(-12).reverse();
+    body.innerHTML = rows.map((e) => {
+      const [cls, text] = CACHE_KIND[e.kind] || ["", e.kind || "–"];
+      const note = e.kind === "refuse" ? REFUSED_NOTE : e.kind === "transfer" ? TRANSFER_NOTE : "";
+      const time = new Date(e.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+      return `<tr><td>${esc(time)}</td><td><span class="st-badge ${cls}"${note ? ` title="${esc(note)}"` : ""}>` +
+             `${esc(text)}${e.count > 1 ? ` ×${fmt(e.count)}` : ""}</span></td><td>${esc(CACHE_TIER[e.src] || e.src || "–")}</td>` +
+             `<td class="num">${e.tokens == null ? "–" : fmt(e.tokens)}</td>` +
+             `<td class="num">${e.bytes == null ? "–" : fmt(e.bytes / 1048576, e.bytes < 10485760 ? 1 : 0)}</td>` +
+             `<td class="num">${dur(e.ms)}</td></tr>`;
+    }).join("");
+  }
+  const all = $("cache-all");
+  all.hidden = evs.length <= 12;
+  all.textContent = cacheShowAll ? "Show fewer" : `Show all (${fmt(evs.length)})`;
+  $("cache-wrap").classList.toggle("all", cacheShowAll);
+  $("cache-totals").textContent = renderCacheTotals(t);
+
+  // stored prefixes: lengths, ages, sizes and record counts - never ids, never content (design §8)
+  const pre = (walk && walk.prefixes) || [];
+  $("cache-prefix-sum").textContent = pre.length
+    ? `${pre.length >= 12 ? "the newest 12" : `${fmt(pre.length)} stored prefix${pre.length === 1 ? "" : "es"}`}, newest first` : "";
+  $("cache-prefixes").innerHTML = pre.length ? pre.map((x) => {
+    const recs = Object.entries(x.records || {}).map(([k, v]) => `${fmt(v)} ${v === 1 ? (RECORD_ONE[k] || k) : k}`).join(" + ");
+    return `<tr><td class="num">${dur((x.age_s || 0) * 1000)}</td><td class="num">${fmt(x.tokens)}</td>` +
+           `<td>${esc(x.tier)}</td><td>${esc(recs)}</td><td class="num">${gb(x.bytes, 2)} GB</td></tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">Nothing stored yet</td></tr>`;   // no "last used" column: the
+  // tier has no cross-restart conversation identity, and design §8 forbids guessing one from an mtime.
+
+  // the facts block and the inert / failure wording (design §7)
+  const stale = (walk && walk.stale) || null, free = walk && walk.disk_free_bytes;
+  facts($("cache-facts"), [
+    ["Store directory", c.dir],
+    ["Cap", cap ? `${gb(cap, 0)} GB (the engine's own limit)` : "none - unlimited"],
+    ["Tier family", c.mode === "delta" ? "delta (chunks + states + manifests), with the v3 snapshot fallback" : "v3 snapshots only"],
+    ["Format version", stale ? (stale.count ? `${fmt(stale.count)} file(s) of version ${stale.version} on disk, not promotable` : "no file of another version on disk") : null],
+    ["Foreign files", walk ? (walk.foreign ? `${fmt(walk.foreign)} file(s) on disk that are not this tier's records` : "none") : null],
+    ["Disk free", free == null ? null : `${gb(free, 0)} GB free of ${gb(walk.disk_total_bytes, 0)} GB on ${c.dir}`],
+    ["RAM tier", rt.checkpoints == null ? null : `${fmt(rt.checkpoints)} checkpoints, ${fmt(rt.live_tokens)} tokens live - resumable without touching disk`],
+    ["Not cached", "layer-split sessions are not cached; a boundary past the drafter ring falls back to a v3 snapshot"],
+    ["Promote cost", "a promote stages the whole snapshot in RAM at once (measured: ~2 GiB for a 964 MiB snapshot)"],
+  ]);
+  const warns = (c.warnings || []).filter((x) => x !== c.inert_reason).map((x) => `<div class="cache-warn">${esc(x)}</div>`);
+  if (stale && stale.count) warns.push(`<div class="cache-warn">both options are legitimate: re-dump them with the binary that wrote them, or remove them and let the store rebuild</div>`);
+  if (t.total_refused) warns.push(`<div class="cache-warn">${esc(REFUSED_NOTE)}</div>`);
+  if (t.total_transfer) warns.push(`<div class="cache-warn cache-warn--danger">${esc(TRANSFER_NOTE)}</div>`);
+  $("cache-warnings").innerHTML = warns.join("");
+}
+function renderCacheTotals(t) {
+  if (!t || !t.requests) return "";
+  const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
+  return `Since ${since} (the server started): ${fmt(t.requests)} turns · ${fmt(t.promotes)} promoted from disk · ` +
+         `${gb(t.total_dump_bytes)} GB written · ${gb(t.total_promote_bytes)} GB read · ${fmt(t.total_refused)} refused · ` +
+         `${fmt(t.total_transfer)} ${t.total_transfer === 1 ? "transfer failure" : "transfer failures"} · ${gb(t.total_evict_bytes)} GB evicted`;
+}
+
 function facts(el, rows) {
   el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
     `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="Copy">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
@@ -340,6 +537,7 @@ document.addEventListener("click", (e) => {
   if (b) copyText(b.dataset.copy, b);
 });
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
+$("cache-all").addEventListener("click", () => { cacheShowAll = !cacheShowAll; if (cacheDetail) renderCache(cacheDetail); });
 
 // ------------------------------------------------------------------ MCP servers (GET /mcp)
 // Tools from the MCP servers in the run config: the chat offers them to the model (opt-in per request,
