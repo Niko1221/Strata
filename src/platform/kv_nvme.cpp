@@ -495,9 +495,19 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
     // mutates nothing: `conversation_validation_test.cpp:158-161`).  It proves the device answers BEFORE a single
     // byte is written, so a context that is already unusable fails as `transfer_failed` with the session
     // untouched, rather than half-applying and failing later.
-    if (cudaDeviceSynchronize() != cudaSuccess) {
+    //
+    // TEST-ONLY FAULT INJECTION (docs/nvme-kv-cache-design.md §5.5): STRATA_TEST_FAIL_CUDA names one thing to
+    // break - the pre-apply synchronize ("sync"), the spare-row re-publish ("spare"), or one apply-pass segment
+    // by name ("gdn", "ple", "pooled", "tail", "dead", "block_pos").  The named transfer is SKIPPED and its
+    // failure branch taken, so the fatal transfer_failed path can be EXECUTED on a healthy device, which no host
+    // fixture can arrange (their copies are memcpy).  Copies before the named one have already been applied, so
+    // the session is exactly the half-applied state the contract says must not be recovered from.  Unset - the
+    // default, and the only shipped configuration - the hook does nothing at all.
+    const char* fail_env = std::getenv("STRATA_TEST_FAIL_CUDA");
+    const std::string fail_seg = fail_env ? fail_env : "";
+    if (fail_seg == "sync" || cudaDeviceSynchronize() != cudaSuccess) {
         err = "nvme_restore: device synchronize before the apply pass";
-        consume_cuda_error();
+        if (fail_seg != "sync") consume_cuda_error();
         return Restore::transfer_failed;
     }
 
@@ -509,6 +519,11 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
     cvec = h.cvec != 0;
     for (const Apply& a : applies) {
         if (a.device) {
+            if (fail_seg == a.what) {   // test-only: skip the named transfer, take its failure branch
+                err = std::string("nvme_restore: host-to-device transfer failed for the ") + a.what +
+                      " segment (" + std::to_string(a.bytes) + " bytes) [STRATA_TEST_FAIL_CUDA]";
+                return Restore::transfer_failed;
+            }
             if (cudaMemcpy(a.dst, a.src, a.bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
                 err = std::string("nvme_restore: host-to-device transfer failed for the ") + a.what +
                       " segment (" + std::to_string(a.bytes) + " bytes)";
@@ -532,10 +547,12 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
         // maintain at every block completion (qsa.cu:213, native_qsa_indexer.cu:93), has to be restored too.
         // For a full-L dump the row already equals `dead`, so this is a no-op there.
         const int64_t row = L / z.shapes.idx_block;   // < idx_pooled_rows: snapshot_pooled_rows checked it
-        if (cudaMemcpy(ss.qsa_states[i].idx_pooled + (size_t) row * g.idx_key_dim,
+        if (fail_seg == "spare" ||
+            cudaMemcpy(ss.qsa_states[i].idx_pooled + (size_t) row * g.idx_key_dim,
                        ss.qsa_states[i].idx_dead, z.state.dead, cudaMemcpyHostToDevice) != cudaSuccess) {
-            err = "nvme_restore: host-to-device transfer failed while re-publishing the spare pooled row";
-            consume_cuda_error();
+            err = std::string("nvme_restore: host-to-device transfer failed while re-publishing the spare pooled row") +
+                  (fail_seg == "spare" ? " [STRATA_TEST_FAIL_CUDA]" : "");
+            if (fail_seg != "spare") consume_cuda_error();
             return Restore::transfer_failed;
         }
     }
