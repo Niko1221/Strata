@@ -49,10 +49,15 @@ if(STRATA_ENABLE_CUDA)
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    if(_base LESS 80)
+    if(_base LESS 70)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 8.0 or newer (RTX 30 / 40 / 50 series), but "
+        "Strata needs an NVIDIA GPU of compute capability 7.0 or newer, but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.")
+    elseif(_base LESS 80)
+      # Volta (sm_70): the only sm_80+ dependency is native_qsa_score.cu
+      # (ldmatrix + tf32 mma.sync), which is currently unreferenced by the runtime.
+      message(WARNING "sm_70 build: excluding native_qsa_score.cu (ldmatrix/tf32 scorer, sm_80+ only)")
+      set(STRATA_SM70 ON)
     endif()
   endforeach()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
@@ -174,7 +179,6 @@ if(STRATA_ENABLE_CUDA)
                           src/kernels/cuda/native_ple_postops.cu
                           src/kernels/cuda/native_flash_attn.cu
                           src/kernels/cuda/native_qsa_indexer.cu
-                          src/kernels/cuda/native_qsa_score.cu
                           src/kernels/cuda/ple.cu
                           src/kernels/cuda/kv_q8.cu
                           src/kernels/cuda/kv_stream.cu
@@ -191,6 +195,9 @@ if(STRATA_ENABLE_CUDA)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  if(NOT STRATA_SM70)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/native_qsa_score.cu)
+  endif()
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/ggml)
   target_include_directories(strata_kernels PRIVATE third_party/ggml)
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
