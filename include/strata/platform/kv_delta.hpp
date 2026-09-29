@@ -242,4 +242,19 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
                    const std::vector<ConversationImageKey>& imgs, bool cvec, const ConversationCheckpoint* at,
                    uint64_t weights_fp, int64_t pid, int64_t seq, std::string& err);
 
+/// THE READER (§5.10): validate EVERYTHING with no CUDA call, assemble the exact v3 image, then run the
+/// existing validation+apply pass (`nvme_restore_image`) on it.  Every manifest/chunk/state problem is
+/// `invalid` - recoverable, provably before any CUDA call (zero copies, sentinel buffers untouched); only the
+/// apply pass inside nvme_restore_image can report `transfer_failed`, with its unchanged meaning: fatal.
+///
+/// `e` is a delta entry (`kind == 1`); `e.path` is the manifest, and the chunks/states hang off the manifest's
+/// own directory.  `weights_fp` is the live process's fingerprint - a mismatch is the match-time refusal (§5.8)
+/// re-checked here as a backstop behind the scan's filtering.  On success the caller sets the live session from
+/// the restored prefix, exactly as it does after a v3 restore.
+strata::core::ConversationRestore delta_restore(const NvmeEntry& e, strata::core::SessionState& ss,
+                                                strata::core::QsaState& mtp_state, const ModelGeometry& g,
+                                                uint64_t weights_fp, std::vector<int32_t>& ids,
+                                                std::vector<ConversationImageKey>& imgs, bool& cvec, int64_t& L,
+                                                std::string& err);
+
 }  // namespace strata::platform

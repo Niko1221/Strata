@@ -71,7 +71,8 @@ using namespace strata::core;
 
 namespace {
 
-int checks = 0;
+int checks = 0, refusals = 0;
+std::string last_error;
 
 void ck(bool ok, const char* what) {
     ++checks;
@@ -81,6 +82,18 @@ void ck_eq(int64_t got, int64_t want, const char* what) {
     ++checks;
     if (got != want) {
         std::fprintf(stderr, "FAIL: %s (got %lld, want %lld)\n", what, (long long) got, (long long) want);
+        std::exit(1);
+    }
+}
+
+/// THE FLOOR EVERY FAILURE PATH MUST CLEAR (kv_nvme_host_test's rule): the tier reported its own failure, so it
+/// must have consumed the CUDA error it handled - a pending error here would be misreported by the next caller.
+void ck_no_pending_error(const char* what) {
+    ++checks;
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "FAIL: %s left a CUDA error pending (%s) for the next caller to misread\n",
+                     what, cudaGetErrorString(e));
         std::exit(1);
     }
 }
@@ -696,6 +709,163 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
     return buf;
 }
 
+
+// ================================ fixture: the reader (Phase 3) ================================
+
+bool all_zero(const std::vector<uint8_t>& b) { return std::all_of(b.begin(), b.end(), [](uint8_t x) { return x == 0; }); }
+
+void fixture_reader(const std::string& root) {
+    using Restore = strata::core::ConversationRestore;
+    const uint64_t WFP = 0xDEADBEEF12345678ull;
+
+    // one delta store, dumped at T=10; the same session dumped to a v3 file for the cross-check
+    Session S;
+    S.seed_indexer(987654.0f, L_BOUNDARY / SHP.idx_block, 555.0f);
+    S.tag_kv();
+    const ConversationCheckpoint cp = boundary_checkpoint(S, L_BOUNDARY, 8);
+    const std::string dir = root + "/reader";
+    std::string err;
+    const bool d_ok = strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp,
+                                                      WFP, 7, 1, err);
+    ck(d_ok, ("the reader's store dumps: " + err).c_str());
+    const std::string v3_path = root + "/reader-v3.bin";
+    const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err);
+    ck(v3_ok, ("the reader's v3 control writes: " + err).c_str());
+
+    strata::platform::NvmeEntry e;
+    e.path = dir + "/log-7-1.manifest";
+    e.ids = cp.ids;
+    e.imgs = cp.imgs;
+    e.L = L_BOUNDARY;
+    e.cvec = true;
+    e.kind = 1;
+
+    {   // THE CROSS-CHECK: nvme_restore(file) and delta_restore(store) leave IDENTICAL sessions
+        Session R1, R2;
+        std::vector<int32_t> ids1, ids2;
+        std::vector<ConversationImageKey> imgs1, imgs2;
+        bool cvec1 = false, cvec2 = false;
+        int64_t L1 = 0, L2 = 0;
+        ck(strata::platform::nvme_restore(v3_path.c_str(), R1.ss, R1.draft, R1.g, ids1, imgs1, cvec1, L1, err) ==
+               Restore::restored, ("the v3 restore of the control file: " + err).c_str());
+        ck(strata::platform::delta_restore(e, R2.ss, R2.draft, R2.g, WFP, ids2, imgs2, cvec2, L2, err) ==
+               Restore::restored, ("the delta restore: " + err).c_str());
+        ck_eq(L1, L_BOUNDARY, "the v3 restore's length");
+        ck_eq(L2, L_BOUNDARY, "the delta restore's length");
+        ck(ids1 == ids2 && imgs1 == imgs2 && cvec1 == cvec2, "the two restores hand back the same prefix and images");
+        for (int64_t i = 0; i < S.g.n_qsa_layers(); ++i) {
+            const Store& a = R1.stores[(size_t) i];
+            const Store& b = R2.stores[(size_t) i];
+            ck(a.k == b.k && a.v == b.v && a.ks == b.ks && a.vs == b.vs, "the KV host copies are identical");
+            ck(a.pooled == b.pooled && a.tail == b.tail && a.dead == b.dead && a.bpos == b.bpos,
+               "the indexer state is identical");
+        }
+        ck(R1.gdn == R2.gdn && R1.ple == R2.ple, "the running state is identical");
+        ck(R1.draft_store.k == R2.draft_store.k && R1.draft_store.ks == R2.draft_store.ks,
+           "the drafter's host copy is identical");
+        ck(R1.ss.ple_prev[0] == R2.ss.ple_prev[0] && R1.ss.ple_prev[1] == R2.ss.ple_prev[1],
+           "and the PLE window");
+        // and the delta restore is a REAL restore: the prefix actually landed in the fresh session
+        const int64_t pages = (L_BOUNDARY + SHP.page_size - 1) / SHP.page_size;
+        ck(std::equal(R2.stores[0].k.begin(), R2.stores[0].k.begin() + pages * block_bytes(0), S.stores[0].k.begin()),
+           "the restored KV equals the dumper's, page for page");
+        ck(((const float*) R2.stores[0].dead.data())[0] == 987654.0f, "the dead key is the checkpoint's");
+        ck(((const float*) R2.stores[0].pooled.data())[(L_BOUNDARY / SHP.idx_block) * S.g.idx_key_dim] == 987654.0f,
+           "C3: the spare row was re-published to the dead key");
+    }
+
+    auto restore_fresh = [&](Session& R) -> std::pair<Restore, std::string> {
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+        std::string e2;
+        const Restore r = strata::platform::delta_restore(e, R.ss, R.draft, R.g, WFP, ids, imgs, cvec, L, e2);
+        return {r, e2};
+    };
+    auto expect_invalid = [&](const char* must_name, const char* label) {
+        reset_faults();
+        Session R;   // fresh: every array zero - "untouched" is the all-zero claim
+        const auto r = restore_fresh(R);
+        ++refusals;
+        ck(r.first == Restore::invalid, label);
+        if (r.second.find(must_name) == std::string::npos) {
+            std::fprintf(stderr, "FAIL: the refusal for '%s' was: %s\n", must_name, r.second.c_str());
+            std::exit(1);
+        }
+        ck_eq(copy_calls, 0, "a refused delta restore made not one cudaMemcpy");
+        ck_eq(sync_calls, 0, "and not one CUDA call at all");
+        bool zero = all_zero(R.gdn) && all_zero(R.ple);
+        for (const Store& s : R.stores)
+            zero = zero && all_zero(s.k) && all_zero(s.v) && all_zero(s.ks) && all_zero(s.vs) &&
+                   all_zero(s.pooled) && all_zero(s.tail) && all_zero(s.dead) && all_zero(s.bpos);
+        ck(zero, "and wrote nothing to the session");
+        ck_no_pending_error(label);
+        last_error = r.second;
+    };
+
+    {   // a MISSING chunk file: the refusal names the chunk (its content-addressed name is in the path)
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        std::vector<strata::platform::DeltaChunkRef> refs;
+        strata::platform::DeltaManifestHeader m;
+        ck(strata::platform::delta_read_manifest(e.path, m, ids, imgs, refs, err), "the manifest reads");
+        const std::string victim =
+            dir + "/chunks/" + strata::platform::delta_key_name(refs[1].key) + ".bin";
+        const std::string kept = victim + ".kept";
+        fs::rename(victim, kept);
+        expect_invalid("chunks/", "a missing chunk is the recoverable class");
+        ck(last_error.find(strata::platform::delta_key_name(refs[1].key)) != std::string::npos,
+           "and the refusal names the chunk's key");
+        fs::rename(kept, victim);
+    }
+    {   // a TRUNCATED chunk
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        std::vector<strata::platform::DeltaChunkRef> refs;
+        strata::platform::DeltaManifestHeader m;
+        ck(strata::platform::delta_read_manifest(e.path, m, ids, imgs, refs, err), "the manifest reads");
+        const std::string victim = dir + "/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin";
+        const std::vector<uint8_t> good = slurp(victim);
+        std::ofstream f(victim, std::ios::binary | std::ios::trunc);
+        f.write((const char*) good.data(), (std::streamsize) (good.size() - 5));
+        f.close();
+        expect_invalid("truncated or oversized", "a truncated chunk is the recoverable class");
+        { std::ofstream f2(victim, std::ios::binary | std::ios::trunc);
+          f2.write((const char*) good.data(), (std::streamsize) good.size()); }
+    }
+    {   // a corrupt MANIFEST footer: the manifest is untrustworthy, refused before any chunk is read
+        const std::string p = e.path;
+        const std::vector<uint8_t> clean = slurp(p);
+        std::vector<uint8_t> bad = clean;
+        bad[bad.size() - 1] ^= 0xFF;
+        { std::ofstream f(p, std::ios::binary | std::ios::trunc);
+          f.write((const char*) bad.data(), (std::streamsize) bad.size()); }
+        expect_invalid("integrity check failed", "a corrupt manifest footer is the recoverable class");
+        { std::ofstream f(p, std::ios::binary | std::ios::trunc);
+          f.write((const char*) clean.data(), (std::streamsize) clean.size()); }   // repaired: the store re-dumps
+    }
+    {   // a weight-set mismatch: match-time refusal, re-checked at restore
+        reset_faults();
+        Session R;
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+        std::string e2;
+        ck(strata::platform::delta_restore(e, R.ss, R.draft, R.g, WFP + 1, ids, imgs, cvec, L, e2) ==
+               Restore::invalid, "a different weight set is refused");
+        ck(e2.find("different weight set") != std::string::npos, "and says which rule fired");
+        ck_eq(copy_calls, 0, "with no CUDA call");
+    }
+    // and the SAME manifest restores again once the file is fixed - a refusal is not a sticky condition
+    {
+        Session R;
+        const auto r = restore_fresh(R);
+        ck(r.first == Restore::restored, "the manifest restores again after the corruption is repaired");
+    }
+}
+
 int count_files(const std::string& dir, const char* prefix) {
     int n = 0;
     std::error_code ec;
@@ -995,6 +1165,7 @@ int main() {
 
     fixture_byte_identity(root);
     fixture_writer_semantics(root);
+    fixture_reader(root);
 
     fs::remove_all(root, ec);
     std::printf("kv_delta_host_test: %d checks passed; no CUDA context, no model\n", checks);

@@ -688,4 +688,177 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
     return true;
 }
 
+// ================================ the reader (§5.10) ================================
+
+strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
+                                                const ModelGeometry& g, uint64_t weights_fp,
+                                                std::vector<int32_t>& ids, std::vector<ConversationImageKey>& imgs,
+                                                bool& cvec, int64_t& L, std::string& err) {
+    using Restore = strata::core::ConversationRestore;
+    ids.clear();
+    imgs.clear();
+    // ---- step 1: the manifest.  Every refusal in this function happens before the first CUDA call, so it
+    // provably writes nothing to the session (P6); only nvme_restore_image can report `transfer_failed`.
+    DeltaManifestHeader h;
+    std::vector<DeltaChunkRef> refs;
+    if (!delta_read_manifest(e.path, h, ids, imgs, refs, err)) return Restore::invalid;
+    DeltaShapes sh = delta_shapes();
+    ConversationStateSizes z;
+    if (!strata::core::conversation_state_sizes(g, z, err)) { err = "kv-delta: " + err; return Restore::invalid; }
+    if (h.geometry != strata::core::conversation_geometry_key(g) ||
+        h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
+        h.page_size != sh.shapes.page_size || h.idx_block != sh.shapes.idx_block ||
+        h.block != sh.block || h.max_cells > ss.qsa_states[0].max_cells) {
+        err = "kv-delta: manifest " + e.path + ": geometry/format mismatch (refusing to convert)";
+        return Restore::invalid;
+    }
+    if (h.weights_fp != weights_fp) {
+        // the match-time rule (§5.8), re-checked: a manifest of another weight set is not a candidate, ever
+        err = "kv-delta: manifest " + e.path + ": belongs to a different weight set";
+        return Restore::invalid;
+    }
+    int64_t mtp_arrays = 0;
+    for (int k = 0; k < nvme_kv_array_count(mtp_state); ++k)
+        mtp_arrays += nvme_kv_host_array(mtp_state, g.head_dim, k).p ? 1 : 0;
+    if (h.mtp_host != mtp_arrays) {
+        err = "kv-delta: manifest " + e.path + ": drafter arrays " + std::to_string(mtp_arrays) +
+              " != manifest " + std::to_string(h.mtp_host);
+        return Restore::invalid;
+    }
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
+        for (int k = 0; k < nvme_kv_array_count(ss.qsa_states[i]); ++k)
+            if (!nvme_kv_host_array(ss.qsa_states[i], g.head_dim, k).p) {
+                err = "kv-delta: null host KV array";
+                return Restore::invalid;
+            }
+
+    // ---- step 2: every chunk and the State record, fully validated (existence, key/range, file size, footer
+    // digest, identity via the tag) BEFORE anything is assembled.  A payload must also equal what THIS
+    // geometry's slice math says - the shapes were checked, but the arrays' formats are the live engine's word.
+    const uint64_t tag = delta_tag(g, h.kv_format, h.cvec != 0, weights_fp, sh.block);
+    const int64_t T = h.L, S = delta_sealed(T, sh);
+    const int64_t pages_per_chunk = sh.block / sh.shapes.page_size;
+    const std::string dir = fs::path(e.path).parent_path().string();
+    std::vector<std::vector<uint8_t>> chunk_payloads(refs.size());
+    for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
+        const std::string path = dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin";
+        std::vector<uint8_t>& payload = chunk_payloads[(size_t) j];
+        if (!delta_read_chunk(path, refs[(size_t) j].key, refs[(size_t) j].a, refs[(size_t) j].a + sh.block,
+                              payload, err))
+            return Restore::invalid;   // the read's message already names the chunk and the reason
+        const int64_t want = delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[(size_t) j].a);
+        if (payload.size() != (size_t) want) {
+            err = "kv-delta: chunk " + path + ": payload " + std::to_string(payload.size()) +
+                  " bytes, this geometry's slice math says " + std::to_string(want);
+            return Restore::invalid;
+        }
+    }
+    const std::string state_path = dir + "/states/" + delta_key_name(h.state_key) + ".bin";
+    std::vector<uint8_t> state;
+    if (!delta_read_state(state_path, tag, h.state_key, state, err)) return Restore::invalid;
+    {
+        const int64_t want = delta_state_payload_bytes(ss, mtp_state, g, z, sh, T);
+        if (state.size() != (size_t) want) {
+            err = "kv-delta: state " + state_path + ": payload " + std::to_string(state.size()) +
+                  " bytes, this geometry's slice math says " + std::to_string(want);
+            return Restore::invalid;
+        }
+    }
+
+    // ---- step 3: assemble the EXACT v3 image in one buffer (the whole-file staging the v3 restore already
+    // does - the measured, accepted C10 cost), interleaving chunk and State slices per the v3 walk's order.
+    const bool has_ple = ss.ple_hist != nullptr;
+    const int64_t pagesT = (T + sh.shapes.page_size - 1) / sh.shapes.page_size;
+    const int64_t rowsT = strata::kernels::qsa_pooled_rows(T, sh.shapes);
+    const int64_t idx4 = g.idx_key_dim * 4;
+    const int n_arrays = nvme_kv_array_count(ss.qsa_states[0]);
+    int64_t widths[4] = {0, 0, 0, 0};
+    for (int k = 0; k < n_arrays; ++k) widths[k] = nvme_kv_host_array(ss.qsa_states[0], g.head_dim, k).w;
+    const int64_t page_kv = g.n_head_kv * sh.shapes.page_size;
+    const int64_t st_pages = pagesT - S / sh.shapes.page_size;   // the State record's tail-page count per array
+    const int64_t st_rows = rowsT - S / sh.shapes.idx_block;
+    // per-layer strides, chunk side and state side; the drafter's arrays ride after the layers in BOTH
+    int64_t ch_arrays = 0, st_arrays = 0, dr_slice = 0;
+    for (int k = 0; k < n_arrays; ++k) {
+        ch_arrays += pages_per_chunk * page_kv * widths[k];
+        st_arrays += st_pages * page_kv * widths[k];
+        dr_slice += pages_per_chunk * page_kv * widths[k];
+    }
+    const int64_t ch_stride = ch_arrays + sh.rows_per_chunk * idx4;
+    const int64_t st_stride = st_arrays + st_rows * idx4 + (int64_t) (z.tail + z.dead + z.block_pos);
+    const int64_t st_drafter_base = (int64_t) z.gdn + (has_ple ? (int64_t) z.ple : 0) + g.n_qsa_layers() * st_stride;
+    int64_t arr_total = 0;
+    for (int k = 0; k < n_arrays; ++k) arr_total += pagesT * page_kv * widths[k];
+    const size_t payload_bytes = sizeof(NvmeHeader) + (size_t) T * 4 +
+                                 imgs.size() * sizeof(ConversationImageKey) + z.gdn + (has_ple ? z.ple : 0) +
+                                 (size_t) g.n_qsa_layers() *
+                                     (size_t) (arr_total + rowsT * idx4 + (int64_t) (z.tail + z.dead + z.block_pos)) +
+                                 (size_t) arr_total +   // the drafter: T <= max_cells, so the ring covers the prefix
+                                 sizeof(uint64_t);
+    std::vector<uint8_t> buf(payload_bytes, 0);
+
+    NvmeHeader v3;
+    v3.L = T;
+    v3.n_imgs = (int64_t) imgs.size();
+    v3.cvec = h.cvec;
+    v3.kv_format = h.kv_format;
+    v3.geometry = h.geometry;
+    v3.page_size = h.page_size; v3.idx_block = h.idx_block; v3.max_cells = h.max_cells;
+    v3.mtp_host = h.mtp_host;
+    size_t at = 0;
+    auto put = [&](const void* p, size_t n) { std::memcpy(buf.data() + at, p, n); at += n; };
+    put(&v3, sizeof v3);
+    put(ids.data(), (size_t) T * 4);
+    if (!imgs.empty()) put(imgs.data(), imgs.size() * sizeof(ConversationImageKey));
+    put(state.data(), z.gdn);                       // gdn: the State record's first slice
+    if (has_ple) put(state.data() + z.gdn, z.ple);  // then ple, when the session has PLE history
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+        const size_t ch_base = (size_t) (i * ch_stride);
+        const size_t st_base = (size_t) (z.gdn + (has_ple ? (int64_t) z.ple : 0) + i * st_stride);
+        int64_t ch_off = 0, st_off = 0;
+        for (int k = 0; k < n_arrays; ++k) {
+            const size_t slice = (size_t) (pages_per_chunk * page_kv * widths[k]);
+            for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
+                put(chunk_payloads[(size_t) j].data() + ch_base + (size_t) ch_off, slice);
+            put(state.data() + st_base + (size_t) st_off, (size_t) (st_pages * page_kv * widths[k]));
+            ch_off += (int64_t) slice;
+            st_off += (int64_t) (st_pages * page_kv * widths[k]);
+        }
+        const size_t rows_slice = (size_t) (sh.rows_per_chunk * idx4);
+        for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
+            put(chunk_payloads[(size_t) j].data() + ch_base + (size_t) ch_off, rows_slice);
+        put(state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
+        st_off += (int64_t) (st_rows * idx4);
+        put(state.data() + st_base + (size_t) st_off, z.tail);   st_off += (int64_t) z.tail;
+        put(state.data() + st_base + (size_t) st_off, z.dead);   st_off += (int64_t) z.dead;
+        put(state.data() + st_base + (size_t) st_off, z.block_pos);
+    }
+    {   // the drafter: the chunks' pages for [0, S) plus the State record's tail pages, per non-null array
+        const size_t ch_drafter = (size_t) (g.n_qsa_layers() * ch_stride);
+        int64_t dr_off = 0;
+        for (int k = 0; k < n_arrays; ++k) {
+            const size_t slice = (size_t) (pages_per_chunk * page_kv * widths[k]);
+            for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
+                put(chunk_payloads[(size_t) j].data() + ch_drafter + (size_t) dr_off, slice);
+            put(state.data() + st_drafter_base + (size_t) dr_off, (size_t) (st_pages * page_kv * widths[k]));
+            dr_off += (int64_t) slice;
+        }
+    }
+    // the walk must land exactly on the footer - an assembly bug here would otherwise hide behind the digest
+    // check as a mysterious "corrupt" verdict, so it refuses loudly instead
+    if (at + sizeof(uint64_t) != payload_bytes) {
+        err = "kv-delta: internal: assembled " + std::to_string(at) + " payload bytes, sized " +
+              std::to_string(payload_bytes - sizeof(uint64_t));
+        return Restore::invalid;
+    }
+    // the digest covers the payload only, never the header nor the footer itself (the v3 restore's own rule)
+    const uint64_t digest = nvme_fnv1a(kNvmeFnvBasis, buf.data() + sizeof(NvmeHeader),
+                                       payload_bytes - sizeof(NvmeHeader) - sizeof(uint64_t));
+    std::memcpy(buf.data() + payload_bytes - sizeof digest, &digest, sizeof digest);
+
+    // ---- step 4: the EXISTING validation+apply pass, unchanged - layout walk, drift diagnostics, digest,
+    // apply, the STATE_HASH gate; the failure classes are its own (§5.10 step 4)
+    return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+}
+
 }  // namespace strata::platform

@@ -380,18 +380,12 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
                const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err) {
     return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, nullptr, err);
 }
-
 strata::core::ConversationRestore nvme_restore(const char* path, strata::core::SessionState& ss,
                                                strata::core::QsaState& mtp_state, const strata::core::ModelGeometry& g,
                                                std::vector<int32_t>& ids,
                                                std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                int64_t& L, std::string& err) {
     using Restore = strata::core::ConversationRestore;
-    // Every refusal below that returns `invalid` happens before the first `Apply` runs, so it provably writes
-    // nothing to the session.  Every `transfer_failed` is a CUDA copy or a sync: it happens at or after the first
-    // apply, and the tier cannot prove the context still answers.
-    Sizes z;
-    if (!sizes_of(g, z, err)) return Restore::invalid;   // the walk must not be sized with zeroed byte counts either
     FILE* f = std::fopen(path, "rb");
     if (!f) { err = std::string("nvme_restore: open ") + path; return Restore::invalid; }
     if (std::fseek(f, 0, SEEK_END) != 0) { err = "nvme_restore: seek"; std::fclose(f); return Restore::invalid; }
@@ -402,24 +396,45 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
         err = "nvme_restore: not a snapshot (size)"; std::fclose(f); return Restore::invalid;
     }
     // VALIDATION IS ATOMIC: the whole snapshot is read and validated before anything is applied, so a truncated
-    // or corrupt file fails without touching the session.  (The APPLY pass below is not atomic - it is a loop, and
-    // a CUDA failure in its middle is `transfer_failed` for that reason.)
+    // or corrupt file fails without touching the session.  (The APPLY pass in nvme_restore_image is not atomic -
+    // it is a loop, and a CUDA failure in its middle is `transfer_failed` for that reason.)
     std::vector<uint8_t> buf((size_t) fsize);
     if (std::fread(buf.data(), 1, buf.size(), f) != buf.size()) {
         err = "nvme_restore: read"; std::fclose(f); return Restore::invalid;
     }
     std::fclose(f);
+    return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+}
+
+// The restore pass proper, on an IN-MEMORY image: everything after nvme_restore's whole-file read, line for
+// line - the extraction exists so the delta tier (which assembles the v3 image from chunks + a State record)
+// can run the EXISTING validation+apply pass unchanged instead of growing a second one.  No logic moved.
+strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t n, strata::core::SessionState& ss,
+                                                     strata::core::QsaState& mtp_state,
+                                                     const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                                     std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
+                                                     int64_t& L, std::string& err) {
+    using Restore = strata::core::ConversationRestore;
+    // Every refusal below that returns `invalid` happens before the first `Apply` runs, so it provably writes
+    // nothing to the session.  Every `transfer_failed` is a CUDA copy or a sync: it happens at or after the first
+    // apply, and the tier cannot prove the context still answers.
+    Sizes z;
+    if (!sizes_of(g, z, err)) return Restore::invalid;   // the walk must not be sized with zeroed byte counts either
+    // the size cap lives in the file wrapper AND here: an in-memory image has no other guard
+    if (n < sizeof(NvmeHeader) + sizeof(uint64_t) || n > (size_t) 64 << 30) {
+        err = "nvme_restore: not a snapshot (size)"; return Restore::invalid;
+    }
     size_t at = sizeof(NvmeHeader);
     bool bad = false;
-    auto take = [&](size_t n) -> const uint8_t* {
-        if (bad || n > buf.size() - at) { bad = true; return nullptr; }
-        const uint8_t* p = buf.data() + at;
-        at += n;
+    auto take = [&](size_t count) -> const uint8_t* {
+        if (bad || count > n - at) { bad = true; return nullptr; }
+        const uint8_t* p = data + at;
+        at += count;
         return p;
     };
 
     NvmeHeader h;
-    std::memcpy(&h, buf.data(), sizeof h);
+    std::memcpy(&h, data, sizeof h);
     if (h.magic != NvmeHeader{}.magic) { err = "nvme_restore: not a strata NVMe snapshot (bad magic)"; return Restore::invalid; }
     if (h.version != NvmeHeader{}.version) {
         err = "nvme_restore: snapshot is format version " + std::to_string(h.version) +
@@ -434,9 +449,9 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
         err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return Restore::invalid;
     }
     // the counts are only trusted once they fit the file (a corrupt header must not size an allocation)
-    if (h.L < 1 || (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size() ||
+    if (h.L < 1 || (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > n ||
         h.n_imgs < 0 ||
-        (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey) + (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > buf.size()) {
+        (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey) + (size_t) h.L * sizeof(int32_t) + sizeof(NvmeHeader) > n) {
         err = "nvme_restore: malformed header sizes"; return Restore::invalid;
     }
     L = h.L;
@@ -489,14 +504,14 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
     // ORDER MATTERS: decide layout first, integrity second - a layout-drifted file (an engine upgrade
     // changed a sizing formula) would otherwise misreport as "corrupt"
     if (bad) { err = "nvme_restore: truncated snapshot"; return Restore::invalid; }
-    if (buf.size() < at + sizeof(uint64_t)) {
+    if (n < at + sizeof(uint64_t)) {
         err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + " past payload of a "
-              + std::to_string(buf.size()) + "-byte file: idx_pooled_rows / PLE / drafter ring changed?) - refusing";
+              + std::to_string(n) + "-byte file: idx_pooled_rows / PLE / drafter ring changed?) - refusing";
         return Restore::invalid;
     }
-    if (at != buf.size() - sizeof(uint64_t)) {
+    if (at != n - sizeof(uint64_t)) {
         err = "nvme_restore: layout mismatch (walk end " + std::to_string(at) + ", file payload "
-              + std::to_string(buf.size() - sizeof(uint64_t)) + ": idx_pooled_rows / PLE / drafter ring changed?) - refusing";
+              + std::to_string(n - sizeof(uint64_t)) + ": idx_pooled_rows / PLE / drafter ring changed?) - refusing";
         return Restore::invalid;
     }
     if (mtp_arrays != h.mtp_host || (h.n_imgs && !imgp) || !idp) {
@@ -505,10 +520,10 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
         return Restore::invalid;
     }
     uint64_t digest = 0;
-    std::memcpy(&digest, buf.data() + buf.size() - sizeof digest, sizeof digest);
+    std::memcpy(&digest, data + n - sizeof digest, sizeof digest);
     // the digest covers the PAYLOAD only (the header is written unhashed before the hasher exists, and its
     // geometry fields are validated field-by-field): hash [sizeof(NvmeHeader), at)
-    const uint64_t expect = fnv1a_up(1469598103934665603ull, buf.data() + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
+    const uint64_t expect = fnv1a_up(1469598103934665603ull, data + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
     if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return Restore::invalid; }
 
     // ---- everything validated: apply.  THE APPLY PASS BEGINS WITH A SYNC, exactly as their
