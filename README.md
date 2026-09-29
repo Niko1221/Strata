@@ -91,6 +91,10 @@ It needs an explicit packing conversion and is not an installer menu option.
 install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
 App). Everything else - Python, the engine, the model - is set up for you.
 
+A Volta or Turing card (compute capability 7.x: Tesla V100, RTX 20) works experimentally: there is no ready-made
+engine for it, so setup compiles one (with a CUDA 12.x toolkit - CUDA 13 dropped Volta - and, on Linux, a GCC that
+toolkit accepts, e.g. `g++-12` next to a newer default one).
+
 **Windows**
 
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
