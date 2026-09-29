@@ -9,12 +9,16 @@
 
 > | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
 > | --- | ---: | ---: | ---: | ---: | ---: |
-> | Prompt processing | **868.5 tok/s** | **836.2 tok/s** | 464.6 tok/s† | 324.6 tok/s† | 259.3 tok/s† |
-> | Output generation | 34.9 tok/s | 45.6 tok/s | 42.5 tok/s† | **44.0 tok/s**† | 40.3 tok/s† |
+> | Prompt processing | **989.1 tok/s** | **966.5 tok/s** | **1136.8 tok/s** | **659.3 tok/s** | **414.1 tok/s** |
+> | Output generation | 49.3 tok/s | 50.6 tok/s | 50.5 tok/s | 44.9 tok/s | 38.8 tok/s |
 >
-> All rows are uncached API requests (`reused=0`). The ~4K and ~8K rows (2026-09-28) run the prefill fast path:
-> FP16 tensor-core GEMMs for the Volta BF16 projections (no more scalar fallback), io_uring O_DIRECT reads for
-> the PLE table, and model storage on the NVMe. † = measured before the fast path (engine 0.1.20 baseline).
+> All rows are uncached API requests (`reused=0`) on the prefill fast path: FP16 tensor-core
+> GEMMs for the Volta BF16 projections (no scalar fallback), io_uring O_DIRECT reads for the PLE
+> table, and model storage on the NVMe. Re-measured 2026-09-28 on the merged main build
+> (engine 0.1.20 + the prefill-speed PR); the exact prompt sizes match the previous table row
+> for row. The passively-cooled V100 throttles when hot (the same 8K prompt spans 616-967
+> tok/s), so the table shows the cool-idle measurement. Raw rows and notes:
+> [`bench/results/2026-09-28-v100-fastpath`](bench/results/2026-09-28-v100-fastpath).
 > [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
@@ -208,6 +212,34 @@ things you use all the time stay on the counter and the rest waits in the pantry
 
 Want the full picture? The [details](docs/DETAILS.md#how-it-works) explain every part and its numbers, and the
 [paper](docs/paper/Strata-Paper.pdf) tells the whole story, with the measurements behind it.
+
+## Benchmarks and regression tests
+
+The V100 table above is reproduced end to end by [`bench/run_v100_bench.py`](bench/run_v100_bench.py):
+it builds every row at the exact published prompt size (unique-prefix repeated text, uncached,
+64 generated tokens), targets the running server, and reads the engine's own timings from
+`/metrics`. The API key is read from `.strata-service.env` / `$STRATA_API_KEY`, so the script
+contains no credentials and can be committed. Use it for all future benchmark runs:
+
+```sh
+.venv/bin/python bench/run_v100_bench.py --model-gguf models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
+.venv/bin/python bench/run_v100_bench.py --model-gguf <shard-1.gguf> --only '~8K,128K'   # a subset of rows
+```
+
+Raw rows and methodology notes for each measuring session live in `bench/results/`.
+
+Before shipping any engine change, run the live OpenAI-compatible tool-call regression checks
+against the running server (they exercise function calling and a Hermes-style agent loop, and
+write full request/response transcripts under the ignored `build/diagnostics/`):
+
+```sh
+.venv/bin/python tests/diagnose_openai.py
+.venv/bin/python tests/diagnose_hermes_flow.py
+```
+
+Both accept `--base-url` / `--api-key` / `--output`; without arguments they use
+`http://127.0.0.1:8088/v1` and the key from `.strata-service.env`.
+
 
 ## Credits
 

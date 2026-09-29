@@ -15,22 +15,34 @@ New here? Start with the [README](../README.md) - it has everything you need to 
 ### Tesla V100 fork benchmark
 
 The Strata-V100 measurements use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5 3600
-(6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20. Runtime settings are a 262,144-token context,
-int8 KV cache, automatic prefill, five CPU pool workers, a calibrated 0.28 PCIe fraction, and MTP speculative
-decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft floor 0.70). Each row is a separate, uncached
-OpenAI-compatible chat-completion request with a unique-prefix repeated-text prompt and 64 generated tokens.
-Prompt and decode timings come from the server's `/metrics` endpoint rather than client wall-clock estimates.
+(6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20 with the prefill-speed PR merged (2026-09-28).
+Runtime settings are a 262,144-token context, int8 KV cache, automatic prefill, five CPU pool workers, a
+calibrated 0.28 PCIe fraction, and MTP speculative decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft
+floor 0.70). Each row is a separate, uncached OpenAI-compatible chat-completion request with a unique-prefix
+repeated-text prompt and 64 generated tokens. Prompt and decode timings come from the server's `/metrics`
+endpoint rather than client wall-clock estimates. The prompts target the exact token totals of the baseline
+table below, so the rows compare directly one for one.
 
 The prefill fast path (2026-09-28) keeps everything else unchanged but replaces the BF16 projection GEMMs with
 FP16 tensor-core products (a BF16 value is exact in FP16 - the scalar 16x16 fallback is gone), the PLE row
 reads with io_uring O_DIRECT (previously one synchronous pread at a time), and moves the model files to the
 256 GB NVMe. Fresh uncached requests measured 2026-09-28 (engine log, `reused=0`):
 
-| Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed |
-| ---: | ---: | ---: | ---: | ---: |
-| ~4K | 4,156 | 4.79 s | **868.5 tok/s** | 34.9 tok/s |
-| ~4K | 4,390 | 5.41 s | 811.7 tok/s | 35.6 tok/s |
-| ~8K | 8,801 | 10.52 s | **836.2 tok/s** | 45.6 tok/s |
+| Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed | Expert-cache hit rate |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| ~4K | 4,143 | 4.19 s | **989.1 tok/s** | 49.3 tok/s | 84.4% |
+| ~4K | 4,376 | 4.34 s | 1007.5 tok/s | 52.1 tok/s | 86.5% |
+| ~8K | 8,785 | 9.09 s | **966.5 tok/s** | 50.6 tok/s | 88.0% |
+| 32K | 29,527 | 25.97 s | **1136.8 tok/s** | 50.5 tok/s | 88.7% |
+| 128K | 117,837 | 178.72 s | 659.3 tok/s | 44.9 tok/s | 88.4% |
+| 256K | 256,076 | 618.39 s | 414.1 tok/s | 38.8 tok/s | 84.3% |
+
+The 8K row was re-measured three times from a cool card (967.0 / 965.0 / 966.5 tok/s). The V100-PCIE-16GB is
+passively cooled: after the long rows it idles at ~79 C and throttles from the 1380 MHz boost to ~960-1280 MHz
+at ~83 C under load, dropping the same prompt by up to ~25% (the 8K prompt spans 616-967 tok/s depending on
+when it runs). The table above is the cool-idle measurement. The raw rows are in
+[`bench/results/2026-09-28-v100-fastpath`](../bench/results/2026-09-28-v100-fastpath), and the whole table is
+reproduced by [`bench/run_v100_bench.py`](../bench/run_v100_bench.py).
 
 The PLE row gather for a fresh request dropped from ~3.6-8 s to ~7 ms, and the hyper-connection GEMMs (the
 largest BF16 projection block) from ~5.2 s to ~0.5 s at 8K. Decode is unchanged.
@@ -45,8 +57,9 @@ Long-context baseline for comparison (engine 0.1.20, models on the portable SSD,
 | Full context | 256,073 | 987.69 s | 259.3 tok/s | 40.3 tok/s | 96.2% | 989.4 s |
 
 The separate hardware calibrator generated 256 tokens while tuning and measured **45.5 tok/s** at the selected
-0.28 PCIe share and 0.70 draft floor. The table above deliberately includes prompt processing, uses uncached
-prefixes (`reused=0` for every row), and reaches within 6,071 tokens of the configured 262,144-token limit.
+0.28 PCIe share and 0.70 draft floor. The tables above deliberately include prompt processing and use
+uncached prefixes (`reused=0` for every row); the 256K row reaches within 6,068 tokens of the configured
+262,144-token limit.
 
 RTX 5070 **12 GB**, Ryzen 5 7600 (6 cores), 64 GB DDR5-5200, Windows, engine 0.1.14 with the settings setup writes
 (`--prefill auto`, 8-bit KV above 4K, KV streaming from 64K). One code-agent prompt per length, 256 generated tokens,
