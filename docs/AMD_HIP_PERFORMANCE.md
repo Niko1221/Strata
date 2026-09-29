@@ -26,6 +26,22 @@ It is not a universal ROCm tuning table. The runtime guards architecture,
 library version and actual shape/stride/workspace requirements, falling back
 when a table entry is unavailable or incompatible. HIP MMQ is opt-in at runtime. Default CUDA selection is preserved.
 
+On ROCm 7.2.1 (hipBLASLt 100202), use the recalibrated table for the same
+shapes:
+
+```sh
+export STRATA_HIPBLASLT_TUNING="$PWD/tools/hip/gfx1100-hipblaslt-100202.txt"
+```
+
+It is calibrated with the branch's own tuner (`build-hip/tune_hipblaslt`) on
+the same RX 7900 XTX. 26 of the 30 covered cases validated on 100202; for four
+shapes at T=4096 every hipBLASLt solution on 100202 produced non-finite output
+so those rows are intentionally absent and the runtime falls back to
+hipblasGemmEx for them - the guard chain above is what makes an incomplete
+table safe.  A table for the runtime's own version is also picked up from
+`tools/hip/<arch>-hipblaslt-<version>.txt` when the environment variable is
+unset (see the parity test's packaged-table fallback).
+
 Measured engine configuration: Orca Flash Next IQ3_XXS, native pack plus matching
 GGUF/tokenizer/template, `--mmap-experts --resident-cpu-experts`, fixed ranked
 `--expert-profile`, `--expert-cache auto`, `--prefill 8192`, `--spec 4`,

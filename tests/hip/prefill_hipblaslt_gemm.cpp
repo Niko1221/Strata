@@ -129,11 +129,48 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
 }
 
 int main() {
-    const char* tuning_path = std::getenv("STRATA_HIPBLASLT_TUNING");
-    if (!tuning_path || !*tuning_path) {
-        std::fprintf(stderr, "SKIP: set STRATA_HIPBLASLT_TUNING to a calibrated matching table\n");
+    // hipBLASLt solution ids are version-scoped, so load the table for THIS runtime. Priority: env,
+    // then the repo's own shipped tools/hip/<arch>-hipblaslt-<version>.txt. Without either, skip: the test
+    // has no oracle, and a test that passes by finding nothing to compare is worse than a skipped test.
+    std::string tuning;
+    if (const char* p = std::getenv("STRATA_HIPBLASLT_TUNING"); p && *p) {
+        tuning = p;
+    } else {
+        int probe_version = 0;
+        {
+            hipblasLtHandle_t probe = nullptr;
+            if (hipblasLtCreate(&probe) == HIPBLAS_STATUS_SUCCESS) {
+                hipblasLtGetVersion(probe, &probe_version);
+                hipblasLtDestroy(probe);
+            }
+        }
+        char probe_arch[64] = {0};
+        {
+            int device = 0;
+            hipDeviceProp_t probe_prop{};
+            if (hipGetDevice(&device) == hipSuccess && hipGetDeviceProperties(&probe_prop, device) == hipSuccess) {
+                std::string a(probe_prop.gcnArchName);
+                const auto colon = a.find(':');
+                if (colon != std::string::npos) a.resize(colon);
+                std::snprintf(probe_arch, sizeof probe_arch, "%s", a.c_str());
+            }
+        }
+        // the committed tables live in tools/hip; the name carries the version the loader requires
+        const std::string candidate = std::string(STRATA_TUNING_TABLE_DIR) + "/" + probe_arch + "-hipblaslt-" +
+                                      std::to_string(probe_version) + ".txt";
+        std::FILE* probe_peek = std::fopen(candidate.c_str(), "rb");
+        if (probe_peek != nullptr) {
+            std::fclose(probe_peek);
+            tuning = candidate;
+            std::fprintf(stderr, "using the packaged table %s\n", candidate.c_str());
+        }
+    }
+    if (tuning.empty()) {
+        std::fprintf(stderr, "SKIP: set STRATA_HIPBLASLT_TUNING (or commit tools/hip/<arch>-hipblaslt-<version>.txt "
+                             "- see build-hip/tune_hipblaslt)\n");
         return 77;
     }
+    const char* tuning_path = tuning.c_str();
 
     int device = 0;
     HIP_CHECK(hipGetDevice(&device));
