@@ -277,9 +277,9 @@ struct Options {
     int64_t cache_every = 16384;
     /// Prompt parts of up to this many tokens go through verify windows instead of the batched prompt path: a new
     /// part that short, and a last prompt chunk that short.  A batched call has a fixed cost (it lends and refills
-    /// expert-cache slots and reads every expert its tokens use): ~0.6 s with a second GPU, ~1.5 s with IQ3_XXS on
-    /// the 3090 alone; verify windows cost 10-15 ms per token.  They break even at ~50-65 tokens with a second GPU,
-    /// ~185 without (bench/feed_test.py).
+    /// expert-cache slots and reads every expert its tokens use): ~0.55 s with a second GPU, ~1.6 s with IQ3_XXS on
+    /// the 3090 alone; verify windows of 8 tokens (--spec-lookup) cost 5-8 ms per token.  They break even at ~73
+    /// (UD-Q4_K_XL) and ~113 (IQ3_XXS) tokens with a second GPU, ~400 without (bench/feed_test.py).
     int64_t feed_max = 128;
     int adapt_swaps = 96;
 };
@@ -2614,11 +2614,12 @@ int main(int argc, char** argv) {
                 }
                 tr("prompt done (slots refilled)");
             }
-            // prompt tokens through verify windows: each window is committed whole, and the draft layer catches up
-            // on the same cells (its drafts are not used)
+            // prompt tokens through verify windows as wide as the verifier's: each window is committed whole, and the
+            // draft layer catches up on the same cells (its drafts are not used, so its chain stops at the first)
             auto feed = [&](int64_t from, int64_t to) -> bool {
+                mtp.set_max_drafts(1);
                 for (int64_t j = from; j < to;) {
-                    const int T = (int) std::min<int64_t>(S, to - j);
+                    const int T = (int) std::min<int64_t>(W, to - j);
                     for (int i = 0; i < T; ++i) window[(size_t) i] = (int32_t) ids[(size_t) (j + i)];
                     drive.d.layers = 0;
                     drive.d.experts = 0;
@@ -2744,7 +2745,6 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             mtp.on_draft = nullptr;
-            mtp.set_max_drafts(S - 1);
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             std::printf("DONE %lld %lld %.1f %.1f %s %lld\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
                         finish, (long long) reuse);
