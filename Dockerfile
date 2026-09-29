@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 #
-# Strata: Qwen3.8-Flash-Next on a single NVIDIA GPU (RTX 30/40/50, 12+ GB VRAM).
+# Strata: Qwen3.8-Flash-Next on NVIDIA GPUs (RTX 30/40/50, 12+ GB VRAM; two or
+# three cards can share one model, 8 GB each - docs/MULTI_GPU.md).
 #
 # The engine is compiled during docker build, so the first container start only
 # downloads the model (~70 GB) and starts the server. docker build has no GPU,
@@ -21,11 +22,21 @@
 #     -e MODEL=IQ2_XS \
 #     strata
 #
+# Setup choices are env vars, read by docker-entrypoint.sh: FAMILY, MODEL, CONTEXT,
+# VISION (no | yes | cpu), KV (int8 | q4_0 | k8v4), GPU (one card) or GPUS ("0,2"
+# or "all", with LAYER_SPLIT), LOW_RAM (auto | on | off), HOST, PORT, API_KEY.
+#
 # Only the model files, the prepared pack, the MTP layer and the install config
-# live in the /data volume; the engine is part of the image. Do not cap the
-# container's memory: Strata loads 32-62 GB into RAM. Add an API key before
-# exposing the port to a network: -e API_KEY=<secret>. Pass -e REINSTALL=1 to
-# change the model settings later.
+# live in the /data volume; the engine is part of the image. Strata loads 32-62 GB
+# into RAM, so a capped container needs -e LOW_RAM=on: setup.py reads the RAM from
+# /proc/meminfo, which here is the host's total, not the container's limit. Add an
+# API key before exposing the port to a network: -e API_KEY=<secret>. Pass
+# -e REINSTALL=1 to change the model settings later.
+#
+# --gpus all on a host with two usable cards: setup takes both (the layer split is
+# its recommended default). Pin one card with -e GPU=0, or name them with
+# -e GPUS=0,2. A volume set up for one card switches to the pair on its first start
+# on a two-card host unless GPU or GPUS pins it. LOW_RAM=on runs on one card.
 
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
 

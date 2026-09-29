@@ -10,10 +10,15 @@ STRATA_DATA="${STRATA_DATA:-/data}"
 FAMILY="${FAMILY:-qwen}"
 MODEL="${MODEL:-IQ2_XS}"
 CONTEXT="${CONTEXT:-32768}"
-VISION="${VISION:-no}"
+VISION="${VISION:-no}"          # no | yes | cpu (the image encoder on the CPU)
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8080}"
 API_KEY="${API_KEY:-}"
+KV="${KV:-}"                    # int8 | q4_0 | k8v4; empty: setup.py's own default (int8)
+GPUS="${GPUS:-}"                # "0,2" or "all": one model across several cards (docs/MULTI_GPU.md)
+GPU="${GPU:-}"                  # one card, numbered as nvidia-smi numbers them
+LAYER_SPLIT="${LAYER_SPLIT:-}"  # with GPUS: where each later card's layers start (default: auto)
+LOW_RAM="${LOW_RAM:-auto}"      # on: the experts come from the pack's experts.bin, not from RAM
 
 # setup.py starts the newest strata-*.json it finds, so link in exactly the one
 # this family and model were set up with. The config is the recorded output of
@@ -27,12 +32,21 @@ mkdir -p "$STRATA_DATA/config"
 # REINSTALL is only needed to change settings for a model that is already set up
 # (context, vision, KV, host, api_key). Switching between models already on the
 # volume needs no setup pass: their config is already there.
+#
+# KV / GPUS / GPU / LAYER_SPLIT are passed only when set, so an unset one keeps
+# setup.py's own default. LOW_RAM is always passed: setup.py measures the PC's RAM
+# from /proc/meminfo, which in a container is the host's total, not the container's
+# limit, so a memory-capped container has to ask for the low-RAM mode itself.
 if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
-  .venv/bin/python setup.py --setup --yes \
-    --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
+  set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
     --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \
-    --port "$PORT" --no-start
+    --port "$PORT" --no-start --low-ram "$LOW_RAM"
+  if [ -n "$KV" ]; then set -- "$@" --kv "$KV"; fi
+  if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
+  if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
+  if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
+  .venv/bin/python setup.py --setup --yes "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
 else
   [ -e "/opt/strata/strata-$tag.json" ] || ln -s "$cfg" "/opt/strata/strata-$tag.json"
@@ -40,4 +54,12 @@ fi
 
 # Later starts skip straight here: setup.py finds the installed config and
 # launches serve/server.py (OpenAI- and Anthropic-compatible API on :8080).
-exec .venv/bin/python setup.py --port "$PORT"
+# GPUS / GPU / LAYER_SPLIT are repeated on purpose. Given at the start they pin the
+# cards for this model, and setup.py saves them in its config; without them a config
+# that names one card is offered once to a pair, on its own, when the host has two
+# cards that can share the model (setup.py's offer_together, docs/MULTI_GPU.md).
+set -- --port "$PORT"
+if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
+if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
+if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
+exec .venv/bin/python setup.py "$@"

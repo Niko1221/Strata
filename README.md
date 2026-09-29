@@ -136,15 +136,23 @@ the same way - nothing big is downloaded again.
 
    The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
    (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
+   `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
+   precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
    Only the model files, the prepared pack, the MTP layer and the install config live in the
    `strata-data` volume; the engine is part of the image. Switching between models already on the
    volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
    `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
-   api_key), since those are recorded in its config.
-   Don't set a memory limit on the container: Strata loads 32-62 GB into RAM.
+   api_key, LOW_RAM), since those are recorded in its config.
+   Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
+   layer split is setup's recommended default ([docs/MULTI_GPU.md](docs/MULTI_GPU.md)), and a volume
+   set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
+   or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
+   A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
+   keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
+   see a cap. LOW_RAM runs on one card.
    The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
    to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
-   healthy once the model is loaded.
+   healthy once the model is loaded, and `GET /v1/status` says what it is running.
 
 ## Using it
 
