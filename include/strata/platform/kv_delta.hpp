@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,8 @@
 namespace strata::platform {
 
 // the shared core's types, named the way kv_nvme.hpp names them
+using strata::core::ConversationCheckpoint;
+using strata::core::ConversationImageKey;
 using strata::core::ConversationStateSizes;
 using strata::core::ModelGeometry;
 using strata::core::QsaState;
@@ -82,7 +85,7 @@ struct DeltaManifestHeader {
     int32_t cvec = 0;
     int32_t kv_format = 0;
     int64_t page_size = 0, idx_block = 0, max_cells = 0, mtp_host = 0;
-    int64_t geometry[18] = {};     ///< conversation_geometry_key(g), verbatim (the same 18 fields NvmeHeader holds)
+    std::array<int64_t, 18> geometry{};  ///< conversation_geometry_key(g), verbatim (the same 18 fields NvmeHeader holds)
     uint64_t weights_fp = 0;       ///< the weight-set fingerprint (§5.8); match-time, like cvec
     uint64_t state_key = 0;        ///< the head State record's key
     int64_t pid = 0, seq = 0;      ///< the file name's numbers, for debugging a store by eye
@@ -176,5 +179,67 @@ bool delta_write_state(const std::string& dir, uint64_t tag, const void* payload
 /// check the footer cannot do, because the footer is the bare payload hash).
 bool delta_read_state(const std::string& path, uint64_t tag, uint64_t expected_key, std::vector<uint8_t>& payload,
                       std::string& err);
+
+/// The conversation tag the whole key space hangs on (§5.7): FNV-1a over the geometry key's bytes, the KV
+/// format, the control-vector state, the weight-set fingerprint and BLOCK.  EVERY derived key goes through it,
+/// so a conversation stored with a different geometry, format, cvec or weight set simply never shares a chunk -
+/// and a mid-conversation cvec toggle behaves as a fork, which is the correct reading of it.
+uint64_t delta_tag(const ModelGeometry& g, int kv_format, bool cvec, uint64_t weights_fp, int64_t block);
+
+/// The chain value after hashing `blocks` BLOCK-sized id runs: c_j = FNV1a(c_{j-1}, ids[(j-1)*BLOCK, j*BLOCK)).
+/// A chunk's key is the chain value THROUGH ITS OWN LAST TOKEN, so it is reachable only by prompts sharing that
+/// prefix - forks share chunks for free, and stale chunks are unreachable (64-bit keys: a birthday collision at
+/// 10^6 chunks is ~1e-8, and one is caught by the footer check - a refused restore, never corruption).
+uint64_t delta_chunk_key(uint64_t tag, const int32_t* ids, int64_t blocks);
+
+/// One manifest body's chunk reference: the sealed chunk covering [a, a+BLOCK) - `b` is not stored, it is
+/// `a + block` from the header (16 bytes on disk, the layout §5.6 pins).
+struct DeltaChunkRef {
+    uint64_t key = 0;
+    int64_t a = 0;
+};
+
+/// Write a manifest (header + ids + imgs + chunk refs + a footer over the body).  Same temp+fsync+rename
+/// discipline: a manifest under its real name is complete and digest-checked, which is what lets the writer's
+/// commit point be the RENAME (§5.9 step 6).
+bool delta_write_manifest(const std::string& path, const DeltaManifestHeader& h, const std::vector<int32_t>& ids,
+                          const std::vector<ConversationImageKey>& imgs, const std::vector<DeltaChunkRef>& chunks,
+                          std::string& err);
+
+/// Read a manifest back, verifying magic, version, the header's own counts against the file size, that
+/// `n_chunks` matches `L / block` (a manifest whose chunk count disagrees with its own boundary is not scanned
+/// at all), and only then the footer over the body.
+bool delta_read_manifest(const std::string& path, DeltaManifestHeader& h, std::vector<int32_t>& ids,
+                         std::vector<ConversationImageKey>& imgs, std::vector<DeltaChunkRef>& chunks,
+                         std::string& err);
+
+/// The previous head a delta dump appends to: the manifest this process wrote last for this conversation, whose
+/// ids must be a strict (or equal) prefix of the new ones.  `path` is what the writer unlinks AFTER the new
+/// manifest is durable - the supersede (§5.9 step 6, §5.12).
+struct DeltaHead {
+    int64_t L = 0;                    ///< the previous head's boundary length (0 = none)
+    std::vector<int32_t> ids;         ///< its ids, for the strict-prefix check
+    std::string path;                 ///< its manifest file
+};
+
+/// THE WRITER (§5.9): at a turn boundary, append the sealed chunks the previous head does not already cover,
+/// write the ragged tail + running state as one State record, then move the manifest head.
+///
+/// `dir` is the delta directory (containing chunks/, states/, the manifests).  `at` is REQUIRED - the delta tier
+/// writes turn boundaries only; a dump without a boundary checkpoint is the v3 path's job.  Everything the v3
+/// dump refuses, this refuses too (kv_mode 0, a split session, images outside the prefix, a checkpoint that
+/// does not fit, a pooled array too small) - and `T > mtp_state.max_cells` refuses with the whole-snapshot
+/// fallback message, because the drafter ring wraps and wrap-aware chunking is out of scope (§5.15).
+/// `weights_fp` is the weight-set fingerprint (§5.8) recorded in the manifest; `pid`/`seq` name the manifest
+/// file, exactly as the v3 store names its snapshots.
+///
+/// On failure: no manifest is written and no head moves; the only residue is content-addressed files the sweep
+/// reclaims - a dump-side failure is not a correctness event (§5.13).  `STRATA_DELTA_FAIL_AT=C1..C5` aborts at
+/// a named step of the write protocol (the crash matrix's C1..C6, minus the in-memory C6 which is the store's);
+/// debug-only, documented like [STRATA_TEST_FAIL_CUDA].
+bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionState& ss, const QsaState& mtp_state,
+                   const ModelGeometry& g, const std::vector<int32_t>& ids,
+                   const std::vector<ConversationImageKey>& imgs, bool cvec, const ConversationCheckpoint* at,
+                   uint64_t weights_fp, int64_t pid, int64_t seq, std::string& err);
 
 }  // namespace strata::platform
