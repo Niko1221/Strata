@@ -18,6 +18,11 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& state
                               int64_t upto, bool include_index, std::string& error);
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                              int64_t upto, bool include_index, std::string& error);
+// Diagnostic read-back after a synchronized restore. Uses 64 KiB of stack
+// workspace, compares authoritative bytes and resident draft-ring pages, and
+// fingerprints the authoritative payload only. Never changes model state.
+bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
+                            int64_t upto, bool include_index, uint64_t& fingerprint, std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
