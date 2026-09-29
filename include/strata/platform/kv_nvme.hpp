@@ -170,6 +170,18 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
                                                std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                int64_t& L, std::string& err);
 
+/// The restore pass proper, on an IN-MEMORY v3 image (`data`, `n` bytes - header, payload, footer): everything
+/// after nvme_restore's whole-file read, with the identical failure contract and the identical validation+apply
+/// pass.  The delta tier hands it the image it ASSEMBLED from chunks + a State record, so a delta restore runs
+/// the exact code a v3 restore runs - that is the mechanical form of "the delta tier inherits every validated
+/// property of the v3 path" (the handoff's §5.2 invariant, reader side).  No caller below the delta tier needs
+/// this directly.
+strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t n, strata::core::SessionState& ss,
+                                                     strata::core::QsaState& mtp_state,
+                                                     const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                                     std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
+                                                     int64_t& L, std::string& err);
+
 /// One stored session: its snapshot file and the token prefix AND pictures it was keyed by (both read at scan
 /// time, so the resume match never trusts a filename - and never compares a request's pictures against an entry
 /// that did not read its own).
@@ -181,6 +193,11 @@ struct NvmeEntry {
     bool cvec = false;                                       ///< the control-vector state it was read with
     int64_t mtime = 0;                                       ///< seconds, for the LRU cap
     uint64_t bytes = 0;                                      ///< file size, for the cap
+    /// WHICH TIER the entry came from: 0 = a v3 snapshot file (`path` is the snapshot), 1 = a delta manifest
+    /// (`path` is the manifest; its store's chunks/states hang off the manifest's own directory).  The serve
+    /// loop's promote picks the longest match across BOTH tiers' entry lists and restores via the store that
+    /// owns `kind`; the match itself, the failure handling and every other field mean the same thing for both.
+    int kind = 0;
 };
 
 /// The NVMe cold tier: a directory of whole-session snapshots with automatic dump (on DONE, synchronous,
