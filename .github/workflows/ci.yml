@@ -48,9 +48,10 @@ jobs:
       - name: Test
         # expert_parity and pool_test compare against a real expert blob from a
         # packed model (pack/full/experts.bin, a REQUIRED input per CMakeLists);
-        # no such fixture exists on a fresh checkout, so they are excluded here
-        # exactly as the per-backend validation notes exclude them.
-        run: ctest --test-dir build-cpu --output-on-failure -E 'expert_parity|pool_test'
+        # no such fixture exists on a fresh checkout. expert_multi_test requires
+        # AVX-512 VNNI+VBMI and the runner pool mixes CPU generations. Both are
+        # excluded exactly as the per-backend validation notes exclude them.
+        run: ctest --test-dir build-cpu --output-on-failure -E 'expert_parity|pool_test|expert_multi_test'
       - name: Python sources compile
         run: python3 -m compileall -q tools serve
 
