@@ -84,6 +84,23 @@ static_assert(sizeof(strata::core::conversation_geometry_key(strata::core::Model
                   sizeof(NvmeHeader{}.geometry),
               "the shared core's geometry key and the envelope's copy of it must be the same 18 int64 fields");
 
+/// FNV-1a seeded with `h` (pass kNvmeFnvBasis to start a fresh hash).  Exposed because the delta tier's record
+/// footers and content keys must be THE SAME hash the v3 payload footer uses: a second hash function here would
+/// be two digests under one name, and a byte-identity claim (the delta tier's §5.2 invariant) cannot survive
+/// the two families hashing differently.
+inline constexpr uint64_t kNvmeFnvBasis = 1469598103934665603ull;
+uint64_t nvme_fnv1a(uint64_t h, const void* p, size_t n);
+
+/// One KV host array as (pointer, row bytes) - the delta tier slices the SAME arrays in the SAME order the v3
+/// walk writes them, and exposing the walk rather than copying it is what keeps the two tiers from drifting
+/// apart in array order or row width (the delta tier's byte-identity invariant is inherited from this walk).
+struct NvmeKvArr {
+    void* p = nullptr;
+    int64_t w = 0;
+};
+NvmeKvArr nvme_kv_host_array(const strata::core::QsaState& st, int64_t head_dim, int which);
+int nvme_kv_array_count(const strata::core::QsaState& st);
+
 /// Dump the live session's full state to `path`.  The caller has synchronized the device (the checkpoint_save
 /// contract).  Requires streamed KV (kv_mode != 0): the host copy is the source of truth.  The file is fsynced.
 ///

@@ -206,6 +206,18 @@ int64_t file_mtime(const std::string& path) {
 
 }  // namespace
 
+// The two helpers the delta tier reuses, defined here at namespace scope over the anonymous-namespace originals:
+// thin forwarders, so the v3 walk's own code paths are untouched and the delta tier cannot grow a second copy
+// of the array walk or the hash.
+uint64_t nvme_fnv1a(uint64_t h, const void* p, size_t n) { return fnv1a_up(h, p, n); }
+
+NvmeKvArr nvme_kv_host_array(const strata::core::QsaState& st, int64_t head_dim, int which) {
+    const KvArr a = kv_host_arrays(st, head_dim, which);
+    return {a.p, a.w};
+}
+
+int nvme_kv_array_count(const strata::core::QsaState& st) { return kv_array_count(st); }
+
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                   const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
