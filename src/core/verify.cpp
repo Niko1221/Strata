@@ -124,6 +124,7 @@ Verifier::~Verifier() {
     if (cs_) cudaStreamDestroy(cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (arena_) cudaFree(arena_);
+    if (ldump_host_) cudaFreeHost(ldump_host_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_};
     for (void* h : hosts)
@@ -166,6 +167,26 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         (le_ < g.n_layers && hand_out_ == nullptr)) {
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
+    }
+    if (want_ladder_) {
+        if (lb_ != 0 || le_ != g.n_layers) {
+            err = "verify: the residual ladder needs the unsplit verifier - a layer split's stage ends "
+                  "mid-model and cannot dump a full ladder";
+            return false;
+        }
+        const uint64_t ladder_floats = (uint64_t) (g.n_layers + 1) * (uint64_t) max_t * (uint64_t) g.hc *
+                                       (uint64_t) g.n_embd;
+        if (cudaHostAlloc((void**) &ldump_host_, ladder_floats * sizeof(float),
+                          cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+            err = "verify: the residual-ladder staging allocation failed";
+            return false;
+        }
+        void* alias = nullptr;
+        if (cudaHostGetDevicePointer(&alias, ldump_host_, 0) != cudaSuccess) {
+            err = "verify: the residual-ladder staging is not mapped";
+            return false;
+        }
+        (void) alias;   // the captured copies address the host pointer; the alias exists so the memory is coherent
     }
     const WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { err = "verify: output.weight is missing"; return false; }
@@ -386,6 +407,27 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             else gdn_idx[(size_t) l] = gi++;
         }
     }
+
+    // ---- the C1 ladder for a native pack (set_layer_dump): the capture carries the same per-layer copies
+    // `session_loop` enqueues on its live stream.  Inside a capture each copy becomes a memcpy NODE, so the
+    // ladder is rewritten every launch for free and reads current `R_` contents; the stride is `max_t_`, not
+    // this window's T, so one staging buffer serves every captured window size.  Row 0 is the embedding
+    // broadcast (session_loop's convention: slot 0 is the INPUT), row l+1 is after layer l - see the layout
+    // caveat on set_layer_dump: these rows are the fused-layout residual, with layer l's pending write NOT
+    // folded in (the next fused read folds it).
+    auto ladder_copy = [&](int64_t row) -> bool {
+        for (int t = 0; t < T; ++t) {
+            const cudaError_t de = cudaMemcpyAsync(ldump_host_ + ((size_t) row * (size_t) max_t_ + (size_t) t) *
+                                                                       (size_t) HC * (size_t) N,
+                                                   Rt(t), (size_t) HC * (size_t) N * sizeof(float),
+                                                   cudaMemcpyDeviceToHost, cs);
+            if (de != cudaSuccess) {
+                err = "verify: ladder copy: " + std::string(cudaGetErrorString(de));
+                return false;
+            }
+        }
+        return true;
+    };
 
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
@@ -740,11 +782,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
 
     for (int grp = 0; grp < G; ++grp)
         if (!pre(lb_, grp)) return false;
-    for (int64_t l = lb_; l < le_; ++l)
-        for (int grp = 0; grp < G; ++grp) {
+    if (ldump_host_ != nullptr && !ladder_copy(0)) return false;   // the embedding broadcast = row 0
+    for (int64_t l = lb_; l < le_; ++l) {
+        for (int grp = 0; grp < G; ++grp)
             if (!post(l, grp)) return false;
-            if (l + 1 < le_ && !pre(l + 1, grp)) return false;
-        }
+        if (ldump_host_ != nullptr && !ladder_copy(l + 1)) return false;   // after layer l, before pre(l+1)
+        if (l + 1 < le_)
+            for (int grp = 0; grp < G; ++grp)
+                if (!pre(l + 1, grp)) return false;
+    }
     if (le_ < g.n_layers) {   // a layer split's earlier stage: hand the residual on, no head
         for (int t = 0; t < T; ++t) {
             copy_from_mapped(hand_out_ + (size_t) t * HB, Rt(t), HC * N, cs);

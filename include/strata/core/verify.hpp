@@ -113,6 +113,36 @@ public:
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    /// Row t's head logits, n_vocab floats on the device, of the last `run` - the same distribution `out[t]`
+    /// was sampled from (`--dump-logits`'s rows under `--spec`).  Valid until the next `run`.
+    const float* window_logits() const { return next_ ? next_->window_logits() : head_logits_; }
+
+    /// THE C1 ORACLE FOR A NATIVE PACK.  A native pack runs verify windows only, so `session_loop`'s
+    /// per-layer residual ladder (--dump-layers) is unreachable there unless the window itself produces it.
+    /// When armed BEFORE `init`, every window capture carries one device-to-host copy per layer: `R_`'s T rows
+    /// land in a pinned, mapped staging buffer right after that layer's `post` ran, row 0 being the embedding
+    /// broadcast.
+    /// **LAYOUT CAVEAT - READ BEFORE COMPARING ROWS ACROSS PATHS.**  The verify window IS the default native
+    /// decode path (its per-token kernels are the single-token kernels, so its rows are bitwise what a plain
+    /// native token holds at the same point), but that path keeps the hyper-connection write of layer l
+    /// PENDING inside the fused read of layer l+1 (or folds it explicitly when cvec covers the layer), while
+    /// the canonical session ladder runs with the fused read disabled and gr_write applied eagerly.  So row
+    /// l+1 here is the residual BEFORE layer l+1 folds layer l's pending write - bitwise the same numbers the
+    /// next fused read actually consumes - NOT the canonical (unfused) ladder.  Compare verify-ladder rows
+    /// against verify-ladder rows (engine-internal bisection, e.g. tracing where a quant diverges), or against
+    /// the fused read's own fold (`fused_gr.cu`: stream c sees R[c] + gw[c]*bo, gw = 2*sigmoid(inj/HC));
+    /// llama-debug's `l_last` nodes are the canonical layout and need the canonical pack's ladder.
+    /// Refused on a layer-split stage (the ladder would end mid-model).
+    /// Valid only between `run` returning and the next `run` (the graph rewrites it every launch); the caller
+    /// reads it right after `run`, before `commit` touches the state.
+    void set_layer_dump() { want_ladder_ = true; }
+    /// `layer` in [0, n_layers], `t` in [0, the window's T): row `layer` = the residual BEFORE layer `layer`
+    /// of token `t`, (hc, n_embd) floats.  Row 0 is the embedding broadcast (session_loop's convention).
+    const float* ladder_row(int64_t layer, int t) const {
+        return ldump_host_ + ((size_t) layer * (size_t) max_t_ + (size_t) t) * (size_t) ladder_floats_per_row();
+    }
+    bool ladder() const { return ldump_host_ != nullptr; }
+    int64_t ladder_floats_per_row() const { return g_ != nullptr ? g_->hc * g_->n_embd : 0; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -231,6 +261,8 @@ private:
     uint16_t* sh_bf16_ = nullptr;
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
+    bool want_ladder_ = false;                                ///< set_layer_dump: capture the residual ladder
+    float* ldump_host_ = nullptr;                             ///< (n_layers + 1) * max_t * hc * n_embd, pinned mapped
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
 };
 
