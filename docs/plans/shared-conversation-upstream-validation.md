@@ -1,6 +1,6 @@
 # Conversation cache validation
 
-The core review branch is based on upstream 0.1.26 (`4c68013`). Recorded model
+The core review branch is based on upstream 0.1.27 (`a790805`). Recorded model
 results below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
 not the new base. The Windows admission test is @midhatn's `32cf918`, retained as
 `b319d43`. Historical records and the general Pi benchmark remain on local branch
@@ -8,12 +8,14 @@ not the new base. The Windows admission test is @midhatn's `32cf918`, retained a
 
 ## Current offline checks
 
-After separating the general benchmark tooling and merging 0.1.26, all 47 tool
+After separating the general benchmark tooling and merging 0.1.27, all 47 tool
 tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
 rejection now clears its diagnostic error before the new batched draft-prefill
 path runs. That C++ integration change still needs an engine build and model
 validation; these Python passes do not establish it. No benchmark server or GPU
-was used for these checks.
+was used for these checks. The core frontend suite passes 66 tests (three skipped)
+on 0.1.27. Upstream changes include a HIP-only compilation fix and a changed draft
+vocabulary; the latter requires new model evidence with its exact loaded assets.
 
 ## Recorded Linux evidence (2026-09-29)
 
@@ -72,7 +74,7 @@ Run model/GPU gates only in an exclusive test window.
 
 ## Outstanding evidence
 
-- Repeat affected build/model gates on 0.1.26, including batched draft prompt KV
+- Repeat affected build/model gates on 0.1.27, including batched draft prompt KV
   and its fingerprint. Previous main-model hashes excluded draft scratch/state.
 - NVMe restart, corruption, foreign identity, eviction/promotion and explicit
   staging bounds; no disk acceptance is claimed yet.
@@ -81,3 +83,10 @@ Run model/GPU gates only in an exclusive test window.
   Coder-model runs are untested; synthetic fixtures do not substitute for them.
 - Full optional upstream test configuration was blocked on 0.1.25 by missing
   `native_mmvq_multi.cpp` and `hit_cpu_order_parity.cu`; focused tests were used.
+
+The opt-in draft read-back diagnostic is part of the core branch. It verifies
+restored authoritative and resident-ring bytes before emitting a draft fingerprint.
+The GPU fixture no longer refills the ring itself, which could hide a restore bug.
+On the 0.1.26 core, 1,188 ASan/UBSan host transfer checks passed, including corrupted
+bytes and failed copies, and affected translation units passed syntax checks.
+The actual GPU fixture and final 0.1.27 engine/model tests remain pending.

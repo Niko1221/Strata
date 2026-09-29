@@ -71,3 +71,8 @@ staging-budget, compatibility and eviction/promotion tests remain required.
 Windows admission coverage includes @midhatn's contribution, preserved with its
 original authorship. See the [validation record](shared-conversation-upstream-validation.md)
 for results, commands, and hardware limits.
+
+For model validation, `STRATA_SNAPSHOT_VERIFY=1` records the draft-prefill path and
+compares restored draft KV with saved bytes, including resident ring pages. The
+read-back uses 64 KiB of workspace and emits a fingerprint only on success.
+A mismatch or read-back failure stops the test engine. It is off by default.
