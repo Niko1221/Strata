@@ -87,6 +87,7 @@
 #include <string>
 #include <set>
 #include <vector>
+#include <memory>
 
 namespace {
 // perf-review D-4: the lent slots are refilled with queued copies and one wait; STRATA_REFILL_BLOCKING=1 waits on each
@@ -773,6 +774,73 @@ bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss,
     ss.ple_prev[0] = L >= 2 ? c.ids[L - 2] : -1;
     ss.ple_prev[1] = L >= 1 ? c.ids[L - 1] : -1;
     return cudaDeviceSynchronize() == cudaSuccess;
+}
+
+// Complete inactive conversation snapshots. Model weights and graph addresses stay resident.
+// Disk backing bounds additional RAM; tmpfile removes each snapshot on close/exit.
+struct CacheSlot {
+    std::unique_ptr<FILE, decltype(&std::fclose)> file{nullptr, &std::fclose};
+    ConvCheckpoint running;
+    std::vector<ConvCheckpoint> checks;
+    bool cvec = true;
+    int64_t cells = 0;
+};
+
+bool slot_region(FILE* file, void* pointer, uint64_t bytes, bool host, bool reading,
+                 std::vector<uint8_t>& buffer) {
+    if (!pointer || !bytes) return bytes == 0;
+    auto* p = static_cast<uint8_t*>(pointer);
+    for (uint64_t offset = 0; offset < bytes;) {
+        const size_t n = (size_t) std::min<uint64_t>(buffer.size(), bytes - offset);
+        if (reading) {
+            if (std::fread(buffer.data(), 1, n, file) != n) return false;
+            if (host) std::memcpy(p + offset, buffer.data(), n);
+            else if (cudaMemcpy(p + offset, buffer.data(), n, cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        } else {
+            if (host) std::memcpy(buffer.data(), p + offset, n);
+            else if (cudaMemcpy(buffer.data(), p + offset, n, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+            if (std::fwrite(buffer.data(), 1, n, file) != n) return false;
+        }
+        offset += n;
+    }
+    return true;
+}
+
+bool slot_qsa(FILE* file, const strata::core::QsaState& st, const strata::core::ModelGeometry& g,
+              int64_t cells, bool reading, std::vector<uint8_t>& buffer) {
+    if (!st.page_table) return true; // no speculative layer when MTP is disabled
+    const auto shapes = strata::kernels::qsa_real_shapes();
+    const uint64_t pages = (uint64_t) ((cells + shapes.page_size - 1) / shapes.page_size);
+    const uint64_t elements = pages * shapes.page_size * g.n_head_kv * g.head_dim;
+    const bool host = st.host.present();
+    auto transfer = [&](void* p, uint64_t n, bool h) { return slot_region(file,p,n,h,reading,buffer); };
+    if (st.kv_int8) {
+        if (!transfer(host ? st.host.k_q : st.k_q,elements,host) || !transfer(host ? st.host.v_q : st.v_q,elements,host)
+            || !transfer(host ? st.host.k_scale : st.k_scale,elements / 64 * 2,host)
+            || !transfer(host ? st.host.v_scale : st.v_scale,elements / 64 * 2,host)) return false;
+    } else if (st.kv_q4) {
+        if (!transfer(host ? st.host.k_q4 : st.k_q4,elements / 256 * 144,host)
+            || !transfer(host ? st.host.v_q4 : st.v_q4,elements / 256 * 144,host)) return false;
+    } else {
+        if (!transfer(host ? st.host.k_pool : st.k_pool,elements * 2,host)
+            || !transfer(host ? st.host.v_pool : st.v_pool,elements * 2,host)) return false;
+    }
+    const uint64_t rows = (uint64_t) std::min<int64_t>(st.idx_pooled_rows, cells / shapes.idx_block + 2);
+    if (!transfer(st.idx_pooled,rows * shapes.idx_dim * sizeof(float),false)
+        || !transfer(st.idx_block_pos,sizeof(int32_t),false)) return false;
+    if (reading && st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map,nullptr);
+    return true;
+}
+
+bool slot_positional(CacheSlot& slot, strata::core::SessionState& ss, const strata::core::ModelGeometry& g,
+                     const strata::core::MtpDrafter& mtp, bool reading) {
+    if (cudaDeviceSynchronize() != cudaSuccess) return false;
+    std::rewind(slot.file.get());
+    std::vector<uint8_t> buffer(16 * 1024 * 1024);
+    for (int64_t l=0;l<g.n_qsa_layers();++l)
+        if (!slot_qsa(slot.file.get(),ss.qsa_states[l],g,slot.cells,reading,buffer)) return false;
+    if (!slot_qsa(slot.file.get(),mtp.kv_state(),g,slot.cells,reading,buffer)) return false;
+    return reading ? cudaDeviceSynchronize() == cudaSuccess : std::fflush(slot.file.get()) == 0;
 }
 
 // --control-vector-scaled: llama.cpp's `common_control_vector_load` (every file's `direction.<l>` times its scale,
@@ -3217,6 +3285,8 @@ int main(int argc, char** argv) {
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
         std::vector<ConvCheckpoint> checks;
+        CacheSlot slots[4];
+        int active_slot = 0;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
@@ -3534,6 +3604,7 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
+        std::printf("INFO cache_slots=%d cache_storage=temporary-disk\n", multi_gpu ? 1 : 4);
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -3574,6 +3645,7 @@ int main(int argc, char** argv) {
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
+            int req_slot = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
@@ -3590,7 +3662,13 @@ int main(int argc, char** argv) {
                     if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
-                    if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    if (key == "cache_slot") {
+                        const char* first = tok.data() + eq + 1;
+                        const char* last = tok.data() + tok.size();
+                        const auto parsed = std::from_chars(first, last, req_slot);
+                        if (parsed.ec != std::errc{} || parsed.ptr != last) req_slot = -1;
+                    }
+                    else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -3739,6 +3817,56 @@ int main(int argc, char** argv) {
                     if ((int32_t) ids[(size_t) i] != pre[(size_t) i]) return false;
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
+            if (req_slot < 0 || req_slot > 3) {
+                std::printf("ERR cache_slot must be 0 through 3\n"); std::fflush(stdout); continue;
+            }
+            // The slot snapshot owns one session arena; do not partially snapshot a layer split.
+            if (multi_gpu && req_slot != 0) {
+                std::printf("ERR cache slots require a single-GPU session\n"); std::fflush(stdout); continue;
+            }
+            if (req_slot != active_slot) {
+                const auto switch_start = Clock::now();
+                // A cancelled request has usable checkpoints but no valid live state.
+                if (!live_ok && !checks.empty()) {
+                    const auto& last = checks.back();
+                    if (!checkpoint_restore(last,ss,g)) { std::printf("ERR cache checkpoint restore failed\n"); return 1; }
+                    live = last.ids; live_imgs = last.imgs; live_ok = true;
+                }
+                if (live_ok && !live.empty()) {
+                    auto& saved = slots[active_slot];
+#if defined(_WIN32)
+                    wchar_t temp_dir[MAX_PATH], temp_file[MAX_PATH];
+                    const DWORD count = GetTempPathW(MAX_PATH, temp_dir);
+                    if (!count || count >= MAX_PATH || !GetTempFileNameW(temp_dir,L"stc",0,temp_file)) {
+                        std::printf("ERR creating cache snapshot file failed\n"); return 1;
+                    }
+                    saved.file.reset(_wfopen(temp_file,L"w+bD"));
+                    if (!saved.file) DeleteFileW(temp_file);
+#else
+                    saved.file.reset(std::tmpfile());
+#endif
+                    saved.cells = (int64_t) live.size();
+                    saved.running.ids = live; saved.running.imgs = live_imgs;
+                    saved.cvec = cvec_cached;
+                    if (!saved.file || !checkpoint_save(saved.running,ss,g) || !slot_positional(saved,ss,g,mtp,false)) {
+                        std::printf("ERR saving conversation cache slot failed\n"); return 1;
+                    }
+                    saved.checks = std::move(checks);
+                }
+                live_ok = false; live.clear(); live_imgs.clear(); checks.clear();
+                auto& incoming = slots[req_slot];
+                if (incoming.file) {
+                    if (!slot_positional(incoming,ss,g,mtp,true) || !checkpoint_restore(incoming.running,ss,g)) {
+                        std::printf("ERR loading conversation cache slot failed\n"); return 1;
+                    }
+                    live = incoming.running.ids; live_imgs = incoming.running.imgs; live_ok = true;
+                    checks = std::move(incoming.checks); cvec_cached = incoming.cvec;
+                    incoming.file.reset(); incoming.running = ConvCheckpoint{};
+                }
+                std::fprintf(stderr,"strata cache: slot %d -> %d restored %lld tokens in %.0f ms\n",active_slot,req_slot,
+                    (long long)live.size(),std::chrono::duration<double,std::milli>(Clock::now()-switch_start).count());
+                active_slot = req_slot;
+            }
             // the control vector for this request.  The live session and the checkpoints were read one way, so a
             // switch reads the prompt again from the start
             if (strata::kernels::cvec().loaded()) {

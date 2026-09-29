@@ -423,6 +423,15 @@ from other devices, set an API key.
 
 ---
 
+## Independent conversation caches
+
+API clients alternating chat with background requests can select `strata_cache_slot` (0–3) to preserve separate
+conversation prefixes on a single GPU. Slot 0 is the default; generation remains sequential. Inactive positional
+caches use temporary disk files and are lost on restart. See [cache slots](CACHE_SLOTS.md) for memory costs,
+limitations, API usage and a real-model correctness check.
+
+---
+
 ## Images (vision)
 
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)

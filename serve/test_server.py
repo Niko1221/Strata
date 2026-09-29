@@ -26,6 +26,7 @@ ANSWER = "x" * 2000                              # longer than the old 1024 fall
 class RecordingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_max_new = max_new
+        self.last_sampling = sampling
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
 
@@ -63,6 +64,35 @@ class MaxTokens(unittest.TestCase):
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
         return s, b, u.get("input_tokens"), u.get("output_tokens")
+
+    def test_cache_slot_validation_precedes_stream_headers(self):
+        for api in ("openai", "anthropic"):
+            for stream in (False, True):
+                for slot in (-1, 4, True, "1", 1.5, None):
+                    with self.subTest(api=api, stream=stream, slot=slot):
+                        status, body, _, _ = self.call(api, max_tokens=8, stream=stream, strata_cache_slot=slot)
+                        self.assertEqual(status, 400)
+                        self.assertIn("strata_cache_slot", body["error"]["message"])
+
+    def test_cache_slot_reaches_engine_over_both_apis(self):
+        for api in ("openai", "anthropic"):
+            status, _, _, _ = self.call(api, max_tokens=8, strata_cache_slot=3)
+            self.assertEqual(status, 200)
+            self.assertEqual(self.engine.last_sampling["strata_cache_slot"], 3)
+
+    def test_layer_split_rejects_nonzero_slot_before_streaming(self):
+        previous = getattr(self.engine, "info", None)
+        self.engine.info = {"cache_slots": "1"}
+        try:
+            status, body, _, _ = self.call("openai", max_tokens=8, stream=True, strata_cache_slot=1)
+            self.assertEqual(status, 400)
+            self.assertIn("single-GPU", body["error"]["message"])
+            self.assertEqual(self.call("openai", max_tokens=8, strata_cache_slot=0)[0], 200)
+        finally:
+            if previous is None:
+                del self.engine.info
+            else:
+                self.engine.info = previous
 
     def test_unset_budget_is_the_rest_of_the_context(self):
         cases = {"openai": [{"max_tokens": -1}, {"max_tokens": 0}, {}, {"max_tokens": None},
@@ -841,6 +871,16 @@ class TimingsDrafts(unittest.TestCase):
         self.assertEqual((t["prompt_n"], t["cache_n"]), (20, 4))
         self.assertNotIn("draft_n", request_timings(24, 20, base))
         self.assertIsNone(request_timings(24, 20, {}))
+
+class CacheSlotProtocol(unittest.TestCase):
+    def test_slot_selection_and_validation(self):
+        self.assertIn("cache_slot=0", StrataEngine.sampling_keys({}))
+        for slot in range(4):
+            self.assertIn(f"cache_slot={slot}", StrataEngine.sampling_keys({"strata_cache_slot":slot}))
+        for slot in [-1,4,True,"1",1.5]:
+            with self.assertRaises(ValueError):
+                StrataEngine.sampling_keys({"strata_cache_slot":slot})
+
 
 if __name__ == "__main__":
     unittest.main()

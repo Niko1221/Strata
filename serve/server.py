@@ -144,6 +144,14 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
             print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
 
 
+def cache_slot(request: dict) -> int:
+    """An explicit independent conversation cache, not another execution lane."""
+    slot = request.get("strata_cache_slot", 0)
+    if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot <= 3:
+        raise ValueError("strata_cache_slot must be an integer from 0 through 3")
+    return slot
+
+
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -251,7 +259,7 @@ class StrataEngine:
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
-        keys = ""
+        keys = f" cache_slot={cache_slot(sampling)}"
         t = sampling.get("temperature")
         if isinstance(t, (int, float)) and float(t) > 0.0:
             keys += f" temperature={float(t)!r}"
@@ -1354,6 +1362,10 @@ def make_handler(svc: Service):
                 return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if path in ("/v1/chat/completions", "/v1/messages"):
+                    slot = cache_slot(req)  # validate before opening an SSE response
+                    if slot and int(getattr(svc.engine, "info", {}).get("cache_slots", 4)) == 1:
+                        raise ValueError("cache slots require a single-GPU session")
                 if path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
