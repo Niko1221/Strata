@@ -8,6 +8,7 @@ import json
 import os
 import queue
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -759,6 +760,44 @@ class WebApp(unittest.TestCase):
         self.assertEqual(m["requests"][0]["output_tokens"], 5)
         # this service has no tier at all: the block says so in the shape the Cache tab hides on (design §5)
         self.assertEqual(m["cache"], {"enabled": False})
+        # what the Monitor's Cache column reads.  This engine printed no `KV` line, so the row is UNKNOWN - a dash
+        # in the page, never "cold" (design §3, note 1).  A tier-on service's row is asserted in CacheWiring.
+        self.assertIn("cache", m["requests"][0])
+        self.assertIsNone(m["requests"][0]["cache"])
+
+    def test_monitor_cache_column_and_engine_rss_row_are_in_the_page(self):
+        """Step 7's Monitor markup: the request table's Cache column - beside `Reused`, which it exists to explain
+        - and the engine-RSS row beside the System RAM row.  The `Reused` header and its column are asserted
+        untouched: the new column must not have quietly replaced or re-labelled them."""
+        code, _, body = self.get("/")
+        self.assertEqual(code, 200)
+        for want in (b'<th class="num">Reused</th>', b"<th title=\"Where this request's KV came from", b">Cache</th>",
+                     b'<td colspan="9" class="muted">No requests yet</td>',
+                     b'id="eng-ram-text"', b'id="sp-eng-ram"'):
+            with self.subTest(want=want):
+                self.assertIn(want, body)
+        # the empty row widened: the table has nine columns now
+        self.assertEqual(body.count(b'colspan="9"'), 1)
+        app = self.get("/web/app.js")[2]
+        for want in (b"function cacheCell", b"const CACHE_SRC", b"cacheCell(r.cache)", b'spark("sp-eng-ram"',
+                     b'"eng-ram-text"'):
+            with self.subTest(want=want):
+                self.assertIn(want, app)
+
+    def test_about_cache_card_is_in_the_page(self):
+        """The About card (design §5): hidden markup the app fills from the `cache` block already in /metrics -
+        About fetches /cache never and walks the store never."""
+        code, _, body = self.get("/")
+        self.assertEqual(code, 200)
+        for want in (b'<div class="st-card" id="card-cache" hidden>', b'<span class="card-title">NVMe cache</span>',
+                     b'id="facts-cache"'):
+            with self.subTest(want=want):
+                self.assertIn(want, body)
+        app = self.get("/web/app.js")[2]
+        for want in (b'$("card-cache").hidden', b'facts($("facts-cache")', b"layer-split sessions are not cached",
+                     b"a promote stages the whole snapshot in RAM at once", b'renderAbout(eng, hw, st, cache)'):
+            with self.subTest(want=want):
+                self.assertIn(want, app)
 
     def test_cache_reports_no_tier(self):
         """GET /cache on a server with no KvCache: 200, {"enabled": false}, and a JSON route - not a file route."""
@@ -1545,8 +1584,9 @@ class StubProc:
     With `gate`, the pump does not outrun the request: no line is printed before `generate()` has written its
     GEN line (which is what sets `in_request`), so a scripted KV line arrives exactly as a real one does."""
 
-    def __init__(self, lines, gate=False):
+    def __init__(self, lines, gate=False, pid=4242):
         self.written, self.started = [], threading.Event()
+        self.pid = pid                                # a stand-in process has an id too (telemetry reads it)
         self.stdout = self._read(lines, gate)
 
     def _read(self, lines, gate):
@@ -1652,11 +1692,13 @@ class RestartKeepsTheCache(unittest.TestCase):
 
     class Engine(StrataEngine):
         """The real `restart()` against a stand-in process: only `__init__` is a stand-in, and it resets `cache`
-        to None exactly as the real one does."""
+        to None exactly as the real one does.  Each stand-in process gets its own pid, as a real one would."""
+
+        pids = iter(range(4242, 4252))
 
         def __init__(self, exe="strata", args=(), cwd=None, log=None, env=None):
             self.spawn, self.info, self.cache = (exe, list(args), cwd, log, env), {}, None
-            self.proc, self.ended = StubProc([]), False
+            self.proc, self.ended = StubProc([], pid=next(self.pids)), False
 
     def test_restart_keeps_the_cache_attached_and_informed(self):
         eng = self.Engine()
@@ -1669,6 +1711,101 @@ class RestartKeepsTheCache(unittest.TestCase):
         self.assertEqual(eng.cache.summary()["promotable"]["entries"], 104)   # what it knew survives the restart
         eng._kv_line(KV_START_LINE)                               # the new process re-reports its store
         self.assertEqual(eng.cache.summary()["promotable"]["entries"], 104)
+
+    def test_the_pid_follows_the_process_restart(self):
+        """`Engine.pid` is a property, not a number captured at startup: `restart()` replaces the process, and
+        telemetry reads the engine's RSS through a lookup for exactly that reason (design §5.2, §6)."""
+        eng = self.Engine()
+
+        def lookup():                                     # what Service.start_telemetry passes to Telemetry
+            return getattr(eng, "pid", None)
+
+        first = eng.pid
+        self.assertEqual(lookup(), first)
+        eng.restart()
+        self.assertNotEqual(eng.pid, first)                     # the old id is not what it reports now
+        self.assertEqual(lookup(), eng.pid)                     # and the lookup followed it to the new process
+
+
+# ------------------------------------------------------------------ the engine's own RSS (serve/telemetry.py)
+try:
+    import psutil  # noqa: F401
+    HAVE_PSUTIL = True
+except ImportError:
+    HAVE_PSUTIL = False
+
+
+def reaped_pid():
+    """A pid that was real and is now waited on: reading it is the `NoSuchProcess` path."""
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+class EngineRss(unittest.TestCase):
+    """`rss_used` - the engine process's own resident bytes (design §6's RAM transient, the bump a ~2 GB promote
+    staging makes).  The pid is resolved per sample, and a reading that cannot be taken is ABSENT: a missing
+    reading must never look like a healthy zero."""
+
+    @staticmethod
+    def sampler(pid):
+        from serve.telemetry import Telemetry
+        return Telemetry(pid=pid)
+
+    @unittest.skipUnless(HAVE_PSUTIL, "the engine's RSS is a psutil reading")
+    def test_a_live_pid_gives_rss_used_and_a_history_deque(self):
+        tel = self.sampler(os.getpid())
+        s = tel.sample()
+        self.assertIn("rss_used", s)
+        self.assertGreater(s["rss_used"], 0)
+        time.sleep(1.2)                                          # one pass of the sampler thread's key list
+        snap = tel.snapshot()
+        self.assertIn("rss_used", snap["now"])
+        self.assertTrue(snap["history"]["rss_used"])             # a deque like every other sampled series
+
+    @unittest.skipUnless(HAVE_PSUTIL, "the engine's RSS is a psutil reading")
+    def test_no_engine_process_is_no_reading_never_zero(self):
+        for case, pid in (("no pid at all", None), ("an engine with no process", lambda: None),
+                          ("a process that is gone", reaped_pid())):
+            with self.subTest(case=case):
+                self.assertNotIn("rss_used", self.sampler(pid).sample())
+
+    @unittest.skipUnless(HAVE_PSUTIL, "the engine's RSS is a psutil reading")
+    def test_the_pid_is_resolved_every_sample_not_captured(self):
+        """restart() replaces the process (a transfer failure is exactly that path, design §5.2): a captured int
+        would keep reading the dead one."""
+        running = [os.getpid()]
+        tel = self.sampler(lambda: running[0])
+        self.assertIn("rss_used", tel.sample())
+        running[0] = None                                        # the engine it pointed at is gone
+        self.assertNotIn("rss_used", tel.sample())
+
+    def test_without_psutil_the_key_is_absent(self):
+        tel = self.sampler(os.getpid())
+        tel.ps = None                                            # the import failed on this machine
+        self.assertNotIn("rss_used", tel.sample())
+
+    def test_the_service_hands_the_sampler_a_lookup_not_a_value(self):
+        """Service.start_telemetry passes `lambda: getattr(self.engine, "pid", None)`; a mock engine has no
+        process, so the Monitor's Engine RAM row stays empty rather than reading the server's own pid."""
+        tok = ByteTokenizer()
+        svc = Service(RecordingEngine(tok, "\n</think>\n\nhello", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.start_telemetry()
+        self.assertTrue(callable(svc.telemetry.pid))
+        self.assertIsNone(svc.telemetry.pid())
+        self.assertNotIn("rss_used", svc.telemetry.sample())
+
+    @unittest.skipUnless(HAVE_PSUTIL, "the engine's RSS is a psutil reading")
+    def test_a_real_engine_process_reaches_the_sampled_key(self):
+        """The whole path for a real `StrataEngine`: its `pid` property -> the lookup -> `rss_used`.  The stand-in
+        process is this test process, so the reading is this process's own."""
+        eng = scripted_engine([])
+        eng.proc.pid = os.getpid()
+        svc = Service(eng, ByteTokenizer(), ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.start_telemetry()
+        self.assertEqual(svc.telemetry.pid(), os.getpid())
+        self.assertGreater(svc.telemetry.sample()["rss_used"], 0)
 
 
 if __name__ == "__main__":

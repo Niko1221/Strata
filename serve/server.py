@@ -260,6 +260,13 @@ class StrataEngine:
     def alive(self) -> bool:
         return not getattr(self, "ended", False) and self.proc.poll() is None
 
+    @property
+    def pid(self) -> int | None:
+        """The id of the engine process THIS object is running NOW - a property, not a number captured at startup:
+        `restart()` replaces `self.proc` (a transfer failure is exactly the path that does it, design §5.2), and
+        telemetry reads the engine's RSS per sample, so it must follow the process (design §6)."""
+        return self.proc.pid if self.proc is not None else None
+
     def exit_code(self):
         try:
             return self.proc.wait(timeout=5)
@@ -671,7 +678,10 @@ class Service:
                     s.update(self.cache.series() or {})
                 return s
             self.telemetry = Telemetry(extra=extra, gpu_index=int(getattr(self, "gpu_index", 0) or 0),
-                                       gpu_indices=getattr(self, "gpu_indices", None))
+                                       gpu_indices=getattr(self, "gpu_indices", None),
+                                       # a LOOKUP, not a value: restart() replaces the engine process (design 5.2),
+                                       # and a mock engine has none - the reading is then absent, never 0
+                                       pid=lambda: getattr(self.engine, "pid", None))
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating."""
