@@ -516,11 +516,33 @@ class WebApp(unittest.TestCase):
         code, ctype, body = self.get("/metrics")
         self.assertEqual(code, 200)
         m = json.loads(body)
-        for key in ("engine", "live", "requests", "hardware", "hardware_static", "history"):
+        for key in ("engine", "live", "requests", "hardware", "hardware_static", "history", "cache"):
             self.assertIn(key, m)
         self.assertEqual(m["engine"]["max_context"], CTX)
         self.assertEqual(m["live"]["state"], "idle")
         self.assertEqual(m["requests"][0]["output_tokens"], 5)
+        # this service has no tier at all: the block says so in the shape the Cache tab hides on (design §5)
+        self.assertEqual(m["cache"], {"enabled": False})
+
+    def test_cache_reports_no_tier(self):
+        """GET /cache on a server with no KvCache: 200, {"enabled": false}, and a JSON route - not a file route."""
+        code, ctype, body = self.get("/cache")
+        self.assertEqual(code, 200)
+        self.assertIn("application/json", ctype)
+        self.assertEqual(json.loads(body), {"enabled": False})
+        self.assertEqual(self.get("/cache/")[0], 200)              # the handler rstrips "/": the same route
+        for path in ("/cache/app.js", "/cache/../web/app.js"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path)[0], 404)      # nothing under /cache is a file route
+
+    def test_cache_needs_the_key_when_one_is_set(self):
+        self.svc.api_key = "secret"
+        try:
+            self.assertEqual(self.get("/cache")[0], 401)
+            self.assertEqual(self.get("/cache", {"Authorization": "Bearer secret"})[0], 200)
+            self.assertEqual(self.get("/cache", {"x-api-key": "secret"})[0], 200)
+        finally:
+            self.svc.api_key = ""
 
     def test_metrics_need_the_key_when_one_is_set(self):
         self.svc.api_key = "secret"
@@ -965,6 +987,127 @@ class CacheWiring(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class CacheRoute(unittest.TestCase):
+    """Step 5: the `cache` block in GET /metrics and the read-only GET /cache, over a tier-on service.
+
+    The split is the whole design (design §4): /metrics carries KvCache.summary() - memory only - and /cache
+    carries KvCache.detail(), which is the only caller of scan()/_walk().  The cache here is a CountingKvCache, so
+    "cheap" is measured (walks before and after each route) rather than asserted."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = os.path.join(cls.tmp.name, "kvstore")
+        now = time.time()
+        os.makedirs(cls.root)
+        snapshot(os.path.join(cls.root, "kv-1-1.bin"), 3, 4107, 1000)          # promotable
+        snapshot(os.path.join(cls.root, "kv-1-2.bin"), 2, 900, 700)            # another build's version: stale
+        os.makedirs(os.path.join(cls.root, "delta/chunks"))
+        os.makedirs(os.path.join(cls.root, "delta/states"))
+        manifest(os.path.join(cls.root, "delta/log-1-1.manifest"), 1, 217, 1, 0x1111, [0x2222])
+        delta_record(os.path.join(cls.root, "delta/chunks/0000000000002222.bin"), 0x4B4E4843, 400)
+        delta_record(os.path.join(cls.root, "delta/states/0000000000001111.bin"), 0x54415453, 200)
+        Path(os.path.join(cls.root, "delta/chunks/.tmp-9-0")).write_bytes(b"x" * 123)   # a crash's residue
+        os.utime(os.path.join(cls.root, "kv-1-1.bin"), (now - 3600, now - 3600))
+        os.utime(os.path.join(cls.root, "delta/log-1-1.manifest"), (now - 60, now - 60))
+
+        tok = ByteTokenizer()
+        cls.engine = CacheEngine(tok, "\\n</think>\\n\\nhello", CTX, [parse_kv(KV_REQUEST_LINE)])
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.cache = CountingKvCache(["--kv-nvme", cls.root, "--kv-nvme-max", "100", "--kv-delta", "1"])
+        cls.svc.cache = cls.cache
+        cls.engine.cache = cls.cache                            # what main() does beside svc.gpu_index
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.tmp.cleanup()
+
+    def get(self, path, headers=None):
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    def post(self):
+        """One real request through the HTTP layer: the pump sees the scripted KV line, Service.run's finally
+        observes it.  Nothing here calls observe() directly."""
+        before = len(self.cache.events)
+        data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}).encode()
+        urllib.request.urlopen(urllib.request.Request(self.base + "/v1/chat/completions", data=data,
+                                                      headers={"Content-Type": "application/json"}), timeout=30).read()
+        return list(self.cache.events)[before:]     # the rows THIS request produced
+
+    def test_metrics_carries_the_summary_and_walks_nothing(self):
+        # the class shares one service, so every assertion about a growing counter is relative to this request
+        ev, reqs, disk = len(self.cache.events), self.cache.totals["requests_with_kv_line"], \
+            self.svc.totals["reused_from_disk"]
+        rows = self.post()
+        self.assertEqual([r["kind"] for r in rows], ["promote", "cascade", "evict"])
+        walks = self.cache.walks
+        code, m = self.get("/metrics")
+        self.assertEqual(code, 200)
+        self.assertEqual(self.cache.walks, walks)                   # summary() did no filesystem work
+        c = m["cache"]
+        self.assertEqual((c["enabled"], c["mode"], c["dir"]), (True, "delta", self.root))
+        self.assertEqual(c["cap_bytes"], 100 * 2**30)
+        self.assertIsNone(c["inert_reason"])
+        self.assertEqual(c["promotable"]["entries"], 104)           # the engine's own store fields, from its line
+        self.assertEqual(c["promotable"]["bytes"], 213674598400 + 1181116416)
+        self.assertEqual(c["ram_tier"], {"checkpoints": 3, "live_tokens": 4131})
+        self.assertEqual([r["kind"] for r in c["events"]][ev:], ["promote", "cascade", "evict"])
+        self.assertEqual(c["totals"]["requests_with_kv_line"], reqs + 1)
+        self.assertEqual(c["totals"]["total_evict_bytes"], 154000384)
+        self.assertEqual(set(c["series"]), {"store_bytes", "write_mb", "read_mb", "warm"})
+        self.assertEqual(c["warnings"], [])
+        # the walk's tables are not here, and neither is the request row the Monitor's Cache column will read
+        for key in ("on_disk", "on_disk_bytes", "on_disk_files", "prefixes", "stale", "foreign",
+                    "disk_free_bytes", "disk_total_bytes", "scanned_at"):
+            self.assertNotIn(key, c)
+        self.assertEqual(m["requests"][0]["cache"]["src"], "delta")
+        self.assertEqual(m["totals"]["reused_from_disk"], disk + 4107)
+
+    def test_cache_carries_the_walk(self):
+        reqs = self.cache.totals["requests_with_kv_line"]
+        rows = self.post()
+        walks = self.cache.walks
+        code, d = self.get("/cache")
+        self.assertEqual(code, 200)
+        self.assertEqual(self.cache.walks, walks + 1)               # the walk happened, here and only here
+        self.get("/cache")
+        self.assertEqual(self.cache.walks, walks + 1)               # throttled: the second read reuses it
+        self.assertEqual({k: (v["count"], v["bytes"]) for k, v in d["on_disk"].items()},
+                         {"snapshots": (2, 1700), "manifests": (1, 328), "chunks": (1, 400),
+                          "states": (1, 200), "residue": (1, 123)})
+        self.assertEqual(d["on_disk"]["snapshots"]["promotable"], 1)
+        self.assertEqual(d["stale"], {"count": 1, "version": 2})    # on disk, not promotable (design §5.3)
+        self.assertEqual([(p["tier"], p["tokens"], p["bytes"]) for p in d["prefixes"]],
+                         [("delta", 217, 328 + 400 + 200), ("v3", 4107, 1000)])   # newest first
+        self.assertGreater(d["disk_free_bytes"], 0)
+        self.assertTrue(any("version 2" in w for w in d["warnings"]), d["warnings"])
+        self.assertEqual([r["kind"] for r in d["events"]][-3:], [r["kind"] for r in rows])
+        self.assertEqual(d["totals"]["requests_with_kv_line"], reqs + 1)
+        self.assertNotEqual(d["promotable"]["bytes"], d["on_disk_bytes"])   # the two books are never merged
+        self.assertTrue({"enabled", "mode", "dir", "cap_bytes", "totals", "series"} <= set(d))
+
+    def test_cache_is_read_only(self):
+        """No store mutation anywhere in the serve protocol (design §4, §8): /cache answers GET and nothing else."""
+        data = b'{"dir": "x"}'
+        walks = self.cache.walks
+        req = urllib.request.Request(self.base + "/cache", data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.fail(f"POST /cache answered {r.status}")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+        self.assertEqual(self.cache.walks, walks)                   # and it did not walk anything either
 
 
 class StubProc:
