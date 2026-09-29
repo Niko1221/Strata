@@ -1,0 +1,127 @@
+# CI for the Strata fork: what a GPU-less runner can honestly check.
+# - cpu: builds the CPU-only configuration and runs its test suite (ggml-backed
+#   CPU kernels, the expert pool, the POSIX direct-file async pool).
+# - cuda / hip: compile validation of the GPU backends in vendor containers.
+#   Nothing GPU-side is executed; hosted runners have no GPUs. Runtime evidence
+#   stays with the per-backend validation recorded in docs/AMD_HIP*.md.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu:
+    name: cpu build + tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Cache the pinned llama.cpp checkout
+        uses: actions/cache@v4
+        with:
+          path: /tmp/strata-llamacpp
+          key: llamacpp-${{ hashFiles('CMakeLists.txt') }}
+      - name: Fetch the pinned llama.cpp (ggml)
+        run: |
+          pin="$(grep -oE 'GIT_TAG [0-9a-f]{40}' CMakeLists.txt | grep -oE '[0-9a-f]{40}')"
+          if [ ! -d /tmp/strata-llamacpp ] || [ "$(git -C /tmp/strata-llamacpp rev-parse HEAD)" != "$pin" ]; then
+            rm -rf /tmp/strata-llamacpp
+            git clone --quiet https://github.com/ggml-org/llama.cpp.git /tmp/strata-llamacpp
+            git -C /tmp/strata-llamacpp checkout --quiet "$pin"
+          fi
+      - name: Configure (CPU-only, tests on)
+        run: >
+          cmake -S . -B build-cpu -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTRATA_BUILD_TESTS=ON
+          -DSTRATA_GGML_DIR=/tmp/strata-llamacpp
+      - name: Build
+        run: cmake --build build-cpu --parallel "$(nproc)"
+      - name: Test
+        # expert_parity and pool_test compare against a real expert blob from a
+        # packed model (pack/full/experts.bin, a REQUIRED input per CMakeLists);
+        # no such fixture exists on a fresh checkout, so they are excluded here
+        # exactly as the per-backend validation notes exclude them.
+        run: ctest --test-dir build-cpu --output-on-failure -E 'expert_parity|pool_test'
+      - name: Python sources compile
+        run: python3 -m compileall -q tools serve
+
+  cuda-compile:
+    name: cuda compile (no GPU run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: nvidia/cuda:13.0.0-devel-ubuntu24.04
+    steps:
+      - name: Install build tools
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          cmake ninja-build git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Cache the pinned llama.cpp checkout
+        uses: actions/cache@v4
+        with:
+          path: /tmp/strata-llamacpp
+          key: llamacpp-${{ hashFiles('CMakeLists.txt') }}
+      - name: Fetch the pinned llama.cpp (ggml)
+        run: |
+          pin="$(grep -oE 'GIT_TAG [0-9a-f]{40}' CMakeLists.txt | grep -oE '[0-9a-f]{40}')"
+          if [ ! -d /tmp/strata-llamacpp ] || [ "$(git -C /tmp/strata-llamacpp rev-parse HEAD)" != "$pin" ]; then
+            rm -rf /tmp/strata-llamacpp
+            git clone --quiet https://github.com/ggml-org/llama.cpp.git /tmp/strata-llamacpp
+            git -C /tmp/strata-llamacpp checkout --quiet "$pin"
+          fi
+      - name: Configure (CUDA, sm_89)
+        run: >
+          cmake -S . -B build-cuda -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTRATA_ENABLE_CUDA=ON
+          -DCMAKE_CUDA_ARCHITECTURES=89
+          -DSTRATA_GGML_DIR=/tmp/strata-llamacpp
+      - name: Compile the engine
+        run: cmake --build build-cuda --parallel "$(nproc)" --target strata
+
+  hip-compile:
+    name: hip compile (no GPU run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: rocm/rocm:7.1
+    steps:
+      - name: Install build tools
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          cmake ninja-build git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Cache the pinned llama.cpp checkout
+        uses: actions/cache@v4
+        with:
+          path: /tmp/strata-llamacpp
+          key: llamacpp-${{ hashFiles('CMakeLists.txt') }}
+      - name: Fetch the pinned llama.cpp (ggml)
+        run: |
+          pin="$(grep -oE 'GIT_TAG [0-9a-f]{40}' CMakeLists.txt | grep -oE '[0-9a-f]{40}')"
+          if [ ! -d /tmp/strata-llamacpp ] || [ "$(git -C /tmp/strata-llamacpp rev-parse HEAD)" != "$pin" ]; then
+            rm -rf /tmp/strata-llamacpp
+            git clone --quiet https://github.com/ggml-org/llama.cpp.git /tmp/strata-llamacpp
+            git -C /tmp/strata-llamacpp checkout --quiet "$pin"
+          fi
+      - name: Configure (HIP, gfx1100)
+        run: >
+          cmake -S . -B build-hip -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTRATA_ENABLE_HIP=ON
+          -DSTRATA_ENABLE_CUDA=OFF
+          -DCMAKE_HIP_ARCHITECTURES=gfx1100
+          -DCMAKE_PREFIX_PATH=/opt/rocm
+          -DSTRATA_GGML_DIR=/tmp/strata-llamacpp
+      - name: Compile the engine
+        run: cmake --build build-hip --parallel "$(nproc)" --target strata

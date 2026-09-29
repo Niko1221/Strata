@@ -1,0 +1,87 @@
+# CD for the Strata fork: on a v* tag, build the CUDA and HIP engines in
+# vendor containers and publish them as a GitHub release. The binaries are
+# compile-validated only — hosted runners have no GPUs, so nothing here
+# executed a model; per-backend runtime evidence stays in docs/AMD_HIP*.md.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cuda-sm_89
+            image: nvidia/cuda:13.0.0-devel-ubuntu24.04
+            configure: >
+              -DSTRATA_ENABLE_CUDA=ON
+              -DCMAKE_CUDA_ARCHITECTURES=89
+          - name: hip-gfx1100
+            image: rocm/rocm:7.1
+            configure: >
+              -DSTRATA_ENABLE_HIP=ON
+              -DSTRATA_ENABLE_CUDA=OFF
+              -DCMAKE_HIP_ARCHITECTURES=gfx1100
+              -DCMAKE_PREFIX_PATH=/opt/rocm
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install build tools
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          cmake ninja-build git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned llama.cpp (ggml)
+        run: |
+          pin="$(grep -oE 'GIT_TAG [0-9a-f]{40}' CMakeLists.txt | grep -oE '[0-9a-f]{40}')"
+          git clone --quiet https://github.com/ggml-org/llama.cpp.git /tmp/strata-llamacpp
+          git -C /tmp/strata-llamacpp checkout --quiet "$pin"
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTRATA_GGML_DIR=/tmp/strata-llamacpp
+          ${{ matrix.configure }}
+      - name: Build the engine
+        run: cmake --build build --parallel "$(nproc)" --target strata
+      - name: Package
+        run: |
+          mkdir dist
+          cp build/strata "dist/strata-${{ matrix.name }}"
+          strip "dist/strata-${{ matrix.name }}" || true
+          sha256sum "dist/strata-${{ matrix.name }}" > "dist/strata-${{ matrix.name }}.sha256"
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: strata-${{ matrix.name }}
+          path: dist/
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release and attach the binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --title "Strata $tag" --generate-notes
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
