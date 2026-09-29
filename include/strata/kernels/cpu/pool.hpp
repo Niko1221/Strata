@@ -32,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -58,26 +59,50 @@ struct ExpertJobMulti {
     const void* nact[MAXT] = {};
 };
 
-/// One logical processor per PHYSICAL core, so a worker is never scheduled onto an SMT sibling of another
-/// worker.  On the 6-core/12-thread machine this project measures on, `hardware_concurrency()/2` workers on
-/// logical processors 0..5 would put every worker on a sibling pair and halve the useful bandwidth - which is
-/// exactly the kind of error that shows up as "the CPU path is slower than the model says" with no clue why.
-std::vector<int> physical_cores();
+/// Each PHYSICAL core's logical processors (SMT siblings together), in the OS's order.  The pool runs one thread
+/// per physical core, so a worker is never scheduled onto an SMT sibling of another worker.  On the 6-core/12-thread
+/// machine this project measures on, `hardware_concurrency()/2` workers on logical processors 0..5 would put every
+/// worker on a sibling pair and halve the useful bandwidth - which is exactly the kind of error that shows up as
+/// "the CPU path is slower than the model says" with no clue why.
+std::vector<std::vector<int>> physical_cores();
 
-/// Where the host loop and the pool's workers run, one logical processor each: the host on the last physical core,
-/// the workers on the others.  With `spare_first` (a second GPU) the first core stays with the OS: Windows sends the
-/// GPUs' interrupts there (here the 5070 Ti's to its first logical processor, the 3090's to its second), and the
-/// second GPU's copies and launches raise thousands a second during generation, each ~16 us there in the ISR and a
-/// DPC.  With four physical cores or fewer the first core takes a worker anyway.
-struct CorePlan {
-    int host = -1;
-    std::vector<int> workers;
+class ExpertPool;
+
+/// Where the host loop and the pool's workers run - one logical processor each, one thread per physical core - and
+/// how they move off the processors that take interrupts.  A GPU's copies and launches interrupt the CPU when they
+/// complete (~10-40 us each in the ISR and a DPC, thousands a second during generation), on processors Windows picks
+/// and moves as the load shifts (the power plan's interrupt steering; here the first few).  So `tick`, called on the
+/// host thread between windows, reads each processor's interrupt and DPC time once a second, and a thread whose
+/// processor spent over 5% there two seconds in a row moves to a quiet processor: a free core's, else its own core's
+/// other one.  Without the counters (not Windows) the threads stay where they started.
+class CorePlacement {
+public:
+    /// The start: the host on the last physical core, the workers on the others; with `spare_first` (a second GPU,
+    /// whose work raises most of the interrupts) and more than four cores, the first core stays free: where Windows
+    /// sends interrupts first, and a place to move to.
+    explicit CorePlacement(bool spare_first);
+    int host() const { return host_; }
+    /// The workers' logical processors, by worker (the pool pins worker i to `workers()[i]`).
+    const std::vector<int>& workers() const { return workers_; }
+    /// At most once a second: samples each processor's interrupt and DPC time and moves the threads whose processors
+    /// took them (`pool`'s workers; the calling thread for the host's).  Returns what moved, or an empty string.
+    std::string tick(ExpertPool& pool);
+    int64_t moves = 0;
+
+private:
+    int quiet_processor(int from, const std::vector<double>& load) const;
+    std::vector<std::vector<int>> cores_;
+    std::vector<int> core_of_;     // logical processor -> physical core, -1 when unknown
+    int host_ = -1;
+    std::vector<int> workers_;
+    std::vector<uint64_t> busy_;   // each processor's interrupt and DPC time at the last sample (100 ns units)
+    std::vector<int> hot_;         // the samples in a row a processor spent over 5% there
+    std::chrono::steady_clock::time_point at_{};
 };
-CorePlan core_plan(bool spare_first);
 
 /// **THE RESERVATION IS A FICTION UNLESS THE HOST IS ACTUALLY PUT THERE.**
 ///
-/// `core_plan()` keeps the workers off the host's core so that the host loop can spin on `cudaEventQuery`
+/// `CorePlacement` keeps the workers off the host's core so that the host loop can spin on `cudaEventQuery`
 /// without stealing a worker's cycles.  Nothing in the pool can enforce the other half of that, so this is it:
 /// the host loop calls this on entry and restores on exit.
 ///
@@ -95,8 +120,8 @@ void restore_thread_affinity(long long previous);
 #endif
 class ExpertPool {
 public:
-    /// `n_workers <= 0` means a worker on each of `core_plan(spare_first).workers`.  Workers are pinned to those
-    /// cores and each owns one `ExpertScratch`, so nothing in the token path allocates.
+    /// Worker i is pinned to `cores[i]` (none of `cores`: `CorePlacement(false).workers()`); `n_workers <= 0` means
+    /// one on each.  Each owns one `ExpertScratch`, so nothing in the token path allocates.
     ///
     /// **`host_works` PUTS THE HOST THREAD INTO THE DRAIN (R2.2's FIRST HALF).**
     ///
@@ -109,12 +134,14 @@ public:
     /// With `host_works`, `run()` claims jobs itself instead of spinning on `done_`, and the pool is six
     /// threads on six cores. `false` is the A/B arm and exists so the change is measurable rather than
     /// asserted - the counter it moves is `pool phases ... drain`, which is host-side and needs no profiler.
-    explicit ExpertPool(int n_workers = 0, bool pin = true, bool host_works = true, bool spare_first = false);
+    explicit ExpertPool(int n_workers = 0, bool pin = true, bool host_works = true, std::vector<int> cores = {});
     ~ExpertPool();
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    /// Moves worker `i` to logical processor `core` (CorePlacement::tick).
+    void pin_worker(int i, int core);
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }

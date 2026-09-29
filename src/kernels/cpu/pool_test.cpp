@@ -314,7 +314,7 @@ int main(int argc, char** argv) {
     }
 
     // ---- the pool
-    const std::vector<int> cores = cpu::core_plan(false).workers;
+    const std::vector<int> cores = cpu::CorePlacement(false).workers();
     const int hw = (int) std::thread::hardware_concurrency();
     std::printf("  %-44s %d logical, %d physical (not the last, the host's)\n", "cores the pool will use",
                 hw, (int) cores.size());

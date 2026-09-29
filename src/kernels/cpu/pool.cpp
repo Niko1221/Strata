@@ -19,52 +19,146 @@
 
 namespace strata::kernels::cpu {
 
-std::vector<int> physical_cores() {
-    std::vector<int> cores;
+std::vector<std::vector<int>> physical_cores() {
+    std::vector<std::vector<int>> cores;
 #if defined(_WIN32)
     // Ask the OS rather than assuming a layout.  `hardware_concurrency()` returns LOGICAL processors, and on
     // every SMT machine half of them are siblings - pinning one worker to each of the first N would put two
     // workers on each physical core and halve the bandwidth the expert kernel is bound by.
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
-    if (len == 0) {
-        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cores.push_back((int) i);
-    } else {
-        std::vector<char> buf(len);
-        if (GetLogicalProcessorInformationEx(RelationProcessorCore,
-                                             (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len)) {
-            const char* p = buf.data();
-            const char* end = p + len;
-            while (p < end) {
-                const auto* e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p;
-                if (e->Relationship == RelationProcessorCore) {
-                    const GROUP_AFFINITY& g = e->Processor.GroupMask[0];
-                    for (int bit = 0; bit < 64; ++bit)
-                        if (g.Mask & (1ull << bit)) { cores.push_back((int) (g.Group * 64 + bit)); break; }
-                }
-                p += e->Size;
+    std::vector<char> buf(len);
+    if (len > 0 && GetLogicalProcessorInformationEx(RelationProcessorCore,
+                                                    (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len)) {
+        for (const char* p = buf.data(); p < buf.data() + len;) {
+            const auto* e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p;
+            if (e->Relationship == RelationProcessorCore) {
+                const GROUP_AFFINITY& g = e->Processor.GroupMask[0];
+                std::vector<int> core;
+                for (int bit = 0; bit < 64; ++bit)
+                    if (g.Mask & (1ull << bit)) core.push_back((int) (g.Group * 64 + bit));
+                if (!core.empty()) cores.push_back(core);
             }
+            p += e->Size;
         }
     }
 #else
-    cpu_set_t set;
+    cpu_set_t set;   // each logical processor as a core of its own
     CPU_ZERO(&set);
-    if (sched_getaffinity(0, sizeof set, &set) == 0)
+    if (sched_getaffinity(0, sizeof set, &set) == 0) {
         for (int i = 0; i < CPU_SETSIZE; ++i)
-            if (CPU_ISSET(i, &set)) cores.push_back(i);
-    else
-        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cores.push_back((int) i);
+            if (CPU_ISSET(i, &set)) cores.push_back({i});
+    }
 #endif
+    if (cores.empty())
+        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cores.push_back({(int) i});
     return cores;
 }
 
-CorePlan core_plan(bool spare_first) {
-    const std::vector<int> cores = physical_cores();
-    CorePlan plan;
-    if (cores.empty()) return plan;
-    plan.host = cores.back();
-    plan.workers.assign(cores.begin() + (spare_first && cores.size() > 4 ? 1 : 0), cores.end() - 1);
-    return plan;
+namespace {
+
+#if defined(_WIN32)
+// Each logical processor's time in interrupts and DPCs so far (100 ns units), from NtQuerySystemInformation's
+// processor performance information (winternl.h names its DpcTime and InterruptTime Reserved1); the kernel adds to
+// them at each clock tick, so over a second they resolve ~1.6%.
+std::vector<uint64_t> interrupt_times() {
+    struct Info { LARGE_INTEGER idle, kernel, user, dpc, interrupt; ULONG interrupts; };
+    using Query = LONG(WINAPI*)(int, void*, ULONG, ULONG*);
+    static const Query query = reinterpret_cast<Query>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation")));
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    std::vector<Info> v(si.dwNumberOfProcessors);
+    ULONG len = 0;
+    std::vector<uint64_t> t;
+    if (query == nullptr || query(8, v.data(), (ULONG) (v.size() * sizeof(Info)), &len) != 0) return t;
+    for (const Info& i : v) t.push_back((uint64_t) (i.dpc.QuadPart + i.interrupt.QuadPart));
+    return t;
+}
+#endif
+
+constexpr double kBusy = 0.05;    // a processor over this share of a second in interrupts and DPCs takes them
+constexpr double kQuiet = 0.02;   // one below it may take a thread
+
+}  // namespace
+
+CorePlacement::CorePlacement(bool spare_first) : cores_(physical_cores()) {
+    for (size_t c = 0; c < cores_.size(); ++c)
+        for (int p : cores_[c]) {
+            if (p >= (int) core_of_.size()) core_of_.resize((size_t) p + 1, -1);
+            core_of_[(size_t) p] = (int) c;
+        }
+    host_ = cores_.back().front();
+    for (size_t c = spare_first && cores_.size() > 4 ? 1 : 0; c + 1 < cores_.size(); ++c)
+        workers_.push_back(cores_[c].front());
+}
+
+// A quiet processor for a thread on `from`: the first of the quietest free core whose processors are all quiet, else
+// the other processor of `from`'s own core, or -1.
+int CorePlacement::quiet_processor(int from, const std::vector<double>& load) const {
+    auto quiet = [&](int p) { return p < (int) load.size() && load[(size_t) p] < kQuiet && hot_[(size_t) p] == 0; };
+    std::vector<char> taken(cores_.size(), 0);
+    for (int p : workers_) taken[(size_t) core_of_[(size_t) p]] = 1;
+    taken[(size_t) core_of_[(size_t) host_]] = 1;
+    int best = -1;
+    double best_load = 0;
+    for (size_t c = 0; c < cores_.size(); ++c) {
+        if (taken[c]) continue;
+        bool ok = true;
+        double sum = 0;
+        for (int p : cores_[c]) {
+            ok = ok && quiet(p);
+            sum += p < (int) load.size() ? load[(size_t) p] : 0.0;
+        }
+        if (ok && (best < 0 || sum < best_load)) {
+            best = cores_[c].front();
+            best_load = sum;
+        }
+    }
+    if (best >= 0) return best;
+    for (int p : cores_[(size_t) core_of_[(size_t) from]])
+        if (p != from && quiet(p)) return p;
+    return -1;
+}
+
+std::string CorePlacement::tick(ExpertPool& pool) {
+#if defined(_WIN32)
+    const auto now = std::chrono::steady_clock::now();
+    const double s = std::chrono::duration<double>(now - at_).count();
+    if (!busy_.empty() && s < 1.0) return {};
+    std::vector<uint64_t> cur = interrupt_times();
+    // a first sample, or the engine idle since the last one (between requests): a new start, nothing to judge
+    const bool fresh = busy_.empty() || s > 3.0 || cur.size() != busy_.size();
+    std::vector<double> load(cur.size(), 0.0);
+    if (!fresh)
+        for (size_t p = 0; p < cur.size(); ++p) load[p] = (double) (cur[p] - busy_[p]) / 1e7 / s;
+    busy_ = std::move(cur);
+    at_ = now;
+    hot_.resize(busy_.size(), 0);
+    for (size_t p = 0; p < hot_.size(); ++p) hot_[p] = !fresh && load[p] > kBusy ? hot_[p] + 1 : 0;
+    std::string moved;
+    for (int t = -1; t < (int) workers_.size(); ++t) {   // the host, then the workers
+        int& at = t < 0 ? host_ : workers_[(size_t) t];
+        if (at >= (int) hot_.size() || hot_[(size_t) at] < 2) continue;
+        const int to = quiet_processor(at, load);
+        if (to < 0) continue;
+        if (t < 0) pin_current_thread(to);
+        else pool.pin_worker(t, to);
+        char line[160];
+        std::snprintf(line, sizeof line,
+                      "%slogical processor %d spent %.0f%% of the last second in interrupts and DPCs: "
+                      "the %s moved to %d", moved.empty() ? "" : "; ", at, 100.0 * load[(size_t) at],
+                      t < 0 ? "host thread" : "pool worker", to);
+        moved += line;
+        hot_[(size_t) at] = 0;
+        at = to;
+        ++moves;
+    }
+    return moved;
+#else
+    (void) pool;
+    return {};
+#endif
 }
 
 namespace {
@@ -120,8 +214,8 @@ void restore_thread_affinity(long long previous) {
 #endif
 }
 
-ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, bool spare_first) : host_works_(host_works) {
-    const std::vector<int> cores = core_plan(spare_first).workers;
+ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, std::vector<int> cores) : host_works_(host_works) {
+    if (cores.empty()) cores = CorePlacement(false).workers();
     n_ = n_workers > 0 ? n_workers : (int) cores.size();
     if (n_ < 1) n_ = 1;
     state_.store(kClosed | (uint64_t) n_, std::memory_order_relaxed);   // epoch 0, closed, everyone parked
@@ -136,6 +230,18 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, bool spare_firs
             worker(i);
         });
     }
+}
+
+void ExpertPool::pin_worker(int i, int core) {
+    if (i < 0 || i >= (int) threads_.size() || core < 0) return;
+#if defined(_WIN32)
+    SetThreadAffinityMask((HANDLE) threads_[(size_t) i].native_handle(), (DWORD_PTR) 1 << (core & 63));
+#else
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(core, &set);
+    pthread_setaffinity_np(threads_[(size_t) i].native_handle(), sizeof set, &set);
+#endif
 }
 
 ExpertPool::~ExpertPool() {
@@ -399,7 +505,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     // ---- **THE HOST DRAINS TOO (R2.2), INSTEAD OF SPINNING ON `done_`.**
     //
     // The loop below used to be `while (done_ != n) _mm_pause();`.  The host is pinned to its own core - the
-    // one `core_plan()` deliberately keeps the workers off - so for the whole drain that core was
+    // one `CorePlacement` deliberately keeps the workers off - so for the whole drain that core was
     // idle while five cores did six cores' worth of work.  Measured before the change: 33.7 GB/s against
     // 5/6 x 44.14 = 36.8 for five workers and 44.14 for six.
     //

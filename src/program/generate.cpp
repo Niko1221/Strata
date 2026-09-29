@@ -467,6 +467,8 @@ struct Drive {
     /// tier moves (the CPU takes every miss; pieces during the pool too slowed its RAM reads): `burst`, a window's
     /// start sends all the queued moves, and an update waits for the previous one's.
     strata::core::AdaptiveTier* tier1 = nullptr;
+    /// Where the host and the pool's workers run: checked before each window, once a second (CorePlacement::tick).
+    strata::kernels::cpu::CorePlacement* placement = nullptr;
     bool burst = false;
     std::vector<double> ring_us;   // by window size and layer
     Clock::time_point rows_at{};   // this window's last CPU rows (none yet: the epoch)
@@ -550,6 +552,10 @@ double tier1_rate(const Drive* t) {
 void drive_window(Drive* t, int T) {
     t->win_t = T;
     t->rows_at = Clock::time_point{};
+    if (t->placement != nullptr && t->d.pool != nullptr) {
+        const std::string moved = t->placement->tick(*t->d.pool);
+        if (!moved.empty()) std::fprintf(stderr, "strata generate: %s\n", moved.c_str());
+    }
     if (t->tier2 != nullptr) t->tier2->apply_pending(false);
     if (t->tier1 == nullptr) return;
     t->tier1->apply_pending(false);
@@ -1393,9 +1399,11 @@ int main(int argc, char** argv) {
     // --ple-io ram: the table goes into RAM once the SSD has delivered the experts and the draft layer
     if (ple_table.is_open() && !ple_table.start_ram_load(err))
         std::fprintf(stderr, "strata generate: %s; its rows stay on the SSD\n", err.c_str());
-    // with a second GPU the first core stays with the OS: that GPU's interrupts go there (core_plan)
-    const bool spare_first = o.second_gpu >= 0;
-    strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker, spare_first);
+    // where the host loop and the pool's workers run, moved off the processors that take interrupts as generation
+    // goes (drive_window); with a second GPU, whose work raises most of them, the first core starts free
+    strata::kernels::cpu::CorePlacement placement(/*spare_first=*/o.second_gpu >= 0);
+    strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
+                                          placement.workers());
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     std::fprintf(stderr, "strata generate: session is up; locating the head\n");
     const strata::core::WeightRef* wo = wt.find("output.weight");
@@ -1582,6 +1590,7 @@ int main(int argc, char** argv) {
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
     drive.d.pool = &pool;
+    drive.placement = &placement;
     drive.d.src = srcp;
     drive.d.n_expert = g.n_expert;
     drive.d.jobs.resize((size_t) K);
@@ -1690,12 +1699,11 @@ int main(int argc, char** argv) {
     strata::core::HitFn hit_fn =
         (o.no_pool || o.expert_cache <= 0) ? nullptr : &strata::core::expert_hit_run;
     void* pool_user = o.no_pool ? nullptr : (void*) &drive;
-    const strata::kernels::cpu::CorePlan cores = strata::kernels::cpu::core_plan(spare_first);
     std::string on;
-    for (int i = 0; i < pool.workers() && i < (int) cores.workers.size(); ++i)
-        on += (i > 0 ? "," : "") + std::to_string(cores.workers[(size_t) i]);
+    for (int i = 0; i < pool.workers() && i < (int) placement.workers().size(); ++i)
+        on += (i > 0 ? "," : "") + std::to_string(placement.workers()[(size_t) i]);
     std::fprintf(stderr, "strata generate: %d pool workers on logical processors %s, the host thread on %d%s%s\n",
-                 pool.workers(), on.c_str(), cores.host, pool.host_works() ? " (draining too)" : "",
+                 pool.workers(), on.c_str(), placement.host(), pool.host_works() ? " (draining too)" : "",
                  o.no_pool ? " (UNUSED: --no-pool)" : "");
 
     // **THE MISALIGNMENT WARNING THAT STOOD HERE IS GONE, BECAUSE THE MISALIGNMENT IS FIXED.**
@@ -2128,7 +2136,7 @@ int main(int argc, char** argv) {
     // Initialised unconditionally, including under --no-pool: the loop validates the scratch it is handed, so
     // passing a default-constructed one is an error rather than a fallback.  (It was, and the guard caught it -
     // which is the point of the guard.)  One allocation at setup either way.
-    if (!loop_scratch.init((size_t) K * g.n_embd * 4, err)) {
+    if (!loop_scratch.init((size_t) K * g.n_embd * 4, err, placement.host())) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -3405,10 +3413,10 @@ int main(int argc, char** argv) {
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
-                        "CPU pool call %.3f ms/round; %u worker sleeps\n", "pool multi", pool.ms_multi_gu / rounds,
-                        pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
+                        "CPU pool call %.3f ms/round; %u worker sleeps; %lld thread moves\n", "pool multi",
+                        pool.ms_multi_gu / rounds, pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
                         (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
-                        (drive.cpu_ms - pool_ms0) / rounds, pool.sleeps() - sleeps0);
+                        (drive.cpu_ms - pool_ms0) / rounds, pool.sleeps() - sleeps0, (long long) placement.moves);
         if (rounds > 0)
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,

@@ -364,8 +364,9 @@ struct SessionLoopScratch {
     long long pinned_core = -1;     ///< the affinity to restore, or -1 if the host was never pinned
     bool pinned = false;
 
-    /// Allocates the buffers and pins the host thread.  Call ONCE, at session setup.
-    bool init(size_t parts_bytes_in, std::string& err);
+    /// Allocates the buffers and pins the host thread to logical processor `host` (CorePlacement::host(); -1: the
+    /// last physical core's first).  Call ONCE, at session setup.
+    bool init(size_t parts_bytes_in, std::string& err, int host = -1);
     /// Frees everything and restores the affinity.  Safe to call twice, or on a default-constructed object.
     void free();
 };
