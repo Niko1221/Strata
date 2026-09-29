@@ -18,7 +18,7 @@ quoted commas, file/stdin CLI behavior and missing-file status. These validators
 run outside the agent workspace after the workflow finishes. A model's assertion
 that the task succeeded is not accepted as validation.
 
-Each phase allows 12 executed tools, 16 model turns and 240 seconds. Bash calls
+Each phase allows 24 executed tools, 32 model turns and 240 seconds. Bash calls
 are limited to 15 seconds and returned text to 16,000 characters per tool result.
 Requests use greedy sampling, disabled thinking, and at most 2,048 output tokens.
 No compaction, skills, discovered extensions, inherited context files or remote

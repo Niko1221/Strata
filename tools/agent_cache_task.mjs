@@ -15,7 +15,7 @@ const sessions = [];
 const phases = [];
 const budgets = new WeakMap();
 const system = 'You are implementing a small Python standard-library project. Work only in the current directory. '
-  + 'Do not access the network, install dependencies, or read parent directories. Use at most 12 tool calls per task. '
+  + 'Do not access the network, install dependencies, or read parent directories. Use at most 24 tool calls per task. '
   + 'Keep tool outputs below 16000 characters and shell commands below 15 seconds. Implement the requested files, '
   + 'run focused checks, then give a short result. Do not build unrelated features.';
 async function makeSession() {
@@ -31,7 +31,7 @@ async function makeSession() {
         return payload;
       });
       pi.on('tool_call', event => {
-        if (++budget.calls > 12) {
+        if (++budget.calls > 24) {
           budget.limited = true;
           return {block: true, terminate: true, reason: 'Benchmark tool-call limit'};
         }
@@ -74,7 +74,7 @@ async function phase(session, name, prompt) {
     if (event.type === 'tool_execution_end') {
       record.tool_ms += performance.now() - (activeTools.get(event.toolCallId) ?? performance.now());
     }
-    if (record.tool_calls > 12 || record.turns > 16) {
+    if (record.tool_calls > 24 || record.turns > 32) {
       record.limited = true;
       void session.abort();
     }

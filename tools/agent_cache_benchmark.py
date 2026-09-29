@@ -122,7 +122,9 @@ def main():
         config.write_text(json.dumps(run_cfg, indent=2))
         config.with_name('config.shared-settings.json').write_text(json.dumps({
             'reasoning_effort': 'none', 'temperature': 0, 'max_tokens': 2048}))
-        record = {'mode': label, 'inputs_sha256': manifest}
+        record = {'mode': label, 'inputs_sha256': manifest,
+                  'task_script_sha256': hashlib.sha256((ROOT/'tools/agent_cache_task.mjs').read_bytes()).hexdigest(),
+                  'engine_sha256': hashlib.sha256(args.engine.read_bytes()).hexdigest()}
         with (run/'server.log').open('w') as log:
             server = subprocess.Popen([sys.executable, '-m', 'serve.server', '--engine', 'strata',
                 '--config', str(config), '--host', '127.0.0.1', '--port', str(args.port)],
