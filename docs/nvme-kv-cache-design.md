@@ -443,3 +443,75 @@ The five alignment steps (rebase onto the shared core's base; adopt the core bou
 semantics; fixtures and one state hash; the failure contract) were executed serially on this branch, then the
 whole branch was rebased onto 0.1.21 and the GPU-phase validation was run (§6). The step-by-step running
 commentary lived in the deleted working file; what it found that is still true lives in §4, §5 and this section.
+
+## 10. The delta tier (the handoff's delta record family, Phases 0-6)
+
+`docs/nvme-delta-cache-handoff.md` is the build record; this section is what it converged to. The delta tier is
+a NEW record family beside the v3 snapshots - the snapshot format stays v3, `NvmeHeader` is untouched, nothing
+converts:
+
+    <kv-nvme dir>/
+      kv-<pid>-<seq>.bin               # v3 snapshots (unchanged; age out under the shared LRU)
+      delta/
+        chunks/<16-hex key>.bin        # sealed, block-aligned, content-addressed
+        states/<16-hex digest>.bin     # per-turn State record (the ragged tail + the running state)
+        log-<pid>-<seq>.manifest       # one per conversation head; superseded by unlink
+
+### 10.1 What it changes
+
+- **The DONE cascade's serialization**: instead of `KvNvmeStore::dump` rewriting a whole v3 snapshot, the delta
+  path (`delta_dump_at`, §5.9 of the handoff) writes ONLY the sealed chunks the previous head does not already
+  cover, plus one State record, then moves the manifest head (new manifest fsynced and renamed BEFORE the old
+  head is unlinked - the commit point; the crash matrix's C4). Chunks are exact contiguous slices of the v3
+  segments, keyed by an FNV chain over the conversation's ids through the chunk's last token - so forks share
+  the shared prefix's files by construction and stale chunks are unreachable.
+- **The restore** reassembles the exact v3 image (chunks + State + the manifest's ids/imgs/header fields) and
+  runs `nvme_restore_image` - the v3 apply pass extracted line-for-line from `nvme_restore` - so every validated
+  property of the v3 path is inherited, not re-derived. THE INVARIANT (§5.2): for the same session and boundary,
+  the reassembled image is byte-identical to what `nvme_dump_at` writes; asserted by the host fixture's `cmp`
+  oracle and on device by `tools/nvme_delta_p0_test.sh` (STATE_HASH over the restored prefix).
+- **The failure contract is unchanged and mapped** (§5.13): every manifest/chunk/State problem - magic, version,
+  geometry, format, BLOCK-vs-lcm, weights, digests, missing or short records - is `invalid` (recoverable, zero
+  CUDA calls, nothing written); only the apply pass can report `transfer_failed`. A corrupted record degrades to
+  refuse-and-drop, and the conversation's next dump REPAIRS the store (the re-dump re-derives every chunk and
+  rewrites them under their content keys - measured: 1513 fresh records, 0 bad after S3's corruption).
+- **Eviction/GC**: ONE byte cap across BOTH tiers (`kv_delta_enforce_cap`), LRU by mtime; eviction of a delta
+  conversation is just its manifest's unlink; the sweep (mark-and-sweep, marks read from the manifests ON DISK
+  - the in-memory list can be behind a C4/C5 dump that committed its manifest and failed after) reclaims exactly
+  the unreferenced set. Fork sharing survives eviction by construction (the P2-2 regression test).
+- **The limits (§5.15, stated not hidden)**: a boundary past the drafter ring (`T > max_cells`) refuses and the
+  whole-snapshot v3 fallback writes it (log line `nvme delta: boundary N exceeds the drafter ring (M) - whole
+  snapshot`); layer-split sessions are inert (both tiers); one writer per store; whole-file staging at restore
+  (the accepted C10 cost).
+
+### 10.2 Measured, and WHERE THE HANDOFF'S ESTIMATE WAS WRONG
+
+`tools/nvme_delta_p0_test.sh` (ALL PASS) and `tools/short_tests.py` (19/19 with `--kv-delta 1`) are the gates.
+The numbers that matter:
+
+| quantity | v3 cascade | delta cascade |
+|---|---|---|
+| snapshot/state at 2,355 tokens | 154 MB (= 36 MB KV + **118 MB running state**) | State record 112.7 MB + manifest |
+| per-turn write, 217 new tokens | ~154 MB (whole rewrite) | **115.8 MB** (112.7 MB State + 3.0 MB chunks) |
+| per-turn write vs session length | grows with the prefix | FLAT (2.6% spread over 4 turns) |
+| chunk files, 3 conversations sharing a prefix | 3 × whole snapshots | 644 files for 1,815 references (588/589 shared) |
+
+**The handoff's §2 estimate ("~34 GB per window, 33x") omitted this model's RUNNING STATE**: the GDN recurrence
+state is ~112 MB per turn, and §5.5 carries it per turn BY DESIGN (the C5 rule: every running-state byte comes
+from ONE source, the boundary checkpoint). The write reduction is therefore NOT 33x - it is
+`(total_tokens x 16 KB + 118 MB) / (new_tokens x 16 KB + 118 MB)`: ~6.5x at the production average turn
+(49k-token sessions, ~1.5k new tokens), ~2x on short sessions, growing toward the KV-only ratio as sessions
+grow. The tier still wins (and the SSD-endurance picture with it), but the honest ratio must be used in any
+endurance claim. A follow-up that would move the number: chunking the GDN/PLE state itself is NOT possible
+(it is a recurrence, not an append-only log); the lever is writing the State record LESS OFTEN (e.g. every N
+turns or at eviction - the maintainer's original "write when evicted from RAM" reading), trading a longer
+promote tail for the per-turn State write.
+
+### 10.3 Wiring
+
+`--kv-delta N` (default 1), beside `--kv-nvme` (which stays opt-in - a plain engine runs nothing new). The serve
+loop: the DONE path routes to the delta dump only on its own conditions (a turn boundary, no layer split,
+`T <= max_cells`), everything else to the v3 cascade; the promote is the longest match across BOTH tiers
+(`kv_nvme_match` reused verbatim per tier); the weight-set fingerprint (§5.8: each model shard's path, size,
+first and last 64 KiB) is checked at match time. `NvmeEntry.kind` (0 = v3, 1 = delta manifest) dispatches the
+restore; the failure handling is byte-for-byte the serve loop's old rule.
