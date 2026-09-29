@@ -375,6 +375,10 @@ class Vision:
             args += ["--threads", str(cfg["threads"])]
         if cfg.get("max_tokens"):
             args += ["--max-tokens", str(cfg["max_tokens"])]
+        if cfg.get("env"):
+            # e.g. {"CUDA_VISIBLE_DEVICES": "0"} puts the encoder on the helper card, not the primary
+            env = dict(env if env is not None else os.environ)
+            env.update({str(k): str(v) for k, v in cfg["env"].items()})
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log or subprocess.DEVNULL,
                                      text=True, encoding="utf-8", bufsize=1, env=env)

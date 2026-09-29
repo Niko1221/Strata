@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -104,9 +105,14 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
+    void set_pcie_off(bool off) { pcie_off_ = off; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
+    /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
+    /// window), as one line; empty when off.
+    std::string profile_report();
 
 private:
     bool capture(int T, std::string& err);
@@ -121,6 +127,12 @@ private:
     bool head_sampling_ = true;          ///< set_head_sampling
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
+    static constexpr int kProfPer = 32;              // stamps per layer
+    bool prof_on_ = false;
+    unsigned long long* prof_ = nullptr;              // device: n_layers * kProfPer + 4 stamps
+    std::vector<unsigned long long> prof_h_;
+    double prof_sum_[2][kProfPer] = {};   // [GDN / QSA layers][stage]
+    int64_t prof_windows_ = 0;
 
     const WeightTable* wt_ = nullptr;
     const ModelGeometry* g_ = nullptr;
@@ -150,6 +162,9 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    cudaStream_t aux_[2] = {};                                    // parallel branches of the captured window
+    cudaEvent_t fev_[4] = {};
+    bool pcie_off_ = false;                                       // no PCIe share (--pcie-frac 0)
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)

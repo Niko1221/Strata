@@ -31,6 +31,8 @@
 
 namespace strata::core {
 
+class PeerExperts;   // the second GPU's expert tier (peer_experts.hpp)
+
 /// Where one routed expert's bytes come from.
 ///
 /// Phase 2 has NO cache (`phase-2-correct-engine.md`: hit rate `h = 0`), so the only implementation is a
@@ -212,6 +214,9 @@ struct ExpertDispatch {
     std::vector<float> usage;
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
+    /// the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
+    PeerExperts* peer = nullptr;
+    int64_t peer_entries = 0;      ///< routed entries the peer served in verify windows
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
