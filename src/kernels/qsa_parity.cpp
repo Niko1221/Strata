@@ -1381,16 +1381,23 @@ int main(int argc, char** argv) {
     // The prefill path appends a chunk in one native_qsa_indexer_append_batch call, the decode path appends
     // token by token - and one cache must never be able to tell which path filled it (rope_scaling.hpp's
     // one-rotation rule).  So the batch's whole end state must be BIT-IDENTICAL to the sequential appends',
-    // under the two extremes of the scaling config: none (today's rotation) and yarn factor 2, whose mscale
-    // and corr-dims both kernels must take from the same RopeScaling.  Eight cells: exactly two completed
+    // under all three scaling configs: none (today's rotation), linear 2 (pure angle shrink, no correction)
+    // and yarn 2 (corr-dims ramp and the mscale magnitude) - both kernels must take the same RopeScaling.
+    // "Bit-identical" is asserted on the bit representations (memcmp of the state words): float != would
+    // pass a NaN-payload or -0.0 flip that the claim does not cover.  Eight cells: exactly two completed
     // blocks, so the paths' end states agree on block_pos too (a mid-block chunk end leaves the sequential
     // path pointing at the open block's base and the batch at the last completed one's - upstream C-2's own
-    // semantics, the same for every scaling).
+    // semantics, the same for every scaling; see native_qsa_indexer.hpp's block_pos contract).
     {
         std::printf("\n-- the native indexer's batched append vs the sequential one\n");
         const int64_t NB = 8;                          // exactly two complete blocks of r=4
         const int32_t BASE = 100;                      // positions 100..107, not cell indices 0..7
         const int64_t MC = 1024;                       // the capacity both sides validate against
+        using RST = strata::kernels::RopeScalingType;
+        struct Variant { const char* name; RST type; double factor; double ext; };
+        const Variant variants[] = {{"none", RST::None, 1.0, 0.0},
+                                    {"linear 2", RST::Linear, 2.0, 0.0},
+                                    {"yarn 2", RST::YaRN, 2.0, 1.0}};
         std::vector<float> raws((size_t) NB * IDXD);
         for (int64_t t = 0; t < NB; ++t)
             for (int64_t d = 0; d < IDXD; ++d)
@@ -1398,9 +1405,11 @@ int main(int argc, char** argv) {
         cudaStream_t cs = nullptr;
         check(cudaStreamCreate(&cs), "cs");
         std::vector<float> none_pooled;
-        for (int variant = 0; variant < 2; ++variant) {
+        for (const Variant& var : variants) {
             strata::kernels::RopeScaling sc;
-            if (variant == 1) { sc.type = strata::kernels::RopeScalingType::YaRN; sc.factor = 2.0; sc.ext_factor = 1.0; }
+            sc.type = var.type;
+            sc.factor = var.factor;
+            sc.ext_factor = var.ext;
             const size_t prows = (size_t) (MC / R + 1) * IDXD, trows = (size_t) (R - 1) * IDXD;
             Dev<float> pooledA(prows), deadA(IDXD), tailA(trows), pooledB(prows), deadB(IDXD), tailB(trows);
             Dev<int32_t> bposA(1), bposB(1), dpos(1);
@@ -1425,21 +1434,21 @@ int main(int argc, char** argv) {
             const std::vector<float> ta = tailA.get(trows), tbb = tailB.get(trows);
             const std::vector<int32_t> ba = bposA.get(1), bb = bposB.get(1);
             long long bad = 0;
-            for (size_t i = 0; i < pa.size(); ++i) bad += pa[i] != pb[i];
-            for (size_t i = 0; i < da.size(); ++i) bad += da[i] != db[i];
-            for (size_t i = 0; i < ta.size(); ++i) bad += ta[i] != tbb[i];
-            bad += ba[0] != bb[0];
-            std::printf("  %-44s %s (%lld of %zu state values differ)\n",
-                        variant == 0 ? "batch vs sequential, none" : "batch vs sequential, yarn 2",
+            for (size_t i = 0; i < pa.size(); ++i) bad += std::memcmp(&pa[i], &pb[i], 4) != 0;
+            for (size_t i = 0; i < da.size(); ++i) bad += std::memcmp(&da[i], &db[i], 4) != 0;
+            for (size_t i = 0; i < ta.size(); ++i) bad += std::memcmp(&ta[i], &tbb[i], 4) != 0;
+            bad += std::memcmp(&ba[0], &bb[0], 4) != 0;
+            std::printf("  %-44s %s (%lld of %zu state words differ)\n",
+                        (std::string("batch vs sequential, ") + var.name).c_str(),
                         bad ? "*** WRONG ***" : "bit-identical", bad, pa.size() + da.size() + ta.size() + 1);
             if (bad) ++g_bad;
-            if (variant == 0) none_pooled = pa;
+            if (var.type == RST::None) none_pooled = pa;
             else {
-                int differ = 0;
-                for (size_t i = 0; i < pa.size(); ++i) differ += pa[i] != none_pooled[i];
-                std::printf("  %-44s %d of %zu pooled values moved\n", "the scaling is visible in the batched keys",
-                            differ, pa.size());
-                if (!differ) { std::printf("    *** the batched append ignored its scaling ***\n"); ++g_bad; }
+                int moved = 0;
+                for (size_t i = 0; i < pa.size(); ++i) moved += std::memcmp(&pa[i], &none_pooled[i], 4) != 0;
+                std::printf("  %-44s %d of %zu pooled words differ from the none baseline\n",
+                            (std::string("the scaling is visible, ") + var.name).c_str(), moved, pa.size());
+                if (!moved) { std::printf("    *** the batched append ignored its scaling ***\n"); ++g_bad; }
             }
         }
         check(cudaStreamDestroy(cs), "csd");
