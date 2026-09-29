@@ -21,6 +21,9 @@ void ck(cudaError_t e, const char* what) {
 }
 
 int64_t pad512(int64_t n) { return (n + 511) / 512 * 512; }
+constexpr int STRATA_Q2_0 = 42;
+ggml_type mmq_type(int t) { return t == STRATA_Q2_0 ? GGML_TYPE_Q2_0 : (ggml_type) t; }
+
 
 __global__ void copy16_kernel(const uint4* __restrict__ a, int64_t na, const uint4* __restrict__ b, int64_t nb,
                               uint4* __restrict__ ab_dst, const uint4* __restrict__ c, int64_t nc, uint4* __restrict__ c_dst) {
@@ -90,7 +93,7 @@ unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
 bool built() { return true; }
 
 bool supported(int t) {
-    switch ((ggml_type) t) {
+    switch (mmq_type(t)) {
         case GGML_TYPE_Q2_0: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
             return true;
@@ -100,7 +103,8 @@ bool supported(int t) {
 }
 
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
-    return (size_t) rows * (size_t) (cols / ggml_blck_size((ggml_type) t)) * ggml_type_size((ggml_type) t);
+    const ggml_type type = mmq_type(t);
+    return (size_t) rows * (size_t) (cols / ggml_blck_size(type)) * ggml_type_size(type);
 }
 
 size_t q8_bytes(int64_t rows, int64_t cols) {
@@ -109,7 +113,7 @@ size_t q8_bytes(int64_t rows, int64_t cols) {
 
 void quantize(const float* x, const int32_t* ids, void* xq, int t, int64_t cols, int64_t ld, int64_t rows, void* stream) {
     if (rows <= 0) return;
-    quantize_mmq_q8_1_cuda(x, ids, xq, (ggml_type) t, cols, ld, rows * ld, rows * ld, pad512(cols), rows, 1, 1,
+    quantize_mmq_q8_1_cuda(x, ids, xq, mmq_type(t), cols, ld, rows * ld, rows * ld, pad512(cols), rows, 1, 1,
                            (cudaStream_t) stream);
     ck(cudaGetLastError(), "quantize");
 }
@@ -123,7 +127,7 @@ Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
 
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
-    const ggml_type t = (ggml_type) p.type;
+    const ggml_type t = mmq_type(p.type);
     const int64_t qk = ggml_blck_size(t), bpr = p.w_cols / qk;
     const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, nullptr,
                         p.w_cols, p.w_rows, p.total_rows, bpr, p.total_rows, p.ld_dst,
