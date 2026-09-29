@@ -329,7 +329,9 @@ Results:
   converter and its verification are in the branch history if they are ever needed again.
 - **Metrics (issue #57's C11)**: the three failure classes, promotes, refusals and dump results are
   stderr-only; `serve/telemetry.py` parses nothing NVMe-related. A log reader - not a metric - is currently
-  the only way to tell the failure classes apart.
+  the only way to tell the failure classes apart. The design that would close it (an engine `KV` line per request,
+  a serve-side store reader, and a web Cache page) is `docs/nvme-kv-cache-web-design.md` - design only, nothing
+  of it built.
 - **Per-turn snapshot accumulation** (no cross-restart supersession) - bounded by the cap; a
   conversation identity would enable per-conversation supersession.
 - **Sparsity** (Step 4, default skip): only the blocks the QSA selection can reach need storing;
