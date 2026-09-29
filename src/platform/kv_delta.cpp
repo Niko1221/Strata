@@ -1153,6 +1153,7 @@ void KvDeltaStore::sweep() {
     }
     size_t swept = 0;
     uint64_t bytes = 0;
+    uint64_t kept = 0;
     for (const char* sub : {"/chunks", "/states"}) {
         for (const fs::directory_entry& de : fs::directory_iterator(dir_ + sub, ec)) {
             if (ec) break;
@@ -1160,14 +1161,27 @@ void KvDeltaStore::sweep() {
             const std::string name = de.path().filename().string();
             const bool temp = name.rfind(".tmp-", 0) == 0;
             const std::string key = (!temp && name.size() > 4) ? name.substr(0, name.size() - 4) : name;
+            const uint64_t sz = (uint64_t) de.file_size(ec);
             if (temp || !mark[key]) {
-                bytes += (uint64_t) de.file_size(ec);
+                bytes += sz;
                 fs::remove(de.path(), ec);
                 ++swept;
+            } else {
+                kept += sz;
             }
         }
     }
-    total_ -= bytes;
+    // RECOMPUTE the tier's total from the disk instead of subtracting the swept bytes: the supersede already
+    // subtracted the old head's entry (whose bytes counted the records the sweep now deletes), so a plain
+    // subtraction would take the same file off the books TWICE - the total drifted low by ~the State record's
+    // size per superseded turn, and a low total makes the cap UNDER-evict (the disk grows past --kv-nvme-max).
+    // The walk above is the disk's truth; the manifests ride on top of it.
+    total_ = kept;
+    for (const fs::directory_entry& de : fs::directory_iterator(dir_, ec)) {
+        if (ec) break;
+        if (de.is_regular_file() && de.path().filename().string().rfind("log-", 0) == 0)
+            total_ += (uint64_t) de.file_size(ec);
+    }
     if (swept)
         std::fprintf(stderr, "strata serve: kv-delta: swept %zu orphan chunks (%.2f GiB)\n",
                      swept, (double) bytes / (double) (1LL << 30));
