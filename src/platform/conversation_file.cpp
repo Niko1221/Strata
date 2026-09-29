@@ -9,6 +9,7 @@
 #include <bit>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 
@@ -212,20 +213,29 @@ bool conversation_identity(const std::vector<ConversationAsset>& assets, const s
         text("strata-conversation-state-v1"); text(settings);
         const auto count = little(assets.size()); hash.update(count.data(), count.size());
         std::array<char, 32768> buffer;
+        std::map<std::filesystem::path, std::pair<uint64_t, ConversationIdentity>> contents;
         for (const auto& asset : assets) {
             text(asset.role);
-            std::ifstream f(asset.path, std::ios::binary);
-            if (!f) throw std::runtime_error("cannot open identity asset: " + asset.path.string());
-            Digest content;
-            uint64_t size = 0;
-            while (f) {
-                f.read(buffer.data(), buffer.size());
-                const auto n = static_cast<size_t>(f.gcount());
-                content.update(buffer.data(), n); add(size, n);
+            // The same GGUF often supplies embeddings, dense layers, PLE and
+            // experts. Read it once within this invocation, never reuse a stale
+            // fingerprint from an earlier process or file-stat-only cache.
+            const auto path = std::filesystem::canonical(asset.path);
+            auto [entry, fresh] = contents.try_emplace(path);
+            if (fresh) {
+                std::ifstream f(path, std::ios::binary);
+                if (!f) throw std::runtime_error("cannot open identity asset: " + path.string());
+                Digest content;
+                uint64_t size = 0;
+                while (f) {
+                    f.read(buffer.data(), buffer.size());
+                    const auto n = static_cast<size_t>(f.gcount());
+                    content.update(buffer.data(), n); add(size, n);
+                }
+                if (f.bad() || !f.eof()) throw std::runtime_error("cannot read identity asset: " + path.string());
+                entry->second = {size, content.finish()};
             }
-            if (f.bad() || !f.eof()) throw std::runtime_error("cannot read identity asset: " + asset.path.string());
-            const auto n = little(size); hash.update(n.data(), n.size());
-            const auto sum = content.finish(); hash.update(sum.data(), sum.size());
+            const auto n = little(entry->second.first); hash.update(n.data(), n.size());
+            const auto& sum = entry->second.second; hash.update(sum.data(), sum.size());
         }
         identity = hash.finish();
         return true;

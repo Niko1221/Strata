@@ -8,6 +8,8 @@
 
 namespace strata::core {
 
+std::array<int64_t, 18> conversation_geometry_key(const ModelGeometry& geometry);
+
 // Caller synchronizes the device before saving, and after restoring all layers.
 // include_index is false for the draft layer (its attention has no indexer).
 size_t conversation_kv_bytes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index);

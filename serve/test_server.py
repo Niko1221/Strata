@@ -266,6 +266,27 @@ class SamplingKeys(unittest.TestCase):
         self.assertFalse([k for k in self.keys(temperature=0.7) if k.startswith("penalty")])
 
 
+class DiskCacheArguments(unittest.TestCase):
+    def test_frontend_files_override_stale_config_identity(self):
+        from serve.server import engine_args
+        original = ["--conversation-cache-disk", "disk-cache", "--conversation-cache-disk-mib", "1024",
+                    "--conversation-cache-tokenizer", "old-tokens", "--conversation-cache-template", "old-template"]
+        cfg = {"args": original[:], "gpu": [0, 1]}
+        tokenizer, template = Path("actual-tokens"), Path("actual-template")
+        result = engine_args(cfg, tokenizer=tokenizer, template=template)
+        self.assertEqual(result[result.index("--conversation-cache-tokenizer") + 1], str(tokenizer.resolve()))
+        self.assertEqual(result[result.index("--conversation-cache-template") + 1], str(template.resolve()))
+        self.assertEqual(result.count("--conversation-cache-tokenizer"), 1)
+        self.assertEqual(result.count("--conversation-cache-template"), 1)
+        self.assertIn("--layer-split", result)
+        self.assertEqual(cfg["args"], original)
+
+    def test_no_disk_flag_keeps_existing_engine_arguments(self):
+        from serve.server import engine_args
+        cfg = {"args": ["--pack", "pack", "--conversation-cache-mib", "1024"]}
+        self.assertEqual(engine_args(cfg, tokenizer=Path("tokens"), template=Path("template")), cfg["args"])
+
+
 class GpuChoice(unittest.TestCase):
     """Issue #51: the config's \"gpu\" reaches the engine as CUDA_VISIBLE_DEVICES, numbered like nvidia-smi."""
 

@@ -98,19 +98,27 @@ public:
     size_t evictions() const { return evictions_; }
 
     template<class Token>
+    static Match match_image(const SavedConversation& image, const std::vector<Token>& prompt,
+                             const std::vector<ConversationImageKey>& images, bool cvec) {
+        Match match;
+        if (image.cvec != cvec) return match;
+        auto consider = [&](const ConversationCheckpoint& checkpoint, bool live) {
+            const int64_t n = conversation_prefix(checkpoint, prompt, images);
+            if (n > match.tokens) match = {0, n, live};
+        };
+        consider(image.live, true);
+        for (const auto& checkpoint : image.checkpoints) consider(checkpoint, false);
+        return match;
+    }
+
+    template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
-            const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
-            auto consider = [&](const ConversationCheckpoint& c, bool live) {
-                const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live};
-            };
-            consider(e.live, true);
-            for (const auto& c : e.checkpoints) consider(c, false);
+            const auto match = match_image(entries_[i], prompt, images, cvec);
+            if (match.tokens > best.tokens) best = {i, match.tokens, match.live};
         }
         return best;
     }

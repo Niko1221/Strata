@@ -1,4 +1,4 @@
-# Conversation snapshots and RAM cache
+# Conversation snapshots and RAM/disk cache
 
 [Issue #57](https://github.com/Niko1221/Strata/issues/57) preserves reusable state
 when independent agent conversations alternate on one server. Requests remain
@@ -96,8 +96,32 @@ that shares its byte budget without consuming a parked slot. Neither promotion n
 cache destruction calls the spill callback. A protected disk hit may cause a spill
 to be declined when disk space is tight; RAM eviction must still proceed.
 
-Build these optional components with `STRATA_ENABLE_CONVERSATION_DISK=ON` (requires
-OpenSSL Crypto); default builds have no new dependency. Runtime identity collection
-and serve-loop promotion wiring are still pending, so this branch does not yet
-provide a usable disk cache. The staging bound covers vector storage and a 64 KiB
-codec allowance, not allocator or process RSS overhead.
+Build with `STRATA_ENABLE_CONVERSATION_DISK=ON` (requires OpenSSL Crypto); default
+builds have no new dependency. In the engine config's `args`, enable RAM caching
+and add `--conversation-cache-disk DIR --conversation-cache-disk-mib N`.
+`--conversation-cache-disk-slots` defaults to 128. A zero disk byte/entry quota
+disables persistence without filesystem I/O. An enabled disk tier requires
+`--serve`, a directory, and enabled RAM/prompt caching; unsupported builds reject it.
+
+Startup hashes complete pack, native GGUF, PLE, draft, tokenizer and steering
+assets, plus the engine executable. Shared files are read once per startup,
+without a persistent file-stat fingerprint cache. Identity also binds inference
+arguments, `STRATA_*` environment settings, resolved geometry/KV layout, GPU/runtime
+and expert/prefill settings. This is deliberately strict: changed paths or unrelated
+inference options may cause misses. Assets must remain immutable while loaded.
+The frontend supplies its actual tokenizer and template paths. Direct engine
+clients can set `--conversation-cache-tokenizer DIR` (default `PACK/tokenizer`) and
+`--conversation-cache-template FILE` when using an external template.
+
+The serve loop compares active/RAM/disk prefixes, with active state winning ties
+and RAM winning equal inactive prefixes. It reserves disk staging within the RAM
+budget, then rechecks the RAM match after any evictions. A decoded disk image is
+matched again and core-validated before changing GPU state. Read, integrity or
+admission failures fall back to remaining RAM/active state or ordinary prefill;
+they may sacrifice reuse after staging has evicted RAM entries. GPU transfer
+failure remains fatal. Successful promotion updates disk LRU. The RAM limit
+reserves 64 KiB for disk operations, and decoded staging includes a further codec
+allowance; these limits cover vector storage, not allocator or process RSS.
+
+The integration is implemented but has only host tests and C++ syntax checks so
+far. Full-model restart, output/state parity and pressure validation remain open.

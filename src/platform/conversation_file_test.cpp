@@ -231,6 +231,10 @@ int main() {
     check(conversation_identity({{"weights", asset}}, "kv=int8", initial, error), "hash whole asset");
     check(conversation_identity({{"weights", moved}}, "kv=int8", other, error) && other == initial,
           "relocating unchanged assets preserves identity");
+    ConversationIdentity repeated, copied;
+    check(conversation_identity({{"weights", asset}, {"embedding", asset}}, "kv=int8", repeated, error) &&
+          conversation_identity({{"weights", asset}, {"embedding", moved}}, "kv=int8", copied, error) && repeated == copied,
+          "deduplicated reads retain each role and match independently copied assets");
     content[100000] = 'b'; write(moved, content);
     check(conversation_identity({{"weights", moved}}, "kv=int8", other, error) && other != initial,
           "middle content change with same size and ends invalidates identity");

@@ -6,16 +6,15 @@
 #include <limits>
 
 namespace strata::core {
-namespace {
-using conversation_detail::add;
-using conversation_detail::product;
-
-std::array<int64_t, 18> geometry_key(const ModelGeometry& g) {
+std::array<int64_t, 18> conversation_geometry_key(const ModelGeometry& g) {
     return {g.n_embd, g.n_layers, g.qsa_interval, g.ssm_state_size, g.ssm_k_heads,
             g.ssm_v_heads, g.ssm_d_conv, g.ssm_conv_channels, g.ssm_value_dim,
             g.n_head, g.n_head_kv, g.head_dim, g.idx_q_heads, g.idx_key_dim,
             g.hc, g.hc_lr, g.n_expert, g.n_ff};
 }
+namespace {
+using conversation_detail::add;
+using conversation_detail::product;
 
 bool fail(std::string& error, const char* message) {
     error = std::string("conversation snapshot: ") + message;
@@ -100,7 +99,7 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
 
 bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z, std::string& error) {
     z = {};
-    const auto key = geometry_key(g);
+    const auto key = conversation_geometry_key(g);
     for (size_t i = 0; i < key.size(); ++i)
         if (key[i] < 0 || (i != 1 && key[i] == 0)) return fail(error, "invalid model geometry");
     size_t recurrence = 0, convolution = 0;
@@ -209,7 +208,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     if (!conversation_snapshot_bytes(view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
     SavedConversation captured;
-    captured.geometry = geometry_key(g);
+    captured.geometry = conversation_geometry_key(g);
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
     captured.kv.resize((size_t) g.n_qsa_layers() + 1);
@@ -225,7 +224,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error) {
     if (!image.live.stage_parts.empty()) return fail(error, "layer-split parking is not supported");
-    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    if (image.geometry != conversation_geometry_key(g)) return fail(error, "incompatible runtime geometry");
     const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
     if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
     if (image.kv.size() != (size_t) g.n_qsa_layers() + 1) return fail(error, "invalid K/V layer count");
