@@ -11,8 +11,8 @@ not the new base. The Windows admission test is @midhatn's `32cf918`, retained a
 After separating the general benchmark tooling and merging 0.1.27, all 47 tool
 tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
 rejection now clears its diagnostic error before the new batched draft-prefill
-path runs. That C++ integration change still needs an engine build and model
-validation; these Python passes do not establish it. No benchmark server or GPU
+path runs. The NVMe-enabled engine builds on the new base; final model validation
+remains outstanding, and Python passes do not establish it. No benchmark server or GPU
 was used for these checks.
 
 On the dependent NVMe branch, five CPU-only CTest targets pass: RAM policy,
@@ -38,7 +38,11 @@ operations. Local commands and logs are in `logs/nvme-host-20260929/` on the NVM
 
 The serve-loop integration passes GCC C++20 syntax checking against CUDA 13.4
 headers with disk support both enabled and disabled, including the shared geometry
-key export. This is not a linked engine build. The dependent frontend suite passes 68 tests
+key export. The linked NVMe-enabled engine and snapshot/host test binaries also
+build with GCC 15.2, CUDA 13.4, SM89 and portable AVX2. Linked host validation and
+injected-transfer CTests pass with GPU visibility disabled; 26 CLI rejection cases
+pass without creating a cache directory. Build/CLI logs are in
+`logs/review-0.1.27/`. The dependent frontend suite passes 68 tests
 (three skipped), including tokenizer/template forwarding from the actual frontend
 paths. Full-model NVMe promotion, restart, output parity and state hashes are still
 unverified; no running benchmark server or GPU was used for these checks.
@@ -54,8 +58,8 @@ State fingerprint reads now use fixed-size chunks and reject transfer failures.
 baseline, eviction, restart, admission denial, changed tokenizer identity and
 corrupted files. It requires known answers, token/main-state parity, matching
 draft read-back fingerprints across restart, and the requested draft-prefill
-path. Its five offline verifier tests pass, including 28 rejected evidence
-mutations and optimized Python. This establishes the verifier's checks, not
+path. Its seven offline verifier tests pass, including 28 lifecycle evidence
+mutations, six insufficient-ring cases, missing residency logs and optimized Python. This establishes the verifier's checks, not
 full-model success. All model executions remain pending the exclusive test window.
 
 ```sh
@@ -125,12 +129,15 @@ copied tokenizer and generated cache files:
 
 ```sh
 python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output NEW_DIRECTORY --draft-path batched
-python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output ANOTHER_NEW_DIRECTORY --draft-path ring
+python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output ANOTHER_NEW_DIRECTORY --draft-path ring --paragraphs 4096
 ```
 
 Add `--run` in the exclusive window. Run INT8 and K8V4 configurations where
 supported. The gate records actual paths/modes and refuses to count an absent
-batched pass or ring restore as coverage.
+batched pass or ring restore as coverage. Ring runs must exceed both main
+residency and the draft window; short prompts are refused before model loading.
+Verification requires the restored prefix to exceed the actual draft residency
+reported by the engine, so an unwrapped ring cannot pass.
 
 ## Outstanding evidence
 

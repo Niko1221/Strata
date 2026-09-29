@@ -22,8 +22,8 @@ from serve.server import StrataEngine, child_env
 
 def evidence(text):
     return {
-        'verified': [dict(draft=h, cells=int(c), mode=int(m), source=s) for h, c, m, s in re.findall(
-            r'SNAPSHOT_VERIFY draft=([0-9a-f]{16}) cells=(\d+) mode=(\d+) source=(ram|disk)', text)],
+        'verified': [dict(draft=h, cells=int(c), mode=int(m), source=s, resident=int(r)) for h, c, m, s, r in re.findall(
+            r'SNAPSHOT_VERIFY draft=([0-9a-f]{16}) cells=(\d+) mode=(\d+) source=(ram|disk) resident=(\d+)', text)],
         'draft_prefill': [dict(path=p, mode=int(m), cells=int(c)) for p, m, c in re.findall(
             r'DRAFT_PREFILL path=(batched|token) mode=(\d+) cells=(\d+)', text)],
         'spills': text.count('disk cache: spilled '),
@@ -91,6 +91,9 @@ def verify(results):
             require(record['reused'] >= results['prompt_tokens'], f'{name}: full disk prefix not restored')
             require(len(verified) == 1 and verified[0]['mode'] == mode and verified[0]['cells'] >= results['prompt_tokens'],
                     f'{name}: missing draft read-back proof for the requested layout')
+            if mode == 2:
+                require(0 < verified[0]['resident'] < results['prompt_tokens'],
+                        f'{name}: restored prompt did not exceed the actual draft ring')
             fingerprints.append(verified[0]['draft'])
         else:
             require(record['reused'] == 0 and not verified, f'{name}: incompatible/unadmitted file reused')
@@ -142,6 +145,16 @@ def main():
         content += f'\nThe exact code to remember is {code}. Reply OK.'
         return encode(tpl.render([{'role': 'user', 'content': content}], enable_thinking=False))
     A, B, C = prompt('A', expected), prompt('B', 'BRONZE-271828'), prompt('C', 'CORAL-161803')
+    if a.draft_path == 'ring':
+        # The draft ring is window + 4*spec + 64 cells, then page-rounded.
+        # Reject a short test before loading any model; actual residency is also
+        # required in the read-back evidence, since the runtime may fall back.
+        window = 32768
+        for i, arg in enumerate(cfg['args'][:-1]):
+            if arg == '--mtp-window':
+                window = int(cfg['args'][i + 1])
+        require(window > 0 and len(A) > max(a.resident_cells, window + 128),
+                'ring gate needs a prompt beyond main residency and the draft window; increase --paragraphs')
     suffix = encode('<|im_end|>\n<|im_start|>user\nWhat exact code did I ask you to remember? '
                     'Reply with only that code.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n')
     disk = output / 'disk'

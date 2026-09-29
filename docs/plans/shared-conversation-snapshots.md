@@ -123,13 +123,12 @@ failure remains fatal. Successful promotion updates disk LRU. The RAM limit
 reserves 64 KiB for disk operations, and decoded staging includes a further codec
 allowance; these limits cover vector storage, not allocator or process RSS.
 
-The integration is implemented but has only host tests and C++ syntax checks so
-far. Full-model restart, output/state parity and pressure validation remain open.
+The integration builds on Linux with CUDA and passes host tests. Full-model restart, output/state parity and pressure validation remain open.
 
 For model validation, `STRATA_SNAPSHOT_VERIFY=1` records which draft-prefill path
 ran and compares restored draft KV bytes with the saved image immediately after
 restore. The read-back checks authoritative storage and resident ring pages with
-64 KiB of workspace, then emits a fingerprint only on success. A mismatch or
+64 KiB of workspace, then emits a fingerprint and actual resident-cell count only on success. A mismatch or
 read-back failure stops the test engine. This diagnostic is off by default.
 
 Disk I/O reports completed stream operations and directory scans to the request

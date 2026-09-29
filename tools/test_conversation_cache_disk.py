@@ -15,7 +15,7 @@ def fixture(path='batched'):
     def record(name, reused=0, initial=False):
         return dict(name=name, ids=[1] if initial else [31, 41], text='AZURE-314159', finish='stop', reused=reused, state=dict(state))
     def proof(disk=False):
-        return dict(verified=[dict(draft='0123456789abcdef', cells=100, mode=mode, source='disk')] if disk else [],
+        return dict(verified=[dict(draft='0123456789abcdef', cells=100, mode=mode, source='disk', resident=64 if mode == 2 else 4096)] if disk else [],
                     draft_prefill=[dict(path='batched' if mode == 0 else 'token', mode=mode, cells=99)],
                     spills=1 if disk else 0, promotion_skips=0, integrity_failures=0,
                     parks=[dict(parked=1, bytes=1234)] if disk else [])
@@ -82,16 +82,28 @@ class DiskGate(unittest.TestCase):
 
     def test_log_evidence(self):
         parsed = evidence('''strata serve: DRAFT_PREFILL path=batched mode=0 cells=1024
-strata serve: SNAPSHOT_VERIFY draft=0123456789abcdef cells=2048 mode=0 source=disk
+strata serve: SNAPSHOT_VERIFY draft=0123456789abcdef cells=2048 mode=0 source=disk resident=4096
 strata serve: conversation cache: parked 2048 tokens in 1.0 ms; parked=1 bytes=8192 evictions=1
 strata serve: disk cache: spilled 2048 tokens
 strata serve: disk cache: promotion skipped (snapshot integrity check failed)
 ''')
-        self.assertEqual(parsed['verified'], [dict(draft='0123456789abcdef', cells=2048, mode=0, source='disk')])
+        self.assertEqual(parsed['verified'], [dict(draft='0123456789abcdef', cells=2048, mode=0, source='disk', resident=4096)])
         self.assertEqual(parsed['parks'], [dict(parked=1, bytes=8192)])
         self.assertEqual(parsed['spills'], 1)
         self.assertEqual(parsed['integrity_failures'], 1)
         self.assertEqual(parsed['promotion_skips'], 1)
+
+    def test_ring_must_wrap_before_restore(self):
+        for phase in ('producer', 'restart'):
+            for resident in (0, 100, 1024):
+                with self.subTest(phase=phase, resident=resident):
+                    data = fixture('ring')
+                    data['phases'][phase]['evidence']['verified'][0]['resident'] = resident
+                    with self.assertRaisesRegex(AssertionError, 'actual draft ring'):
+                        verify(data)
+
+    def test_old_log_is_not_residency_proof(self):
+        self.assertEqual(evidence('SNAPSHOT_VERIFY draft=0123456789abcdef cells=2048 mode=2 source=disk')['verified'], [])
 
     def test_dry_run_does_not_open_config_or_engine(self):
         script = Path(__file__).with_name('conversation_cache_disk.py')
