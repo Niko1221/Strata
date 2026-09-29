@@ -254,6 +254,42 @@ struct TierActivity {
     uint64_t swept_bytes = 0;
 };
 
+/// WHAT THE CACHE TIERS DID FOR ONE REQUEST, plus what they have done for the life of the process - the facts
+/// the serve loop prints as its `KV` line (docs/nvme-kv-cache-web-design.md §3).  REPORTING ONLY: nothing in
+/// the engine reads this struct, and filling it changes no resume / promote / dump / cap / sweep decision.  A
+/// plain aggregate of defaults, filled where the serve loop already knows the number.
+///
+/// The per-request fields describe ONE request (the serve loop resets them at the top of every request); the
+/// `total_*` fields are cumulative over the process and are never reset, so a `KV` line the server never saw
+/// (a cancelled request, a malformed line) cannot corrupt the totals it reads off the LAST line it did see.
+struct TierCounters {
+    // ---- this request
+    const char* src = "none";      ///< none (cold re-prefill) | ram (live session or a checkpoint) | nvme (v3
+                                   /// snapshot) | delta (manifest).  The serve loop already computes exactly
+                                   /// this (`from_live`, `from_nvme`, `NvmeEntry::kind`); it is a `const char*`
+                                   /// because the line prints it verbatim.
+    int64_t resume = 0;            ///< tokens this request did not read (the same number DONE reports)
+    double promote_ms = 0.0;       ///< wall time of the restore() call - the promote's TTFT cost
+    uint64_t promote_bytes = 0;    ///< what the tier read: NvmeEntry::bytes, for either tier
+    uint64_t staging_bytes = 0;    ///< the whole-file buffer the restore staged (the accepted C10 cost); for
+                                   /// delta the assembled image, which is NOT the entry's byte count
+    double dump_ms = 0.0;          ///< the cascade's server occupancy at DONE: dump + cap, after the reply
+                                   /// streamed and before the next request can start
+    uint64_t dump_bytes = 0;       ///< what this turn's cascade wrote (0 when the dump was the idempotent skip)
+    int64_t evict = 0;             ///< entries the LRU cap dropped this turn
+    uint64_t evict_bytes = 0;
+    int64_t sweep = 0;             ///< orphan records the delta sweep reclaimed this turn
+    uint64_t sweep_bytes = 0;
+    int64_t refused = 0;           ///< `invalid` promotes this request (design doc §5.1)
+    int64_t transfer = 0;          ///< `transfer_failed` this request (§5.2) - the engine stops after it
+    // ---- the process, cumulative
+    uint64_t total_dump_bytes = 0;
+    uint64_t total_promote_bytes = 0;
+    uint64_t total_evict_bytes = 0;
+    int64_t total_refused = 0;
+    int64_t total_transfer = 0;
+};
+
 class KvNvmeStore {
 public:
     /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry/format tag

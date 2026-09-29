@@ -3394,6 +3394,48 @@ int main(int argc, char** argv) {
         // the delta tier beside it (same store dir, one byte cap, one LRU when both are on)
         strata::platform::KvDeltaStore deltastore;
         bool have_kvdelta = false;
+        // WHAT THE CACHE TIERS DID, for the `KV` line (docs/nvme-kv-cache-web-design.md §3): this request's
+        // facts plus the process's cumulative totals.  Reporting only - no decision in the loop reads it.
+        strata::platform::TierCounters tc;
+        // the per-request facts start empty at every request; the total_* fields are the process's and survive
+        auto tc_request_start = [&tc] {
+            tc.src = "none";
+            tc.resume = 0;
+            tc.promote_ms = 0.0;
+            tc.promote_bytes = 0;
+            tc.staging_bytes = 0;
+            tc.dump_ms = 0.0;
+            tc.dump_bytes = 0;
+            tc.evict = 0;
+            tc.evict_bytes = 0;
+            tc.sweep = 0;
+            tc.sweep_bytes = 0;
+            tc.refused = 0;
+            tc.transfer = 0;
+        };
+        // THE `KV` LINE: space-separated key=value, no value containing a space, no paths - the INFO line's own
+        // convention, so the serve side parses it the same way (design §3).  Printed after the cascade and
+        // before DONE, and once on the transfer-failure exit, where it is the server's only chance to learn the
+        // class before the engine dies.
+        auto print_kv = [&]() {
+            std::printf("KV src=%s resume=%lld promote_ms=%.0f promote_bytes=%llu staging_bytes=%llu dump_ms=%.0f "
+                        "dump_bytes=%llu evict=%lld evict_bytes=%llu sweep=%lld sweep_bytes=%llu refused=%lld "
+                        "transfer=%lld entries=%llu entries_bytes=%llu delta_entries=%llu delta_bytes=%llu cap=%lld "
+                        "checkpoints=%llu live=%llu total_dump_bytes=%llu total_promote_bytes=%llu total_refused=%lld "
+                        "total_transfer=%lld total_evict_bytes=%llu\n",
+                        tc.src, (long long) tc.resume, tc.promote_ms, (unsigned long long) tc.promote_bytes,
+                        (unsigned long long) tc.staging_bytes, tc.dump_ms, (unsigned long long) tc.dump_bytes,
+                        (long long) tc.evict, (unsigned long long) tc.evict_bytes, (long long) tc.sweep,
+                        (unsigned long long) tc.sweep_bytes, (long long) tc.refused, (long long) tc.transfer,
+                        (unsigned long long) kvstore.size(), (unsigned long long) kvstore.total_bytes(),
+                        (unsigned long long) deltastore.size(), (unsigned long long) deltastore.total_bytes(),
+                        (long long) (o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0),
+                        (unsigned long long) checks.size(), (unsigned long long) live.size(),
+                        (unsigned long long) tc.total_dump_bytes, (unsigned long long) tc.total_promote_bytes,
+                        (long long) tc.total_refused, (long long) tc.total_transfer,
+                        (unsigned long long) tc.total_evict_bytes);
+            std::fflush(stdout);
+        };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         Clock::time_point pp_t0 = Clock::now();
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
@@ -3739,6 +3781,14 @@ int main(int argc, char** argv) {
                              o.kv_nvme.c_str(), deltastore.size(),
                              (double) deltastore.total_bytes() / (double) (1LL << 30));
             }
+            // The store's own state, on stdout AFTER READY (the scan plus the open-time sweep is a real cost and
+            // READY must not wait for it - design §3, ordering note 2).  `start=1` marks it as STORE STATE, not
+            // a request event; the serve side reads it in order off the pump thread.
+            std::printf("KV start=1 entries=%llu entries_bytes=%llu delta_entries=%llu delta_bytes=%llu cap=%llu\n",
+                        (unsigned long long) kvstore.size(), (unsigned long long) kvstore.total_bytes(),
+                        (unsigned long long) deltastore.size(), (unsigned long long) deltastore.total_bytes(),
+                        (long long) (o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0));
+            std::fflush(stdout);
         }
         // NVMe cold tier, Step 0 spike: load a snapshot at startup so the first request resumes from it.
         if (!o.nvme_restore.empty()) {
@@ -3986,6 +4036,7 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
+            tc_request_start();   // this request's cache facts start empty (the totals are the process's)
             // C6: a promote is indistinguishable from a live-session resume at `from_live` (both leave the session
             // holding what the arena holds), and the refill below is the RAM tier's rule - so the tier that read a
             // snapshot says so explicitly.  `nvme_restore` refilled the drafter's ring itself (kv_nvme.cpp).
@@ -4027,9 +4078,13 @@ int main(int argc, char** argv) {
                     // restore via the store that owns the entry (the failure handling below is UNCHANGED, §5.13:
                     // transfer -> stop; invalid -> drop the entry, re-read the prompt), dispatched on kind
                     std::string nerr;
+                    const Clock::time_point promote0 = Clock::now();
                     const strata::core::ConversationRestore got =
                         best->kind == 1 ? deltastore.restore(*best, ss, mtp.kv_state_mut(), g, nerr)
                                         : kvstore.restore(*best, ss, mtp.kv_state_mut(), g, nerr);
+                    tc.promote_ms =
+                        std::chrono::duration<double, std::milli>(Clock::now() - promote0).count();
+                    tc.promote_bytes = best->bytes;   // what the tier read, in either tier's entry accounting
                     if (got == strata::core::ConversationRestore::transfer_failed) {
                         // **FATAL, BY THE CONTRACT** (docs/nvme-kv-cache-design.md §5).  A CUDA copy or sync
                         // failure happens AT OR AFTER the first write, and the apply pass is a loop: the session is
@@ -4043,6 +4098,11 @@ int main(int argc, char** argv) {
                         // restarts the engine, and a NEW PROCESS is a new CUDA context, a new pinned arena and new
                         // graphs - the state an in-process reset could not prove it reached.
                         // The snapshot is NOT dropped: a transfer failure says nothing about the file.
+                        tc.transfer = 1;
+                        ++tc.total_transfer;
+                        tc.resume = resume;
+                        print_kv();   // BEFORE the ERR line and the exit 1: the engine is about to die, and this
+                                      // line is the server's only chance to record which class failed
                         std::fprintf(stderr, "strata serve: nvme promote FAILED (transfer): %s\n", nerr.c_str());
                         std::fprintf(stderr, "strata serve: the snapshot is half-applied and nothing proves the CUDA "
                                              "context still answers - not attempting a clean reset. The snapshot is "
@@ -4064,12 +4124,20 @@ int main(int argc, char** argv) {
                         else kvstore.drop(*best);                      //      degrades to refuse-and-drop
                         resume = 0;
                         from_live = false;
+                        tc.refused = 1;
+                        ++tc.total_refused;
+                        tc.src = "none";   // the tier served nothing: this request re-reads the prompt
                     } else {
                         resume = best->L;
                         from_live = true;
                         from_nvme = true;
                         live = best->ids;
                         live_imgs = best->imgs;
+                        tc.src = best->kind == 1 ? "delta" : "nvme";
+                        // the v3 tier stages its snapshot file; the delta tier stages the v3 IMAGE it assembled
+                        // from chunks + a State record, which is a different number from the entry's bytes
+                        tc.staging_bytes = best->kind == 1 ? deltastore.last_image_bytes() : best->bytes;
+                        tc.total_promote_bytes += best->bytes;
                         std::fprintf(stderr, "strata serve: nvme promote: resumed %lld tokens from %s\n",
                                      (long long) best->L, best->path.c_str());
                         // the same fingerprint the --nvme-restore startup path prints straight after its load
@@ -4080,6 +4148,10 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // what this request actually resumed from, now that the tiers have had their say: a promote named
+            // itself (nvme / delta); anything else that resumed came from the RAM tier; nothing means a cold read
+            tc.resume = resume;
+            if (resume > 0 && !from_nvme) tc.src = "ram";
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
@@ -4525,11 +4597,13 @@ int main(int argc, char** argv) {
             // without the model's hidden reasoning tokens, so a full-consumed-state snapshot could never match).
             if (have_kvstore && live_ok) {
                 cudaDeviceSynchronize();
+                const Clock::time_point cascade0 = Clock::now();   // the cascade's server occupancy (design §6)
                 const ConvCheckpoint* at = nullptr;
                 for (const ConvCheckpoint& c : checks)
                     if (at == nullptr || c.ids.size() > at->ids.size()) at = &c;
                 std::string derr;
                 bool dumped;
+                strata::platform::TierActivity act;   // what THIS turn's cascade wrote / superseded / evicted
                 // the boundary and its state are ONE shared checkpoint now: `at->ids` is the key the next
                 // request replays, `at->imgs` the pictures below it, `at->gdn/ple/tails` the running state there.
                 // `live_imgs` covers the whole consumed conversation (it is what the full-state dump needs), so the
@@ -4542,22 +4616,36 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: nvme delta: boundary %lld exceeds the drafter ring (%lld) - whole snapshot\n",
                                  (long long) at->ids.size(), (long long) mtp.kv_state().max_cells);
                 if (delta_path)
-                    dumped = deltastore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
+                    dumped = deltastore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr, &act);
                 else if (at != nullptr && !at->ids.empty())
-                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr);
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, at, derr, &act);
                 else
-                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, nullptr, derr);
+                    dumped = kvstore.dump(ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, nullptr, derr, &act);
                 if (!dumped)
                     std::fprintf(stderr, "strata serve: kv-nvme dump failed: %s\n", derr.c_str());
+                strata::platform::TierActivity cap;
                 if (have_kvdelta) {
                     // ONE byte cap across BOTH tiers, LRU by mtime; the sweep after eviction reclaims exactly
                     // the chunks no live manifest references (§5.12)
-                    kv_delta_enforce_cap(kvstore, deltastore,
-                                         o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
+                    cap = kv_delta_enforce_cap(kvstore, deltastore,
+                                               o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
                 }
+                // what the cascade did, reported (the v3 tier's own cap evictions already ride in `act`, because
+                // its dump() calls enforce_cap itself)
+                tc.dump_ms = std::chrono::duration<double, std::milli>(Clock::now() - cascade0).count();
+                tc.dump_bytes = act.written;
+                tc.evict = act.evicted + cap.evicted;
+                tc.evict_bytes = act.evicted_bytes + cap.evicted_bytes;
+                tc.sweep = cap.swept;
+                tc.sweep_bytes = cap.swept_bytes;
+                tc.total_dump_bytes += act.written;
+                tc.total_evict_bytes += act.evicted_bytes + cap.evicted_bytes;
             }
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
+            // the cache line for this request: after the cascade (so it carries the store's totals straight
+            // after this turn's write) and before DONE.  No tier, no line.
+            if (have_kvstore) print_kv();
             // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused> [hits] [lookups]
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld\n", (long long) produced_n, (long long) n, prompt_ms,
                         decode_ms, finish, (long long) draft_accepted, (long long) draft_offered, (long long) resume,

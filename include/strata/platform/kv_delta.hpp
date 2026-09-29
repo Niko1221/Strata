@@ -269,11 +269,15 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
 /// own directory.  `weights_fp` is the live process's fingerprint - a mismatch is the match-time refusal (§5.8)
 /// re-checked here as a backstop behind the scan's filtering.  On success the caller sets the live session from
 /// the restored prefix, exactly as it does after a v3 restore.
+/// `image_bytes`, when given, receives the size of the v3 image this call staged in RAM (the accepted C10
+/// whole-file cost - the buffer step 3 builds, NOT the entry's byte count, which counts the delta records).
+/// It is written only once the assembly begins: a refusal in steps 1-2 staged nothing, and the out-param is
+/// left alone.  Reporting only; it changes nothing the reader does.
 strata::core::ConversationRestore delta_restore(const NvmeEntry& e, strata::core::SessionState& ss,
                                                 strata::core::QsaState& mtp_state, const ModelGeometry& g,
                                                 uint64_t weights_fp, std::vector<int32_t>& ids,
                                                 std::vector<ConversationImageKey>& imgs, bool& cvec, int64_t& L,
-                                                std::string& err);
+                                                std::string& err, uint64_t* image_bytes = nullptr);
 
 /// THE WEIGHT-SET FINGERPRINT (§5.8): FNV-1a over each model file's resolved path bytes, its size (int64), and
 /// its first and last 64 KiB - two sequential reads per file at startup, no false positives across
@@ -318,6 +322,9 @@ public:
     const std::vector<NvmeEntry>& entries() const { return entries_; }
     uint64_t total_bytes() const { return total_; }   ///< chunks + states + manifests, this tier
     size_t size() const { return entries_.size(); }
+    /// what the LAST `restore` staged in RAM (the assembled v3 image); 0 when it refused before assembling.
+    /// Reporting only - the `KV` line's `staging_bytes` (docs/nvme-kv-cache-web-design.md §3).
+    uint64_t last_image_bytes() const { return last_image_bytes_; }
 
 private:
     std::string dir_;                                  ///< the delta directory (the v3 store's + "/delta")
@@ -326,6 +333,7 @@ private:
     std::vector<uint64_t> entry_states_;               ///< parallel: each entry's State key
     uint64_t weights_fp_ = 0;
     uint64_t total_ = 0;
+    uint64_t last_image_bytes_ = 0;                    ///< the last restore's staged image (reporting only)
     std::vector<int32_t> last_ids_;                    ///< this process's previous dump (the supersede hint)
     std::string last_path_;
     long seq_base_ = 0;                                ///< this instance's manifest-number block: two opens in

@@ -89,7 +89,7 @@ Fill it at the three places that already know:
 | where | anchor | what to add |
 |---|---|---|
 | promote | `:3761-3825` | `src` from `from_live` / `from_nvme` / `best->kind` (the three values already exist at `:3737`, `:3815`); `promote_ms` = `steady_clock` around the `restore()` call at `:3776-3778`; `promote_bytes = best->bytes`; `staging_bytes` = the same for v3, and for delta the assembled image size (`delta_restore`'s `buf`, `kv_delta.cpp:779-872` — add a trailing defaulted `uint64_t* image_bytes = nullptr` out-param there and surface it through `KvDeltaStore::restore` / `last_image_bytes()`); `refused` at `:3806`; `transfer` at `:3791` |
-| cascade | `:4208-4241` | `dump_ms` around the `dump()` calls at `:4227-4231`; the `TierActivity` out-params from step 1; the `kv_delta_enforce_cap` return at `:4237` |
+| cascade | `:4208-4241` | `dump_ms` around the `dump()` calls at `:4227-4231` **and** the cap call at `:4237` (design §6 defines it as the cascade's occupancy, so it is dump + cap; the `cudaDeviceSynchronize()` that opens the block is outside the measured window); the `TierActivity` out-params from step 1; the `kv_delta_enforce_cap` return at `:4237` |
 | end of request | `:4244` (before `DONE`) | the `KV` line, only when `have_kvstore` |
 
 The line, printed with `std::printf` + `fflush` **before** `DONE`, space-separated `key=value`, no value
@@ -114,11 +114,14 @@ Two ordering facts this step has to get right:
    line is read in order regardless of which request is in flight).
 
 **Gate** (GPU oracles, all already exist and already run with the tier on):
-- `tools/short_tests.py`: a `check("KV line on every turn", …)` on the log tail plus `src` agreeing with the
-  prose it now supplements (`nvme promote` ⇔ `src=nvme|delta`); the suite stays 19/19 with `--kv-delta 1`.
-- `tools/nvme_steps123_test.sh`: the cap turn asserts `evict=1`.
+- `tools/nvme_steps123_test.sh`: `KV start=1 entries=` appears once, one `KV src=` line per `DONE` line, and the
+  cap turn asserts `evict=[1-9]… evict_bytes=[1-9]`.
 - `tools/nvme_failure_contract_test.sh`: the `transfer_failed` case asserts `transfer=1` arrives **before** the
-  `ERR` line and before exit 1; the `invalid` case asserts `refused=1` and `transfer=0`.
+  `ERR` line and before exit 1; the `invalid` case asserts `refused=1`, `transfer=0` and `src=none`.
+- **`tools/short_tests.py` cannot be a `KV` gate** — found while executing step 2, and a correction to this plan.
+  The server gives the engine's **stderr** to the log file (`server.py:159`) and keeps **stdout** on a pipe, so a
+  log-tail grep never sees a `KV` line. The two shell oracles above capture engine stdout directly and are the
+  live-server gate; the short suite's cache assertions belong to step 5, where they read the facts off `/metrics`.
 - `tools/nvme_delta_p0_test.sh` and `tools/nvme_p0_test.sh`: unchanged verdicts (the line must not change a byte
   or a promote decision — the state-hash oracles are the guard).
 - **No-tier regression**: run `tools/needle_bench.py` (tier off) and diff the engine's stdout against the pre-step

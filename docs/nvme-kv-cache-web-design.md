@@ -98,10 +98,15 @@ One line per request, printed **after** the cascade and **before** `DONE` (so it
 straight after this turn's write), only when `have_kvstore`:
 
 ```
-KV src=delta resume=4107 promote_ms=1840 promote_bytes=1010893312 dump_ms=412 dump_bytes=1184923648 \
-   evict=1 evict_bytes=154000384 sweep_bytes=0 refused=0 transfer=0 entries=104 entries_bytes=213674598400 \
-   delta_entries=1 delta_bytes=1181116416 cap=107374182400 checkpoints=3 live=4131 staging_bytes=1010893312
+KV src=delta resume=4107 promote_ms=1840 promote_bytes=1010893312 staging_bytes=1010893312 dump_ms=412 \
+   dump_bytes=1184923648 evict=1 evict_bytes=154000384 sweep=0 sweep_bytes=0 refused=0 transfer=0 \
+   entries=104 entries_bytes=213674598400 delta_entries=1 delta_bytes=1181116416 cap=107374182400 \
+   checkpoints=3 live=4131 total_dump_bytes=… total_promote_bytes=… total_refused=… total_transfer=… total_evict_bytes=…
 ```
+
+plus one startup line, `KV start=1 entries=… entries_bytes=… delta_entries=… delta_bytes=… cap=…`, printed after
+`READY` (the store scan is a real cost and `READY` must not wait for it) and read as **store state**, not a
+request event.
 
 Space-separated `key=value`, no value containing a space — the `INFO` line's own convention, so the same parser
 shape works. **No paths in the line**: the serve side already knows the directory (§2.1), and a path is the one
@@ -115,7 +120,7 @@ Fields, and where each one comes from:
 | `resume` | tokens this request did not read | already `DONE`'s field 8; repeated here so the cache record is self-contained |
 | `promote_ms` | wall time of the `restore()` call | wrap `deltastore.restore` / `kvstore.restore` (`:3776-3778`) |
 | `promote_bytes` | bytes the tier read: `NvmeEntry::bytes` for v3; manifest + chunks + State for delta | `NvmeEntry::bytes` exists for both; the delta store already sums them for `total_` |
-| `dump_ms` | the cascade's server occupancy at `DONE` — after the reply streamed, before the next request | wrap the `dump()` call (`:4227-4231`) |
+| `dump_ms` | the cascade's server occupancy at `DONE` — after the reply streamed, before the next request | the `dump()` calls **and** the cap call (`:4227-4237`); the device sync that opens the block is outside the window |
 | `dump_bytes` | bytes this turn's cascade wrote (delta: new chunks + State + manifest; v3: the snapshot written, 0 when the dump was an idempotent skip) | the delta writer already sizes each record (`delta_chunk_payload_bytes`, `delta_state_payload_bytes`); the v3 path takes the file size it just wrote |
 | `evict` / `evict_bytes` | entries the LRU cap dropped this turn | `kv_nvme.cpp:789` and `kv_delta.cpp:1155` both know; today they say nothing |
 | `sweep_bytes` | orphan records the sweep reclaimed | `kv_delta.cpp:1113` already computes `bytes` and prints it; it just has to return it |
@@ -126,7 +131,7 @@ Fields, and where each one comes from:
 | `cap` | the byte cap in force (0 = unlimited) | `o.kv_nvme_max_gb` |
 | `checkpoints` | RAM-tier checkpoints alive at the end of the request | already printed in the per-request stderr line (`checks.size()`) |
 | `live` | tokens the live session holds | `live.size()` |
-| `staging_bytes` | the whole-file buffer the restore staged (the accepted C10 cost) | the image size the restore held; 0 when nothing was promoted |
+| `staging_bytes` | the whole-file buffer the restore staged (the accepted C10 cost) | v3: the snapshot's bytes; delta: the size of the v3 image it assembled (`delta_restore`'s buffer, surfaced by `KvDeltaStore::last_image_bytes()`) — a different number from the entry's byte count. 0 when nothing was promoted or the tier refused before assembling |
 
 Two implementation notes the design has to state, because they are where this would otherwise go wrong:
 

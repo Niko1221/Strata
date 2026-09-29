@@ -770,12 +770,16 @@ void fixture_reader(const std::string& root) {
         std::vector<ConversationImageKey> imgs1, imgs2;
         bool cvec1 = false, cvec2 = false;
         int64_t L1 = 0, L2 = 0;
+        uint64_t image_bytes = 0;   // what the delta restore staged in RAM (the KV line's staging_bytes)
         ck(strata::platform::nvme_restore(v3_path.c_str(), R1.ss, R1.draft, R1.g, ids1, imgs1, cvec1, L1, err) ==
                Restore::restored, ("the v3 restore of the control file: " + err).c_str());
-        ck(strata::platform::delta_restore(e, R2.ss, R2.draft, R2.g, WFP, ids2, imgs2, cvec2, L2, err) ==
+        ck(strata::platform::delta_restore(e, R2.ss, R2.draft, R2.g, WFP, ids2, imgs2, cvec2, L2, err,
+                                           &image_bytes) ==
                Restore::restored, ("the delta restore: " + err).c_str());
         ck_eq(L1, 300, "the v3 restore's length");
         ck_eq(L2, 300, "the delta restore's length");
+        ck_eq((int64_t) image_bytes, (int64_t) slurp(v3_path).size(),
+              "the delta restore staged the SAME whole-file image the v3 tier reads (the C10 cost, reported)");
         ck(ids1 == ids2 && imgs1 == imgs2 && cvec1 == cvec2, "the two restores hand back the same prefix and images");
         for (int64_t i = 0; i < S.g.n_qsa_layers(); ++i) {
             const Store& a = R1.stores[(size_t) i];
@@ -1208,10 +1212,22 @@ void fixture_store(const std::string& root) {
         std::vector<strata::platform::DeltaChunkRef> refs;
         strata::platform::DeltaManifestHeader m;
         ck(strata::platform::delta_read_manifest(e.path, m, ids, imgs, refs, err), "the manifest reads");
+        {   // WHAT A PROMOTE STAGES, reported (the KV line's `staging_bytes`): the assembled v3 image.  The v3
+            // tier's own file for the SAME boundary IS that image, so the two sizes must agree.
+            const std::string v3 = dir + "/p7-v3.bin";
+            ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, p10.ids, p10.imgs, true, &p10, err),
+               "the p7 v3 control writes");
+            Session R0;
+            ck(d.restore(e, R0.ss, R0.draft, R0.g, err) == strata::core::ConversationRestore::restored,
+               "the entry restores while every record it references is on disk");
+            ck_eq((int64_t) d.last_image_bytes(), (int64_t) slurp(v3).size(),
+                  "the store reports the image its restore staged");
+        }
         fs::remove(dir + "/delta/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin");
         Session R;
         ck(d.restore(e, R.ss, R.draft, R.g, err) == strata::core::ConversationRestore::invalid,
            "the externally-deleted chunk refuses the restore");
+        ck_eq((int64_t) d.last_image_bytes(), 0, "a refusal before the assembly staged nothing");
         d.drop(e);
         ck_eq((int64_t) d.size(), 0, "and the store drops the dead entry");
     }
