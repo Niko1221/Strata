@@ -1,0 +1,16 @@
+[
+ {
+  "label": "128K",
+  "target": 117833,
+  "prompt_tokens": 117838,
+  "reused": 0,
+  "prompt_ms": 113731.0,
+  "prompt_tok_s": 1036.1,
+  "output_tokens": 64,
+  "decode_ms": 1722.9,
+  "decode_tok_s": 37.1,
+  "hit_rate": 0.831,
+  "duration_s": 115.5,
+  "wall_s": 116.1
+ }
+]

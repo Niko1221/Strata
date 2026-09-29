@@ -9,16 +9,20 @@
 
 > | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
 > | --- | ---: | ---: | ---: | ---: | ---: |
-> | Prompt processing | **989.1 tok/s** | **966.5 tok/s** | **1136.8 tok/s** | **659.3 tok/s** | **414.1 tok/s** |
-> | Output generation | 49.3 tok/s | 50.6 tok/s | 50.5 tok/s | 44.9 tok/s | 38.8 tok/s |
+> | Prompt processing | **1073.1 tok/s** | **1064.0 tok/s** | **1271.2 tok/s** | **1036.1 tok/s** | **466.7 tok/s** |
+> | Output generation | 56.9 tok/s | 55.5 tok/s | 50.6 tok/s | 37.1 tok/s | 38.5 tok/s |
 >
 > All rows are uncached API requests (`reused=0`) on the prefill fast path: FP16 tensor-core
 > GEMMs for the Volta BF16 projections (no scalar fallback), io_uring O_DIRECT reads for the PLE
-> table, and model storage on the NVMe. Re-measured 2026-09-28 on the merged main build
-> (engine 0.1.20 + the prefill-speed PR); the exact prompt sizes match the previous table row
-> for row. The passively-cooled V100 throttles when hot (the same 8K prompt spans 616-967
-> tok/s), so the table shows the cool-idle measurement. Raw rows and notes:
-> [`bench/results/2026-09-28-v100-fastpath`](bench/results/2026-09-28-v100-fastpath).
+> table, and model storage on the NVMe. Re-measured 2026-09-29 on the prefill-decode branch
+> (batched verify windows, the tiled block scorer, `--spec 8`): the 4K/8K/32K rows are
+> cool-card measurements against the 2026-09-28 table (+8.5% / +10.1% / +11.8% prompt),
+> and the long rows were re-measured from the same cool-card start on the same day's builds
+> (baseline 805.5 / 396.3: +28.6% / +17.8%). The passively-cooled V100 throttles when hot
+> (the same 8K prompt spans 616-967 tok/s on the 2026-09-28 build), so the table shows the
+> cool-idle measurement; the 128K/256K output rows swing with the card temperature
+> (+10-16% measured against the same-day baseline). Raw rows and notes:
+> [`bench/results/2026-09-29-prefill-decode`](bench/results/2026-09-29-prefill-decode).
 > [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
