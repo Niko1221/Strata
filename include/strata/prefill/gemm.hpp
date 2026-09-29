@@ -24,7 +24,11 @@ public:
     bool init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
                        std::string& err);
 
-    /// Y[T, N] (fp32, row stride ldy) = X[T, K] (bf16, row-major) . W[N, K]^T (bf16, row-major).  `beta` = 1 adds.
+    /// Y[T, N] (fp32, row stride ldy) = X[T, K] . W[N, K]^T with BF16 X and W on BF16-native devices (sm_80+,
+    /// cuBLAS BF16 tensor cores).  On older devices (Volta: no native BF16 GEMM) the operands are FP16 bits
+    /// instead: W is BF16 to FP16 here (the conversion is exact), and X MUST ALREADY be FP16 bits (the prompt
+    /// producers write FP16 images on such devices - `prefill::fp16_bits()`), so the product still runs on
+    /// FP16 tensor cores exactly as the BF16 one would.  `beta` = 1 adds.
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
               float beta = 0.0f);
 
@@ -39,20 +43,18 @@ public:
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
 
-    uint16_t* scratch() const { return scratch_; }
-    int64_t scratch_elems() const { return scratch_elems_; }
-    void* stream() const { return stream_; }
+    /// True when this device has no native BF16 GEMM: the prompt's 16-bit activation images are FP16 bits.
+    bool fp16_operands() const { return !native_bf16_; }
 
 private:
     void* handle_ = nullptr;
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;
     int64_t scratch_elems_ = 0;
+    uint16_t* w16_ = nullptr;           // owned FP16 W staging for the Volta path when no scratch is available
+    int64_t w16_elems_ = 0;
     void* workspace_ = nullptr;
     bool external_ = false;
     bool native_bf16_ = true;
 };
-
-
-
 }  // namespace strata::prefill

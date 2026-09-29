@@ -728,6 +728,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         const char* v = std::getenv("STRATA_PLE_BATCH");
         return v == nullptr || std::atoi(v) != 0;
     }();
+
     const bool ple_batch = ple_on && ple_batch_env && strata::kernels::ple_native_postops_enabled() &&
                            (ss.ple.w.key_bf16 != nullptr || ss.ple.w.key_native_data != nullptr) &&
                            m.region_bytes / ((uint64_t) (3 * strata::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * 2 + 4096) >= 64;
@@ -877,13 +878,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     float* gate = carve_f((size_t) nb * 4);
                     uint16_t* e16 = (uint16_t*) carve_f((size_t) nb * N / 2);
                     const float* emb = m.ple_emb + s0 * N;
+                    const bool e16_fp16 = m.gemm.fp16_operands();   // the bf16 GEMM reads FP16 X on Volta
                     if (pw.key_bf16 != nullptr) {
-                        to_bf16(emb, e16, nb * N, m.cs);
+                        e16_fp16 ? to_f16(emb, e16, nb * N, m.cs) : (void) to_bf16(emb, e16, nb * N, m.cs);
                         m.gemm.bf16(e16, pw.key_bf16, key, nb, HD, N);
                     } else {
                         to_f16(emb, e16, nb * N, m.cs);
                         m.gemm.native(e16, pw.key_native_type, pw.key_native_data, key, nb, HD, N);
-                        to_bf16(emb, e16, nb * N, m.cs);
+                        e16_fp16 ? to_f16(emb, e16, nb * N, m.cs) : (void) to_bf16(emb, e16, nb * N, m.cs);
                     }
                     m.gemm.bf16(e16, pw.value_bf16, val, nb, N, N);
                     try {
@@ -1001,9 +1003,15 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
                         const int64_t nb = std::min(m.sel_batch, T - t0);
                         const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
+                        // Steps are monotonic within a chunk.  Score only through the last query's live tail block,
+                        // not the session's full 262K-context capacity (the kernels use this value as both grid
+                        // width and row stride).  At a 15K prompt the old capacity grid launched ~17x more blocks.
+                        const int64_t score_blocks =
+                            (int64_t) m.steps_host[(size_t) ((t0 + nb - 1) * strata::kernels::kStepCount +
+                                                            strata::kernels::kStepNBid)] + 1;
                         strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
-                                                          m.max_blocks, s, m.sel_scores, m.cs);
-                        strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
+                                                          score_blocks, s, m.sel_scores, m.cs);
+                        strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, score_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs);
                     }
                     // STRATA_IDX_FP16_CHECK: would FP16 pooled indexer keys select the same cells? (the KV-streaming
@@ -1028,9 +1036,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
                             const int64_t nb = std::min(m.sel_batch, T - t0);
                             const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
+                            const int64_t score_blocks =
+                                (int64_t) m.steps_host[(size_t) ((t0 + nb - 1) * strata::kernels::kStepCount +
+                                                                strata::kernels::kStepNBid)] + 1;
                             strata::kernels::qsa_block_scores(pooled16, dead16, m.q_idx + t0 * 512, steps0, nb,
-                                                              m.max_blocks, s, m.sel_scores, m.cs);
-                            strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
+                                                              score_blocks, s, m.sel_scores, m.cs);
+                            strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, score_blocks, m.cap, s,
                                                             ids16 + t0 * m.cap, m.cs);
                         }
                         std::vector<int32_t> a((size_t) (T * m.cap)), b((size_t) (T * m.cap));

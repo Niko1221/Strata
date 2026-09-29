@@ -1,5 +1,6 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
+#include "strata/prefill/kernels.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 
 #include <cublas_v2.h>
@@ -18,34 +19,25 @@ void ck(cublasStatus_t s, const char* what) {
     }
 }
 
-__device__ __forceinline__ float bf16_to_float(uint16_t value) {
-    return __uint_as_float(static_cast<uint32_t>(value) << 16);
+// Volta (sm_70) has no BF16 path in cuBLAS.  A BF16 value is exact in FP16 (7 mantissa bits fit in 10), so the
+// BF16 product runs identically on FP16 tensor cores: W is converted here, X must already be FP16 bits (the
+// prompt producers write FP16 images on such devices).  The conversion rounds to FP16; every BF16 value in
+// FP16's range (all model weights and activations) is represented exactly.
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, uint16_t* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const uint32_t bits = (uint32_t) in[i] << 16;   // the exact f32 image of the bf16 value
+    out[i] = __half_as_ushort(__float2half_rn(__uint_as_float(bits)));
 }
 
-__global__ void bf16_gemm_fallback(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w,
-                                   float* __restrict__ y, int t_count, int n_count, int k_count, int ldy,
-                                   float beta) {
-    constexpr int tile_size = 16;
-    __shared__ float x_tile[tile_size][tile_size];
-    __shared__ float w_tile[tile_size][tile_size];
-    const int t = blockIdx.y * tile_size + threadIdx.y;
-    const int n = blockIdx.x * tile_size + threadIdx.x;
-    float sum = 0.0f;
-    for (int k0 = 0; k0 < k_count; k0 += tile_size) {
-        const int xk = k0 + threadIdx.x;
-        const int wk = k0 + threadIdx.y;
-        x_tile[threadIdx.y][threadIdx.x] =
-            t < t_count && xk < k_count ? bf16_to_float(x[(size_t) t * k_count + xk]) : 0.0f;
-        w_tile[threadIdx.y][threadIdx.x] =
-            n < n_count && wk < k_count ? bf16_to_float(w[(size_t) n * k_count + wk]) : 0.0f;
-        __syncthreads();
-#pragma unroll
-        for (int k = 0; k < tile_size; ++k) sum = fmaf(x_tile[threadIdx.y][k], w_tile[k][threadIdx.x], sum);
-        __syncthreads();
-    }
-    if (t < t_count && n < n_count) {
-        float* out = y + (size_t) t * ldy + n;
-        *out = beta == 0.0f ? sum : fmaf(beta, *out, sum);
+void launch_bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t s) {
+    if (n <= 0) return;
+    const unsigned blocks = (unsigned) ((n + 255) / 256);
+    bf16_to_f16_kernel<<<blocks, 256, 0, s>>>(in, out, n);
+    const cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        std::fprintf(stderr, "prefill gemm: bf16->fp16: %s\n", cudaGetErrorString(error));
+        std::exit(1);
     }
 }
 
@@ -64,6 +56,7 @@ Gemm::~Gemm() {
         if (scratch_) cudaFree(scratch_);
         if (workspace_) cudaFree(workspace_);
     }
+    if (w16_) cudaFree(w16_);
 }
 
 bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
@@ -78,6 +71,7 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
     cublasSetWorkspace(h, workspace_, ws_bytes);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
     native_bf16_ = device_has_native_bf16();
+    strata::prefill::set_fp16_bits(!native_bf16_);
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
     return true;
@@ -102,6 +96,7 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     cublasSetWorkspace(h, workspace_, ws);
     cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
     native_bf16_ = device_has_native_bf16();
+    strata::prefill::set_fp16_bits(!native_bf16_);
     if (scratch_elems > 0 && cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2) != cudaSuccess) {
         err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB";
         return false;
@@ -116,15 +111,29 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
     if (!native_bf16_) {
-        const dim3 threads(16, 16);
-        const dim3 blocks((unsigned) ((N + 15) / 16), (unsigned) ((T + 15) / 16));
-        bf16_gemm_fallback<<<blocks, threads, 0, (cudaStream_t) stream_>>>(
-            X, W, Y, (int) T, (int) N, (int) K, (int) ldy, beta);
-        const cudaError_t error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            std::fprintf(stderr, "prefill gemm: Volta BF16 fallback: %s\n", cudaGetErrorString(error));
-            std::exit(1);
+        // Volta: convert the BF16 W to FP16 (exact) and run an FP16 tensor-core GEMM; X is already FP16 bits
+        // (the producers write FP16 images when `prefill::fp16_bits()`, which `init` set for this device).
+        const int64_t w_elems = N * K;
+        uint16_t* w16 = scratch_;
+        if (w16 == nullptr || w_elems > scratch_elems_) {
+            // No scratch (the parity test) or W larger than it: stage in an owned buffer.
+            if (w_elems > w16_elems_) {
+                if (w16_) cudaFree(w16_);
+                w16_ = nullptr;
+                w16_elems_ = 0;
+                if (cudaMalloc(&w16_, (size_t) w_elems * 2) != cudaSuccess) {
+                    std::fprintf(stderr, "prefill gemm: Volta W staging of %lld elems\n", (long long) w_elems);
+                    std::exit(1);
+                }
+                w16_elems_ = w_elems;
+            }
+            w16 = w16_;
         }
+        launch_bf16_to_f16(W, w16, w_elems, (cudaStream_t) stream_);
+        ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, w16,
+                        CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
+                        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
+           "cublasGemmEx fp16 (Volta bf16 path)");
         return;
     }
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].

@@ -2,18 +2,20 @@
 
 > **Tesla V100 fork.** This fork keeps Strata compatible with NVIDIA Volta (`sm_70`) and is validated on a
 > Tesla V100-PCIE-16GB, Ryzen 5 3600, 48 GB DDR4-3200, and CUDA 12.8. The installed Qwen3.8-Flash-Next Q2_0
-> configuration provides the model's full **262,144-token context**, Q4_0 KV cache, and MTP speculative decoding.
+> configuration provides the model's full **262,144-token context**, int8 KV cache, and MTP speculative decoding.
 > The bundled web chat and live performance monitor run at `http://100.80.155.43:8088/` over this machine's
 > Tailscale network. API access is protected by the key stored locally in `.strata-service.env`.
 > Hardware calibration selected a 0.28 PCIe share and 0.70 MTP draft floor, measuring **45.5 output tokens/s**.
 
-| V100 benchmark | 1K prompt | 8K prompt | 32K prompt | 128K prompt | 256K prompt |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Prompt processing | 291.0 tok/s | 457.4 tok/s | **464.6 tok/s** | 324.6 tok/s | 259.3 tok/s |
-| Output generation | 33.6 tok/s | 41.2 tok/s | 42.5 tok/s | **44.0 tok/s** | 40.3 tok/s |
-
-These are uncached API requests (`reused=0`) against engine 0.1.20; the 256K row used 256,073 input tokens.
-[Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
+> | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
+> | --- | ---: | ---: | ---: | ---: | ---: |
+> | Prompt processing | **868.5 tok/s** | **836.2 tok/s** | 464.6 tok/s† | 324.6 tok/s† | 259.3 tok/s† |
+> | Output generation | 34.9 tok/s | 45.6 tok/s | 42.5 tok/s† | **44.0 tok/s**† | 40.3 tok/s† |
+>
+> All rows are uncached API requests (`reused=0`). The ~4K and ~8K rows (2026-09-28) run the prefill fast path:
+> FP16 tensor-core GEMMs for the Volta BF16 projections (no more scalar fallback), io_uring O_DIRECT reads for
+> the PLE table, and model storage on the NVMe. † = measured before the fast path (engine 0.1.20 baseline).
+> [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
 one NVIDIA card (12-24 GB) + 64 GB of RAM · Windows or Linux · one click to install</p>

@@ -10,13 +10,21 @@
 #include <cstdint>
 
 namespace strata::prefill {
+/// On devices without native BF16 (Volta, sm_70) the prompt GEMMs run through FP16 tensor cores
+/// (a BF16 value is exact in FP16).  The 16-bit activation images below are then FP16 bits, not BF16:
+/// the same buffers, same sizes, and `bf16_proj` still feeds them to `Gemm::bf16` (whose Volta branch
+/// reads FP16 X).  `set_fp16_bits` is called once by `Gemm::init`; absent a call the images stay BF16.
+void set_fp16_bits(bool on);
+bool fp16_bits();
+
 
 // ---- hyper-connection (n_embd 2560, hc 4, hc_lr 320)
-/// xn[t, c*2560 + d] = R[t,c,d] * rsqrt(mean_d R[t,c,:]^2 + eps) * w_norm[c*2560 + d]; also its BF16 image.
+/// xn[t, c*2560 + d] = R[t,c,d] * rsqrt(mean_d R[t,c,:]^2 + eps) * w_norm[c*2560 + d]; also its 16-bit image
+/// (BF16 bits, or FP16 bits when `fp16_bits`).
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream);
-/// lo16[t, k] = bf16(silu(lo[t, k] / hc))
+/// lo16[t, k] = bf16|fp16(silu(lo[t, k] / hc))  (FP16 bits when `fp16_bits`).
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream);
-/// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (either image may be null).
+/// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16|FP16 and FP16 (either image may be null).
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h = nullptr);
 /// R[t, c, d] += bo[t, d] * 2 sigmoid(inj[t, c] / hc)   (inj has row stride inj_ld)

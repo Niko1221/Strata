@@ -24,10 +24,12 @@ double ReaderStats::percentile(double q) const {
 }
 
 namespace {
-
 constexpr size_t LATENCY_RING = 65536;
 constexpr uint32_t WAYS = 8;
 constexpr uint32_t EMPTY = 0xFFFFFFFFu;
+// A miss reads the row's 4 KiB page (two when the row straddles a page).  The chunk's rows are scattered
+// uniformly over a very large table, so no window size reduces the read count by much; the wins come from
+// DirectFile's io_uring batching (many reads in flight at once) and the row cache, not from bigger reads.
 
 /// Set-associative row cache: 8 ways per set, round-robin replacement inside a set. Bounded by construction.
 struct RowCache {
@@ -74,7 +76,7 @@ struct Use {
 
 struct Job {
     uint64_t offset = 0;   // aligned file offset
-    uint32_t length = 0;   // PAGE or 2 * PAGE (a row that straddles a page boundary)
+    uint32_t length = 0;   // PAGE, or 2 * PAGE for a row that straddles a page boundary
     uint32_t ticket = 0;
     std::vector<Use> uses;
     double issued_us = 0;
@@ -93,9 +95,10 @@ struct TicketState {
 struct PleReader::Impl {
     DirectFile file;
     uint64_t table_offset = 0;
+    uint64_t size = 0;
     uint64_t n_rows = 0;
     uint32_t max_inflight = 0;
-    uint8_t* slab = nullptr;              // max_inflight slots of 2 pages
+    uint8_t* slab = nullptr;              // max_inflight slots of two pages
     std::vector<uint32_t> free_slots;
     std::vector<Job> inflight;            // indexed by slot
     std::vector<Completion> delayed;      // completed but held back by fault injection
@@ -113,9 +116,9 @@ struct PleReader::Impl {
     std::mutex mu;
     std::condition_variable cv_work;      // worker: there is something to submit
     std::condition_variable cv_done;      // collectors: a ticket may have completed
+    uint8_t* slot_buf(uint32_t s) { return slab + (size_t) s * 2 * PAGE; }
     std::thread worker;
 
-    uint8_t* slot_buf(uint32_t s) { return slab + (size_t) s * 2 * PAGE; }
     bool busy() const { return free_slots.size() < max_inflight || !delayed.empty(); }
 
     void record_latency(double us) {
@@ -244,14 +247,13 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
         return false;
     }
     impl_->table_offset = table_offset;
-    impl_->n_rows = n_rows;
-    impl_->max_inflight = max_inflight;
     impl_->slab = (uint8_t*) DirectFile::alloc_aligned((size_t) max_inflight * 2 * PAGE);
+    impl_->max_inflight = max_inflight;
     if (impl_->slab == nullptr) { err = "PleReader: cannot allocate read buffers"; close(); return false; }
     impl_->inflight.assign(max_inflight, Job{});
     impl_->free_slots.clear();
     for (uint32_t s = max_inflight; s-- > 0;) impl_->free_slots.push_back(s);
-    impl_->cache.init(cache_rows);
+    impl_->size = impl_->file.size();
     impl_->error.clear();
     reset_stats();
     impl_->stop = false;
@@ -259,7 +261,6 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
     if (io_thread) impl_->worker = std::thread([this] { impl_->worker_loop(); });
     return true;
 }
-
 void PleReader::close() {
     Impl& m = *impl_;
     if (m.worker.joinable()) {
@@ -305,7 +306,7 @@ PleReader::Ticket PleReader::issue(const uint32_t* rows, size_t n, uint8_t* out_
     const uint32_t id = m.next_ticket++;
     if (m.next_ticket == 0) m.next_ticket = 1;
     TicketState& ts = m.tickets[id];
-    std::unordered_map<uint64_t, size_t> by_page;     // aligned offset -> index in `jobs`
+    std::unordered_map<uint64_t, size_t> by_page;     // aligned page offset -> index in `jobs`
     std::vector<Job> jobs;
     for (size_t i = 0; i < n; ++i) {
         uint8_t* dst = out_raw + i * ROW_BYTES;

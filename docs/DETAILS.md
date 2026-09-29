@@ -16,11 +16,26 @@ New here? Start with the [README](../README.md) - it has everything you need to 
 
 The Strata-V100 measurements use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5 3600
 (6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20. Runtime settings are a 262,144-token context,
-Q4_0 KV cache, automatic prefill, five CPU pool workers, a calibrated 0.28 PCIe fraction, and MTP speculative
+int8 KV cache, automatic prefill, five CPU pool workers, a calibrated 0.28 PCIe fraction, and MTP speculative
 decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft floor 0.70). Each row is a separate, uncached
 OpenAI-compatible chat-completion request with a unique-prefix repeated-text prompt and 64 generated tokens.
 Prompt and decode timings come from the server's `/metrics` endpoint rather than client wall-clock estimates.
 
+The prefill fast path (2026-09-28) keeps everything else unchanged but replaces the BF16 projection GEMMs with
+FP16 tensor-core products (a BF16 value is exact in FP16 - the scalar 16x16 fallback is gone), the PLE row
+reads with io_uring O_DIRECT (previously one synchronous pread at a time), and moves the model files to the
+256 GB NVMe. Fresh uncached requests measured 2026-09-28 (engine log, `reused=0`):
+
+| Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed |
+| ---: | ---: | ---: | ---: | ---: |
+| ~4K | 4,156 | 4.79 s | **868.5 tok/s** | 34.9 tok/s |
+| ~4K | 4,390 | 5.41 s | 811.7 tok/s | 35.6 tok/s |
+| ~8K | 8,801 | 10.52 s | **836.2 tok/s** | 45.6 tok/s |
+
+The PLE row gather for a fresh request dropped from ~3.6-8 s to ~7 ms, and the hyper-connection GEMMs (the
+largest BF16 projection block) from ~5.2 s to ~0.5 s at 8K. Decode is unchanged.
+
+Long-context baseline for comparison (engine 0.1.20, models on the portable SSD, before the fast path):
 | Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed | Expert-cache hit rate | Total request |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1K | 1,031 | 3.54 s | 291.0 tok/s | 33.6 tok/s | 81.7% | 5.4 s |
