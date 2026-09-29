@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -127,6 +128,9 @@ public:
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
+    /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
+    /// window), as one line; empty when off.
+    std::string profile_report();
 
 private:
     bool capture(int T, std::string& err);
@@ -151,6 +155,12 @@ private:
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
+    static constexpr int kProfPer = 32;              // stamps per layer
+    bool prof_on_ = false;
+    unsigned long long* prof_ = nullptr;              // device: n_layers * kProfPer + 4 stamps
+    std::vector<unsigned long long> prof_h_;
+    double prof_sum_[2][kProfPer] = {};   // [GDN / QSA layers][stage]
+    int64_t prof_windows_ = 0;
 
     const WeightTable* wt_ = nullptr;
     const ModelGeometry* g_ = nullptr;

@@ -541,4 +541,14 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
     check("copy_indexed");
 }
 
+// a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
+namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    buf[i] = t;
+} }
+void gpu_stamp(unsigned long long* buf, int i, void* stream) {
+    gpu_stamp_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(buf, i);
+}
+
 }  // namespace strata::kernels

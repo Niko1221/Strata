@@ -34,6 +34,9 @@ std::atomic<bool> enabled{false};
 __global__ void combine(const float* __restrict__ parts, const float* __restrict__ weights,
                         const float* __restrict__ shared, float* __restrict__ output,
                         int64_t n_embd, int k) {
+    // blockIdx.y = the token of a multi-token launch (0 for the single one)
+    const int64_t tk = blockIdx.y;
+    parts += tk * k * n_embd; weights += tk * k; if (shared) shared += tk * n_embd; output += tk * n_embd;
     const int64_t col = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (col >= n_embd) return;
     float sum = parts[col] * weights[0];
@@ -67,6 +70,15 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
             || (shared && overlap(output, row_bytes, shared, row_bytes)))
         throw std::invalid_argument("native MoE combine requires aligned spans and disjoint output");
     combine<<<unsigned((n_embd + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+        parts, weights, shared, output, n_embd, int(k));
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+void native_moe_combine_multi(const float* parts, const float* weights, const float* shared, float* output,
+                              int64_t n_embd, int64_t k, int n_tok, void* stream) {
+    if (!stream || n_embd <= 0 || k < 1 || k > 15 || n_tok < 1)
+        throw std::invalid_argument("native MoE combine (multi) requires a stream, width, 1..15 experts, tokens");
+    combine<<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
         parts, weights, shared, output, n_embd, int(k));
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));

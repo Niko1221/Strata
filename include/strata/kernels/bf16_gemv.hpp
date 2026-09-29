@@ -44,5 +44,9 @@ void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_i
 /// No allocations or synchronization, including when stream is null (the CUDA default stream).
 void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
                          int64_t n_in, int64_t n_out, void* stream);
+/// bf16_gemv_fp32_mmvf for n_tok (1..8) activation rows x[t * ldx], outputs y[t * ldy + j]; one launch,
+/// the weight read once, every output bit-identical to its own single-row call.
+void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
+                               int64_t n_in, int64_t n_out, int n_tok, void* stream);
 
 }  // namespace strata::kernels
