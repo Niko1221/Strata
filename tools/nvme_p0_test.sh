@@ -18,7 +18,10 @@ cd /local/strata
 # and nvme_snapshot_ids refuses a snapshot whose version field disagrees).
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$ROOT/tools/nvme_header_layout.sh"
-E=build/strata
+# The engine is overridable so the oracles can validate a DIFFERENT build than the one in this checkout's
+# build/ - which is the whole point when the tree under test is a worktree (NVME_ENGINE=/path/to/strata).
+# Default stays this checkout's binary, so the recorded v2-format results keep meaning what they meant.
+E=${NVME_ENGINE:-build/strata}
 OUT=/tmp/nvme-p0
 mkdir -p "$OUT"; rm -f "$OUT"/*
 export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
