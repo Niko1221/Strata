@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -74,6 +75,77 @@ class SampleSeries(unittest.TestCase):
                 self.assertIn(key, now)
         self.assertIsInstance(static["cores"], (int, type(None)))
         self.assertIn("gpu_name", static)
+
+
+class CardSelection(unittest.TestCase):
+    """The two rules of a mixed or Ryzen box: the card at the model's HIP device, and AMD numbers where the
+    model runs on AMD even if NVML loads.  A fake sysfs and two fake backends stand in for the hardware."""
+
+    def _fake_drm(self, root, cards):
+        """cards: [(cardN, pci_slot)] - each with DRIVER=amdgpu in its uevent."""
+        for name, slot in cards:
+            dev = root / name / "device"
+            dev.mkdir(parents=True)
+            (dev / "uevent").write_text(f"DRIVER=amdgpu\nPCI_SLOT_NAME={slot}\nPCI_ID=1002:744C\n")
+
+    def test_the_card_is_the_one_at_the_model_s_hip_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fake_drm(root, [("card0", "0000:00:08.1"),      # a Ryzen iGPU is amdgpu too
+                                  ("card1", "0000:03:00.0")])     # the gfx1100 the model runs on
+            gpu = telemetry._AmdSysfs(0, {0: "0000:03:00.0"}, root=root)
+            self.assertTrue(gpu.ok())
+            self.assertEqual(telemetry._card_slot(gpu.dir), "0000:03:00.0",
+                             "the iGPU at index 0 of the card scan must not be picked")
+            stale = telemetry._AmdSysfs(0, {}, root=root)          # documented fallback: card order
+            self.assertEqual(telemetry._card_slot(stale.dir), "0000:00:08.1")
+
+    def test_amd_readings_win_when_the_model_runs_on_amd_even_if_nvml_loads(self):
+        class FakeNvml:
+            def __init__(self, index=0):
+                self.index = index
+
+            def ok(self):
+                return True                          # NVML loads on this box
+
+            def name(self):
+                return "NVIDIA card"
+
+        class FakeAmd:
+            def __init__(self, index=0, hip_map=None, root=None):
+                self.index = index
+
+            def ok(self):
+                return True
+
+            def name(self):
+                return "AMD card"
+
+        saved = telemetry._Nvml, telemetry._AmdSysfs, telemetry._hip_pci_map
+        telemetry._Nvml, telemetry._AmdSysfs = FakeNvml, FakeAmd
+        telemetry._hip_pci_map = lambda: {0: "0000:03:00.0"}
+
+        def restore():
+            telemetry._Nvml, telemetry._AmdSysfs = saved[0], saved[1]
+            telemetry._hip_pci_map = saved[2]
+
+        self.addCleanup(restore)
+        self.assertIsInstance(telemetry.Telemetry(hip=True, gpu_index=0).gpu, FakeAmd,
+                              "the model on the AMD card: its numbers, not NVML's")
+        self.assertIsInstance(telemetry.Telemetry(hip=False, gpu_index=0).gpu, FakeNvml,
+                              "the model on an NVIDIA card: NVML as before")
+
+    def test_where_the_model_runs_decides_the_backend(self):
+        self.assertTrue(telemetry.engine_runs_on_amd({"backend": "hip"}))
+        self.assertFalse(telemetry.engine_runs_on_amd({"backend": "cuda"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "strata"
+            exe.write_bytes(b"\x7fELF" + b"\0" * 32 + b"libamdhip64.so.1\0")
+            self.assertTrue(telemetry.engine_runs_on_amd({"exe": str(exe)}),
+                            "no backend key: the binary's own linkage decides")
+            exe.write_bytes(b"\x7fELF" + b"\0" * 32 + b"libcudart.so.12\0")
+            self.assertFalse(telemetry.engine_runs_on_amd({"exe": str(exe)}))
+        self.assertFalse(telemetry.engine_runs_on_amd({}))
 
 
 if __name__ == "__main__":

@@ -621,7 +621,8 @@ class Service:
             from serve.telemetry import Telemetry
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
-                                       gpu_indices=getattr(self, "gpu_indices", None))
+                                       gpu_indices=getattr(self, "gpu_indices", None),
+                                       hip=getattr(self, "gpu_hip", None))
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating."""
@@ -1731,6 +1732,8 @@ def main() -> int:
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
+    from serve.telemetry import engine_runs_on_amd
+    svc.gpu_hip = engine_runs_on_amd(cfg)               # the model on the AMD card: AMD readings even if NVML loads
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:

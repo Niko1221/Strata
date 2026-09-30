@@ -27,7 +27,9 @@ On Linux with an RX 7900 XT / XTX and the kernel's amdgpu driver (no ROCm instal
   `$ROCM_PATH`) with hipcc and hipBLAS is used instead when present.
 - **Engine:** compiled on your PC (10-20 minutes, once; again after a `git pull` that changes it). This needs a C++
   compiler and git (`sudo apt install build-essential git`).
-- **Limits for now:** one GPU, no images, no calibration. The Monitor shows no GPU statistics.
+- **Limits for now:** one GPU, no images, no calibration. The Monitor shows the GPU, VRAM, temperature and
+  power readings from amdgpu's sysfs (the card at the model's HIP device - a Ryzen iGPU is not picked), and
+  they are used on a PC that also has an NVIDIA card whenever the model runs on the AMD card.
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 

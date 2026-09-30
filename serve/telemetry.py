@@ -174,31 +174,96 @@ def _read_text(path):
 
 
 # ------------------------------------------------------------------------------------------------ amdgpu (ROCm)
+_SYS_DRM = Path("/sys/class/drm")
+
+
+def _card_slot(dev):
+    """A card device's PCI slot name ('0000:03:00.0') from its uevent."""
+    try:
+        for line in (dev / "uevent").read_text().splitlines():
+            if line.startswith("PCI_SLOT_NAME="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def _links_hip_runtime(exe):
+    """True when the engine binary links AMD's HIP runtime - the ground truth for 'the model runs on the AMD
+    card'.  Only a string-table entry is read; the binary is never executed."""
+    try:
+        return b"libamdhip64" in Path(exe).read_bytes()
+    except OSError:
+        return False
+
+
+def _hip_pci_map():
+    """{HIP device ordinal: PCI slot name}, straight from AMD's HIP runtime.  {} whenever the runtime or the
+    query is unavailable - callers then fall back to card order."""
+    try:
+        lib = ctypes.CDLL("libamdhip64.so.1") if os.name != "nt" else ctypes.WinDLL("amdhip64.dll")
+        if lib.hipInit(0) != 0:
+            return {}
+        lib.hipDeviceGetCount.restype = ctypes.c_int
+        n = ctypes.c_int()
+        if lib.hipDeviceGetCount(ctypes.byref(n)) != 0:
+            return {}
+        lib.hipDeviceGetPciBusId.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        out = {}
+        for i in range(n.value):
+            buf = ctypes.create_string_buffer(64)
+            if lib.hipDeviceGetPciBusId(buf, 64, i) == 0:
+                out[i] = buf.value.decode()
+        return out
+    except Exception:
+        return {}
+
+
+def engine_runs_on_amd(cfg):
+    """Whose numbers the Monitor shows follows where the model runs: 0.1.26's setup lets a PC with both kinds
+    of card choose AMD (setup.py asks), and NVML still loads there (it ships with the NVIDIA driver)."""
+    backend = (cfg or {}).get("backend")
+    if backend == "hip":
+        return True
+    if backend:
+        return False
+    return _links_hip_runtime((cfg or {}).get("exe") or "")
+
+
 class _AmdSysfs:
     """The NVML fields, from amdgpu's sysfs - what a ROCm box has instead of libnvidia-ml.
 
     The card is found under /sys/class/drm/card*/device; the number is not fixed (a box with another DRM device
-    can have the AMD card at card1), so the backend scans for DRIVER=amdgpu and takes the index-th one.  Every
+    can have the AMD card at card1), so the backend scans for DRIVER=amdgpu.  With a HIP map the card is the one
+    at the model device's PCI slot - never "the index-th amdgpu", which on a Ryzen box can be the iGPU.  Every
     reading is a small sysfs file read: a sample cannot block the server, and anything the kernel does not
     expose stays None so the Monitor shows "-" instead of a made-up number.  PCIe throughput has no sysfs
     counter - the link generation and width are reported, the MB/s series stays empty."""
 
-    def __init__(self, index=0):
+    def __init__(self, index=0, hip_map=None, root=None):
         self.dir = None
         self._temp = None
-        for d in self._cards():
-            if index <= 0:
-                self.dir = d
-                break
-            index -= 1
+        cards = self._cards(root)
+        slot = (hip_map or {}).get(index)
+        if slot:
+            for d in cards:
+                if _card_slot(d) == slot:
+                    self.dir = d
+                    break
+        if self.dir is None:                      # no HIP mapping: the index-th amdgpu card, as before
+            for d in cards:
+                if index <= 0:
+                    self.dir = d
+                    break
+                index -= 1
         if self.dir is not None:
             self._temp = self._find_temp()
 
     @staticmethod
-    def _cards():
-        """Every /sys/class/drm/cardN/device whose driver is amdgpu, in card order."""
+    def _cards(root=None):
+        """Every <root>/cardN/device whose driver is amdgpu, in card order."""
         out = []
-        paths = sorted(Path("/sys/class/drm").glob("card[0-9]*/device"),
+        paths = sorted((root or _SYS_DRM).glob("card[0-9]*/device"),
                        key=lambda p: int(re.sub(r"\D", "", p.parent.name) or 0))
         for p in paths:
             try:
@@ -334,22 +399,28 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, hip=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
-        PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  A ROCm box has no
-        NVML: the same fields come from amdgpu's sysfs (_AmdSysfs)."""
+        PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `hip`: True when
+        the model runs on the AMD card - the readings then come from amdgpu's sysfs even where NVML loads, and
+        the cards are the ones at the model's HIP devices (a Ryzen iGPU is amdgpu too)."""
         self.extra = extra
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
-        self.gpus = [(i, _Nvml(i)) for i in idx]
-        ok = [(i, g) for i, g in self.gpus if g.ok()]
-        if not ok:                                    # ROCm box (no libnvidia-ml): the same fields from amdgpu's sysfs
-            ok = [(i, g) for i, g in ((i, _AmdSysfs(i)) for i in idx) if g.ok()]
-        self.gpus = ok or self.gpus[:1]
+        if hip:
+            hip_map = _hip_pci_map()              # the model's cards by PCI slot, not "the index-th amdgpu"
+            self.gpus = [(i, g) for i, g in ((i, _AmdSysfs(i, hip_map)) for i in idx) if g.ok()] \
+                or [(idx[0], _AmdSysfs(idx[0], hip_map))]
+        else:
+            self.gpus = [(i, _Nvml(i)) for i in idx]
+            ok = [(i, g) for i, g in self.gpus if g.ok()]
+            if not ok:                                    # ROCm box (no libnvidia-ml): the same fields from amdgpu's sysfs
+                ok = [(i, g) for i, g in ((i, _AmdSysfs(i)) for i in idx) if g.ok()]
+            self.gpus = ok or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:
             import psutil  # noqa: F401
