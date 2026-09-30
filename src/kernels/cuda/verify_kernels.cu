@@ -375,6 +375,24 @@ void ident_hits(const int32_t* ids, int n, int32_t* slot, int32_t* dst, int32_t*
     check("ident_hits");
 }
 
+namespace {
+__global__ void copy_row_to_first_kernel(const int32_t* __restrict__ row_dev, float* a, int64_t a_n, float* b,
+                                         int64_t b_n, float* c, int64_t c_n) {
+    const int64_t row = *row_dev;
+    if (row == 0) return;
+    const int64_t i0 = (int64_t) blockIdx.x * blockDim.x + threadIdx.x, st = (int64_t) gridDim.x * blockDim.x;
+    for (int64_t i = i0; i < a_n; i += st) a[i] = a[row * a_n + i];
+    for (int64_t i = i0; i < b_n; i += st) b[i] = b[row * b_n + i];
+    for (int64_t i = i0; i < c_n; i += st) c[i] = c[row * c_n + i];
+}
+}  // namespace
+
+void copy_row_to_first(const int32_t* row_dev, float* a, int64_t a_n, float* b, int64_t b_n, float* c, int64_t c_n,
+                       void* stream) {
+    copy_row_to_first_kernel<<<16, 256, 0, (cudaStream_t) stream>>>(row_dev, a, a_n, b, b_n, c, c_n);
+    check("copy_row_to_first");
+}
+
 void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const int32_t* row_dev, float* R_dst,
                 int32_t* tok_dst, int32_t* out, int j, void* stream, const float* probs, float* out_p) {
     mtp_select_kernel<<<16, 256, 0, (cudaStream_t) stream>>>(R_src, R_stride, ids, row_dev, R_dst, tok_dst, out, j,

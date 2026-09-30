@@ -92,6 +92,13 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    /// The layer's front for T rows at step rows [row0, +T): the embedding, the fc projections, the attention
+    /// hyper-connection read (R_, inj_, mixed_) and the K/V appended.
+    bool record_front(int T, int row0, cudaStream_t cs, std::string& err);
+    /// The rest for row 0 at step row `step_row`: the attention from the q projection, the MLP, the final mixer,
+    /// the head, the draft and its probability.  Needs row 0's R_, inj_ and mixed_ (its q8_1 rows in xq_).
+    bool record_rest(int step_row, cudaStream_t cs, std::string& err);
+    void norm_rope(float* data, const float* gamma, int rows, int cols, const int32_t* p, cudaStream_t cs);
     bool capture_round(int T, std::string& err);
     bool capture_step(int j, std::string& err);
     cudaGraphExec_t step_exec_[9] = {};
