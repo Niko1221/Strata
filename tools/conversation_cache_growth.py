@@ -29,14 +29,16 @@ def verify(results):
     require(full['name'] == 'full' and incremental['name'] == 'incremental', 'incorrect comparison arms')
     requests = results['requests']
     require([r['name'] for r in requests] == NAMES, 'incomplete growth/rewind requests')
+    require(all(r['ids'] and r['max_new'] > 0 for r in requests), 'empty growth request')
     digest = hashlib.sha256(json.dumps(requests, sort_keys=True).encode()).hexdigest()
     require(digest == results['request_digest'], 'request evidence changed')
     for arm in (full, incremental):
         require(arm['request_digest'] == digest and arm['args'] == full['args'], 'inputs or arguments differ')
+        require(arm['exe_sha256'] == full['exe_sha256'], 'executable changed between comparison arms')
         require([r['name'] for r in arm['records']] == NAMES, 'incomplete growth/rewind outputs')
         for key in (*SETTINGS, 'conversation_cache_mib', 'conversation_cache_slots'):
             require(key in arm['info'] and arm['info'][key] == full['info'][key], f'engine setting differs: {key}')
-        require(arm['info']['conversation_cache_mib'] > 0, 'cache is not enabled')
+        require(arm['info']['conversation_cache_mib'] == results['cache_mib'] > 0, 'cache budget differs')
         budget = arm['info']['conversation_cache_mib'] * 1024 * 1024
         require(arm['parks'] and all(0 < p['snapshot_bytes'] <= p['bytes'] <= budget and
                 0 <= p['reused_kv_bytes'] <= p['snapshot_bytes'] for p in arm['parks']), 'invalid allocation/reuse evidence')
@@ -99,7 +101,7 @@ def main():
     env['STRATA_SNAPSHOT_VERIFY'] = '1'
     env['STRATA_MTP_BATCH'] = '1'
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
-    results = {'requests': [], 'arms': [], 'spec': a.spec, 'paragraphs': a.paragraphs}
+    results = {'requests': [], 'arms': [], 'spec': a.spec, 'paragraphs': a.paragraphs, 'cache_mib': a.cache_mib}
     for name in ('full', 'incremental'):
         current_env = dict(env)
         if name == 'full':

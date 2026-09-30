@@ -384,6 +384,8 @@ retained for the next parking operation; growth appends storage without copying
 the existing pages. Rewinds refresh the affected pages, and running state and
 checkpoints are captured again. Retained active K/V counts against the same byte
 budget and is discarded before evicting parked entries under memory pressure.
+If reserving space for growth would evict another conversation, parking uses a
+full capture instead.
 Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
