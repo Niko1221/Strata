@@ -219,6 +219,46 @@ The file's second line names the architecture and version (`STRATA_HIPBLASLT_TUN
 as `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `STRATA_HIPBLASLT_TUNING` at it. Compare the
 prompt speed with and without it before keeping it.
 
+## RDNA3 WMMA kernels for the gfx1100 prefill (opt-in)
+
+gfx11 has matrix instructions (`v_wmma_*`) for fp16 and bf16 that this backend was not using: dense projections
+reached BLAS, and the prompt attention used the ordered FP32 fallback written for CUDA-only QSA matrix
+instructions.  Two native paths are available behind **opt-in** switches, so default output stays exactly what
+hipBLAS produces today:
+
+* `STRATA_WMMA_GEMM=1` - dense GEMM over the RDNA3 WMMA fragment layout (16x16x16, wave32 "doubled" inputs),
+  templated for `_Float16` and `__bfloat16`, dispatched from `Gemm::f16` and `Gemm::bf16` ahead of the BLAS
+  fallback.  `STRATA_WMMA_BF16=0` excludes just the bf16 path.
+* `STRATA_PA_WMMA=1` - the prompt attention itself on WMMA (scores 16x32 in two waves, output four warps over 64
+  dimensions) instead of the emulated scalar path.
+
+Both paths gate themselves at **runtime** on the device's `gcnArchName` (gfx11 prefix): a gfx1201, a mixed-arch
+build or any other device never executes them, whatever was compiled.  The build only supplies the
+`STRATA_WMMA_GFX11` compile definition for gfx11 configurations (see `cmake/hip_backend.cmake`), because the host
+pass of a HIP compile does not define `__gfx1100__` and a compiler-macro guard would silently build the
+returning-false stubs.
+
+Measured on one RX 7900 XTX with a 6-core host over PCIe 4.0 x16 (engine 0.1.30, the documented measured
+configuration, two repetitions per cell, interleaved):
+
+| tier | switch state | prefill (tok/s) | decode (tok/s) |
+| --- | --- | ---: | ---: |
+| 1K | off | 376 / 455 | 35.2 / 45.4 |
+| 1K | GEMM | 471 / 551 | 39.7 / 51.5 |
+| 1K | GEMM + PA | 619 / 471 | 50.1 / 50.3 |
+| 32K | off | 790 / 800 | 57.3 / 55.8 |
+| 32K | GEMM + PA | **1501 / 1484** | 55.1 / 57.1 |
+
+Prefill is the clear win and grows with context (+31 % at the 1K median, +88 % at 32K); decode is unchanged within
+this host's variance.
+
+`tests/hip/prefill_wmma_gemm_parity.cpp` (ctest-registered like the neighbouring `hip_*` tests) covers both entry
+points against a double-precision host reference over 440 shapes x 4 beta/ldy configurations x 2 dtypes, including
+partial tiles, padding columns, end guards and the declined shapes.  Numerical note: the fp16 comparison allows
+4 ULP because the matrix core accumulates in fp32 but rounds toward zero while the reference rounds to nearest -
+every delta observed is <= 1 ULP and toward zero, bf16 compares exactly, and with the switches off the engine's
+output is bit-identical to the hipBLAS path by construction.  `STRATA_WMMA_PARITY_EXACT=1` demands bit equality.
+
 ## Original backend validation (PR #94)
 
 The following is historical validation of the original backend, not a fresh
