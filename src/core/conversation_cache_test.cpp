@@ -143,6 +143,35 @@ int main() {
         check(!cache.make_room(0, one*2+1), "held larger than budget cannot underflow");
     }
     {
+        struct Evictions { size_t calls = 0, bytes = 0; int32_t first = 0; } evicted;
+        const auto spill = [](void* user, const SavedConversation& image) noexcept {
+            auto& record = *static_cast<Evictions*>(user);
+            ++record.calls; record.bytes = image.bytes(); record.first = image.live.ids.front();
+        };
+        const size_t one = image({1,2,3}).bytes();
+        ConversationCache cache(one * 2, 2, spill, &evicted);
+        cache.put(image({1,2,3})); cache.put(image({9,8,7}));
+        check(evicted.calls == 0, "parking within budget does not spill");
+        auto held = cache.take(0);
+        check(evicted.calls == 0, "promotion does not spill");
+        check(cache.make_room(one, held.bytes()), "reserve while holding incoming image");
+        check(evicted.calls == 1 && evicted.first == 9 && evicted.bytes == one, "eviction borrows complete image before release");
+        cache.put(image({5,6,7}), held.bytes());
+        check(evicted.calls == 1, "non-evicting insert after reservation does not spill again");
+        check(!cache.make_room(one * 3), "oversized reservation rejected before callback");
+        check(evicted.calls == 1, "oversized reservation does not spill");
+    }
+    {
+        const size_t one = image({1,2,3}).bytes();
+        ConversationCache cache(one * 3, 2);
+        cache.put(image({1,2,3})); cache.put(image({9,8,7}));
+        check(cache.make_staging_room(one), "disk staging fits remaining byte budget");
+        check(cache.size() == 2 && cache.evictions() == 0, "staging does not consume a parked slot");
+        check(cache.make_staging_room(one * 2), "larger disk staging evicts for bytes");
+        check(cache.size() == 1 && cache.bytes() + one * 2 <= one * 3, "disk staging shares total RAM bound");
+        check(!cache.make_staging_room(one * 3 + 1) && cache.size() == 1, "oversize staging leaves retained images alone");
+    }
+    {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");

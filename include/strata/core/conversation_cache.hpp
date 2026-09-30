@@ -96,13 +96,17 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
 
 class ConversationCache {
 public:
+    // Synchronous borrow: the callback must not retain the image or reenter this
+    // cache. A failed spill is handled by the callback; eviction still proceeds.
+    using EvictionCallback = void (*)(void*, const SavedConversation&) noexcept;
     struct Match {
         size_t index = 0;
         int64_t tokens = 0;
         bool live = false;
     };
 
-    ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
+    ConversationCache(size_t budget, size_t slots, EvictionCallback spill = nullptr, void* user = nullptr)
+        : budget_(budget), slots_(slots), spill_(spill), spill_user_(user) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
@@ -127,19 +131,27 @@ public:
     }
 
     template<class Token>
+    static Match match_image(const SavedConversation& image, const std::vector<Token>& prompt,
+                             const std::vector<ConversationImageKey>& images, bool cvec) {
+        Match match;
+        if (image.cvec != cvec) return match;
+        auto consider = [&](const ConversationCheckpoint& checkpoint, bool live) {
+            const int64_t n = conversation_prefix(checkpoint, prompt, images);
+            if (n > match.tokens) match = {0, n, live};
+        };
+        consider(image.live, true);
+        for (const auto& checkpoint : image.checkpoints) consider(checkpoint, false);
+        return match;
+    }
+
+    template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
-            const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
-            auto consider = [&](const ConversationCheckpoint& c, bool live) {
-                const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live};
-            };
-            consider(e.live, true);
-            for (const auto& c : e.checkpoints) consider(c, false);
+            const auto match = match_image(entries_[i], prompt, images, cvec);
+            if (match.tokens > best.tokens) best = {i, match.tokens, match.live};
         }
         return best;
     }
@@ -154,15 +166,12 @@ public:
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
-        if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        if (bytes() > budget_ - held - incoming) reuse_ = {};
-        while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            bytes_ -= entries_.front().bytes();
-            entries_.pop_front();
-            ++evictions_;
-        }
-        return true;
+        return reserve(incoming, held, true);
     }
+
+    // Disk read staging shares the RAM byte budget but does not occupy a parked
+    // entry slot. Its caller protects the disk candidate while evictions spill.
+    bool make_staging_room(size_t incoming) { return reserve(incoming, 0, false); }
 
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
@@ -173,8 +182,21 @@ public:
     }
 
 private:
+    bool reserve(size_t incoming, size_t held, bool entry_slot) {
+        if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
+        if (bytes() > budget_ - held - incoming) reuse_ = {};
+        while (!entries_.empty() && ((entry_slot && entries_.size() >= slots_) || bytes_ > budget_ - held - incoming)) {
+            if (spill_) spill_(spill_user_, entries_.front());
+            bytes_ -= entries_.front().bytes();
+            entries_.pop_front();
+            ++evictions_;
+        }
+        return true;
+    }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0;
     std::deque<SavedConversation> entries_; // least recently active first
+    EvictionCallback spill_ = nullptr;
+    void* spill_user_ = nullptr;
     ConversationKvReuse reuse_;
 };
 

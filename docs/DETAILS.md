@@ -455,8 +455,42 @@ rather than permission to continue with partial state. Indexer spare keys and th
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
-retention for diagnostic comparisons. Snapshots are not
-persisted across restarts.
+retention for diagnostic comparisons. RAM-only snapshots are not persisted across restarts.
+
+**Optional disk cache.** Install the OpenSSL development headers and Crypto library,
+then enable disk support in your existing engine build (configured for your GPU):
+
+```sh
+cmake -S . -B build -DSTRATA_ENABLE_CONVERSATION_DISK=ON
+cmake --build build --target strata -j 2
+```
+
+The option defaults to `OFF`; ordinary builds have no OpenSSL dependency. In your
+server config (for example `strata-iq3_s.json`), point `exe` at the newly built
+engine and append these entries to its existing `args` array:
+
+```json
+"--conversation-cache-mib", "8192",
+"--conversation-cache-slots", "4",
+"--conversation-cache-disk", "/absolute/path/to/cache",
+"--conversation-cache-disk-mib", "16384",
+"--conversation-cache-disk-slots", "128"
+```
+
+Restart the server with that config. This example permits 8 GiB of parked/staged
+RAM and 16 GiB of disk snapshots; choose budgets that fit your machine. Disk caching
+requires serve mode and enabled RAM/prompt caching. The disk MiB quota includes
+temporary writes; the entry limit defaults to 128. A zero disk MiB quota (the default)
+or zero disk slots disables persistence without touching the cache directory.
+
+The engine owns `strata-conversations-v1` below the configured directory and locks
+it against another writer. Files contain conversation content. Snapshots are written
+only when evicted from RAM, not on every turn or shutdown: the latest active turn is
+not guaranteed to survive a restart. Matching persisted entries can be restored
+after restart; corrupt, incompatible or unadmitted entries fall back to ordinary
+prompt processing. Startup hashes model/runtime assets, adding I/O; changing assets,
+the executable or bound settings/paths can invalidate reuse. The frontend supplies
+its actual tokenizer/template paths automatically.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /

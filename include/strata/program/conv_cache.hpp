@@ -26,8 +26,24 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <vector>
 
 namespace strata::program::conv_cache {
+
+// Persisted stamps belong to an earlier process's clock. Keep relative age and
+// ties, but remove arbitrary absolute values before advancing the local clock.
+// Allocate before mutating; callers may decline promotion on allocation failure.
+template<class Checkpoint>
+void rebase_stamps(std::vector<Checkpoint>& checkpoints) {
+    std::vector<uint64_t> stamps;
+    stamps.reserve(checkpoints.size());
+    for (const auto& c : checkpoints) stamps.push_back(c.used);
+    std::sort(stamps.begin(), stamps.end());
+    stamps.erase(std::unique(stamps.begin(), stamps.end()), stamps.end());
+    for (auto& c : checkpoints)
+        c.used = uint64_t(std::lower_bound(stamps.begin(), stamps.end(), c.used) - stamps.begin()) + 1;
+}
 
 /// The index in `stamps` of the chain item to drop once the chain holds more than `cap` items.  `stamps`
 /// are the items' last-use stamps; the caller owns the chain and erases the returned index.  Pure and

@@ -538,12 +538,22 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
-def engine_args(cfg: dict) -> list[str]:
+def engine_args(cfg: dict, *, tokenizer: Path | None = None, template: Path | None = None) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
     args = list(cfg["args"])
     if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    if "--conversation-cache-disk" in args:
+        # The frontend owns tokenization. Bind its actual files, including the
+        # fallback template, instead of assuming they live below --pack.
+        for flag, path in (("--conversation-cache-tokenizer", tokenizer), ("--conversation-cache-template", template)):
+            if path is None:
+                continue
+            while flag in args:
+                index = args.index(flag)
+                del args[index:index + 2]
+            args += [flag, str(path.resolve())]
     return args
 
 
@@ -1893,6 +1903,8 @@ def main() -> int:
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()
     tpath = Path(a.tokenizer)
+    tpl = tpath / "chat_template.jinja"
+    template_path = tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
     if (tpath / "vocab.json").exists():
@@ -1921,14 +1933,14 @@ def main() -> int:
         print("loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({cfg.get('layer_split') or 'auto'})", flush=True)
-        engine = StrataEngine(cfg["exe"], engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
+        engine = StrataEngine(cfg["exe"], engine_args(cfg, tokenizer=tpath, template=template_path),
+                              cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
         warn_tight_ram(engine.info.get("arena_mib"))
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's
-    tpl = tpath / "chat_template.jinja"
-    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+    svc = Service(engine, tok, ChatTemplate(template_path),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)

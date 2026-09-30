@@ -49,3 +49,5 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+# Generated conversation snapshots, wherever the disk cache is configured
+strata-conversations-v1/

@@ -62,6 +62,28 @@ int main() {
         const size_t b = eviction_victim(stamps.data(), stamps.size(), 4);
         check(a == 1 && b == 1, "ties among equally stale leaves: the earlier index, deterministically");
     }
+    {
+        struct Checkpoint { uint64_t used; int token_length; };
+        std::vector<Checkpoint> restored = {{UINT64_MAX, 10}, {UINT64_MAX - 1, 20},
+                                            {7, 30}, {7, 40}, {UINT64_MAX, 50}};
+        const uint64_t before[] = {UINT64_MAX, UINT64_MAX - 1, 7, 7, UINT64_MAX};
+        strata::program::conv_cache::rebase_stamps(restored);
+        std::vector<uint64_t> after;
+        for (const auto& c : restored) after.push_back(c.used);
+        check(after == std::vector<uint64_t>({3, 2, 1, 1, 3}),
+              "restored extreme stamps preserve relative ages and ties");
+        check(restored[0].token_length == 10 && restored[4].token_length == 50,
+              "stamp rebasing leaves the checkpoint prefix chain in place");
+        check(eviction_victim(before, 5, 4) == eviction_victim(after.data(), 5, 4),
+              "rebasing preserves the root-pinned eviction choice");
+        uint64_t clock = 3;
+        after[2] = ++clock;
+        check(eviction_victim(after.data(), 5, 4) == 3,
+              "mounting a restored checkpoint advances without wrapping");
+        restored.clear();
+        strata::program::conv_cache::rebase_stamps(restored);
+        check(restored.empty(), "an empty restored chain needs no stamps");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }
