@@ -66,16 +66,20 @@ public:
     /// Remote: pinned [max_chunk, n_embd]: the MoE input goes in here, the sums come out here (both FP16).
     uint16_t* host_input() const;
     uint16_t* host_sum() const;
+    /// Remote, before run_layer of the same layer: rows [t0, t0 + rows) of the input, copied in once `ready` (an
+    /// event of the first GPU, recorded once host_input holds them) has passed; a chunk's rows in pieces, as they
+    /// reach host_input.
+    void stage_input(int64_t t0, int64_t rows, cudaEvent_t ready);
 
     /// Layer `layer` of a chunk of T tokens: expert experts[j] serves rows [off[j], off[j + 1]), row r being token
     /// src[r] with routing weight w[r]; each row times its weight adds to its token's sum.  Local: reads `input`
     /// [T, n_embd] (FP16) and adds into `sum` [T, n_embd], queued on the prompt path's stream.  Remote: `input` and
-    /// `sum` are null; its work waits for `input_ready` (an event of the first GPU, recorded once host_input holds
-    /// the input), and done() is recorded once host_sum holds the sums.  Returns once the work is queued.
+    /// `sum` are null, the input came through stage_input, and the sums reach host_sum in pieces of `piece` rows,
+    /// piece_done(k) recorded as piece k lands.  Returns once the work is queued.
     bool run_layer(int64_t layer, int64_t T, const std::vector<int32_t>& experts, const std::vector<int32_t>& off,
-                   const std::vector<int32_t>& src, const std::vector<float>& w, cudaEvent_t input_ready,
+                   const std::vector<int32_t>& src, const std::vector<float>& w, int64_t piece,
                    const uint16_t* input, float* sum, std::string& err);
-    cudaEvent_t done() const;
+    cudaEvent_t piece_done(int64_t k) const;
 
     int64_t experts_resident = 0;   ///< expert-layer groups served from its cache
     int64_t experts_streamed = 0;   ///< expert blobs copied from the arena

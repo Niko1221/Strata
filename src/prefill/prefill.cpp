@@ -153,10 +153,10 @@ struct Prefill::Impl {
     strata::kernels::QsaShapes s;
     int64_t cap = 0, max_blocks = 0;
     cudaStream_t cs = nullptr;
-    // the second GPU's share: the input goes out on `xfer`, the sums come back on `xsum` a sub-chunk at a time
+    // the second GPU's share, a sub-chunk at a time: the input goes out on `xfer`, the sums come back on `xsum`
     cudaStream_t xfer = nullptr, xsum = nullptr;
-    cudaEvent_t ev_mixed = nullptr, ev_input = nullptr;
-    std::vector<cudaEvent_t> ev_piece;   // a sub-chunk's sums have landed
+    cudaEvent_t ev_mixed = nullptr;
+    std::vector<cudaEvent_t> ev_in, ev_piece;   // a sub-chunk's input is in host memory, its sums on this GPU
     Gemm gemm;
     void* owned = nullptr;   // the buffers' own allocation (no region)
     Bufs b;
@@ -178,7 +178,8 @@ Prefill::~Prefill() {
     if (m.cs) cudaStreamSynchronize(m.cs);
     if (m.xfer) cudaStreamSynchronize(m.xfer);
     if (m.xsum) cudaStreamSynchronize(m.xsum);
-    for (cudaEvent_t e : {m.ev_mixed, m.ev_input}) if (e) cudaEventDestroy(e);
+    if (m.ev_mixed) cudaEventDestroy(m.ev_mixed);
+    for (cudaEvent_t e : m.ev_in) if (e) cudaEventDestroy(e);
     for (cudaEvent_t e : m.ev_piece) if (e) cudaEventDestroy(e);
     if (m.xfer) cudaStreamDestroy(m.xfer);
     if (m.xsum) cudaStreamDestroy(m.xsum);
@@ -199,14 +200,15 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.s = shapes_of(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, m.s);
     m.max_blocks = ss.qsa_states[0].max_cells / m.s.idx_block + 2;
-    m.ev_piece.assign((size_t) ((max_chunk + SUB - 1) / SUB), nullptr);
+    m.ev_in.assign((size_t) ((max_chunk + SUB - 1) / SUB), nullptr);
+    m.ev_piece.assign(m.ev_in.size(), nullptr);
     bool pieces = true;
-    for (cudaEvent_t& e : m.ev_piece)
-        pieces = pieces && cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
+    for (auto* v : {&m.ev_in, &m.ev_piece})
+        for (cudaEvent_t& e : *v)
+            pieces = pieces && cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
     if (!pieces || cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
         cudaStreamCreateWithFlags(&m.xsum, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&m.ev_mixed, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&m.ev_input, cudaEventDisableTiming) != cudaSuccess ||
         cudaHostAlloc((void**) &m.ids_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc((void**) &m.w_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess) {
         err = "prefill: streams, events and pinned routing buffers";
@@ -617,7 +619,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 if (m.offload) {
                     cudaEventRecord(m.ev_mixed, m.cs);
                     cudaStreamWaitEvent(m.xfer, m.ev_mixed, 0);
-                    cudaMemcpyAsync(m.offload->host_input() + t0 * N, mixed_h, (size_t) P * N * 2, cudaMemcpyDeviceToHost, m.xfer);
+                    cudaMemcpyAsync(m.offload->host_input() + t0 * N, mixed_h, (size_t) P * N * 2,
+                                    cudaMemcpyDeviceToHost, m.xfer);
+                    cudaEventRecord(m.ev_in[(size_t) (t0 / SUB)], m.xfer);
+                    m.offload->stage_input(t0, P, m.ev_in[(size_t) (t0 / SUB)]);
                 }
                 // ---- the router, and the shared expert (its gated output starts the MoE sum)
                 mark(kPsRouter);
@@ -636,7 +641,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             if (!qsa) ++gdn_index;
             else ++qsa_index;
             // ================ the routed experts of the whole chunk ================
-            if (m.offload) cudaEventRecord(m.ev_input, m.xfer);
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
@@ -676,13 +680,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 }
                 of.push_back((int32_t) sr.size());
             }
-            if (m.offload && !m.offload->run_layer(l, T, m.ex2, m.off2, m.src2, m.w2, m.ev_input, nullptr, nullptr, err))
+            if (m.offload && !m.offload->run_layer(l, T, m.ex2, m.off2, m.src2, m.w2, SUB, nullptr, nullptr, err))
                 return false;
-            if (!m.local.run_layer(l, T, m.ex1, m.off1, m.src1, m.w1, nullptr, b.mixed_h, b.bo_moe, err)) return false;
+            if (!m.local.run_layer(l, T, m.ex1, m.off1, m.src1, m.w1, SUB, b.mixed_h, b.bo_moe, err)) return false;
             // ---- the MoE output (+ the second GPU's sums) goes into the residual stream as the next layer reads it
             if (m.offload) {
-                cudaStreamWaitEvent(m.xsum, m.offload->done(), 0);
                 for (int64_t t0 = 0; t0 < T; t0 += SUB) {
+                    cudaStreamWaitEvent(m.xsum, m.offload->piece_done(t0 / SUB), 0);
                     const size_t bytes = (size_t) std::min(SUB, T - t0) * N * 2;
                     cudaMemcpyAsync(b.sums + t0 * N, m.offload->host_sum() + t0 * N, bytes, cudaMemcpyHostToDevice,
                                     m.xsum);
