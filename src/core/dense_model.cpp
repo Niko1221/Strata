@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <map>
@@ -74,6 +76,10 @@ struct DenseModel::Impl {
     std::map<std::string, Found> index;
     std::vector<Layer> layers;
     std::vector<void*> allocations;                 // everything cudaMalloc'ed here, freed in the destructor
+    std::vector<void*> host_allocs;                 // weights that did not fit in VRAM: mapped pinned host memory
+    uint64_t budget = UINT64_MAX;                   // bytes of weights that may go to VRAM
+    uint64_t dev_used = 0, host_bytes = 0;
+    int host_tensors = 0;
     cudaStream_t stream = nullptr;
     cudaEvent_t embed_done = nullptr;
 
@@ -177,14 +183,35 @@ struct DenseModel::Impl {
             err = "dense model: " + name + ": payload size mismatch or truncated file"; return false;
         }
         void* dev = nullptr;
-        cudaError_t s = cudaMalloc(&dev, bytes);
-        if (s == cudaSuccess) s = cudaMemcpy(dev, f->file->tensor_data(t), bytes, cudaMemcpyHostToDevice);
-        if (s != cudaSuccess) {
-            if (dev) cudaFree(dev);
-            err = "dense model: upload " + name + ": " + cudaGetErrorString(s);
-            return false;
+        cudaError_t s = cudaSuccess;
+        if (dev_used + bytes <= budget) {
+            s = cudaMalloc(&dev, bytes);
+            if (s == cudaSuccess) s = cudaMemcpy(dev, f->file->tensor_data(t), bytes, cudaMemcpyHostToDevice);
+            if (s != cudaSuccess) {                 // the card is fuller than cudaMemGetInfo said: spill this one
+                if (dev) cudaFree(dev);
+                dev = nullptr;
+                cudaGetLastError();
+            } else {
+                allocations.push_back(dev);
+                dev_used += bytes;
+            }
         }
-        allocations.push_back(dev);
+        if (!dev) {
+            // Host-resident: pinned + mapped, so the GEMV kernel reads the blocks over PCIe on every token.
+            void* host = nullptr;
+            s = cudaHostAlloc(&host, bytes, cudaHostAllocMapped);
+            if (s == cudaSuccess) s = cudaHostGetDevicePointer(&dev, host, 0);
+            if (s != cudaSuccess) {
+                if (host) cudaFreeHost(host);
+                err = "dense model: " + name + " fits neither in VRAM nor in pinned host memory (" +
+                      std::to_string(bytes >> 20) + " MiB): " + cudaGetErrorString(s);
+                return false;
+            }
+            std::memcpy(host, f->file->tensor_data(t), bytes);
+            host_allocs.push_back(host);
+            host_bytes += bytes;
+            ++host_tensors;
+        }
         out = QMat{dev, (int) t.type, n_in, n_out};
         total += bytes;
         return true;
@@ -263,6 +290,7 @@ DenseModel::~DenseModel() {
     if (!impl_) return;
     if (impl_->stream) cudaStreamSynchronize(impl_->stream);
     for (void* p : impl_->allocations) cudaFree(p);
+    for (void* p : impl_->host_allocs) cudaFreeHost(p);
     if (impl_->embd_stage) cudaFreeHost(impl_->embd_stage);
     if (impl_->embed_done) cudaEventDestroy(impl_->embed_done);
     if (impl_->stream) cudaStreamDestroy(impl_->stream);
@@ -360,6 +388,31 @@ bool DenseModel::load(const std::string& path, int64_t max_context, std::string&
 
         // ---- 4. the layers
         uint64_t total = 0;
+        {   // How much of the weights VRAM can take: what is free, minus the KV caches, minus a margin for the CUDA
+            // context, the activations and the kernels.  The rest of the weights stays in pinned host memory.
+            int n_attn = 0;
+            for (int l = 0; l < cfg_.n_layer; ++l)
+                if (I.find("blk." + std::to_string(l) + ".attn_q.weight")) ++n_attn;
+            const uint64_t kv_need = (uint64_t) n_attn * 2 * (uint64_t) cfg_.n_head_kv * (uint64_t) max_context *
+                                     (uint64_t) cfg_.head_dim * 2;
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            const uint64_t margin = 1024ull << 20;
+            if (const char* e = std::getenv("STRATA_DENSE_GPU_MIB")) {       // explicit cap for the weights, in MiB
+                I.budget = (uint64_t) std::atoll(e) << 20;
+            } else if ((uint64_t) free_b > kv_need + margin) {
+                I.budget = (uint64_t) free_b - kv_need - margin;
+            } else {
+                err = "dense model: the KV cache for a context of " + std::to_string(max_context) + " needs " +
+                      std::to_string(kv_need >> 20) + " MiB, but only " + std::to_string(free_b >> 20) +
+                      " MiB of VRAM are free (1 GiB is kept as margin). Use a shorter --context.";
+                return false;
+            }
+            std::fprintf(stderr, "strata-dense: VRAM %zu MiB free of %zu; KV cache %llu MiB (context %lld); "
+                         "%llu MiB of weights may go to the GPU, the rest stays in host memory\n",
+                         free_b >> 20, total_b >> 20, (unsigned long long) (kv_need >> 20), (long long) max_context,
+                         (unsigned long long) (I.budget >> 20));
+        }
         const int C = cfg_.conv_channels(), V = cfg_.value_dim(), H = cfg_.n_head, HK = cfg_.n_head_kv, D = cfg_.head_dim;
         I.layers.assign((size_t) cfg_.n_layer, Layer{});
         for (int l = 0; l < cfg_.n_layer; ++l) {
@@ -430,6 +483,11 @@ bool DenseModel::load(const std::string& path, int64_t max_context, std::string&
                           I.head, total, err))
             return false;
         weight_bytes_ = total;
+        host_bytes_ = I.host_bytes;
+        if (I.host_tensors)
+            std::fprintf(stderr, "strata-dense: %d tensors (%.2f GiB of %.2f) live in host memory and are read over PCIe "
+                         "on every token - a shorter --context or a smaller quant puts more on the GPU\n",
+                         I.host_tensors, I.host_bytes / 1073741824.0, total / 1073741824.0);
 
         // ---- 6. activations and scratch
         const int max_in = std::max({cfg_.n_embd, cfg_.n_ff, V, H * D});

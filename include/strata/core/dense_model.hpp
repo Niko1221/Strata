@@ -62,6 +62,8 @@ public:
     const DenseConfig& config() const { return cfg_; }
     int64_t max_context() const { return max_context_; }
     uint64_t weight_bytes() const { return weight_bytes_; }
+    /// Weights that did not fit in VRAM and sit in pinned host memory (read over PCIe each token).
+    uint64_t host_weight_bytes() const { return host_bytes_; }
     uint64_t kv_bytes() const { return kv_bytes_; }
 
     /// Forgets the conversation: zeroes the recurrent state and the position.
@@ -82,7 +84,7 @@ private:
     struct Impl;
     DenseConfig cfg_;
     int64_t max_context_ = 0, pos_ = 0;
-    uint64_t weight_bytes_ = 0, kv_bytes_ = 0;
+    uint64_t weight_bytes_ = 0, kv_bytes_ = 0, host_bytes_ = 0;
     std::unique_ptr<Impl> impl_;
 };
 

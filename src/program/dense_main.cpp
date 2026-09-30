@@ -139,9 +139,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("INFO engine=dense-0.1 model=%s layers=%d n_embd=%d weights_mib=%llu kv_mib=%llu context=%lld\n",
+    std::printf("INFO engine=dense-0.1 model=%s layers=%d n_embd=%d weights_mib=%llu host_mib=%llu kv_mib=%llu context=%lld\n",
                 cfg.arch.c_str(), cfg.n_layer, cfg.n_embd, (unsigned long long) (model.weight_bytes() >> 20),
-                (unsigned long long) (model.kv_bytes() >> 20), (long long) model.max_context());
+                (unsigned long long) (model.host_weight_bytes() >> 20), (unsigned long long) (model.kv_bytes() >> 20), (long long) model.max_context());
     std::printf("READY %lld stop\n", (long long) model.max_context());
     std::fflush(stdout);
     std::fprintf(stderr, "strata-dense: ready - %.2f GiB of weights, %.2f GiB of KV cache, context %lld\n",
