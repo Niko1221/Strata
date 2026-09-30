@@ -29,7 +29,11 @@ ARGS="--serve --pack packs/iq3_xxs
  --ple-gguf models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 2048
  --spec 4 --spec-min-p 0.5 --mtp mtp/rt --max-context 131072 --kv int8
- --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0"
+ --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0 --kv-delta 0"
+# --kv-delta 0, and it is load-bearing: this oracle asserts the v3 snapshot FILES ($STORE/kv-*.bin) and their
+# supersession, and the delta tier has been the DEFAULT cascade since Phase 6 (kv_delta = 1, generate.cpp:298) -
+# with `--kv-nvme` alone a turn appends chunks and states and writes no snapshot at all, so every Step 1-3
+# assertion below would read an empty store.  The delta path is gated by tools/nvme_delta_p0_test.sh.
 ARGS=$(echo "$ARGS" | tr '\n' ' ')
 
 # six distinct ~3900-token chat prompts + three short tails, via the pack's tokenizer
@@ -142,7 +146,7 @@ if [ -n "$FR" ] && [ "$FR" -lt 100 ]; then echo "PASS step2 ttft: only $FR fresh
 if [ "$N3" -lt 7 ]; then echo "PASS step3 cap: $N3 files remain (evicted)"; else echo "FAIL step3: cap did not evict ($N3 files)"; FAIL=1; fi
 # the capped process must SAY it evicted: a KV line with evict >= 1 and the bytes it dropped
 KEV=$(grep -cE "^KV src=.* evict=[1-9][0-9]* evict_bytes=[1-9]" "$OUT/proc3.out" 2>/dev/null); KEV=${KEV:-0}
-if [ "$KEV" -ge 1 ]; then echo "PASS step3 KV: the cap turn reported $(grep -oE 'evict=[0-9]+ evict_bytes=[0-9]+' "$OUT/proc3.out" | head -1)"
+if [ "$KEV" -ge 1 ]; then echo "PASS step3 KV: the cap turn reported $(grep -oE 'evict=[1-9][0-9]* evict_bytes=[1-9][0-9]*' "$OUT/proc3.out" | head -1)"
 else echo "FAIL step3 KV: no KV line with evict>=1 in the capped process"; FAIL=1; fi
 GB=$(grep "NVMe KV store" "$OUT/proc4.err" | grep -oE "[0-9.]+ GiB" | head -1 | cut -d' ' -f1)
 if [ -n "$GB" ] && .venv/bin/python -c "import sys; sys.exit(0 if float('$GB') <= 1.05 else 1)"; then
