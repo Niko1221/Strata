@@ -26,20 +26,20 @@ One GPU. No image input on this backend. gfx1201 has no hipBLASLt tuning table, 
 
 Windows 11, RX 9070 16 GB, Core i7-12700 (AVX2, no AVX-512), 96 GB RAM, ROCm 10.0.0.
 Model: Unsloth Qwen3.8-Flash-Next UD-Q3_K_XL. MTP on (`--spec 4`, `--spec-min-p 0.5`).
-Context 131072. KV is FP16 and stays on the GPU, so the expert cache is smaller than at 8K.
+Context 131072. KV is int8, with 32,768 cells resident on the GPU and the rest in 1.55 GiB of RAM.
 
 | | RX 9070, this pack |
 | --- | ---: |
-| Long reply, 128K window | 19.6 tokens/s (28,377 tokens) |
-| Short reply | about 20–29 tokens/s |
-| Read a 4,445-token prompt | 238 tokens/s |
-| MTP drafts kept | 73% (18,272 of 24,916) |
-| Experts on the GPU at 128K | 2,357 of 24,576 (4.97 GiB) |
-| Expert-cache hits on that reply | 70% |
-| VRAM free after load | 498 MiB |
+| Warmed short reply | 32.1 tokens/s (171 tokens) |
+| Same reply, first request after boot | 18.3 tokens/s (graph capture) |
+| Read a 4,445-token prompt | 238 tokens/s (FP16 KV, earlier run) |
+| MTP drafts kept on the 32.1 tok/s run | 129 of 129 |
+| Experts on the GPU at 128K | 3,708 of 24,576 (7.82 GiB) |
+| Expert-cache hits on that reply | 88% |
+| VRAM free after load | 496 MiB |
 | Experts in RAM | 52 GiB |
 
-At 8K context the same card held 3,914 experts (8.25 GiB). The drop at 128K is the FP16 KV cache, not a missing kernel.
+Keeping all 128K of FP16 KV on the GPU left room for only 2,357 experts and a long reply at 19.6 tokens/s. Int8 plus streaming is what the table above uses.
 
 ## What this branch adds
 
@@ -75,7 +75,7 @@ Serve the pack you built. The engine used for the table above was started with:
 - `--expert-cache auto`, `--prefill auto`, `--max-context 131072`
 - `--mtp` the packed draft runtime, `--spec 4`, `--spec-min-p 0.5`
 
-KV was left at the default FP16, fully resident. `--kv int8` and `--kv-resident 32768` are the upstream knobs that give the expert cache its VRAM back at 64K and above. They were not on for the numbers in the table.
+The numbers above use `--kv int8` and `--kv-resident 32768`.
 
 The browser API is OpenAI-compatible (`/v1/chat/completions`). This machine's server listens on port 8095. Upstream's installer uses 8080.
 
