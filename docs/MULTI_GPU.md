@@ -69,7 +69,8 @@ strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per 
 ## What each card holds
 
 - **every card**: a copy of the dense weights (~3.4 GB for the Coder), its own session state (the KV cache of the full
-  context), its verify window and its prompt-path buffers, and an expert cache for its layers filled from the profile;
+  context), its verify window, and an expert cache for its layers filled from the profile. While a prompt is read,
+  the top slots of each cache hold that card's prompt buffers, as on one card, and are refilled after it;
 - **the last card**: also the output head and the draft layer (~0.8 GB);
 - **host RAM**: the expert arena once, shared by all cards (the CPU pool computes whatever no card holds).
 
@@ -91,9 +92,10 @@ into the card that owns the layer.
     as it did without a split: its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`), with or without a split; a native (IQ) pack says so at
   start.
-- The prompt path has its own buffers on every card (1.5 GB each at the default 2048-token chunk; `--prefill 1024`
-  halves that) instead of borrowing cache slots as one card does. An explicit `--expert-cache` on the first card is
-  capped to leave room for them.
+- Every card's prompt path borrows the top slots of its own expert cache, and all of them read the same chunk (the
+  rows handed from card to card are that size): with `--prefill auto`, the largest chunk every card can lend. With
+  `--no-prefill-borrow` every card keeps its own buffers for the whole session instead (1.5 GB each at 2048-token
+  chunks), and an explicit `--expert-cache` on the first card is capped to leave room for them.
 - On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
   allocations); the PCIe share covers those layers. Linux pins all of it, as with one card.
 - Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
