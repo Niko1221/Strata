@@ -234,6 +234,20 @@ class StrataEngine:
         except Exception:  # noqa: BLE001 - the pump must survive anything the engine prints
             pass
 
+    def attach_cache(self, cache) -> None:
+        """The pump can feed a KvCache only once one is attached, and main() attaches it AFTER the engine has
+        been started: the constructor waits for READY, the engine prints its `KV start=1` store state just after
+        that, and the pump thread may well have read it already - so the state it carried is replayed here.
+        Without the replay a tier-on server reports `enabled: true` with every store fact null until some request
+        line happens to arrive (found on a live server, not in a unit test: the tests attach the cache by hand).
+        Either path delivers it exactly once: replay if the line is already read, direct if it is still to come."""
+        self.cache = cache
+        if cache is not None and self.store_kv:
+            try:
+                cache.store_state(dict(self.store_kv))
+            except Exception:  # noqa: BLE001 - the tiers are reporting, they never take the server down
+                pass
+
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
         tail = ""
@@ -1845,7 +1859,7 @@ def main() -> int:
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     if a.engine == "strata":                            # the cache tiers, from the FINAL engine arguments
         svc.cache = KvCache(engine_args(cfg), cfg.get("log"))
-        engine.cache = svc.cache                        # _kv_line feeds it the store state as the lines arrive
+        engine.attach_cache(svc.cache)                  # replays the startup line the pump already read
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
