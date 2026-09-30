@@ -3724,11 +3724,12 @@ int main(int argc, char** argv) {
                 estimate = fresh_estimate;
                 err.clear();
             }
-            if (!reuse.kv.empty() && !conversations.can_fit(estimate, held)) {
-                // Optional growth capacity must not evict useful conversations.
-                reuse = {};
-                estimate = fresh_estimate;
-            }
+            // A park carrying its own retained K/V replaces memory the cache
+            // already held, so capacity is make_room's call - it runs next either
+            // way, and put()'s accounting still bounds the budget. The with-reuse
+            // estimate must stay uncapped: it counts the retained buffers'
+            // capacity and directories, and put() charges that same true size -
+            // a capped figure would under-evict and overfill the budget.
             if (!conversations.make_room(estimate, held)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
