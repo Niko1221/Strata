@@ -1,6 +1,7 @@
 // src/kernels/qsa_select_bench.cpp - the prompt path's QSA selection (qsa_select.hpp) timed per stage, block scores
-// (the warp kernel and the tensor-core one) and top-k, for a batch of consecutive queries at a given context, and
-// the two scorers compared: score difference and how many selections differ (GPU, synthetic, no model).
+// (the warp kernel, the sm80 tensor-core one, and the AMD tensor-core one) and top-k, for a batch of consecutive
+// queries at a given context, and the scorers compared: score difference and how many selections differ (GPU,
+// synthetic, no model).  Timing is a median of 9 samples of `reps` calls each, after 3 warmup samples.
 // Usage: qsa_select_bench [context=131072] [queries=256] [reps=10]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_select.hpp"
@@ -59,81 +60,110 @@ int main(int argc, char** argv) {
     const float* d_dead = up(dead);
     const float* d_q = up(q);
     const int32_t* d_steps = up(steps);
-    float *sc_old = nullptr, *sc_new = nullptr;
+    float *sc_old = nullptr, *sc_new = nullptr, *sc_wmma = nullptr;
     int32_t *ids_old = nullptr, *ids_new = nullptr;
     ck(cudaMalloc(&sc_old, (size_t) (nq * max_blocks) * 4), "malloc");
     ck(cudaMalloc(&sc_new, (size_t) (nq * max_blocks) * 4), "malloc");
+    ck(cudaMalloc(&sc_wmma, (size_t) (nq * max_blocks) * 4), "malloc");
     ck(cudaMalloc(&ids_old, (size_t) (nq * cap) * 4), "malloc");
     ck(cudaMalloc(&ids_new, (size_t) (nq * cap) * 4), "malloc");
     const int64_t active = steps[(size_t) ((nq - 1) * k::kStepCount + k::kStepNBid)] + 1;
     auto run_old = [&] { k::qsa_block_scores(d_pooled, d_dead, d_q, d_steps, nq, max_blocks, s, sc_old, nullptr, active); };
+    static bool tc_ok = true;
     auto run_new = [&] {
         if (!k::qsa_block_scores_tc(d_pooled, d_dead, d_q, d_steps, nq, max_blocks, s, sc_new, nullptr, active)) {
-            std::fprintf(stderr, "tc scorer refused\n");
-            std::exit(2);
+            if (tc_ok) { std::printf("tc scorer refused (no sm80 path here) - skipping that arm\n"); tc_ok = false; }
+        }
+    };
+    static bool wmma_ok = true;
+    auto run_wmma = [&] {   // the AMD tensor-core arm, staging + main + tail exactly as the prompt path calls it
+        if (!k::qsa_block_scores_wmma(d_pooled, d_dead, d_q, d_steps, nq, max_blocks, s, sc_wmma, nullptr, active)) {
+            if (wmma_ok) { std::fprintf(stderr, "wmma scorer refused\n"); wmma_ok = false; }
         }
     };
     run_old();
     run_new();
+    run_wmma();
+    if (!wmma_ok) return 2;
     k::qsa_block_topk_ref(sc_old, d_steps, nq, max_blocks, cap, s, ids_old, nullptr);
     k::qsa_block_topk(sc_new, d_steps, nq, max_blocks, cap, s, ids_new, nullptr);
     int32_t* ids_reg = nullptr;   // the register top-k on the OLD scores: must equal the reference exactly
     ck(cudaMalloc(&ids_reg, (size_t) (nq * cap) * 4), "malloc");
     k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr);
     ck(cudaDeviceSynchronize(), "warm");
-    // compare
-    std::vector<float> a((size_t) (nq * max_blocks)), b(a.size());
-    std::vector<int32_t> ia((size_t) (nq * cap)), ib(ia.size());
+    // compare: the other arm's scores and selections against the warp arm's
+    std::vector<float> a((size_t) (nq * max_blocks));
+    std::vector<int32_t> ia((size_t) (nq * cap)), ir(ia.size());
     ck(cudaMemcpy(a.data(), sc_old, a.size() * 4, cudaMemcpyDeviceToHost), "down");
-    ck(cudaMemcpy(b.data(), sc_new, b.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(ia.data(), ids_old, ia.size() * 4, cudaMemcpyDeviceToHost), "down");
-    ck(cudaMemcpy(ib.data(), ids_new, ib.size() * 4, cudaMemcpyDeviceToHost), "down");
-    std::vector<int32_t> ir(ia.size());
     ck(cudaMemcpy(ir.data(), ids_reg, ir.size() * 4, cudaMemcpyDeviceToHost), "down");
     int64_t reg_same = 0;
     for (int64_t i = 0; i < nq; ++i) {
         const int64_t w = steps[(size_t) (i * k::kStepCount + k::kStepWidth)];
         reg_same += std::equal(ia.begin() + i * cap, ia.begin() + i * cap + w, ir.begin() + i * cap);
     }
-    double max_rel = 0, sum_rel = 0, n_rel = 0;
-    int64_t same_sel = 0, cells_diff = 0, cells_all = 0;
-    for (int64_t i = 0; i < nq; ++i) {
-        const int32_t* st = steps.data() + i * k::kStepCount;
-        for (int64_t j = 0; j <= st[k::kStepNBid]; ++j) {
-            const double x = a[(size_t) (i * max_blocks + j)], y = b[(size_t) (i * max_blocks + j)];
-            const double r = std::fabs(x - y) / std::max(1e-6, std::fabs(x));
-            max_rel = std::max(max_rel, r);
-            sum_rel += r;
-            n_rel += 1;
+    auto compare = [&](const float* d_sc, int32_t* d_ids, const char* tag) {
+        std::vector<float> b(a.size());
+        std::vector<int32_t> ib(ia.size());
+        ck(cudaMemcpy(b.data(), d_sc, b.size() * 4, cudaMemcpyDeviceToHost), "down");
+        k::qsa_block_topk(d_sc, d_steps, nq, max_blocks, cap, s, d_ids, nullptr);
+        ck(cudaMemcpy(ib.data(), d_ids, ib.size() * 4, cudaMemcpyDeviceToHost), "down");
+        double max_rel = 0, sum_rel = 0, n_rel = 0;
+        int64_t same_sel = 0, cells_diff = 0, cells_all = 0;
+        for (int64_t i = 0; i < nq; ++i) {
+            const int32_t* st = steps.data() + i * k::kStepCount;
+            for (int64_t j = 0; j <= st[k::kStepNBid]; ++j) {
+                const double x = a[(size_t) (i * max_blocks + j)], y = b[(size_t) (i * max_blocks + j)];
+                const double r = std::fabs(x - y) / std::max(1e-6, std::fabs(x));
+                max_rel = std::max(max_rel, r);
+                sum_rel += r;
+                n_rel += 1;
+            }
+            const int64_t w = st[k::kStepWidth];
+            std::vector<int32_t> x(ia.begin() + i * cap, ia.begin() + i * cap + w), y(ib.begin() + i * cap, ib.begin() + i * cap + w);
+            same_sel += x == y;
+            std::vector<int32_t> d;
+            std::set_symmetric_difference(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(d));
+            cells_diff += (int64_t) d.size() / 2;
+            cells_all += w;
         }
-        const int64_t w = st[k::kStepWidth];
-        std::vector<int32_t> x(ia.begin() + i * cap, ia.begin() + i * cap + w), y(ib.begin() + i * cap, ib.begin() + i * cap + w);
-        same_sel += x == y;
-        std::vector<int32_t> d;
-        std::set_symmetric_difference(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(d));
-        cells_diff += (int64_t) d.size() / 2;
-        cells_all += w;
-    }
-    // time
+        std::printf("  vs warp (%s): score rel diff mean %.2g max %.2g; selections identical %lld/%lld, cells "
+                    "differing %.4f%%\n", tag, sum_rel / std::max(1.0, n_rel), max_rel, (long long) same_sel,
+                    (long long) nq, cells_all ? 100.0 * (double) cells_diff / (double) cells_all : 0.0);
+    };
+    if (tc_ok) compare(sc_new, ids_new, "tc");
+    compare(sc_wmma, ids_new, "wmma");
+    // time: median of 9 samples of `reps` calls each, after 3 warmup samples
     cudaEvent_t e0, e1;
     cudaEventCreate(&e0); cudaEventCreate(&e1);
     auto timed = [&](auto f) {
-        cudaEventRecord(e0);
-        for (int r = 0; r < reps; ++r) f();
-        cudaEventRecord(e1);
-        ck(cudaEventSynchronize(e1), "time");
-        float ms = 0;
-        cudaEventElapsedTime(&ms, e0, e1);
-        return ms / reps;
+        for (int w = 0; w < 3; ++w) {   // warmup samples
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) f();
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+        }
+        std::vector<float> v;
+        for (int w = 0; w < 9; ++w) {
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) f();
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+            float ms = 0;
+            cudaEventElapsedTime(&ms, e0, e1);
+            v.push_back(ms / reps);
+        }
+        std::sort(v.begin(), v.end());
+        return v[4];
     };
-    const float t_old = timed(run_old), t_new = timed(run_new);
+    const float t_old = timed(run_old), t_wmma = timed(run_wmma);
+    const float t_tc = tc_ok ? timed(run_new) : 0.0f;
     const float t_tk = timed([&] { k::qsa_block_topk_ref(sc_old, d_steps, nq, max_blocks, cap, s, ids_old, nullptr); });
     const float t_tk2 = timed([&] { k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr); });
     std::printf("top-k %.3f -> %.3f ms (%.1fx), register top-k identical to the reference %lld/%lld\n", t_tk, t_tk2,
                 t_tk / t_tk2, (long long) reg_same, (long long) nq);
-    std::printf("ctx %lld, %lld queries x %lld blocks: scores %.3f -> %.3f ms (%.1fx), top-k %.3f ms; score rel diff "
-                "mean %.2g max %.2g; selections identical %lld/%lld, cells differing %.4f%%\n", (long long) ctx,
-                (long long) nq, (long long) active, t_old, t_new, t_old / t_new, t_tk, sum_rel / std::max(1.0, n_rel),
-                max_rel, (long long) same_sel, (long long) nq, cells_all ? 100.0 * (double) cells_diff / (double) cells_all : 0.0);
+    if (tc_ok) std::printf("tc arm: %.3f ms\n", t_tc);
+    std::printf("ctx %lld, %lld queries x %lld blocks: scores warp %.3f ms, wmma %.3f ms (%.2fx); top-k %.3f ms\n",
+                (long long) ctx, (long long) nq, (long long) active, t_old, t_wmma, t_old / t_wmma, t_tk);
     return 0;
 }
