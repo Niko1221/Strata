@@ -478,14 +478,44 @@ class Vision:
             self.proc.kill()
 
 
+def _gpu_bus_score(idx: int) -> int:
+    """nvidia-smi's PCIe link class for card `idx` (gen.max x width.max); 0 when the query fails.
+    Cached: gpu_list runs several times per launch."""
+    global _BUS_SCORE
+    try:
+        if idx not in _BUS_SCORE:
+            out = subprocess.run(
+                ["nvidia-smi", "-i", str(idx),
+                 "--query-gpu=pcie.link.gen.max,pcie.link.width.max", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10)
+            gen_s, width_s = out.stdout.strip().split(",")
+            _BUS_SCORE[idx] = int(gen_s) * int(width_s)
+        return _BUS_SCORE[idx]
+    except Exception:
+        return 0
+
+
+_BUS_SCORE: dict = {}
+
+
 def gpu_list(cfg: dict) -> list[int]:
     """The config's "gpu": one card (2), or several for a layer split ([0, 2] or "0,2"), numbered as nvidia-smi
-    numbers them; [] when it names none."""
+    numbers them; [] when it names none.  With several, the card with the widest PCIe link goes FIRST: the
+    main device (CUDA0) streams the whole expert arena through the prompt path and hands the later layers to
+    the stages, so the faster its bus the faster every prompt (measured on this rig: a Gen5 x8 internal card
+    as main prefill 1339 t/s vs 890 with the Gen4 x4 eGPU box as main).  Equal scores keep the written order."""
     g = cfg.get("gpu")
     if g is None or g == "":
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
-    return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+    gpus = [int(str(x).strip()) for x in items if str(x).strip() != ""]
+    if len(gpus) > 1:
+        scored = sorted(gpus, key=lambda i: -_gpu_bus_score(i))
+        if scored != gpus:
+            print(f"[strata] GPU order by PCIe link: main = nvidia-smi {scored[0]} "
+                  f"(score {_gpu_bus_score(scored[0])}; the config named {gpus})", flush=True)
+        gpus = scored
+    return gpus
 
 
 def engine_args(cfg: dict) -> list[str]:
