@@ -20,7 +20,10 @@ public:
     Gemm& operator=(const Gemm&) = delete;
 
     /// `scratch_elems`: BF16 elements of the dequantization scratch (the largest weight dequantized at once).
-    bool init(void* stream, int64_t scratch_elems, std::string& err);
+    /// `resource_failure`, when given, is set to true only for a failure that means the machine ran out of room
+    /// (a cuBLAS allocation or a `cudaMalloc`), so a caller can retry with a smaller cache instead of treating
+    /// every init failure as fatal.  It is always set (false on success or a non-resource error).
+    bool init(void* stream, int64_t scratch_elems, std::string& err, bool* resource_failure = nullptr);
     /// The same with caller-owned device buffers (the prompt path borrowing expert-cache slots).
     bool init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
                        std::string& err);

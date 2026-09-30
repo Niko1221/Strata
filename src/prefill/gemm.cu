@@ -315,24 +315,39 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
 #endif
 }
 
-bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
+bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err, bool* resource_failure) {
+    if (resource_failure) *resource_failure = false;
+    // Every failure below is reported with the call that produced it and, for the two that mean "the machine is
+    // out of room", with `resource_failure` set so a caller can tell "no VRAM" from "a broken install" without
+    // parsing the message.  The distinction matters on a low-RAM box: a shortage is worth retrying with a smaller
+    // cache or prompt, while an unsupported math mode never is.
+    auto blas = [&](cublasStatus_t s, const char* op) {
+        if (s == CUBLAS_STATUS_SUCCESS) return true;
+        if (resource_failure) *resource_failure = s == CUBLAS_STATUS_ALLOC_FAILED;
+        err = std::string("prefill gemm: ") + op + ": cuBLAS status " + std::to_string((int) s);
+        return false;
+    };
+    auto alloc = [&](cudaError_t s, const char* op) {
+        if (s == cudaSuccess) return true;
+        if (resource_failure) *resource_failure = s == cudaErrorMemoryAllocation;
+        err = std::string("prefill gemm: ") + op + ": " + cudaGetErrorString(s);
+        return false;
+    };
     cublasHandle_t h = nullptr;
-    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
+    if (!blas(cublasCreate(&h), "create")) return false;
     handle_ = h;
     stream_ = stream;
-    cublasSetStream(h, (cudaStream_t) stream);
+    if (!blas(cublasSetStream(h, (cudaStream_t) stream), "stream")) return false;
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
-    if (cudaMalloc(&workspace_, ws) != cudaSuccess) { err = "prefill gemm: workspace"; return false; }
-    cublasSetWorkspace(h, workspace_, ws);
-    cublasSetMathMode(h, CUBLAS_DEFAULT_MATH);
+    if (!alloc(cudaMalloc(&workspace_, ws), "workspace")) return false;
+    if (!blas(cublasSetWorkspace(h, workspace_, ws), "workspace config") ||
+        !blas(cublasSetMathMode(h, CUBLAS_DEFAULT_MATH), "math mode")) return false;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws).release();
 #endif
-    if (scratch_elems > 0 && cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2) != cudaSuccess) {
-        err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB";
-        return false;
-    }
+    if (scratch_elems > 0 && !alloc(cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2),
+                                    "dequant scratch")) return false;
     scratch_elems_ = scratch_elems;
     return true;
 }
