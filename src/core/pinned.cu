@@ -53,7 +53,8 @@ static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
 
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
 // A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
-// are the resident arena.  Keeping the header inside the same mapping also works for tmpfs and hugetlbfs.
+// are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
+// hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
               uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
     mapping_base = nullptr;

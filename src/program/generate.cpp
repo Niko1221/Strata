@@ -437,7 +437,7 @@ void usage() {
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
                  "  --shared-expert-arena FILE  Linux: back the resident arena with one MAP_SHARED file.\n"
-                 "                       Put this file on /dev/shm or hugetlbfs, not ordinary SSD storage.\n"
+                 "                       Put this file on /dev/shm, not ordinary SSD storage.\n"
                  "                       A small header binds an existing backing file to the same pack.\n"
                  "  --resident-cpu-experts  with mmap and a static profile, keep CPU misses resident in ordinary RAM.\n"
                  "                       Borrowed GPU-cache entries may read from mmap during prompt prefill.\n");
