@@ -51,8 +51,7 @@ private:
     int64_t scratch_elems_ = 0;
     void* workspace_ = nullptr;
     bool external_ = false;
-    bool native_bf16_ = true;
-    float* fp32_ = nullptr;
+    float* fp32_ = nullptr; // Optional 64 MiB, owned even in external mode; reserved only during init.
     void* hipblaslt_state_ = nullptr;
 };
 
