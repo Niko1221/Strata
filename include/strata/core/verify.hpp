@@ -192,6 +192,14 @@ private:
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
+                                                                  // (pcie_mode 2: also a captured-graph member, joined
+                                                                  // by joint_ev_ so its kernels replay)
+    cudaEvent_t joint_ev_ = nullptr;                              // record/wait that folds copy_ into the window's
+                                                                  // capture (a graph edge: records on cs, waits on copy_)
+    cudaEvent_t joint_bwd_ = nullptr;                             // and back out: EndCapture refuses a capture whose
+                                                                  // joined stream has no edge into the capturing one
+    uint32_t* pipe_flags_ = nullptr;                              // pcie_mode 2 rendezvous (device arena), 8 words:
+                                                                  // [plan(2) | staged(2) | pcie done(2) | window start]
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
@@ -202,6 +210,9 @@ private:
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
+    /// pcie_mode 2: sequence the captured copy-stream share back into the capturing stream (EndCapture refuses a
+    /// graph whose secondary stream's work has no path to the end)
+    bool end_copy_share(cudaStream_t cs);
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd

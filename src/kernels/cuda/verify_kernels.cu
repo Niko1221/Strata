@@ -426,6 +426,13 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     while (*flag < value) __nanosleep(100);
     __threadfence_system();
 }
+__global__ void set_flag_kernel(volatile uint32_t* flag, uint32_t value) {
+    if (threadIdx.x == 0) { *flag = value; __threadfence(); }
+}
+__global__ void clear_flags_kernel(volatile uint32_t* flags, long long n) {
+    for (long long i = threadIdx.x; i < n; i += blockDim.x) flags[i] = 0;
+    __threadfence();
+}
 }  // namespace
 
 namespace {
@@ -518,6 +525,16 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");
+}
+
+void set_flag(uint32_t* flag, uint32_t value, void* stream) {
+    set_flag_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
+    check("set_flag");
+}
+
+void clear_flags(uint32_t* flags, int n, void* stream) {
+    clear_flags_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(flags, n);
+    check("clear_flags");
 }
 
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

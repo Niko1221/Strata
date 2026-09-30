@@ -122,6 +122,8 @@ Verifier::~Verifier() {
         if (e) cudaGraphExecDestroy(e);
     if (commit_exec_) cudaGraphExecDestroy(commit_exec_);
     if (cs_) cudaStreamDestroy(cs_);
+    if (joint_ev_) cudaEventDestroy(joint_ev_);
+    if (joint_bwd_) cudaEventDestroy(joint_bwd_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (arena_) cudaFree(arena_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
@@ -248,6 +250,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
         staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+        pipe_flags_ = b.take<uint32_t>(8);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
@@ -278,7 +281,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
-    if (cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess) {
+    if (cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess ||   // (mode 2: also a capture
+                                                                                     // member, via joint_ev_)
+        cudaEventCreateWithFlags(&joint_ev_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&joint_bwd_, cudaEventDisableTiming) != cudaSuccess) {
         err = "verify: copy stream create failed";
         return false;
     }
@@ -339,6 +345,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     auto stamp = [&](int64_t l, int i, int grp) { if (prof_on_ && grp == 0) gpu_stamp(prof_, (int) (l * kProfPer + i), cs); };
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     groups_[T] = G;
+    if (sink_.pcie_mode == 2) {   // the copy stream's kernels rendezvous on these flags (device arena): this
+        // window's clear first, zeroed here in the graph, so every replay waits for THIS replay's writes alone
+        clear_flags(pipe_flags_, 8, cs);
+        set_flag(pipe_flags_ + 6, 1, cs);
+    }
 
     // ---- the window's inputs, from mapped staging
     copy_i32_from_mapped(tok_, m_tok_, T, cs);
@@ -667,6 +678,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             wait_flag_ge(m_flagA_, ring, cs);                  // the pool published this group's GPU plan
             copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
         }
+        if (sink_.pcie_mode == 2) set_flag(pipe_flags_ + grp, ring, cs);
         stamp(l, 19, grp);
         const int32_t* p_counts = pl;
         const int32_t* p_start = pl + 4;
@@ -695,14 +707,36 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 20, grp);
         if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
         else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
-        if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
+        if (sink_.pcie_mode == 2) {                            // stage the mapped blobs on the copy stream instead of
+            // the decode stream's pipeline: the copy runs beside the layers' own work (mode 0's host call stalls
+            // the pool: issue #31; the kernel keeps the staging on-device).  The streams rendezvous on device
+            // flags: the window clears them all first, so every replay waits for THIS window's writes alone.
+            auto* flags = pipe_flags_;                         // [plan(2) | staged(2) | pcie done(2) | window start]
+            if (l == lb_ && grp == 0) {                        // copy_ JOINS the capture here: work on a stream that
+                                                               // has not joined is not captured - its kernels would
+                                                               // launch during capture itself (on nothing) instead of
+                                                               // replaying.  The join edge is a graph node, so the
+                                                               // replay re-creates it; the window's set_flag above
+                                                               // is the edge's record, the clear first (all later
+                                                               // copy-stream work trails it in the graph)
+                cudaEventRecord(joint_ev_, cs);
+                cudaStreamWaitEvent(copy_, joint_ev_, 0);
+                wait_flag_ge(flags + 6, 1, copy_);
+            }
+            wait_flag_ge(flags + grp, ring, copy_);            // the plan's device copy is in place
+            if (l > lb_) wait_flag_ge(flags + 4 + grp, ring - G, copy_);   // the staging slot's reader is done
+            if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, copy_);
+            else wait_flag_ge(m_flagB_, ring, copy_);   // (device plan off: skip_ is null, the plain wait)
             const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
             uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-            fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
-            rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+            fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, copy_);
+            rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), copy_);
+            set_flag(flags + 2 + grp, ring, copy_);
+            wait_flag_ge(flags + 2 + grp, ring, cs);
         }
         stamp(l, 21, grp);
         grouped(p_ptr2, p_start2, p_counts + 2);
+        if (sink_.pcie_mode == 2) set_flag(pipe_flags_ + 4 + grp, ring, cs);
         stamp(l, 22, grp);
         if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
             wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
@@ -751,7 +785,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             copy_from_mapped(hand_out_ + (size_t) t * HB + HC * N, bo_ + (size_t) t * N, N, cs);
             copy_from_mapped(hand_out_ + (size_t) t * HB + HC * N + N, inj2_ + (size_t) t * HC, HC, cs);
         }
-        return true;
+        return end_copy_share(cs);
     }
 
     // ---- the head, T columns, and the argmax of each
@@ -788,6 +822,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
     }
     stamp(g.n_layers, 1, 0);
+    if (!end_copy_share(cs)) return false;
+    return true;
+}
+
+bool Verifier::end_copy_share(cudaStream_t cs) {
+    if (sink_.pcie_mode != 2) return true;   // copy_ joined the capture only when it stages inside the graph
+    cudaEventRecord(joint_bwd_, copy_);      // the graph's edge back out of copy_ (a node; replays with the graph)
+    cudaStreamWaitEvent(cs, joint_bwd_, 0);
     return true;
 }
 
