@@ -1509,9 +1509,14 @@ int main(int argc, char** argv) {
                          (long long) o.max_context, rope_cfg.orig_ctx);
             if ((double) o.max_context <= rope_cfg.orig_ctx)
                 std::fprintf(stderr,
-                             "strata generate: note: the context is within the trained %.0f - the angles barely move, "
-                             "but YaRN's magnitude correction applies everywhere\n",
+                             "strata generate: note: the context is within the trained %.0f - no position needs the "
+                             "extension, and the resolved scaling still applies to every angle\n",
                              rope_cfg.orig_ctx);
+            if (rope_cfg.type == RST::YaRN && rope_cfg.mscale() != 1.0)
+                std::fprintf(stderr,
+                             "strata generate: note: YaRN's magnitude correction scales cos and sin by %.6f "
+                             "at every position\n",
+                             rope_cfg.mscale());
         }
     }
     strata::core::NativeEmbed native_embed;
