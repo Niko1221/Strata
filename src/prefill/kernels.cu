@@ -87,7 +87,7 @@ __global__ void gr_norm_rs_kernel(const float* __restrict__ R, const float* __re
     for (int d = threadIdx.x; d < N; d += blockDim.x) ss += r[d] * r[d];
     const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
     if (threadIdx.x == 0) rs_out[row] = rs;
-    for (int d = threadIdx.x; d < N; d += blockDim.x) xn16[row * N + d] = bf(r[d] * rs * w[c * N + d]);
+    for (int d = threadIdx.x; d < N; d += blockDim.x) xn16[row * N + d] = g_fp16_bits_device ? hf(r[d] * rs * w[c * N + d]) : bf(r[d] * rs * w[c * N + d]);
 }
 __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __restrict__ rs, const float* __restrict__ w,
                                 const float* __restrict__ g, float* __restrict__ mixed, uint16_t* __restrict__ mixed16,
@@ -104,7 +104,7 @@ __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __rest
     }
     s /= (float) HC;
     mixed[i] = s;
-    if (mixed16) mixed16[i] = bf(s);
+    if (mixed16) mixed16[i] = g_fp16_bits_device ? hf(s) : bf(s);
     if (mixed_h) mixed_h[i] = hf(s);
 }
 // F-2: gr_write_kernel for one row (t, c), then gr_norm_rs_kernel's reduction over it with the next half's norm
@@ -135,7 +135,7 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
     if (threadIdx.x == 0) rs_out[row] = rs;
     k = 0;
 #pragma unroll
-    for (int d = threadIdx.x; d < N; d += 256, ++k) xn16[row * N + d] = bf(v[k] * rs * w[c * N + d]);
+    for (int d = threadIdx.x; d < N; d += 256, ++k) xn16[row * N + d] = g_fp16_bits_device ? hf(v[k] * rs * w[c * N + d]) : bf(v[k] * rs * w[c * N + d]);
 }
 __global__ void gr_silu_kernel(const float* __restrict__ lo, uint16_t* __restrict__ lo16, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
