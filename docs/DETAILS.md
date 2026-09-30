@@ -465,6 +465,14 @@ cmake -S . -B build -DSTRATA_ENABLE_CONVERSATION_DISK=ON
 cmake --build build --target strata -j 2
 ```
 
+On Windows, install x64 OpenSSL development headers and libraries compatible with
+your MSVC build. CMake finds the `Crypto` component through
+[FindOpenSSL](https://cmake.org/cmake/help/latest/module/FindOpenSSL.html); if needed,
+add `-DOPENSSL_ROOT_DIR="C:/path/to/OpenSSL"` to configuration. Build with
+`cmake --build build --config Release --target strata -j 2`. With shared OpenSSL,
+the matching libcrypto DLL must be available at runtime, for example on `PATH`.
+Setup does not install this optional dependency or enable disk caching for you.
+
 The option defaults to `OFF`; ordinary builds have no OpenSSL dependency. In your
 server config (for example `strata-iq3_s.json`), point `exe` at the newly built
 engine and append these entries to its existing `args` array:

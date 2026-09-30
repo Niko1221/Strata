@@ -51,3 +51,4 @@ build-vision.bat
 
 # Generated conversation snapshots, wherever the disk cache is configured
 strata-conversations-v1/
+strata-conversations-v2/
