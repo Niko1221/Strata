@@ -18,6 +18,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
+#include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
@@ -238,6 +239,7 @@ struct Options {
     /// pool's own drain: 33.7 GB/s against 5/6 x 44.14 = 36.8 for five workers, on a machine whose sixth core
     /// is reserved for a host thread that has nothing to do while the drain runs.
     bool no_host_worker = false;
+    bool coupled_draft = strata::core::coupled_draft_env(); ///< Coupled draft sampling for MTP drafter under sampling
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
     std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
@@ -514,6 +516,8 @@ void usage() {
                  "  --pool-workers N     R2.2: CPU expert pool worker count.  Default 0 = every physical core\n"
                  "                       except the one the host loop spins on.  A sweep is how the pool's\n"
                  "                       deviation from `cpu_s2` is attributed.\n"
+                 "  --coupled-draft      enable coupled draft sampling for MTP drafter under sampling (STRATA_SPEC_COUPLED)\n"
+                 "  --no-coupled-draft   disable coupled draft sampling (propose argmax drafts)\n"
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
@@ -1051,6 +1055,8 @@ int main(int argc, char** argv) {
         else if (a == "--pool-workers") o.pool_workers = std::atoi(next("--pool-workers"));
         else if (a == "--no-host-worker") o.no_host_worker = true;
         else if (a == "--no-ple-prefetch") o.no_ple_prefetch = true;
+        else if (a == "--coupled-draft") o.coupled_draft = true;
+        else if (a == "--no-coupled-draft") o.coupled_draft = false;
         else parsed = false;
         // The chain continues here in a second statement: one chain of 120+ `else if` passed MSVC's limit of 128
         // nested blocks (C1061).  The order of the tests and what each does are unchanged.
@@ -1185,6 +1191,7 @@ int main(int argc, char** argv) {
         }
         }
     }
+    strata::core::set_coupled_draft(o.coupled_draft);
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
