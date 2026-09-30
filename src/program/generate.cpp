@@ -487,6 +487,11 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    /// Records actually written, which is NOT `calls`: the decode path writes one per layer, but a verify
+    /// window (`--spec`, on in every installed config) writes one per TOKEN through `drive_pool_multi`.  A
+    /// trace of zero bytes otherwise reports as a full one (the record count was `calls`), so a profile built
+    /// from it looks empty rather than broken.
+    int64_t trace_records = 0;
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -515,6 +520,7 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
         std::fwrite(rec, sizeof rec, 1, t->routing);
         std::fwrite(ids, sizeof(int32_t), (size_t) k, t->routing);
         std::fwrite(weights, sizeof(float), (size_t) k, t->routing);
+        t->trace_records += 1;
     }
 }
 
@@ -539,6 +545,7 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
             static const float one[64] = {};   // k <= 64 in a verify window; zeros read as unit weights
             std::fwrite(one, sizeof(float), (size_t) k, t->routing);
         }
+        t->trace_records += n_tok;
     }
 }
 
@@ -1323,10 +1330,42 @@ int main(int argc, char** argv) {
     // Plan v0.3 P6: where the experts live.  A native pack (tools/iq_pack.py: the IQ2_XS / IQ3_XXS files) keeps
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
+    //
+    // **THE EXPERT COUNT COMES FROM THE MODEL FILE, NOT FROM `ModelGeometry`'s DEFAULT.**  `expert_layout_load`
+    // reports the number the pack was cut for (a native pack's header carries it), and the model's own GGUF
+    // header is the independent second opinion: the Coder release is Qwen3.8-Flash-Next with *half* of its routed
+    // experts pruned away, so 256 is a property of the file and the 512 default would size every router buffer,
+    // cache table and hit mask to twice what the file has.  The two must agree - a pack cut from a file with a
+    // different count than the shard being loaded is a mis-indexing hazard, not a tuning difference.
+    int64_t n_expert = 0;
+    int64_t n_layers_file = 0;   // the model file's own depth, when a native GGUF is given
     {
         const strata::core::ModelGeometry g0;
         if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        n_expert = strata::kernels::cpu::expert_layout().n_expert;
+    }
+    if (!o.native_preset.empty()) {
+        std::string ferr;
+        strata::GgufFile f(o.native_preset);
+        const uint32_t from_file = strata::read_expert_count(f, ferr);
+        if (from_file == 0) {
+            std::fprintf(stderr, "strata generate: %s\n", ferr.c_str());
+            return 1;
+        }
+        if ((int64_t) from_file != n_expert) {
+            std::fprintf(stderr, "strata generate: the pack %s was built for %lld experts but %s has %u: rebuild it "
+                                 "(tools/iq_pack.py)\n", o.pack.c_str(), (long long) n_expert,
+                         o.native_preset.c_str(), from_file);
+            return 1;
+        }
+        n_layers_file = (int64_t) strata::read_layer_count(f);
+        if (n_layers_file > 0 && n_layers_file != strata::kernels::cpu::expert_layout().n_layers) {
+            std::fprintf(stderr, "strata generate: %s has %lld layers but the pack was built for %lld\n",
+                         o.native_preset.c_str(), (long long) n_layers_file,
+                         (long long) strata::kernels::cpu::expert_layout().n_layers);
             return 1;
         }
     }
@@ -5006,7 +5045,7 @@ int main(int argc, char** argv) {
         std::fclose(routing);
         drive.routing = nullptr;
         std::printf("%-24s %s (%lld records of layer, k, ids, weights)\n", "routing dumped",
-                    o.dump_routing.c_str(), (long long) drive.calls);
+                    o.dump_routing.c_str(), (long long) drive.trace_records);
     }
     if (o.stage_timing) strata::core::stage_timing_report(g.n_layers);
 

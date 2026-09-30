@@ -462,6 +462,12 @@ private:
 
 // ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
 // refused with a precise error rather than silently mis-run.
+//
+// `experts = 0` means "the caller does not pin the expert count", which is what the Coder release needs: it is
+// Qwen3.8-Flash-Next with half of its routed experts pruned away (256 of 512 per layer, ISTA-DASLab's RCO), and
+// every other geometry number is identical.  The count is not ignored - it is read from the file and threaded
+// through `ModelGeometry`, so a mismatch becomes a refusal at the router instead of a silent mis-index.  A
+// caller that knows the count still passes it and gets the strict check.
 struct Qwen4ExpGuard {
     uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
              head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
@@ -491,6 +497,35 @@ inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& wa
             return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
     }
     return {}; // empty == ok
+}
+
+/// The model's routed experts per layer, as the FILE says.  The router's weight is `[n_embd, n_expert]` and is
+/// the tensor the count is actually read off, so a file whose metadata and tensors disagree is refused here
+/// rather than failing later inside the router.  Returns 0 with `err` set when it cannot be determined.
+inline uint32_t read_expert_count(const GgufFile& g, std::string& err) {
+    const MetaValue* m = g.get("qwen4exp.expert_count");
+    uint64_t n = m != nullptr ? m->u : 0;
+    for (const auto& t : g.tensors()) {
+        if (t.name.size() > 19 && t.name.compare(t.name.size() - 19, 19, "ffn_gate_inp.weight") == 0) {
+            if (t.shape.size() < 2) { err = t.name + " has no expert axis"; return 0; }
+            const uint64_t axis = t.shape[t.shape.size() - 1];
+            if (n == 0) n = axis;
+            else if (axis != n) {
+                err = "qwen4exp.expert_count = " + std::to_string(n) + " but " + t.name + " has " +
+                      std::to_string(axis) + " rows";
+                return 0;
+            }
+        }
+    }
+    if (n == 0) { err = "cannot determine the expert count (no qwen4exp.expert_count, no ffn_gate_inp.weight)"; return 0; }
+    return (uint32_t) n;
+}
+
+/// The transformer's layer count, so a file with a different depth is not read through a 48-layer geometry.
+/// 0 means the metadata is missing or zero.
+inline uint32_t read_layer_count(const GgufFile& g) {
+    const MetaValue* m = g.get("qwen4exp.block_count");
+    return m != nullptr ? (uint32_t) m->u : 0;
 }
 
 } // namespace strata

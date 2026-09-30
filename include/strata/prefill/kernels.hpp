@@ -45,7 +45,8 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
                     const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream);
 
 // ---- MoE
-/// softmax over 512, top-10 (ties to the lower id), weights renormalised over the ten (the native router).
+/// softmax over `n_expert`, top-10 (ties to the lower id), weights renormalised over the ten (the native router).
+/// `n_expert` is 512 for the original model and 256 for the pruned Coder release.
 void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream);
 /// Expert blob (Strata pack layout, Q2_0) -> BF16 matrices: gate/up interleaved [1280, 2560], down [2560, 640].
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);

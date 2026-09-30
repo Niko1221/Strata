@@ -109,8 +109,32 @@ class Model:
         g, t, mm, _ = self.where[name]
         return tensor_bytes(mm, g, t)
 ROLES = ("gate", "up", "down")
-N_EXPERT = 512
+N_EXPERT = 512      # the unpruned model's count; a pruned file (the Coder release) says so in its tensors
 ALIGN = 64
+
+
+def expert_count(T) -> int:
+    """The routed experts per layer, as the FILE says rather than as this script assumes.
+
+    The Coder release is Qwen3.8-Flash-Next with half of its experts pruned away (ISTA-DASLab's RCO), so every
+    `*_exps.weight` is `[.., 256]` and the router is `[n_embd, 256]`.  GGUF stores one count for the whole
+    model, so the last axis of any expert tensor is authoritative; a file that mixed counts could not be
+    expressed in the format.  The router's last axis is cross-checked because a mismatch there is exactly the
+    silent mis-indexing this function exists to prevent.
+    """
+    counts = {int(t.shape[-1]) for n, t in T.items() if n.startswith("blk.") and n.endswith("_exps.weight")}
+    if not counts:
+        raise SystemExit("no *_exps.weight tensors: is this a Qwen3.8-Flash-Next file?")
+    if len(counts) != 1:
+        raise SystemExit("expert tensors disagree on the expert count: %s" % sorted(counts))
+    n = counts.pop()
+    for name, t in T.items():
+        if name.endswith("ffn_gate_inp.weight") and int(t.shape[-1]) != n:
+            raise SystemExit("%s says %d experts but the expert tensors say %d"
+                             % (name, int(t.shape[-1]), n))
+    if n <= 0:
+        raise SystemExit("expert count %d is not positive" % n)
+    return n
 
 
 def read_index(path: pathlib.Path):
@@ -293,6 +317,9 @@ def main() -> int:
                        check=True)   # writes <out>/tokenizer/
 
     # ---- the experts
+    n_expert = expert_count(T)
+    if n_expert != N_EXPERT:
+        print("model has %d experts per layer (the unpruned model has %d)" % (n_expert, N_EXPERT))
     n_layers = 1 + max(int(n.split(".")[1]) for n in T if n.startswith("blk.") and n.endswith("_exps.weight"))
     n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
     if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
