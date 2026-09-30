@@ -172,6 +172,23 @@ __global__ void attn_merge_kernel(const float* __restrict__ part_acc, const floa
     out[(size_t) h * head_dim + threadIdx.x] = L > 0.0f ? a / L : 0.0f;
 }
 
+
+// y[h, :] = rms(o[h, :]) * w * silu(z[h, :])   (Qwen3.5 gated delta net closing norm, 128-wide heads, w plain)
+__global__ void gdn_out_norm_silu_kernel(const float* __restrict__ o, const float* __restrict__ z,
+                                         const float* __restrict__ w, float* __restrict__ y, int head_dim, float eps) {
+    __shared__ float part[4];
+    const int h = blockIdx.x, i = threadIdx.x;           // blockDim.x == head_dim == 128
+    const float v = o[(size_t) h * head_dim + i];
+    float acc = v * v;
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, off);
+    if ((i & 31) == 0) part[i >> 5] = acc;
+    __syncthreads();
+    const float sum = part[0] + part[1] + part[2] + part[3];
+    const float inv = rsqrtf(sum / (float) head_dim + eps);
+    const float zz = z[(size_t) h * head_dim + i];
+    y[(size_t) h * head_dim + i] = v * inv * w[i] * (zz / (1.0f + expf(-zz)));
+}
+
 int splits_for(int cells) { return (cells + kChunk - 1) / kChunk; }
 
 }  // namespace
@@ -179,6 +196,13 @@ int splits_for(int cells) { return (cells + kChunk - 1) / kChunk; }
 void dense_rms_norm(const float* x, const float* w, float* out, int rows, int cols, float eps, void* stream) {
     rms_norm_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(x, w, out, cols, eps);
     check("dense_rms_norm");
+}
+
+void dense_gdn_out_norm_silu(const float* o, const float* z, const float* w, float* y, int heads, int head_dim, float eps,
+                             void* stream) {
+    if (head_dim != 128) throw std::invalid_argument("dense_gdn_out_norm_silu: head_dim must be 128");
+    gdn_out_norm_silu_kernel<<<heads, 128, 0, (cudaStream_t) stream>>>(o, z, w, y, head_dim, eps);
+    check("dense_gdn_out_norm_silu");
 }
 
 void dense_swiglu(const float* gate, const float* up, float* out, int64_t n, void* stream) {

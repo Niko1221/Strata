@@ -24,6 +24,10 @@ namespace strata::kernels {
 /// out[r, :] = x[r, :] * rsqrt(mean(x[r, :]^2) + eps) * w        (w NOT shifted: the GGUF already holds 1 + w)
 void dense_rms_norm(const float* x, const float* w, float* out, int rows, int cols, float eps, void* stream);
 
+/// y[h, :] = rms(o[h, :]) * w * silu(z[h, :]) per 128-wide head (Qwen3.5 gated delta net closing norm; SiLU, not sigmoid)
+void dense_gdn_out_norm_silu(const float* o, const float* z, const float* w, float* y, int heads, int head_dim, float eps,
+                             void* stream);
+
 /// out[i] = silu(gate[i]) * up[i]
 void dense_swiglu(const float* gate, const float* up, float* out, int64_t n, void* stream);
 

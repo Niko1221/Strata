@@ -291,16 +291,18 @@ void trace_vec(const char* what, int64_t pos, int layer, const char* kind, const
         std::fprintf(stderr, "dbg pos=%lld %s: copy failed\n", (long long) pos, what);
         return;
     }
-    double mx = 0.0, sum2 = 0.0;
+    double mx = 0.0, sum2 = 0.0, sum = 0.0;
     int nan = 0, inf = 0;
     for (float v : h) {
         if (std::isnan(v)) { ++nan; continue; }
         if (std::isinf(v)) { ++inf; continue; }
         mx = std::max(mx, (double) std::fabs(v));
         sum2 += (double) v * v;
+        sum += (double) v;
     }
-    std::fprintf(stderr, "dbg pos=%lld layer=%2d %-4s %-7s max|v|=%-12.5g rms=%-12.5g nan=%d inf=%d\n", (long long) pos, layer,
-                 kind, what, mx, std::sqrt(sum2 / std::max(1, n)), nan, inf);
+    std::fprintf(stderr, "dbg pos=%lld layer=%2d %-4s %-7s max|v|=%-12.5g rms=%-12.5g nan=%d inf=%d sum=%.5f v[0..2]=%.5f %.5f %.5f\n",
+                 (long long) pos, layer, kind, what, mx, std::sqrt(sum2 / std::max(1, n)), nan, inf, sum,
+                 n > 0 ? (double) h[0] : 0.0, n > 1 ? (double) h[1] : 0.0, n > 2 ? (double) h[2] : 0.0);
 }
 
 void trace_logits(int64_t pos, const float* dev, int n, void* stream) {
@@ -370,6 +372,13 @@ bool DenseModel::load(const std::string& path, int64_t max_context, std::string&
             !need("ssm.state_size", cfg_.ssm_state) || !need("ssm.group_count", cfg_.ssm_k_heads) ||
             !need("ssm.time_step_rank", cfg_.ssm_v_heads))
             return false;
+        // block_count includes the MTP/nextn layer(s) stored at the end of the file: they are not part of the main
+        // forward pass (llama.cpp uses n_layer_all - n_layer_nextn), running them corrupts the hidden state.
+        if (meta_int(g0, a + "nextn_predict_layers", v) && v > 0 && v < cfg_.n_layer) {
+            std::fprintf(stderr, "strata-dense: skipping %lld nextn (MTP) layer(s): %d -> %d layers\n", (long long) v,
+                         cfg_.n_layer, cfg_.n_layer - (int) v);
+            cfg_.n_layer -= (int) v;
+        }
         if (const auto* e = g0.get(a + "attention.layer_norm_rms_epsilon")) cfg_.rms_eps = (float) e->num();
         if (const auto* e = g0.get(a + "rope.freq_base")) cfg_.rope_base = (float) e->num();
         if (const auto* e = g0.get("tokenizer.ggml.eos_token_id")) cfg_.eos_id = (int32_t) e->u;
@@ -619,7 +628,7 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
                 native_gdn_gate(I.alpha, L.dt, L.ssm_a, I.gate, VH, s);
                 GdnShapes gs{S, KH, VH};
                 native_gdn_step(L.state, I.h, I.h + qk, I.h + 2 * qk, I.gate, I.beta, I.o, gs, s);
-                native_gdn_out_norm(I.o, I.z, L.ssm_norm, I.y, VH, S, eps, s);
+                dense_gdn_out_norm_silu(I.o, I.z, L.ssm_norm, I.y, VH, S, eps, s);   // rms(o) * w * SiLU(z), as llama.cpp build_norm_gated (native_gdn_out_norm uses sigmoid: the MoE variant)
                 I.quantize(I.y, V, s);
                 I.gemv(L.ssm_out, I.mix, s);
             } else {
