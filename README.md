@@ -1,15 +1,16 @@
 <h1 align="center">Strata</h1>
 
-<p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
-one NVIDIA card (12-24 GB) + 64 GB of RAM · Windows or Linux · one click to install</p>
+<p align="center"><b>Windows HIP fork: Qwen3.8-Flash-Next on an AMD Radeon RX 9070</b><br>
+ROCm 10 · gfx1201 · 16 GB VRAM · 128K context · fork of Niko1221/Strata</p>
 
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
 <a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
 
-Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** - a large, smart AI model that
-normally needs a server - on your own PC. It writes its answers at **60-95 tokens per second** (a token is about ¾
-of a word): faster than you can read.
+This fork builds Strata's HIP engine on Windows with ROCm 10 and runs
+**[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** on an AMD Radeon RX 9070
+(`gfx1201`, 16 GB). The measured rate on that card is about **20 tokens per second**, not the
+upstream NVIDIA figure below.
 
 - **Free and open source.**
 
@@ -21,7 +22,21 @@ of a word): faster than you can read.
 
 ## How fast is it?
 
-Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
+Measured on this fork: Windows 11, Radeon RX 9070 16 GB, Core i7-12700, 96 GB RAM, ROCm 10.0.0,
+Unsloth UD-Q3_K_XL, MTP on, context 131072, FP16 KV kept on the GPU.
+
+| | This PC |
+| --- | ---: |
+| Writes a long answer (128K window) | 19.6 tokens/s |
+| Writes a short answer | about 20-29 tokens/s |
+| Reads a 4445-token prompt | 238 tokens/s |
+| MTP drafts kept | 73% (18,272 of 24,916) |
+| Experts resident on the GPU | 2,357 of 24,576 (4.97 GiB) |
+
+The long-answer row is one 28,377-token reply. The expert cache hit rate on that run was 70%.
+A 16 GB card at 128K with FP16 KV cannot hold the expert count the upstream 12 GB NVIDIA setup holds.
+
+Upstream's published table is a different machine (RTX 5070 12 GB, Ryzen 5 7600, 64 GB RAM) and the official packs:
 
 | Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
 | --- | ---: | ---: | ---: |
@@ -31,13 +46,8 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 | **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |
 | **Coder** (IQ1_M) | 55 tokens/s | 43 tokens/s | 2,180 tokens/s |
 
-- **Writes answers** = how fast the reply appears (tokens per second).
-- **Reads your prompt** = how fast it takes in what you send (long documents, code, chat history), measured on a
-  32K-token prompt; a 4K prompt reads at 910-1,580 tokens/s. A 32K prompt takes about 15 seconds with Q2_0.
-
-A card with more VRAM is faster, because more of the model fits on the GPU: an RTX 3090 (24 GB) should do roughly
-100-140 tokens per second. All measurements, long-context numbers and estimates for other cards are in the
-[details](docs/DETAILS.md#speed-measured).
+Those prompt rates are for a 32K-token prompt. Full upstream tables are in the
+[details](docs/DETAILS.md#speed-measured). AMD notes: [AMD HIP](docs/AMD_HIP.md).
 
 Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
 (about 5-10 minutes; on the PC above it made the Coder 7% faster).
