@@ -331,15 +331,29 @@ def main() -> int:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)
         return 0
     path = out / "experts.bin"
+
+    def layer_blobs(blob, ts):
+        chunk = np.concatenate([model.bytes(t.name).reshape(n_expert, -1) for t in ts], axis=1)
+        assert chunk.shape == (n_expert, blob)             # (n_expert, blob): gate | up | down per expert
+        return chunk
+
     if path.exists() and path.stat().st_size == offset:
-        print("experts.bin exists with the right size; not rewritten")
-        return 0
+        # the size alone would keep another checkpoint's experts of the same geometry (a re-quantized or fine-tuned
+        # model packed into the same folder): compare the first and last blobs of the first, middle and last layers
+        same = True
+        with open(path, "rb") as f:
+            for l, gt, dt, off, blob, ts in (layout[0], layout[len(layout) // 2], layout[-1]):
+                chunk = layer_blobs(blob, ts)
+                for e in (0, n_expert - 1):
+                    f.seek(off + e * blob)
+                    same = same and f.read(blob) == chunk[e].tobytes()
+        if same:
+            print("experts.bin exists with the right size and this GGUF's blobs; not rewritten")
+            return 0
+        print("experts.bin has the right size but other contents; rewriting it")
     with open(path, "wb") as fo:
         for l, gt, dt, off, blob, ts in layout:
-            parts = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
-            chunk = np.concatenate(parts, axis=1)          # (n_expert, blob): gate | up | down per expert
-            assert chunk.shape == (n_expert, blob)
-            fo.write(chunk.tobytes())
+            fo.write(layer_blobs(blob, ts).tobytes())
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
