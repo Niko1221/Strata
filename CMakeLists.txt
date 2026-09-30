@@ -732,18 +732,29 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
+            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp
+            # LOCAL PORT (Z620): the AVX+FMA3+F16C rung, for Sandy Bridge / Ivy Bridge (Xeon E5-2600).
+            src/kernels/cpu/q2_avx1.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  # LOCAL PORT (Z620): /arch:AVX only.  Deliberately NO /mfma and NO /mf16c: the target CPU is a Sandy
+  # Bridge-E (Xeon E5-2680), which has neither - those arrived with Ivy Bridge - and enabling them here
+  # produces vfmadd* and vcvtph2ps, which raise #UD on exactly the machine this file is written for.
+  # q2_avx1.cpp does a software fp16 decode and a mul+add instead.  The per-file flag is also what keeps
+  # AVX2 out of this TU, so a wrong cpu_avx2_ok() answer costs speed instead of a trap.
+  set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
 else()
   # GCC/Clang spell it differently, and `-mavx512vnni` alone is not enough: VBMI is a separate feature bit.
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  # LOCAL PORT (Z620): AVX only, and deliberately WITHOUT -mfma / -mf16c - see the MSVC branch above.
+  # -mavx implies the SSE4.1/SSSE3 the int8 dot and the code unpack need.
+  set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)

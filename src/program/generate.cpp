@@ -1624,8 +1624,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
         }
     }
-    // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
+    // LOCAL PORT (Z620): the canonical Q2_0 pack's CPU kernels now have three rungs, not one, so the gate
+    // is `cpu_require_expert_support_any()` (AVX-512 -> AVX2 -> AVX1) instead of the AVX-512-only
+    // `cpu_require_expert_support()`.  Keeping the old call would refuse every pre-AVX-512 CPU at startup
+    // even though the AVX1 kernel in q2_avx1.cpp is exactly what such a CPU should use.  Upstream's comment
+    // here ("AVX-512 only") described the two-rung ladder; with the third rung it is accurate for neither
+    // the canonical nor the native pack, which is why the wording changed along with the call.
+    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support_any();
     else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",

@@ -49,6 +49,14 @@ bool cpu_avx512_ok();
 bool cpu_avx2_ok();
 /// The CPU's brand string (CPUID 0x80000002..4), for messages; "unknown" when it has none.
 std::string cpu_name();
+/// Whether this CPU (and its OS) runs the AVX1 kernels: AVX (256-bit float), SSSE3 and SSE4.1, and
+/// deliberately NOT FMA3 or F16C, which arrived a generation later than the CPUs this is for.
+/// q2_avx1.cpp does a software fp16 decode and a mul+add rather than using them.
+bool cpu_avx1_ok();
+/// The startup gate for the whole ladder (AVX-512, then AVX2, then AVX1).  Lives in `expert_layout.cpp`
+/// rather than calling `cpu_require_expert_support()` because that one is defined in a `/arch:AVX512`
+/// translation unit, where the compiler may emit AVX-512 into the error path itself.
+void cpu_require_expert_support_any();
 /// Q2_0 GGUF rows / activation quantizer on the kernels this CPU has.
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1);
