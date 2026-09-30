@@ -13,6 +13,10 @@ of a word): faster than you can read.
 
 - **Free and open source.**
 
+> **This fork** (branch `custom`) is tuned for a PC with an RTX 3090 and an RTX 5070 Ti: the second card works as another
+> expert tier, unsloth's K-quant files run too, and prompts and answers are faster. How it compares with llama.cpp and
+> upstream Strata on that PC: [docs/COMPARISON.md](docs/COMPARISON.md).
+
 > **Jump to:** [How fast?](#how-fast-is-it) · [Which model?](#which-model-should-i-pick) · [Install](#install) ·
 > [Using it](#using-it) · [Problems?](#something-went-wrong) · [How it works](#how-does-it-work) ·
 > [All the details](docs/DETAILS.md)
