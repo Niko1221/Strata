@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -83,6 +84,9 @@ MtpDrafter::~MtpDrafter() {
     for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
     if (cs_) cudaStreamDestroy(cs_);
+    if (side_) cudaStreamDestroy(side_);
+    if (sh_fork_) cudaEventDestroy(sh_fork_);
+    if (sh_join_) cudaEventDestroy(sh_join_);
     if (dense_) cudaFree(dense_);
     if (experts_) cudaFree(experts_);
     if (state_arena_) cudaFree(state_arena_);
@@ -213,6 +217,8 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         grp_counts_ = b.take<int32_t>(4);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+        rseq_ = b.take<uint32_t>(4);
+        rcount_ = b.take<unsigned>(4);
         hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
             strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
             strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
@@ -238,7 +244,13 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             for (int64_t i = 0; i < cap_; ++i) id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
+    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&sh_fork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&sh_join_, cudaEventDisableTiming) != cudaSuccess) {
+        err = "mtp: streams";
+        return false;
+    }
     char fmts[48] = "Q2_0 blobs";
     if (nat_.gu_type >= 0) std::snprintf(fmts, sizeof fmts, "ggml types %d/%d", nat_.gu_type, nat_.d_type);
     std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f as %s, dense %.0f)\n",
@@ -398,16 +410,45 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
             }
             fused_gr_read_multi(fa, T, grs_, cs);
         }
-        // ---- MoE: router, the 512 resident experts, the shared expert, the combine, the write
+        // ---- MoE: the shared expert on a branch beside the router and the 512 resident experts, then the combine
+        // and the write
+        NativeSharedWeights nsw;
+        nsw.gate_type = GGML_Q8_0; nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
+        nsw.up_type = GGML_Q8_0; nsw.up_data = q8("mlp.shared_expert.up_proj.weight");
+        nsw.down_type = GGML_Q8_0; nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
+        nsw.q8_1 = xq_;   // the routed experts read nat_xq_ / hit_xq_
+        const SForm none{};
+        if (cudaEventRecord(sh_fork_, cs) != cudaSuccess || cudaStreamWaitEvent(side_, sh_fork_, 0) != cudaSuccess) {
+            err = "mtp: the shared expert's branch";
+            return false;
+        }
         for (int t = 0; t < T; ++t) {
-            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
-            else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+            f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, side_);
+            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
+                          nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_, shared_ + t * N,
+                          N, g.n_ff, 32, side_, mixed_ + t * N, &nsw);
+        }
+        if (cudaEventRecord(sh_join_, side_) != cudaSuccess) { err = "mtp: the shared expert's branch"; return false; }
+        bool xq1 = false;   // the router kernel wrote the native experts' q8_1 rows
+        if (native_router_enabled()) {
+            VerifyRouterArgs ra;
+            ra.x = mixed_; ra.w = bf16("mlp.gate.weight"); ra.logits = logits_; ra.ids = ids_; ra.weights = w_;
+            ra.xq1 = nat_.gu_type >= 0 ? nat_xq_ : nullptr;
+            ra.seq = rseq_; ra.counter = rcount_;
+            ra.n_tok = T; ra.n_embd = (int) N; ra.n_expert = (int) g.n_expert;
+            verify_router(ra, cs);
+            xq1 = ra.xq1 != nullptr;
+        } else {
+            for (int t = 0; t < T; ++t) {
+                bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N,
+                                    (int) g.n_expert, cs);
+                router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+            }
         }
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) blob_, grp_ptr_, grp_start_, grp_counts_,
                            hit_dst_, hit_slot_, cs);
         if (nat_.gu_type >= 0) {
-            quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
+            if (!xq1) quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
             native_expert_grouped(nat_, grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K,
                                   (int64_t) T * K, nat_xq_, hit_scratch_, parts_, cs);
         } else {
@@ -415,17 +456,8 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
             moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K,
                            hit_xq_, hit_xs_, hit_scratch_, parts_, cs);
         }
-        NativeSharedWeights nsw;
-        nsw.gate_type = GGML_Q8_0; nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
-        nsw.up_type = GGML_Q8_0; nsw.up_data = q8("mlp.shared_expert.up_proj.weight");
-        nsw.down_type = GGML_Q8_0; nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
-        nsw.q8_1 = xq_;
-        const SForm none{};
+        if (cudaStreamWaitEvent(cs, sh_join_, 0) != cudaSuccess) { err = "mtp: the shared expert's join"; return false; }
         for (int t = 0; t < T; ++t) {
-            f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
-            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
-                          nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_, shared_ + t * N,
-                          N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
             if (native_moe_combine_enabled())
                 native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
             else
@@ -479,24 +511,21 @@ bool MtpDrafter::capture_round(int T, std::string& err) {
     const int64_t HCN = g_->hc * g_->n_embd;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
     bool ok = true;
-    copy_i32_from_mapped(tok_, m_tok_, T, cs_);
-    copy_i32_from_mapped(step_, m_step_, (int64_t) 2 * T * 4, cs_);
-    copy_i32_from_mapped(pos_, m_pos_, (int64_t) 2 * T * g_->n_head, cs_);
-    copy_i32_from_mapped(row_, m_row_, 2, cs_);
-    copy_from_mapped(Rin_, window_R_, (int64_t) T * HCN, cs_);
     // the catch-up: the layer's front for the window's T cells (their K/V), then its rest for row a only, on row
     // a's intermediates copied to row 0, at the cell the host staged in step row 2*max_t - 1; the draft chain is
     // one graph per step (`capture_step`) so the host can stop it when a draft is unlikely
     const int ra = 2 * max_t_ - 1;
-    const int64_t N = g_->n_embd;
+    const int64_t N = g_->n_embd, NH = g_->n_head;
+    const MappedCopy in[7] = {{tok_, m_tok_, T}, {step_, m_step_, (int64_t) 2 * T * 4}, {pos_, m_pos_, 2 * T * NH},
+                              {row_, m_row_, 2}, {Rin_, window_R_, T * HCN}, {step_ + ra * 4, m_step_ + ra * 4, 4},
+                              {pos_ + ra * NH, m_pos_ + ra * NH, NH}};
+    copy_from_mapped_multi(in, 7, cs_);
     ok = record_front(T, 0, cs_, err);
     if (ok) {
         if (T > 1) {
             copy_row_to_first(row_, R_, HCN, inj_, g_->hc, mixed_, N, cs_);
             native_quantize_q8_1(mixed_, xq_, (int) N, 1, cs_);
         }
-        copy_i32_from_mapped(step_ + ra * 4, m_step_ + ra * 4, 4, cs_);
-        copy_i32_from_mapped(pos_ + ra * g_->n_head, m_pos_ + ra * g_->n_head, g_->n_head, cs_);
         ok = record_rest(ra, cs_, err);
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
@@ -511,8 +540,9 @@ bool MtpDrafter::capture_step(int j, std::string& err) {
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
-    copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
-    copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
+    const MappedCopy in[2] = {{step_ + row * 4, m_step_ + row * 4, 4},
+                              {pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head}};
+    copy_from_mapped_multi(in, 2, cs_);
     bool ok = record_forward(1, row, cs_, err);
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
     return finish_capture(cs_, ok, step_exec_[j], "step", err);

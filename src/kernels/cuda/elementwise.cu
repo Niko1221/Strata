@@ -293,6 +293,37 @@ __global__ void copy_i32_from_mapped_kernel(int32_t* __restrict__ dst, const vol
     for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
 }
 
+struct MappedCopies {
+    MappedCopy c[8];
+};
+
+__global__ void copy_from_mapped_multi_kernel(MappedCopies a) {
+    const MappedCopy c = a.c[blockIdx.y];
+    const int64_t i0 = (int64_t) blockIdx.x * blockDim.x + threadIdx.x, st = (int64_t) gridDim.x * blockDim.x;
+    if ((c.words & 3) == 0 && ((uintptr_t) c.dst & 15) == 0 && ((uintptr_t) c.src & 15) == 0) {
+        const volatile float4* s = (const volatile float4*) c.src;
+        for (int64_t i = i0; i < c.words / 4; i += st) ((float4*) c.dst)[i] = const_cast<const float4*>(s)[i];
+    } else {
+        const volatile int32_t* s = (const volatile int32_t*) c.src;
+        for (int64_t i = i0; i < c.words; i += st) ((int32_t*) c.dst)[i] = s[i];
+    }
+}
+
+void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
+    if (n <= 0) return;
+    if (n > 8) { std::fprintf(stderr, "copy_from_mapped_multi: at most 8 copies\n"); std::exit(1); }
+    MappedCopies a;
+    int64_t most = 0;
+    for (int i = 0; i < n; ++i) {
+        a.c[i] = copies[i];
+        most = copies[i].words > most ? copies[i].words : most;
+    }
+    const int64_t units = (most + 3) / 4;
+    const unsigned bx = (unsigned) ((units + 255) / 256 < 32 ? (units + 255) / 256 : 32);
+    copy_from_mapped_multi_kernel<<<dim3(bx < 1 ? 1 : bx, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(a);
+    check_launch("copy_from_mapped_multi");
+}
+
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     if (n <= 0) return;
     copy_i32_from_mapped_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(dst, (const volatile int32_t*) src, (int) n);

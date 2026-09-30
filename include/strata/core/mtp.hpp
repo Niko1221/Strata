@@ -115,6 +115,10 @@ private:
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;
+    cudaStream_t side_ = nullptr;                    // the shared expert's branch of the draft graphs
+    cudaEvent_t sh_fork_ = nullptr, sh_join_ = nullptr;
+    uint32_t* rseq_ = nullptr;                       // verify_router's sequence word and counter (device)
+    unsigned* rcount_ = nullptr;
     cudaGraphExec_t round_exec_[9] = {};
 
     struct Tensor { std::string name, kind; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; };
