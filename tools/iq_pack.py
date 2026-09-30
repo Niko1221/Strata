@@ -163,6 +163,10 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
                     converted.append({"name": t.name, "source_type": t.type_name, "bytes": len(raw)})
                 else:
                     kind = {"BF16": "4", "F16": "5", "F32": "2"}[t.type_name]
+                    if t.type_name == "F32" and t.name.endswith("ple_conv1d.weight"):
+                        # the PLE conv kernel in the engine reads this one as F16; ordinary quants may ship it F32
+                        raw = np.frombuffer(raw, dtype=np.float32).astype(np.float16).tobytes()
+                        kind = "5"
                 if not convert and t.type_name == "F32" and t.name.endswith(ROUTERS):
                     u = np.frombuffer(raw, dtype=np.uint32)
                     if np.count_nonzero(u & 0xFFFF):
