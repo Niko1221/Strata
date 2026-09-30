@@ -650,6 +650,10 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
+  # the layer split's preparation (layer_split.hpp, header-only, no library to link)
+  add_executable(layer_split_test src/program/layer_split_test.cpp)
+  target_include_directories(layer_split_test PRIVATE include)
+  add_test(NAME layer_split_test COMMAND layer_split_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp

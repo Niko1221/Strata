@@ -49,6 +49,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/layer_split.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -92,6 +93,8 @@
 #include <string>
 #include <set>
 #include <vector>
+
+namespace layer_split = strata::program::layer_split;
 
 namespace {
 // perf-review D-4: the lent slots are refilled with queued copies and one wait; STRATA_REFILL_BLOCKING=1 waits on each
@@ -2278,7 +2281,12 @@ int main(int argc, char** argv) {
         // Unregistered layers remain in the resident arena and use the CPU expert path.
         // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
         // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail)
-        const uint64_t pin_limit = (o.expert_cache_remote[0] > 0 || multi_gpu) ? (8ull << 30) : 0;
+#ifdef _WIN32
+        constexpr bool wddm = true;
+#else
+        constexpr bool wddm = false;
+#endif
+        const uint64_t pin_limit = layer_split::arena_pin_cap(o.expert_cache_remote[0] > 0 || multi_gpu, wddm);
         if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                             o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
