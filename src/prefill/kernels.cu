@@ -110,7 +110,7 @@ constexpr int GRW_PER = N / 256;
 __global__ void __launch_bounds__(256)
 gr_write_norm_rs_kernel(float* __restrict__ R, const float* __restrict__ bo, const float* __restrict__ inj,
                         int64_t inj_ld, const float* __restrict__ w, float eps, float* __restrict__ rs_out,
-                        uint16_t* __restrict__ xn16) {
+                        uint16_t* __restrict__ xn16, const uint16_t* __restrict__ partial) {
     __shared__ float sh[32];
     const int64_t row = blockIdx.x;                 // t * 4 + c
     const int64_t t = row / HC;
@@ -122,7 +122,8 @@ gr_write_norm_rs_kernel(float* __restrict__ R, const float* __restrict__ bo, con
 #pragma unroll
     for (int k = 0; k < GRW_PER; ++k) {
         const int d = threadIdx.x + 256 * k;
-        const float x = fmaf(bo[t * N + d], sc, r[d]);
+        const float b = partial ? bo[t * N + d] + __half2float(__ushort_as_half(partial[t * N + d])) : bo[t * N + d];
+        const float x = fmaf(b, sc, r[d]);
         r[d] = x;
         v[k] = x;
         ss += x * x;
@@ -535,9 +536,9 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
     check("gr_mix_r");
 }
 void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm, float eps,
-                      float* rs, uint16_t* xn16, int64_t T, void* stream) {
+                      float* rs, uint16_t* xn16, int64_t T, void* stream, const uint16_t* partial) {
     gr_write_norm_rs_kernel<<<(unsigned) (T * HC), 256, 0, (cudaStream_t) stream>>>(R, bo, inj, inj_ld, w_norm, eps,
-                                                                                     rs, xn16);
+                                                                                     rs, xn16, partial);
     check("gr_write_norm_rs");
 }
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream) {

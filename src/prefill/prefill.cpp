@@ -56,9 +56,10 @@ struct Alloc {
 struct Bufs {
     uint16_t* w16 = nullptr;
     void* gemm_ws = nullptr;
-    // the chunk's: residual stream, the MoE's input (FP16) and output, the FFN half's injection, routing, steps, PLE rows
+    // the chunk's: residual stream, the MoE's input (FP16) and output, the FFN half's injection, routing, steps, PLE
+    // rows, the second GPU's sums (FP16)
     float *R = nullptr, *bo_moe = nullptr, *inj_f = nullptr, *w = nullptr, *ple_emb = nullptr;
-    uint16_t* mixed_h = nullptr;
+    uint16_t *mixed_h = nullptr, *sums = nullptr;
     int32_t *ids = nullptr, *steps = nullptr;
     // a sub-chunk's: the mixer's BF16 input, its output, the mixer half's injection, a read's row scales
     uint16_t* mixed_bf = nullptr;
@@ -76,7 +77,6 @@ struct Bufs {
     int32_t* sel_ids = nullptr;
     float *logits = nullptr, *sgate = nullptr, *sup = nullptr, *sg = nullptr;
     uint16_t* sh_h = nullptr;
-    uint16_t* sums = nullptr;     // the second GPU's sums (FP16)
     uint8_t* local = nullptr;     // this GPU's expert runner
     uint64_t local_bytes = 0;
 };
@@ -97,6 +97,7 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.w = a.take<float>(t * K);
     b.steps = a.take<int32_t>(t * strata::kernels::kStepCount);
     b.ple_emb = a.take<float>(t * N);
+    b.sums = offload ? a.take<uint16_t>(t * N) : nullptr;   // read by the next layer's sub-chunks
     b.mixed_bf = a.take<uint16_t>(p * N);
     b.bo = a.take<float>(p * N);
     b.inj_a = a.take<float>(p * HC);
@@ -124,7 +125,6 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.logits = a.take<float>(p * NE); b.sgate = a.take<float>(p * 640); b.sup = a.take<float>(p * 640);
     b.sh_h = a.take<uint16_t>(p * 640); b.sg = a.take<float>(p);
     next();   // the routed experts
-    b.sums = offload ? a.take<uint16_t>(t * N) : nullptr;
     b.local_bytes = ExpertRunner::bytes_needed(T, NE, false, !offload);
     b.local = a.take<uint8_t>(b.local_bytes);
     next();
@@ -153,9 +153,10 @@ struct Prefill::Impl {
     strata::kernels::QsaShapes s;
     int64_t cap = 0, max_blocks = 0;
     cudaStream_t cs = nullptr;
-    // the second GPU's share: the input goes out and the sums come back on `xfer`
-    cudaStream_t xfer = nullptr;
-    cudaEvent_t ev_mixed = nullptr, ev_input = nullptr, ev_sum = nullptr;
+    // the second GPU's share: the input goes out on `xfer`, the sums come back on `xsum` a sub-chunk at a time
+    cudaStream_t xfer = nullptr, xsum = nullptr;
+    cudaEvent_t ev_mixed = nullptr, ev_input = nullptr;
+    std::vector<cudaEvent_t> ev_piece;   // a sub-chunk's sums have landed
     Gemm gemm;
     void* owned = nullptr;   // the buffers' own allocation (no region)
     Bufs b;
@@ -176,8 +177,11 @@ Prefill::~Prefill() {
     Impl& m = *impl_;
     if (m.cs) cudaStreamSynchronize(m.cs);
     if (m.xfer) cudaStreamSynchronize(m.xfer);
-    for (cudaEvent_t e : {m.ev_mixed, m.ev_input, m.ev_sum}) if (e) cudaEventDestroy(e);
+    if (m.xsum) cudaStreamSynchronize(m.xsum);
+    for (cudaEvent_t e : {m.ev_mixed, m.ev_input}) if (e) cudaEventDestroy(e);
+    for (cudaEvent_t e : m.ev_piece) if (e) cudaEventDestroy(e);
     if (m.xfer) cudaStreamDestroy(m.xfer);
+    if (m.xsum) cudaStreamDestroy(m.xsum);
     if (m.ids_host) cudaFreeHost(m.ids_host);
     if (m.w_host) cudaFreeHost(m.w_host);
     if (m.owned) cudaFree(m.owned);
@@ -195,10 +199,14 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.s = shapes_of(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, m.s);
     m.max_blocks = ss.qsa_states[0].max_cells / m.s.idx_block + 2;
-    if (cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
+    m.ev_piece.assign((size_t) ((max_chunk + SUB - 1) / SUB), nullptr);
+    bool pieces = true;
+    for (cudaEvent_t& e : m.ev_piece)
+        pieces = pieces && cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
+    if (!pieces || cudaStreamCreateWithFlags(&m.xfer, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaStreamCreateWithFlags(&m.xsum, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&m.ev_mixed, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&m.ev_input, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&m.ev_sum, cudaEventDisableTiming) != cudaSuccess ||
         cudaHostAlloc((void**) &m.ids_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc((void**) &m.w_host, (size_t) max_chunk * K * 4, cudaHostAllocDefault) != cudaSuccess) {
         err = "prefill: streams, events and pinned routing buffers";
@@ -425,6 +433,20 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         for (int64_t t = 0; t < T; ++t) strata::kernels::qsa_step_fill(m.steps_host.data() + t * SC, p0 + t, s);
         cudaMemcpyAsync(b.steps, m.steps_host.data(), (size_t) T * SC * 4, cudaMemcpyHostToDevice, m.cs);
 
+        // ---- a layer's FFN write, deferred to the sub-chunk that reads its rows next: the second GPU's sums come back
+        // a sub-chunk at a time while this GPU works on the sub-chunks before (with `norm`, the next read's norm in
+        // the same pass)
+        bool pending = false;
+        auto ffn_write = [&](int64_t t0, int64_t P, const float* norm) {
+            const uint16_t* part = nullptr;
+            if (m.offload) {
+                cudaStreamWaitEvent(m.cs, m.ev_piece[(size_t) (t0 / SUB)], 0);
+                part = b.sums + t0 * N;
+            }
+            float *R = b.R + t0 * D, *bo = b.bo_moe + t0 * N, *inj = b.inj_f + t0 * HC;
+            if (norm) gr_write_norm_rs(R, bo, inj, HC, norm, EPS, b.rs, b.xn16, P, m.cs, part);
+            else gr_write(R, bo, inj, HC, P, m.cs, part);
+        };
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
             const core::LayerView v(*m.wt, l);
@@ -445,6 +467,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 const strata::kernels::PleWeights& pw = ss.ple.w;
                 for (int64_t t0 = 0; t0 < T; t0 += SUB) {
                     const int64_t P = std::min(SUB, T - t0);
+                    if (pending) ffn_write(t0, P, nullptr);
                     const float* ple_emb = b.ple_emb + t0 * N;
                     to_bf16(ple_emb, b.mixed_bf, P * N, m.cs);
                     if (pw.key_bf16 != nullptr) {
@@ -464,6 +487,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             {b.ple_key, b.ple_q, b.inj_a, b.ple_gated, b.ple_q, b.R + t0 * D}, (int) P, m.cs);
                     } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
                 }
+                pending = false;
                 new_layer();
             }
             const core::WeightRef *wr = nullptr, *wgi = nullptr, *wsg = nullptr, *wsu = nullptr, *wsd = nullptr;
@@ -486,7 +510,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
                     if (!wn || !wd || !wu || !wi) return false;
                     float* inj = half == 0 ? b.inj_a : b.inj_f + t0 * HC;
-                    if (half == 0) gr_norm_rs(b.R + t0 * D, (const float*) wn->data, EPS, b.rs, b.xn16, P, m.cs);
+                    if (half == 0 && pending) {
+                        mark(kPsCombine);
+                        ffn_write(t0, P, (const float*) wn->data);
+                        mark(kPsHcRead);
+                    } else if (half == 0) {
+                        gr_norm_rs(b.R + t0 * D, (const float*) wn->data, EPS, b.rs, b.xn16, P, m.cs);
+                    }
                     if (!bf16_proj(m.gemm, wd, b.xn16, b.lo, P, sd, err)) return false;
                     gr_silu(b.lo, b.lo16, P, m.cs);
                     if (!bf16_proj(m.gemm, wu, b.lo16, b.gated, P, su, err)) return false;
@@ -602,6 +632,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 cudaMemcpyAsync(m.ids_host + t0 * K, b.ids + t0 * K, (size_t) P * K * 4, cudaMemcpyDeviceToHost, m.cs);
                 cudaMemcpyAsync(m.w_host + t0 * K, b.w + t0 * K, (size_t) P * K * 4, cudaMemcpyDeviceToHost, m.cs);
             }
+            pending = false;
             if (!qsa) ++gdn_index;
             else ++qsa_index;
             // ================ the routed experts of the whole chunk ================
@@ -648,16 +679,20 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             if (m.offload && !m.offload->run_layer(l, T, m.ex2, m.off2, m.src2, m.w2, m.ev_input, nullptr, nullptr, err))
                 return false;
             if (!m.local.run_layer(l, T, m.ex1, m.off1, m.src1, m.w1, nullptr, b.mixed_h, b.bo_moe, err)) return false;
-            // ---- the MoE output (+ the second GPU's sums) into the residual stream
-            mark(kPsCombine);
+            // ---- the MoE output (+ the second GPU's sums) goes into the residual stream as the next layer reads it
             if (m.offload) {
-                cudaStreamWaitEvent(m.xfer, m.offload->done(), 0);
-                cudaMemcpyAsync(b.sums, m.offload->host_sum(), (size_t) T * N * 2, cudaMemcpyHostToDevice, m.xfer);
-                cudaEventRecord(m.ev_sum, m.xfer);
-                cudaStreamWaitEvent(m.cs, m.ev_sum, 0);
+                cudaStreamWaitEvent(m.xsum, m.offload->done(), 0);
+                for (int64_t t0 = 0; t0 < T; t0 += SUB) {
+                    const size_t bytes = (size_t) std::min(SUB, T - t0) * N * 2;
+                    cudaMemcpyAsync(b.sums + t0 * N, m.offload->host_sum() + t0 * N, bytes, cudaMemcpyHostToDevice,
+                                    m.xsum);
+                    cudaEventRecord(m.ev_piece[(size_t) (t0 / SUB)], m.xsum);
+                }
             }
-            gr_write(b.R, b.bo_moe, b.inj_f, HC, T, m.cs, m.offload ? b.sums : nullptr);
+            pending = true;
         }
+        mark(kPsCombine);   // the last layer's write
+        for (int64_t t0 = 0; t0 < T; t0 += SUB) ffn_write(t0, std::min(SUB, T - t0), nullptr);
         if (draft != nullptr && !draft_pass(tokens + c0, T, p0)) return false;
         if (profile) {
             mark(kPsPle);
