@@ -37,8 +37,19 @@ ARGS="--serve --pack packs/iq3_xxs
  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 2048
  --spec 4 --spec-min-p 0.5 --mtp mtp/rt --max-context 131072 --kv int8
  --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0 --vision
- --kv-nvme $STORE --kv-nvme-max 40"
+ --kv-nvme $STORE --kv-nvme-max 40 --kv-delta 0"
 ARGS=$(echo "$ARGS" | tr '\n' ' ')
+
+# --kv-delta 0, and it is load-bearing: this oracle asserts the v3 snapshot FILES (the SNAP glob below and
+# the NvmeHeader it parses) and the PROMOTE keyed on their image list, and the delta tier has been the DEFAULT
+# cascade since Phase 6 (kv_delta = 1, generate.cpp:307).  With `--kv-nvme` alone a turn appends chunks and a
+# per-turn state and writes no v3 snapshot at all: the store glob found nothing and the oracle died on
+# "the store wrote no snapshot" with a run that had answered the image request perfectly (rc=0, 39 tokens) -
+# the same silent wrong-tier bug d2cb8f6 fixed in the three sibling oracles, which left this one behind.
+# The image correctness contract is NOT weakened by naming the tier: NvmeEntry::imgs, the two historical image
+# defects (a never-filled list, a dump of the LIVE list) and the ImgKey that the negative control below probes
+# all live on the v3 path this oracle keeps asserting, at n_imgs == 1, with the promote and the negative control
+# unchanged.  The delta cascade's own write path stays gated by tools/nvme_delta_p0_test.sh.
 rm -rf "$OUT"; mkdir -p "$STORE"
 
 # the synthetic image and both prompts.  The image is a 2x2 patch grid: four rows the engine strides by
