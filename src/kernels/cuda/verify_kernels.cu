@@ -23,10 +23,10 @@ void check(const char* what) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
 }
 
-__global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(const float* __restrict__ hist,
-                                                              const float* __restrict__ qkv,
+// `commit` (one token): the history then keeps it - [hist1, hist2, x_0], each thread its channel's, after reading them
+__global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const float* __restrict__ qkv,
                                                               const float* __restrict__ w, float* __restrict__ h,
-                                                              int C, int qk_heads, float eps, int t_begin) {
+                                                              int C, int qk_heads, float eps, int t_begin, bool commit) {
     __shared__ float part[S / 32];
     const int t = t_begin + blockIdx.y;
     const int c = blockIdx.x * S + threadIdx.x;
@@ -38,6 +38,11 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(const float* __res
         win[j] = src < 3 ? hist[c * 3 + src] : qkv[(size_t) (src - 3) * C + c];
     }
     const float v0 = win[0], v1 = win[1], v2 = win[2], x = qkv[(size_t) t * C + c];
+    if (commit) {
+        hist[c * 3] = v1;
+        hist[c * 3 + 1] = v2;
+        hist[c * 3 + 2] = x;
+    }
     float sum = v0 * w[c * 4] + v1 * w[c * 4 + 1] + v2 * w[c * 4 + 2] + x * w[c * 4 + 3];
     float y = sum / (1.0f + __expf(-sum));
     if ((int) blockIdx.x < qk_heads) {
@@ -582,13 +587,14 @@ void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
 }
 
 void gdn_conv_l2_multi(const float* history, const float* qkv, const float* conv_w, float* h, int channels,
-                       int qk_heads, float eps, int n_tok, void* stream, int t_begin) {
-    if (!history || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > 65535) {
+                       int qk_heads, float eps, int n_tok, void* stream, int t_begin, bool commit) {
+    if (!history || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > 65535 ||
+        (commit && (n_tok != 1 || t_begin != 0))) {
         std::fprintf(stderr, "gdn_conv_l2_multi: invalid arguments\n");
         std::exit(1);
     }
     gdn_conv_l2_multi_kernel<<<dim3((unsigned) (channels / S), (unsigned) n_tok), S, 0, (cudaStream_t) stream>>>(
-        history, qkv, conv_w, h, channels, qk_heads, eps, t_begin);
+        const_cast<float*>(history), qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit);
     check("gdn_conv_l2_multi");
 }
 

@@ -274,6 +274,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
         arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
+        one_ = b.take<int32_t>(4);
         hist_snap_ = b.take<float>(T * HS);
         const uint64_t PD = (uint64_t) strata::kernels::NG_HC_DIM;
         ple_key_ = b.take<float>(T * PD); ple_val_ = b.take<float>(T * N); ple_nkey_ = b.take<float>(T * PD);
@@ -289,6 +290,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     Bump real;
     real.base = (uint8_t*) arena_;
     carve(real);
+    {
+        const int32_t one = 1;
+        if (cudaMemcpy(one_, &one, sizeof one, cudaMemcpyHostToDevice) != cudaSuccess) {
+            err = "verify: the arena could not be set";
+            return false;
+        }
+    }
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
@@ -615,11 +623,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 proj(wqkv, qkv + (size_t) tb * C, N, C, cs);
                 proj(wg, z_ + (size_t) tb * ZV, N, ZV, shs_);
                 if (!mark(shs_, pjoin_)) return false;
-                gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
+                // a one-token window keeps its token: it advances the conv history and the state itself (commit)
+                gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb,
+                                  T == 1);
                 if (!wait(bjoin_) || !wait(pjoin_)) return false;
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
-                                    (int) HV, te, nullptr, cs, tb);
+                                    (int) HV, te, T == 1 ? one_ : nullptr, cs, tb);
                 quant(y_ + (size_t) tb * ZV, ZV);
                 proj(wout, bo_ + tb * N, ZV, N, cs);
             } else {
@@ -1403,11 +1413,13 @@ bool Verifier::commit(int n_keep, std::string& err, bool wait) {
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    const cudaError_t le = cudaGraphLaunch(commit_exec_, cs_);
-    if (le != cudaSuccess) { err = std::string("verify: commit launch: ") + cudaGetErrorString(le); return false; }
-    (void) cudaStreamQuery(cs_);   // submit now, not at the next driver call
-    commit_pending_ = true;
+    if (last_t_ > 1) {   // a one-token window has advanced the state itself (record_window)
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        const cudaError_t le = cudaGraphLaunch(commit_exec_, cs_);
+        if (le != cudaSuccess) { err = std::string("verify: commit launch: ") + cudaGetErrorString(le); return false; }
+        (void) cudaStreamQuery(cs_);   // submit now, not at the next driver call
+        commit_pending_ = true;
+    }
     for (int t = 0; t < n_keep; ++t) {
         ss_->ple_prev[0] = ss_->ple_prev[1];
         ss_->ple_prev[1] = last_tokens_[t];
