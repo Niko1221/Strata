@@ -701,13 +701,15 @@ def cuda_lib_dirs():
 
 
 # ------------------------------------------------------------------------------------------------ AMD (experimental)
-# The RX 7900 XT / XTX (gfx1100) on Linux, through the HIP backend (docs/AMD_HIP.md).  There is no ready-made AMD
+# The RX 7900 XT / XTX (gfx1100) and RX 9060 XT (gfx1200) on Linux, through the HIP backend (docs/AMD_HIP.md,
+# docs/AMD_HIP_GFX1200.md).  There is no ready-made AMD
 # engine: ROCm comes from AMD's TheRock Python wheels into .venv (no sudo; a system ROCm in /opt/rocm is used when it
 # has hipcc and hipBLAS) and the engine is compiled here.  One GPU, no images yet.
 ROCM_INDEX = os.environ.get("STRATA_ROCM_INDEX", "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/")
 ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
-AMD_ARCHS = ("gfx1100",)
-AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)"}   # when sysfs has no product name
+AMD_ARCHS = ("gfx1100", "gfx1200")
+AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
+             "gfx1200": "AMD Radeon RX 9060 XT (gfx1200)"}
 
 
 def amd_gpus():
@@ -747,8 +749,8 @@ def amd_gpus():
 
 def amd_problem(g):
     if g["arch"] not in AMD_ARCHS:
-        return (f"not supported - Strata's AMD backend runs on the RX 7900 XT / XTX ({', '.join(AMD_ARCHS)}) only, "
-                f"this is {g['arch']}")
+        return (f"not supported - Strata's AMD backend runs on the RX 7900 XT / XTX (gfx1100) and "
+                f"RX 9060 XT (gfx1200) only, this is {g['arch']}")
     return None
 
 
@@ -1725,7 +1727,7 @@ def main() -> int:
             say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.0f} GB VRAM - " + (amd_problem(g) or "can be used"))
         usable = [g for g in amd if amd_problem(g) is None]
         if not usable:
-            fail("no AMD GPU Strata can use", "the AMD backend runs on the RX 7900 XT / XTX (gfx1100) on Linux")
+            fail("no AMD GPU Strata can use", "the AMD backend runs on the RX 7900 XT / XTX (gfx1100) and RX 9060 XT (gfx1200) on Linux")
         if a.gpus:
             fail("several GPUs sharing one model: NVIDIA only for now", "use one AMD card (--gpu N)")
         if a.gpu is not None:

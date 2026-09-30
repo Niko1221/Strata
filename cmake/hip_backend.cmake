@@ -1,12 +1,19 @@
-# Opt-in HIP configuration. Strata's CUDA-shaped kernels currently target RDNA3 gfx1100 wave32.
+# Opt-in HIP configuration. Strata's CUDA-shaped kernels target AMD RDNA wave32 GPUs; the supported
+# architectures are listed here and the startup check (src/core/device.cu) compares the running card
+# against the arch the binary was compiled for, so a binary built for one card fails loudly on another
+# instead of later with an 'invalid device function'.
 # CMake/compiler discovery stays machine-independent; pass CMAKE_HIP_COMPILER when it is not on PATH.
+set(STRATA_HIP_ARCHS gfx1100 gfx1200 CACHE STRING "Strata HIP target architectures")
 if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
-  set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture")
+  list(GET STRATA_HIP_ARCHS 0 _strata_hip_arch)
+  set(CMAKE_HIP_ARCHITECTURES ${_strata_hip_arch} CACHE STRING "Strata HIP target architecture")
 endif()
-if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx1100")
+list(LENGTH CMAKE_HIP_ARCHITECTURES _strata_hip_arch_count)
+if(NOT _strata_hip_arch_count EQUAL 1 OR NOT CMAKE_HIP_ARCHITECTURES IN_LIST STRATA_HIP_ARCHS)
   message(FATAL_ERROR
-    "Strata HIP currently supports only gfx1100 wave32; CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
+    "Strata HIP supports one of: ${STRATA_HIP_ARCHS} (wave32); CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
 endif()
+set(STRATA_HIP_ARCH ${CMAKE_HIP_ARCHITECTURES})
 
 enable_language(HIP)
 find_package(hip CONFIG REQUIRED)
@@ -55,4 +62,7 @@ foreach(_source IN ITEMS tests/hip/intrinsics.cpp tests/hip/native_qsa_score.cpp
   endif()
 endforeach()
 
-message(STATUS "Strata: HIP enabled, arch ${CMAKE_HIP_ARCHITECTURES}")
+message(STATUS "Strata: HIP enabled, arch ${STRATA_HIP_ARCH}")
+
+# The runtime device check compares the card against this (src/core/device.cu).
+target_compile_definitions(strata_hip_runtime INTERFACE "STRATA_HIP_ARCH=\"${STRATA_HIP_ARCH}\"")
