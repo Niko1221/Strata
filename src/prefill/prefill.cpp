@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <vector>
 
 namespace strata::prefill {
@@ -167,8 +168,9 @@ struct Prefill::Impl {
     std::vector<int32_t> steps_host, cnt, off, entry_of;
     std::vector<int32_t> ex1, off1, src1, ex2, off2, src2;   // this GPU's experts, the second GPU's
     std::vector<float> w1, w2;
-    std::vector<float> ple_emb_host;
-    std::vector<uint32_t> ple_rows;
+    // a chunk's PLE rows, read on a thread while the chunk before runs: two pinned buffers, their row indices
+    float* ple_host[2] = {};
+    std::vector<uint32_t> ple_rows[2];
 };
 
 Prefill::Prefill() : impl_(new Impl) {}
@@ -183,6 +185,7 @@ Prefill::~Prefill() {
     for (cudaEvent_t e : m.ev_piece) if (e) cudaEventDestroy(e);
     if (m.xfer) cudaStreamDestroy(m.xfer);
     if (m.xsum) cudaStreamDestroy(m.xsum);
+    for (float* h : m.ple_host) if (h) cudaFreeHost(h);
     if (m.ids_host) cudaFreeHost(m.ids_host);
     if (m.w_host) cudaFreeHost(m.w_host);
     if (m.owned) cudaFree(m.owned);
@@ -219,8 +222,13 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.cnt.resize(NE);
     m.off.resize(NE + 1);
     m.entry_of.resize(T * K);
-    m.ple_emb_host.resize(T * N);
-    m.ple_rows.resize(T * strata::kernels::PLE_N_HEADS);
+    for (int i = 0; i < 2; ++i) {
+        m.ple_rows[i].resize(T * strata::kernels::PLE_N_HEADS);
+        if (cudaHostAlloc((void**) &m.ple_host[i], T * N * 4, cudaHostAllocDefault) != cudaSuccess) {
+            err = "prefill: pinned PLE row buffers";
+            return false;
+        }
+    }
     int dev = 0;
     cudaGetDevice(&dev);
     return m.gemm.init(stream, err) &&
@@ -390,6 +398,37 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         return true;
     };
 
+    // ---- a chunk's PLE rows (one batched SSD request) on a thread: the first chunk's while its layer 0 runs, each
+    // next chunk's while the one before runs; waited for before the PLE block at layer 1
+    struct PleRead {
+        std::thread th;
+        bool ok = true;
+        std::string err;
+        bool wait(std::string& e) {
+            if (th.joinable()) th.join();
+            if (!ok) e = err;
+            return ok;
+        }
+        ~PleRead() { if (th.joinable()) th.join(); }
+    } ple_read;
+    int32_t pa[2] = {prev[0], prev[1]};   // the rows' tokens before the next chunk to read
+    int ple_cur = 0;
+    auto ple_start = [&](int64_t c, int buf) {
+        const int64_t Tc = std::min(m.T, n - c);
+        uint32_t* rows = m.ple_rows[buf].data();
+        for (int64_t t = 0; t < Tc; ++t) {
+            const int32_t tok = (int32_t) tokens[c + t];
+            strata::kernels::ngram_rows(&tok, pa, 1, ss.ple.consts, rows + t * strata::kernels::PLE_N_HEADS);
+            pa[0] = pa[1];
+            pa[1] = tok;
+        }
+        ple_read.ok = true;
+        ple_read.th = std::thread([&m, &ss, &ple_read, rows, Tc, out = m.ple_host[buf]] {
+            ple_read.ok = ss.ple.table->gather_batch(rows, (size_t) Tc, out, ple_read.err);
+        });
+    };
+    if (ss.ple.ready() && n > 0) ple_start(0, 0);
+
     static const bool trace = std::getenv("STRATA_TRACE") != nullptr;
     processed_ = 0;
     int64_t c0 = 0;
@@ -414,23 +453,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             }
             gr_broadcast(b.emb, b.R + t0 * D, P, m.cs);
         }
-        // ---- the PLE rows of the whole chunk, one batched SSD request
         const bool ple_on = ss.ple.ready();
-        if (ple_on) {
-            const auto tp = Clock::now();
-            for (int64_t t = 0; t < T; ++t) {
-                const int32_t tok = (int32_t) tokens[c0 + t];
-                strata::kernels::ngram_rows(&tok, prev, 1, ss.ple.consts, m.ple_rows.data() + t * strata::kernels::PLE_N_HEADS);
-                prev[0] = prev[1];
-                prev[1] = tok;
-            }
-            if (!ss.ple.table->gather_batch(m.ple_rows.data(), (size_t) T, m.ple_emb_host.data(), err)) return false;
-            // before any expert copy of the chunk takes the link
-            cudaMemcpyAsync(b.ple_emb, m.ple_emb_host.data(), (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs);
-            stats_.ms_ple += ms_since(tp);
-        } else {
-            for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }
-        }
         // ---- the QSA step records of every position in the chunk
         for (int64_t t = 0; t < T; ++t) strata::kernels::qsa_step_fill(m.steps_host.data() + t * SC, p0 + t, s);
         cudaMemcpyAsync(b.steps, m.steps_host.data(), (size_t) T * SC * 4, cudaMemcpyHostToDevice, m.cs);
@@ -466,6 +489,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             // ---- the PLE block at layer 1: the key and value projections, then the decode path's per-token
             // arithmetic (the conv reads the previous tokens' normalized rows)
             if (l == 1 && ple_on) {
+                // the chunk's rows, then the next chunk's read on the thread (the other buffer)
+                const auto tp = Clock::now();
+                if (!ple_read.wait(err)) return false;
+                cudaMemcpyAsync(b.ple_emb, m.ple_host[ple_cur], (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs);
+                if (c0 + T < n) ple_start(c0 + T, 1 - ple_cur);
+                ple_cur = 1 - ple_cur;
+                stats_.ms_ple += ms_since(tp);
                 const strata::kernels::PleWeights& pw = ss.ple.w;
                 for (int64_t t0 = 0; t0 < T; t0 += SUB) {
                     const int64_t P = std::min(SUB, T - t0);
@@ -710,6 +740,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             ev.clear();
         }
         stats_.tokens += T;
+        for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }
     }
     ss.ple_prev[0] = prev[0];
     ss.ple_prev[1] = prev[1];
