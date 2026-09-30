@@ -110,6 +110,15 @@ public:
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
 
+    /// Measurement hook (STRATA_LOGPOS): after run(), write one line per row t of the last window's head -
+    /// "pos target logprob top top_logprob hit extra_logprob target_logprob_without_extra" - where row t is the
+    /// distribution at pos0 + t, targets[t] is the token at pos0 + t + 1, extra_logprob is the log-probability of
+    /// `extra_id` in the same row, and the last column is the target's log-probability in that row renormalized
+    /// over every token but `extra_id` (both nan when they do not apply).  A layer split's earlier stage forwards
+    /// to the stage that holds the head.
+    bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
+                         std::string& err);
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }

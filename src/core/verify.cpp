@@ -1170,6 +1170,47 @@ void Verifier::publish_plan(void* ctx) {
     *(volatile uint32_t*) v->h_flagA_ = v->cur_layer_ + 1;
 }
 
+bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
+                               std::string& err) {
+    if (next_ != nullptr) return next_->window_logprobs(targets, T, pos0, extra_id, out, err);
+    const OnDevice on_device(device_);
+    if (head_logits_ == nullptr || n_vocab_ <= 0 || T <= 0 || targets == nullptr || out == nullptr) {
+        err = "window_logprobs: no head logits for this window";
+        return false;
+    }
+    // run() synchronized cs_ before returning, so the head of this window is complete
+    std::vector<float> h((size_t) T * (size_t) n_vocab_);
+    if (cudaMemcpy(h.data(), head_logits_, h.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        err = "window_logprobs: the head logits copy failed";
+        return false;
+    }
+    for (int t = 0; t < T; ++t) {
+        const float* row = h.data() + (size_t) t * (size_t) n_vocab_;
+        const int32_t tgt = targets[t];
+        if (tgt < 0 || (int64_t) tgt >= n_vocab_) continue;
+        int64_t top = 0;
+        for (int64_t v = 1; v < n_vocab_; ++v)
+            if (row[v] > row[top]) top = v;
+        const double maxv = row[top];
+        const bool has_extra = extra_id >= 0 && (int64_t) extra_id < n_vocab_;
+        double sum = 0.0, sum_without = 0.0;   // the second skips extra_id: no cancellation when it holds ~all mass
+        for (int64_t v = 0; v < n_vocab_; ++v) {
+            const double e = std::exp((double) row[v] - maxv);
+            sum += e;
+            if (v != (int64_t) extra_id) sum_without += e;
+        }
+        const double lse = maxv + std::log(sum);
+        const double extra = has_extra ? (double) row[extra_id] - lse : NAN;
+        const double without = has_extra && tgt != extra_id && sum_without > 0.0
+                                   ? (double) row[tgt] - (maxv + std::log(sum_without)) : NAN;
+        std::fprintf(out, "%lld\t%d\t%.9f\t%lld\t%.9f\t%d\t%.9f\t%.9f\n", (long long) (pos0 + t), (int) tgt,
+                     (double) row[tgt] - lse, (long long) top, maxv - lse, (int) (top == (int64_t) tgt), extra,
+                     without);
+    }
+    std::fflush(out);
+    return true;
+}
+
 bool Verifier::commit(int n_keep, std::string& err) {
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }

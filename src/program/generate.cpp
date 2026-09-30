@@ -3911,6 +3911,20 @@ int main(int argc, char** argv) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
                     }
+                    // STRATA_LOGPOS=<path>: the teacher-forced log-probability of every token read here (every
+                    // token is committed and nxt[t] is the prompt's own next token), appended to <path>; the last
+                    // column is the log-probability of STRATA_LOGPOS_EXTRA (default 248046, <|im_end|>), so the
+                    // end-of-turn mass a chat model puts on raw text can be taken out of the measurement
+                    static std::FILE* logpos = [] {
+                        const char* p = std::getenv("STRATA_LOGPOS");
+                        return p != nullptr ? std::fopen(p, "ab") : nullptr;
+                    }();
+                    static const int32_t logpos_extra = [] {
+                        const char* p = std::getenv("STRATA_LOGPOS_EXTRA");
+                        return p != nullptr ? (int32_t) std::atoi(p) : (int32_t) 248046;
+                    }();
+                    if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
+                        return false;
                     if (!ver.commit(T, e) || !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e)) return false;
                     q += T;
                 }
