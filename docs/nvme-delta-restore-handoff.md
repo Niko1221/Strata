@@ -46,8 +46,9 @@ block, and the live server at :8080 runs `--kv-delta 1` with `STRATA_WATCHDOG_S=
 
 ## 1. Where the restore time goes (measured, 142k-token promote ≈ 10 s ≈ 14k tok/s; v3 ≈ 50k)
 
-**Status: A, B1 and B2 are landed on `nvme-kv-cache` (2026-09-30); the table below is the BEFORE picture, kept
-for the record.**  The measured before/after pair is under it.
+**Status: A, B1, B2 and the pooled-row placement are landed on `nvme-kv-cache` (2026-09-30); the table below is
+the BEFORE picture, kept for the record.**  The measured before/after pair is under it, and every raw line is in
+`docs/nvme-restore-perf-evidence.md`.
 
 **Before, re-measured on the merged binary (Phase 0's own line, on-device, 2026-09-30; `GEN`-driven
 143,495-token conversation, 560 chunks, 2.15 GiB read, server stopped):**
@@ -61,33 +62,34 @@ strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest 3115.3 ms, a
 below is confirmed phase-by-phase (read+digest and assemble are the two ~2.5 s blocks A and B attack; the
 ~1.9 s apply is the inherited v3 choreography, unchanged).
 
-**After B2 (the streaming restore, landed):**
+**After B2 + the pooled rows placed per chunk (final; every raw line in `docs/nvme-restore-perf-evidence.md`):**
 
 ```
-strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest+place 2637.7 ms, stage 0.0 ms,
-                                                  apply 24.2 ms, rss peak 46597 MB (entry 46257 MB), T 143495, 560 chunks, 2.15 GiB read
+strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest+place 2569.7 ms, pooled rows 39.7 ms,
+                                                  apply 9.4 ms, rss peak 46334 MB (entry 46204 MB), T 143495, 560 chunks, 2.15 GiB read
 ```
 
-≈ 2.7 s wall ≈ **53k tok/s** (the v3 tier's ~50k is the bar) - and the `KV` line itself agrees on device:
-`KV src=delta resume=143495 promote_ms=2668 promote_bytes=2309000692 staging_bytes=356179248`.
+≈ 2.6 s wall ≈ **55k tok/s** (the v3 tier's ~50k is the bar) - and the `KV` line itself agrees on device:
+`KV src=delta resume=143495 promote_ms=2621 promote_bytes=2309000692 staging_bytes=135802160`.
 
-**On the RSS target.**  This document's expected end state guessed "~100 MB (the bounded staging)"; what the
-path actually allocates at 143k tokens is **356,179,248 bytes**, and the breakdown is worth recording because
-two thirds of it is not the conversation's KV at all:
+**On the RSS target.**  This document's expected end state guessed "~100 MB (the bounded staging)".  What the
+path now allocates at 143k tokens is **135,802,160 bytes** with a **~130 MB** process transient (VmHWM 46,334
+vs 46,204 at entry) - from 4,404 MB before this work, a **34x** reduction - and the restore no longer scales
+with the conversation at all.  The staging is:
 
 | term | bytes | what it is |
 |---|---|---|
-| State record | 120,139,080 (115 MiB) | the tail pages + tail rows + gdn/ple/tails/dead/block_pos, read once |
-| pooled-row staging | 219,547,308 (~209 MiB) | `n_layers × qsa_pooled_rows(T) × idx_key_dim × 4` |
-| 4 worker buffers | 16,492,860 (~16 MiB) | one chunk payload each, reused |
+| gdn + ple | 118,038,528 (112.2 MiB) | the apply pass's first two device segments: a batch, so both are host-resident when it starts. `gdn` alone is 117,669,888 bytes. |
+| 4 reader buffers | ~15.6 MiB | one chunk payload each, reused (Phase A's workers) |
+| pooled-rows buffer | 32,768 | one chunk's span of rows, reused |
+| ~~pooled-row staging~~ | ~~219,547,308~~ | **gone** - the rows cross the bus per chunk now |
 
-The process's own transient peak was **~340 MB** (VmHWM 46,597 vs 46,257 at entry) - the assembled path cost
-**~4.4 GB**, so this is a 13x reduction and the staging is bounded and flat in the CHUNK COUNT (which is what the
-parallel read bought), but it is NOT yet ~100 MB: the pooled-row staging is O(conversation length) because R4
-requires ONE pooled apply per layer covering all `qsa_pooled_rows(T)` rows, so every layer's whole row span has to
-be resident in host memory at apply time.  Removing THAT would mean per-chunk pooled applies (560 x n_layers
-H2D copies instead of n_layers), which changes the applies list's shape and count and therefore needs the
-owner's decision, not a quiet implementation change - it is the natural next item after this work.
+Getting the total under ~112 MiB is not available to this design: `gdn` alone costs 117,669,888 bytes at the
+262,144-token context, and the apply pass's batch shape (frozen, R1) means that segment is host-resident when it
+runs.  Going below it would mean per-segment `gdn` applies - changing the applies list's shape and count, an
+owner's decision - or streaming `gdn` through a mapping so the bytes are reclaimable page cache rather than
+anonymous memory (a real improvement for the OOM story, not a smaller number).  What was actually available -
+removing the term that scaled with the prompt - is done.
 
 **Bit-exact against the v3 tier at this scale**: the v3 cascade's own snapshot of the same boundary (L=143,495), restored by
 `--nvme-restore`, prints the SAME `STATE_HASH` line as the streamed delta promote - all nine fields, including

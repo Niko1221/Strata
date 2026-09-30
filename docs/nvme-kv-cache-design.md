@@ -298,10 +298,10 @@ Results:
   roughly twice the file size. This is the number that sizes the chunked-`pread` fix in §7. **The delta tier no
   longer pays it**: its streaming restore memcpy's each chunk's KV pages and drafter pages straight into the host
   arrays as the chunk is read and stages only the device-bound bytes (the State record, the pooled rows, one
-  payload buffer per worker) - measured on a 143,495-token conversation (560 chunks, 2.15 GiB read): **2.7 s
-  wall (`promote_ms=2668`, ~54k tok/s), 356 MB staged, a ~340 MB process peak** against the assembled path's
-  7.4 s and ~4.4 GB, and bit-exact against the v3 tier's own restore of the same boundary (`STATE_HASH`, all nine
-  fields, §5.2).
+  payload buffer per worker) - measured on a 143,495-token conversation (560 chunks, 2.15 GiB read): **2.6 s
+  wall (`promote_ms=2621`, ~55k tok/s), 135,802,160 bytes staged, a ~130 MB process peak** against the assembled
+  path's 7.4 s and ~4.4 GB, and bit-exact against the v3 tier's own restore of the same boundary (`STATE_HASH`,
+  all nine fields, §5.2).
 - **No base regression from the tier**: `tools/needle_bench.py` (1k/32k, tier off in both configs) is identical
   across the pre-tier and converge binaries - 6/6 found, same timings.
 - **GPU parity suite**: 26/28 with a free GPU; the two failures are environmental/upstream (`ple_parity` needs a
@@ -412,9 +412,9 @@ binding here too - a number on the page must be a number an oracle already measu
 - **Overhead is three costs, not one**: `dump_ms` (server occupancy at `DONE`), `promote_ms` (the TTFT price paid
   instead of a re-prefill), and `staging_bytes` plus the engine's own process RSS. On the v3 tier that transient
   is the ~2 GiB measured above; the delta tier's restore reads each chunk straight into the arrays it belongs in
-  and stages only the State record + the pooled rows + one buffer per worker - measured on a 143k-token promote:
-  `staging_bytes=356,179,248` (115 MiB State + ~209 MiB pooled rows + 16 MiB of worker buffers) over a
-  ~340 MB process peak, against ~4.4 GB for the assembled path.
+  and stages only what the apply pass cannot avoid - measured on a 143k-token promote: `staging_bytes=135,802,160`
+  (112.2 MiB of `gdn`+`ple`, the apply pass's own first two device segments, plus ~15.6 MiB of reader buffers and a
+  32 KB rows buffer) over a ~130 MB process peak, against ~4.4 GB for the assembled path.
 - **Endurance** is cumulative bytes written since the engine started, quoted with §10.2's ratio -
   `(total_tokens × 16 KB + 118 MB) / (new_tokens × 16 KB + 118 MB)`, ~6.5× at the production average turn - **not**
   the handoff's 33×.
@@ -535,11 +535,12 @@ Each item below was a real incompatibility between the two designs when the work
 - **C10 - physical-RAM admission**: NOT settled, but the DELTA half is. Its streaming restore
   (`docs/nvme-delta-restore-handoff.md` §3, B2) reads each chunk straight into the destination arrays - no
   assembled image, no second hash pass - so the "bounded read staging" the maintainer asked for is real and
-  measured: `staging_bytes=356,179,248` (State 115 MiB + pooled rows ~209 MiB + one buffer per worker) and a
-  ~340 MB process peak for a 143k-token promote, where the assembled path cost ~4.4 GB. The staging is bounded
-  and flat in the chunk COUNT, but still O(conversation) in the pooled rows: one pooled apply per layer (R4)
-  needs each layer's whole row span in host memory at apply time. What is still open is the v3 path's
-  whole-file staging (~2 GiB transient, §7) and the core's `conversation_available_memory` /
+  measured: `staging_bytes=135,802,160` and a ~130 MB process peak for a 143k-token promote, where the assembled
+  path cost ~4.4 GB (a 34x reduction, `docs/nvme-restore-perf-evidence.md` has every raw line). What is left is
+  `gdn` + `ple` - 118,038,528 bytes, the apply pass's own first two device segments, which its batch shape
+  requires in host memory - so the staging no longer grows with the conversation at all; the 219 MB of pooled
+  rows that once made it O(prompt) now cross the bus per chunk instead of being staged. What is still open is the
+  v3 path's whole-file staging (~2 GiB transient, §7) and the core's `conversation_available_memory` /
   `conversation_memory_admit`, which are imported dormant (`conversation_memory.cpp` builds only the memory
   fixture, not the engine).
 - **C11 - metrics**: settled as a build (§7): `TierActivity` out-params, the per-request `KV` line and the
