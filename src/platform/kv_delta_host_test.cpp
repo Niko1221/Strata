@@ -1195,6 +1195,28 @@ void fixture_store(const std::string& root) {
         ck_eq((int64_t) ev.swept_bytes, (int64_t) (rec_before.second - rec_after.second), "with its bytes");
         ck_eq(ev.swept, 1, "that record is A's orphan State record");
     }
+    {   // SWEEP MEETS THE DISK (the 6648be7 recompute's own promise): after a sweep, the books equal a
+        // recursive walk of the delta subtree's bytes - the sawtooth's snap-back, asserted against the disk.
+        const std::string dir = root + "/sweepbooks";
+        Session S;
+        S.seed_indexer(1.0f, 2, 2.0f);
+        S.tag_kv();
+        std::string err;
+        strata::platform::KvNvmeStore nov3;
+        strata::platform::KvDeltaStore d;
+        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        const ConversationCheckpoint sb256 = boundary_checkpoint(S, 256, 256);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(256), {}, true, &sb256, err), "A dumps");
+        const ConversationCheckpoint sb600 = boundary_checkpoint(S, 600, 600);
+        ck(d.dump(S.ss, S.draft, S.g, ids_of(600), {}, true, &sb600, err), "B supersedes A (A's State goes orphan)");
+        d.sweep();   // the books are recomputed from the disk here
+        uint64_t walked = 0;
+        std::error_code ec;
+        for (const fs::directory_entry& de : fs::recursive_directory_iterator(dir + "/delta", ec))
+            if (de.is_regular_file(ec)) walked += (uint64_t) de.file_size(ec);
+        ck_eq((int64_t) d.total_bytes(), (int64_t) walked,
+              "after a sweep the books equal the delta subtree's bytes on disk (the sawtooth's snap-back)");
+    }
     {   // P7 AT THE STORE LEVEL: an externally deleted chunk degrades to refuse-and-drop, and drop() works
         const std::string dir = root + "/p7";
         Session S;

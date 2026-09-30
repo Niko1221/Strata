@@ -378,12 +378,17 @@ binding here too - a number on the page must be a number an oracle already measu
 - **"Warm" is two numbers and the page names both.** *Stored prefixes* = `entries + delta_entries` - snapshots,
   not conversations (§7: no cross-restart identity, so one five-turn conversation is five prefixes).  *RAM tier*
   = `checkpoints` + `live`.
-- **`entries_bytes` / `delta_bytes` are CAP ACCOUNTING, not a disk footprint.** The delta store sums every
-  `chunks/` and `states/` file once - including the residue a coming sweep will remove, because "the cap must not
-  lie about the disk" - and then adds each entry's own `bytes` (manifest + State + its chunks), so a chunk shared
-  by three manifests is counted four times (`kv_delta.cpp:921-970`, deliberately).  The serve-side walk
-  (`serve/kvcache.py scan()`) reports what the volume actually holds, including files this engine refuses to
-  promote.  The page labels the two *cap accounting* and *on disk* and never merges them into one "cache size".
+- **`entries_bytes` / `delta_bytes` are CAP ACCOUNTING, a SAWTOOTH, not a disk footprint.** At open, the
+  delta store counts every `chunks/`+`states/` file once - including the residue a coming sweep will remove -
+  and then adds each entry's own `bytes` (manifest + State + its chunks), so a chunk shared by three manifests
+  is counted four times (`kv_delta.cpp`, deliberately: the over-estimate is the *safety* direction - the cap
+  over-evicts rather than letting the disk grow past it).  On append the same per-reference counting applies;
+  at every sweep the total is RECOMPUTED from the disk, which is where the books meet the disk again.  So the
+  number drifts above the footprint as shared references accumulate and snaps back at each sweep - it equals
+  the footprint exactly only right after a sweep, a coincidence the page must not present as an invariant.
+  The serve-side walk (`serve/kvcache.py scan()`) reports what the volume actually holds, including files this
+  engine refuses to promote.  The page labels the two *cap accounting* and *on disk* and never merges them into
+  one "cache size".
 - **Store fill** = `(entries_bytes + delta_bytes) / cap`, shown beside `disk_free_bytes` from
   `shutil.disk_usage(dir)`: the cap is a policy the user set, free space is what actually stops the tier.
 - **Overhead is three costs, not one**: `dump_ms` (server occupancy at `DONE`), `promote_ms` (the TTFT price paid
