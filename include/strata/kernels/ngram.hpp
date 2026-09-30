@@ -110,6 +110,9 @@ struct PleIoOptions {
     uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
     uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
+    /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
+    /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
+    bool lock = false;
 };
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every
@@ -144,6 +147,8 @@ public:
     bool open(const std::string& gguf_path, std::string& err);
     void close();
     bool is_open() const;
+    /// True when `PleIoOptions::lock` was asked for and mlock succeeded (false: pages only pre-touched).
+    bool locked() const;
     uint64_t rows() const;
 
     /// 16 row indices -> 2560 floats.  The gathered rows are flattened HEAD-SLOWEST: row h's 160 values

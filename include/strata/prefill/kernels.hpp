@@ -6,6 +6,7 @@
 #pragma once
 
 #include "strata/kernels/kv_stream.hpp"
+#include "strata/kernels/rope_scaling.hpp"
 
 #include <cstdint>
 
@@ -22,6 +23,15 @@ bool fp16_bits();
 /// xn[t, c*2560 + d] = R[t,c,d] * rsqrt(mean_d R[t,c,:]^2 + eps) * w_norm[c*2560 + d]; also its 16-bit image
 /// (BF16 bits, or FP16 bits when `fp16_bits`).
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream);
+/// F-1: gr_norm without its FP32 output: the row scales rs[t*4 + c] and the BF16 image; gr_mix_r then reads R.
+void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream);
+/// gr_mix with xn recomputed from R, rs and w_norm exactly as gr_norm computes it (the same bits).
+void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
+              int64_t T, void* stream, uint16_t* mixed_h = nullptr);
+/// F-2: gr_write, then gr_norm_rs of the next half (its norm weights) over the rows just written - the same bits as
+/// the two calls, without reading R back.
+void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
+                      float* rs, uint16_t* xn16, int64_t T, void* stream);
 /// lo16[t, k] = bf16|fp16(silu(lo[t, k] / hc))  (FP16 bits when `fp16_bits`).
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream);
 /// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16|FP16 and FP16 (either image may be null).
@@ -52,6 +62,9 @@ void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* s
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream);
 /// h16[n, r] = fp16(silu(g[n, r]) * u[n, r])   (the shared expert, gate and up separate, width 640)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
+/// dst[i] = src[i] for n int32s, as a kernel: either side may be mapped host memory, and the copy never waits
+/// behind the copy engine's queue (the prompt path's grouping tables, while the expert stream fills it).
+void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
@@ -61,8 +74,10 @@ void moe_combine(const float* D, const int32_t* slot, const float* w, const floa
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
 void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, float eps, void* stream);
-/// NEOX rotary on the first 64 dims of each head: x [T, heads, dim] at positions pos0 + t.
-void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0, float freq_base, void* stream);
+/// NEOX rotary on the first 64 dims of each head: x [T, heads, dim] at positions pos0 + t.  The rope
+/// scaling (rope_scaling.hpp) rides in as the process config - none is today's arithmetic exactly.
+void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
+          const strata::kernels::RopeScaling& scaling, void* stream);
 /// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
 void split_q(const float* q_full, float* q, int64_t T, void* stream);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)

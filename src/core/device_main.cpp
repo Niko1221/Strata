@@ -32,7 +32,12 @@ int main(int argc, char** argv) {
     try {
         const strata::core::DeviceInfo d = strata::core::device_info(0);
         std::printf("device %d: %s\n", d.ordinal, d.name.c_str());
+#if defined(STRATA_USE_HIP)
+        std::printf("  HIP arch            %s wave32 (compiled for %s)\n", d.arch.c_str(),
+                    strata::core::compiled_gpu_archs());
+#else
         std::printf("  compute capability  %d.%d   (sm_%d%d)\n", d.cc_major, d.cc_minor, d.cc_major, d.cc_minor);
+#endif
         std::printf("  multiprocessors     %d\n", d.multi_processor_count);
         std::printf("  VRAM total / free   %s / %s\n", human(d.total_bytes).c_str(), human(d.free_bytes).c_str());
         std::printf("  driver / runtime    %d / %d\n", d.driver_version, d.runtime_version);

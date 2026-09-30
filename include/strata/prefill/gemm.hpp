@@ -6,6 +6,7 @@
 // rounded to BF16, which is also what llama.cpp's batched CUDA path does.  Tensor-core GEMM through cuBLAS.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -56,5 +57,6 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     bool native_bf16_ = true;
+    void* hipblaslt_state_ = nullptr;
 };
 }  // namespace strata::prefill

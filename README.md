@@ -52,15 +52,15 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 
 | Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
 | --- | ---: | ---: | ---: |
-| **Q2_0** | 90 tokens/s | 67 tokens/s | 1,310 tokens/s |
-| **IQ2_XS** | 74 tokens/s | 60 tokens/s | 1,240 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 46 tokens/s | 1,110 tokens/s |
-| **IQ3_S** | 52 tokens/s | 41 tokens/s | 1,070 tokens/s |
-| **Coder** (IQ1_M) | 51 tokens/s | 44 tokens/s | 1,300 tokens/s |
+| **Q2_0** | 93 tokens/s | 74 tokens/s | 2,170 tokens/s |
+| **IQ2_XS** | 79 tokens/s | 63 tokens/s | 2,090 tokens/s |
+| **IQ3_XXS** | 62 tokens/s | 49 tokens/s | 1,750 tokens/s |
+| **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |
+| **Coder** (IQ1_M) | 55 tokens/s | 43 tokens/s | 2,180 tokens/s |
 
 - **Writes answers** = how fast the reply appears (tokens per second).
 - **Reads your prompt** = how fast it takes in what you send (long documents, code, chat history), measured on a
-  32K-token prompt; a 4K prompt reads at 740-1,000 tokens/s. A 32K prompt takes about 25 seconds with Q2_0.
+  32K-token prompt; a 4K prompt reads at 910-1,580 tokens/s. A 32K prompt takes about 15 seconds with Q2_0.
 
 A card with more VRAM is faster, because more of the model fits on the GPU: an RTX 3090 (24 GB) should do roughly
 100-140 tokens per second. All measurements, long-context numbers and estimates for other cards are in the
@@ -74,7 +74,7 @@ asks whether to share the model across them (recommended when two can). An insta
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
 card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
 pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 30 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
 
 ## Which model should I pick?
 
@@ -111,6 +111,10 @@ one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./se
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
 It needs an explicit packing conversion and is not an installer menu option.
 
+An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental):
+`./setup.sh --backend hip`, chosen by itself on a PC with no NVIDIA card Strata can use. It installs ROCm without sudo
+and compiles the engine (one GPU, no images yet). Details: [AMD HIP](docs/AMD_HIP.md).
+
 ## Install
 
 **You need:** an NVIDIA GPU with compute capability 7.0 or newer and 12 GB of VRAM or more, enough RAM for the size
@@ -125,7 +129,9 @@ RTX 30/40/50 cards use the ready-made engine; Volta cards such as the Tesla V100
 2. Double-click **`START-HERE.bat`**.
 3. Answer a few questions - or just press Enter each time for the recommended choice:
    - **Which model and size?** The original or Swift 1.5, and Q2_0, IQ2_XS, IQ3_XXS or IQ3_S - see [above](#which-model-should-i-pick)
-   - **How much context?** How much text it can keep in mind at once (it suggests one for your card)
+   - **How much context?** How much text it can keep in mind at once (it suggests one for your card). 384K and
+     512K (experimental) extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
+     covering factor; `--rope-scaling`/`--rope-scale` override) ([details](docs/DETAILS.md))
    - **Images?** Whether it should also read pictures
    - **Experimental speed projection?** Off unless you say yes - [read what it does](docs/DETAILS.md#experimental-speed-projection-experimental-off-by-default) first
 
@@ -144,6 +150,38 @@ model files are kept in a `Strata-data` folder next to your Strata folder, so a 
 the same way - nothing big is downloaded again.
 
 **Linux:** run `./setup.sh` - same questions, same result.
+
+**Docker (Linux):** the same idea, in a container.
+
+1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+   and a driver **580 or newer** (CUDA 13.0).
+2. Build (this compiles the engine into the image, so the container never compiles):
+   `docker build -t strata .`
+   `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
+   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
+   set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
+   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
+
+   The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
+   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
+   `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
+   precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
+   Only the model files, the prepared pack, the MTP layer and the install config live in the
+   `strata-data` volume; the engine is part of the image. Switching between models already on the
+   volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
+   `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
+   api_key, LOW_RAM), since those are recorded in its config.
+   Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
+   layer split is setup's recommended default ([docs/MULTI_GPU.md](docs/MULTI_GPU.md)), and a volume
+   set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
+   or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
+   A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
+   keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
+   see a cap. LOW_RAM runs on one card.
+   The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
+   to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
+   healthy once the model is loaded, and `GET /v1/status` says what it is running.
 
 ## Using it
 

@@ -38,7 +38,8 @@ class ChatTemplate:
         env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
-        self.template = env.from_string(Path(path).read_text(encoding="utf-8"))
+        self.source = Path(path).read_text(encoding="utf-8")
+        self.template = env.from_string(self.source)
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
@@ -144,7 +145,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         role = m.get("role")
         if role == "developer":
             role = "system"
-        out = {"role": role, "content": _parts_of(m.get("content")) if role == "user" else _text_of(m.get("content"))}
+        out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -241,6 +242,61 @@ CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 
 
+PARAM_END = "</parameter>"
+FUNC_END = "</function>"
+
+
+def param_end(text: str, final: bool = False) -> int:
+    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
+    `<parameter=` or `</function>` - the same text inside a value (a file that documents the call format, #210) is
+    part of the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+    at = text.find(PARAM_END)
+    while at >= 0:
+        after = text[at + len(PARAM_END):].lstrip()
+        if after.startswith(("<parameter=", FUNC_END)):
+            return at
+        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
+            return at if final else -2
+        at = text.find(PARAM_END, at + 1)
+    return -1
+
+
+def call_end(text: str) -> int:
+    """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
+    its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
+    the call format ends at the first `</tool_call>`, as before."""
+    s = text.lstrip()
+    pos = len(text) - len(s)
+    if not s.startswith("<function="):
+        return text.find(CALL_END) if not "<function=".startswith(s) else -1
+    gt = text.find(">", pos)
+    if gt < 0:
+        return -1
+    pos = gt + 1
+    while True:
+        rest = text[pos:]
+        s = rest.lstrip()
+        pos += len(rest) - len(s)
+        if s.startswith("<parameter="):
+            gt = text.find(">", pos)
+            if gt < 0:
+                return -1
+            end = param_end(text[gt + 1:])
+            if end < 0:
+                return -1
+            pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith(FUNC_END):
+            rest = text[pos + len(FUNC_END):]
+            s = rest.lstrip()
+            if s.startswith(CALL_END):
+                return pos + len(FUNC_END) + len(rest) - len(s)
+            return -1 if CALL_END.startswith(s) else text.find(CALL_END, pos)
+        elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s):
+            return -1
+        else:
+            return text.find(CALL_END, pos)
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -256,9 +312,9 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         pname = rest[:rest.index(">")]
         rest = rest[rest.index(">") + 1:]
-        end = rest.find("</parameter>")
+        end = param_end(rest, final=True)
         value = rest[:end] if end >= 0 else rest
-        rest = rest[end + len("</parameter>"):] if end >= 0 else ""
+        rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         if value.startswith("\n"):
             value = value[1:]
         if value.endswith("\n"):
@@ -350,16 +406,17 @@ class OutputParser:
                         self.sp += 1
                         rest = rest[1:]
                     self.sval_started = True
-                end = rest.find("</parameter>")
+                end = param_end(rest)
                 if end >= 0:
                     value = rest[:end]
                     if value.endswith("\n"):
                         value = value[:-1]
                     args(json.dumps(value)[1:-1] + '"')
-                    self.sp += end + len("</parameter>")
+                    self.sp += end + len(PARAM_END)
                     self.ss = "between"
                     continue
-                safe = len(rest) - self._hold(rest, ("</parameter>",))
+                # an undecided </parameter> (-2) is held from its start, like a tag still arriving
+                safe = rest.find(PARAM_END) if end == -2 else len(rest) - self._hold(rest, (PARAM_END,))
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
                     safe -= 1
                 if safe > 0:
@@ -367,7 +424,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = rest.find("</parameter>")
+                end = param_end(rest)
                 if end < 0:
                     return out
                 value = rest[:end]
@@ -380,7 +437,7 @@ class OutputParser:
                 except ValueError:
                     v = value
                 args(json.dumps(v, ensure_ascii=False))
-                self.sp += end + len("</parameter>")
+                self.sp += end + len(PARAM_END)
                 self.ss = "between"
             else:
                 return out
@@ -448,7 +505,7 @@ class OutputParser:
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
             else:
-                i = self.buf.find(CALL_END)
+                i = call_end(self.buf)
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body

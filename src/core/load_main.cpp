@@ -65,7 +65,10 @@ int main(int argc, char** argv) {
 
     const strata::core::LoadStats st =
         strata::core::load_experts(path, dst, blob_bytes, blobs_per_layer, layers, threads, chunk);
-    if (st.seconds < 0) return 1;
+    if (!st.ok) {
+        std::fprintf(stderr, "loading the experts failed: %s\n", st.error.empty() ? "unknown" : st.error.c_str());
+        return 1;
+    }
 
     std::printf("loaded %.3f GiB in %.3f s with %d threads and %llu MiB chunks  ->  %.2f GiB/s\n",
                 (double) st.bytes / (1024.0 * 1024 * 1024), st.seconds, threads,

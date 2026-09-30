@@ -148,7 +148,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (hits.d_res == nullptr || hits.cache_base == nullptr || hits.blob <= 0) {
-        err = "verify: needs the profile-filled VRAM expert tier (--expert-profile and --expert-cache)";
+        err = "verify: needs the profile-filled VRAM expert tier (--expert-profile and --expert-cache); with "
+              "--expert-cache auto, no VRAM was left for it: lower --max-context, use --kv k8v4 or images on the CPU";
         return false;
     }
     std::string why;
@@ -173,7 +174,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
 
     const strata::kernels::QsaShapes s = shapes_of(g);
     cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    max_blocks_ = ss.qsa_states[0].max_cells / s.idx_block + 2;
+    max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
@@ -452,7 +453,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     !native_of(wout, v.name("ssm_out.weight"), err))
                     return false;
                 const int64_t gi = gdn_idx[(size_t) l];
-                float* state = ss.gdn_state + (size_t) gi * gdn_floats;
+                float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 float* qkv = qkv_L_ + (size_t) gi * MT * C;
                 float* hb = h_L_ + (size_t) gi * MT * C;
@@ -491,7 +492,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos) {
                     if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, cs);
                     else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, cs);
-                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, (float) qsa_freq_base(), pos, cs);
+                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), pos, cs);
                     else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, cs);
                 };
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
@@ -510,12 +511,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (st.kv_q4) {   // Q4_0 KV (kv_q4.hpp): K and V rotated before they are stored
                     fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
+                } else if (st.kv_hybrid) {   // K8V4: only V is rotated
+                    fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
                 stamp(l, 8, grp);
                 if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
                 for (int t = tb; t < te; ++t) {
                     const int32_t* step_t = step_ + t * kStepCount;
-                    if (st.kv_q4)
+                    if (st.kv_hybrid) {   // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
+                        kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t,
+                                          kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, nullptr);
+                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
+                                          vcur_ + t * NKV * HD, s, cs, nullptr);
+                    } else if (st.kv_q4)
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, &st.host);
                     else if (st.kv_int8)
@@ -529,7 +537,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 for (int t = tb; t < te; ++t)
                     native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
                                               (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                              (float) qsa_freq_base(), cs);
+                                              rope_scaling(), cs);
                 stamp(l, 9, grp);
                 native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD),
                             n, cs);
@@ -573,7 +581,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
                                       s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
                 stamp(l, 13, grp);
-                if (st.kv_q4) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
+                if (st.kv_q4 || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
                 if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
                                               (int) (n * NH), (int) HD, cs);
                 else
@@ -702,7 +710,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             copy_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                      skip_ + grp, ring, cs);
         } else {
-            wait_flag_ge(m_flag_, ring, cs);                   // the CPU's share is in the mapped rows
+            wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
             stamp(l, 23, grp);
             if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
                 copy_rows_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
@@ -829,6 +837,7 @@ bool Verifier::capture(int T, std::string& err) {
         err = std::string("verify: end capture: ") + cudaGetErrorString(ce);
         return false;
     }
+#if !defined(STRATA_USE_HIP)   // a CUDA debug listing (node types, kernel names)
     if (std::getenv("STRATA_VERIFY_NODES") != nullptr) {   // what the window graph holds
         size_t nn = 0;
         cudaGraphGetNodes(graph, nullptr, &nn);
@@ -842,8 +851,10 @@ bool Verifier::capture(int T, std::string& err) {
             if (ty == cudaGraphNodeTypeKernel) {
                 cudaKernelNodeParams kp{};
                 if (cudaGraphKernelNodeGetParams(nd, &kp) == cudaSuccess) {
+#if CUDART_VERSION >= 12030   // cudaFuncGetName arrived in CUDA 12.3
                     const char* fn = nullptr;
                     if (cudaFuncGetName(&fn, kp.func) == cudaSuccess && fn) name = fn;
+#endif
                 }
             } else if (ty == cudaGraphNodeTypeMemcpy) name = "memcpy";
             else if (ty == cudaGraphNodeTypeMemset) name = "memset";
@@ -856,6 +867,7 @@ bool Verifier::capture(int T, std::string& err) {
         for (size_t i = 0; i < v.size() && i < 40; ++i) std::fprintf(stderr, " %d x %.60s;", v[i].first, v[i].second.c_str());
         std::fprintf(stderr, "\n");
     }
+#endif
     const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
@@ -894,7 +906,7 @@ bool Verifier::capture_commit(std::string& err) {
             if (!is_qsa_layer(g, l)) {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
-                float* state = ss.gdn_state + (size_t) gdn_index * gdn_floats;
+                float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
                 gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
@@ -911,7 +923,7 @@ bool Verifier::capture_commit(std::string& err) {
                 for (int64_t t = 0; t < MT; ++t)
                     native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
                                               (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                              (float) qsa_freq_base(), cs_);
+                                              rope_scaling(), cs_);
                 ++qsa_index;
             }
         }
@@ -942,7 +954,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
-    if (pos0 + T > ss.qsa_states[0].max_cells) { err = "verify: the window runs past the context"; return false; }
+    if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     if (!capture(T, err) || !capture_commit(err)) return false;
     VDBG("captured; staging\n");
     const Clock::time_point t0 = Clock::now();

@@ -338,6 +338,15 @@ def verify_experts(gguf: pathlib.Path, out_dir: pathlib.Path, man: dict, every: 
 def verify(gguf: pathlib.Path, out_dir: pathlib.Path, limit: int | None, expert_every: int) -> int:
     """P1.T3 over the pack: decode it from disk and compare with the source, bit for bit."""
     man = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    # A full verify also reads back the source hash build recorded (absent after --skip-hash, which is how setup
+    # builds): a pack compared against a different shard than it was built from is a mismatch, not a decode bug.
+    want = (man.get("source") or {}).get("shard1_sha256")
+    if want and limit is None:
+        got = sha256(gguf)
+        if got != want:
+            print("%s: sha256 %s, but the pack was built from %s" % (gguf.name, got, want))
+            print("tools/strata_pack.py verify FAIL")
+            return 1
     g = G.GGUFFile(gguf)
     head, flen = open_shard(gguf)
     data_off = data_section_offset(g, flen)

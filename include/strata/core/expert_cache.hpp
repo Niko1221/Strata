@@ -26,6 +26,7 @@
 // kernel. This is that first step, and the step it unblocks is the one that can be measured.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -140,6 +141,11 @@ public:
     int64_t fills() const { return fills_; }
 
 private:
+#if defined(STRATA_USE_HIP)
+    bool ensure_blocking_staging(std::size_t bytes, std::string& err);
+    uint8_t* blocking_staging_ = nullptr;
+    std::size_t blocking_staging_bytes_ = 0;
+#endif
     uint8_t* base_ = nullptr;
     std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
     int64_t slots_ = 0;

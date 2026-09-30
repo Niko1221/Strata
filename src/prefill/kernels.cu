@@ -75,6 +75,68 @@ __global__ void gr_norm_kernel(const float* __restrict__ R, const float* __restr
         xn16[row * N + d] = g_fp16_bits_device ? hf(v) : bf(v);
     }
 }
+// F-1: the row scale only (and the BF16 image); gr_mix_r_kernel recomputes r * rs * w itself, in the same order,
+// so the FP32 copy of the normalized rows (T x 10240 floats) is neither written nor read
+__global__ void gr_norm_rs_kernel(const float* __restrict__ R, const float* __restrict__ w, float eps,
+                                  float* __restrict__ rs_out, uint16_t* __restrict__ xn16) {
+    __shared__ float sh[32];
+    const int64_t row = blockIdx.x;                 // t * 4 + c
+    const int c = (int) (row % HC);
+    const float* r = R + row * N;
+    float ss = 0.0f;
+    for (int d = threadIdx.x; d < N; d += blockDim.x) ss += r[d] * r[d];
+    const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
+    if (threadIdx.x == 0) rs_out[row] = rs;
+    for (int d = threadIdx.x; d < N; d += blockDim.x) xn16[row * N + d] = bf(r[d] * rs * w[c * N + d]);
+}
+__global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __restrict__ rs, const float* __restrict__ w,
+                                const float* __restrict__ g, float* __restrict__ mixed, uint16_t* __restrict__ mixed16,
+                                int64_t T, uint16_t* __restrict__ mixed_h) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * N) return;
+    const int64_t t = i / N, d = i % N;
+    float s = 0.0f;
+#pragma unroll
+    for (int c = 0; c < HC; ++c) {
+        const int64_t j = t * D + c * N + d;
+        const float x = R[j] * rs[t * HC + c] * w[c * N + d];   // gr_norm_kernel's value, bit for bit
+        s = fmaf(x, sigm(g[j]), s);
+    }
+    s /= (float) HC;
+    mixed[i] = s;
+    if (mixed16) mixed16[i] = bf(s);
+    if (mixed_h) mixed_h[i] = hf(s);
+}
+// F-2: gr_write_kernel for one row (t, c), then gr_norm_rs_kernel's reduction over it with the next half's norm
+// weights - the same thread-to-element mapping (256 threads, stride 256) and block_sum, so rs and the BF16 image are
+// the same bits, and R is not read back
+constexpr int GRW_PER = (N + 255) / 256;
+__global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict__ R, const float* __restrict__ bo,
+                                                               const float* __restrict__ inj, int64_t inj_ld,
+                                                               const float* __restrict__ w, float eps,
+                                                               float* __restrict__ rs_out, uint16_t* __restrict__ xn16) {
+    __shared__ float sh[32];
+    const int64_t row = blockIdx.x;                 // t * 4 + c
+    const int64_t t = row / HC;
+    const int c = (int) (row % HC);
+    float* r = R + row * N;
+    const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
+    float v[GRW_PER];
+    float ss = 0.0f;
+    int k = 0;
+#pragma unroll
+    for (int d = threadIdx.x; d < N; d += 256, ++k) {
+        const float x = fmaf(bo[t * N + d], sc, r[d]);
+        r[d] = x;
+        v[k] = x;
+        ss += x * x;
+    }
+    const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
+    if (threadIdx.x == 0) rs_out[row] = rs;
+    k = 0;
+#pragma unroll
+    for (int d = threadIdx.x; d < N; d += 256, ++k) xn16[row * N + d] = bf(v[k] * rs * w[c * N + d]);
+}
 __global__ void gr_silu_kernel(const float* __restrict__ lo, uint16_t* __restrict__ lo16, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -283,6 +345,65 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_kernel(float* __restrict
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
+// gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while this token
+// computes (software pipelining).  The same arithmetic in the same order: the same bits, and the same CB-column split.
+// STRATA_GDN_PIPELINE=0: gdn_rec_cols_kernel.
+__global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h,
+                                                                      const float* __restrict__ gate,
+                                                                      const float* __restrict__ beta,
+                                                                      float* __restrict__ oc_out, int64_t T) {
+    constexpr int NT = CB * RG, LPT = S / NT;   // threads, q/k rows loaded per thread
+    __shared__ float sk[S], sq[S], red[RG][CB];
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
+    const int qh = head % HK;
+    float s[RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+    float nq[LPT], nk[LPT], nv = 0.0f, ng = 0.0f, nb = 0.0f;
+    auto fetch = [&](int64_t t) {
+        const float* ht = h + t * C;
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { nq[u] = ht[qh * S + tid + u * NT]; nk[u] = ht[HK * S + qh * S + tid + u * NT]; }
+        nv = ht[2 * HK * S + head * S + col];
+        ng = gate[t * HV + head];
+        nb = beta[t * HV + head];
+    };
+    if (T > 0) fetch(0);
+    for (int64_t t = 0; t < T; ++t) {
+        float cq[LPT], ck[LPT];
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { cq[u] = nq[u]; ck[u] = nk[u]; }
+        const float cv = nv, cg = ng, cbt = nb;
+        __syncthreads();
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
+        __syncthreads();
+        if (t + 1 < T) fetch(t + 1);
+        const float g = __expf(cg);
+        float kv = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
+        red[rg][c] = kv;
+        __syncthreads();
+        const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
+        const float delta = (cv - g * kv_col) * cbt;
+        float o = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
+            o = fmaf(s[r], sq[rg * RPG + r], o);
+        }
+        __syncthreads();
+        red[rg][c] = o;
+        __syncthreads();
+        if (rg == 0) oc_out[t * HV * S + head * S + col] = (red[0][c] + red[1][c] + red[2][c] + red[3][c]) * rsqrtf((float) S);
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+}
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
                                                          float eps, float* __restrict__ y, uint16_t* __restrict__ y16) {
     __shared__ float wsum[4];
@@ -410,13 +531,17 @@ __global__ void rms_rows_kernel(float* __restrict__ x, const float* __restrict__
     for (int64_t c = threadIdx.x; c < cols; c += blockDim.x) r[c] = s * r[c] * w[c];
 }
 __global__ void rope_kernel(float* __restrict__ x, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
-                            float theta_scale, const int32_t* __restrict__ mtab) {
+                            float theta_scale, float freq_scale, float corr_low, float corr_high,
+                            float ext_factor, float mscale, const int32_t* __restrict__ mtab) {
     const int64_t row = blockIdx.x;             // t * heads + h
     const int pair = threadIdx.x;               // 0..31
     const int64_t t = row / heads, h = row % heads;
     float* p = x + t * ld + h * dim;
-    const float theta = (float) strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair) * powf(theta_scale, (float) pair);
-    const float c = cosf(theta), s = sinf(theta);
+    const float theta_extrap =
+        (float) strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair) * powf(theta_scale, (float) pair);
+    float c, s;
+    strata::kernels::rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale,
+                                       pair, c, s);
     const float a = p[pair], b = p[pair + 32];
     p[pair] = a * c - b * s;
     p[pair + 32] = a * s + b * c;
@@ -531,6 +656,22 @@ void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t
     gr_norm_kernel<<<(unsigned) (T * HC), 256, 0, (cudaStream_t) stream>>>(R, w_norm, eps, xn, xn16);
     check("gr_norm");
 }
+void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream) {
+    gr_norm_rs_kernel<<<(unsigned) (T * HC), 256, 0, (cudaStream_t) stream>>>(R, w_norm, eps, rs, xn16);
+    check("gr_norm_rs");
+}
+void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
+              int64_t T, void* stream, uint16_t* mixed_h) {
+    gr_mix_r_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(R, rs, w_norm, gated, mixed, mixed16, T,
+                                                                          mixed_h);
+    check("gr_mix_r");
+}
+void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
+                      float* rs, uint16_t* xn16, int64_t T, void* stream) {
+    gr_write_norm_rs_kernel<<<(unsigned) (T * HC), 256, 0, (cudaStream_t) stream>>>(R, bo, inj, inj_ld, w_norm_next, eps,
+                                                                                      rs, xn16);
+    check("gr_write_norm_rs");
+}
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream) {
     gr_silu_kernel<<<blocks_for(T * LR), 256, 0, (cudaStream_t) stream>>>(lo, lo16, T * LR);
     check("gr_silu");
@@ -570,7 +711,11 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
     if (serial || T <= 0) {
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {
-        gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
+        if (pipe)   // the software-pipelined loads (same bits)
+            gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        else
+            gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16);
     }
     check("gdn_recurrence");
@@ -601,6 +746,18 @@ void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void*
     swiglu_pair_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
     check("swiglu_pair");
 }
+namespace {
+__global__ void copy_i32_kernel(int32_t* __restrict__ dst, const int32_t* __restrict__ src, int64_t n) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+}  // namespace
+void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
+    if (n <= 0) return;
+    const int64_t b = (n + 255) / 256;
+    copy_i32_kernel<<<(unsigned) (b < 256 ? b : 256), 256, 0, (cudaStream_t) stream>>>(dst, src, n);
+    check("copy_i32");
+}
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream) {
     if (n <= 0) return;
     gather_rows16_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst16, n, width);
@@ -616,9 +773,19 @@ void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, 
     rms_rows_kernel<<<(unsigned) rows, 256, 0, (cudaStream_t) stream>>>(x, w, cols, ld, eps);
     check("rms_rows");
 }
-void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0, float freq_base, void* stream) {
-    const float theta_scale = powf(freq_base, -2.0f / 64.0f);
-    rope_kernel<<<(unsigned) (T * heads), 32, 0, (cudaStream_t) stream>>>(x, heads, dim, ld, pos0, theta_scale, strata::kernels::mrope_table());
+void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
+          const strata::kernels::RopeScaling& scaling, void* stream) {
+    // The engine validates the resolved config at startup with the same rule (generate.cpp), so this only
+    // fires for a caller that bypassed it; the prompt path has no error return here, so it stops the process.
+    if (const char* why = strata::kernels::rope_scaling_invalid(scaling)) {
+        std::fprintf(stderr, "prefill rope: invalid rope scaling: %s\n", why);
+        std::exit(1);
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / 64.0f);
+    const strata::kernels::RopeKernelArgs k = scaling.kernel_args(64);   // none: the identity constants
+    rope_kernel<<<(unsigned) (T * heads), 32, 0, (cudaStream_t) stream>>>(
+        x, heads, dim, ld, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
+        strata::kernels::mrope_table());
     check("rope");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {

@@ -69,6 +69,22 @@ bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_ex
 
 ExpertCache::~ExpertCache() { close(); }
 
+#if defined(STRATA_USE_HIP)
+bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
+    if (bytes <= blocking_staging_bytes_) return true;
+    void* next = nullptr;
+    const cudaError_t status = cudaHostAlloc(&next, bytes, cudaHostAllocDefault);
+    if (status != cudaSuccess) {
+        err = std::string("ExpertCache: HIP blocking staging allocation: ") + cudaGetErrorString(status);
+        return false;
+    }
+    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    blocking_staging_ = static_cast<uint8_t*>(next);
+    blocking_staging_bytes_ = bytes;
+    return true;
+}
+#endif
+
 bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
                        std::string& err) {
     close();
@@ -125,6 +141,12 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     blob_ = blob_bytes;
+#if defined(STRATA_USE_HIP)
+    if (!ensure_blocking_staging((std::size_t) blob_, err)) {
+        close();
+        return false;
+    }
+#endif
     next_free_ = 0;
     fills_ = 0;
     admitted_ = 0;
@@ -154,11 +176,22 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     slots_ = (int64_t) slot_bytes.size();
     blob_ = mx;
     off_ = std::move(off);
+#if defined(STRATA_USE_HIP)
+    if (!ensure_blocking_staging((std::size_t) blob_, err)) {
+        close();
+        return false;
+    }
+#endif
     layer_next_.assign((size_t) (n_layers > 0 ? n_layers : 0), 0);
     return true;
 }
 
 void ExpertCache::close() {
+#if defined(STRATA_USE_HIP)
+    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    blocking_staging_ = nullptr;
+    blocking_staging_bytes_ = 0;
+#endif
     off_.clear();
     if (base_ != nullptr) {
         cudaFree(base_);
@@ -256,7 +289,18 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
         err = "ExpertCache::fill_slot_blocking: the host blob is null";
         return false;
     }
+#if defined(STRATA_USE_HIP)
+    // Bound HIP's pageable-source staging to one expert instead of repeatedly
+    // registering regions of the mmap. The blocking copy completes before reuse.
+    if (!blocking_staging_ || n > blocking_staging_bytes_) {
+        err = "ExpertCache::fill_slot_blocking: HIP staging buffer is too small";
+        return false;
+    }
+    std::memcpy(blocking_staging_, host_blob, n);
+    const cudaError_t e = cudaMemcpy(dst, blocking_staging_, n, cudaMemcpyHostToDevice);
+#else
     const cudaError_t e = cudaMemcpy(dst, host_blob, n, cudaMemcpyHostToDevice);
+#endif
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot_blocking: ") + cudaGetErrorString(e);
         return false;

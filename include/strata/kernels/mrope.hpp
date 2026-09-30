@@ -22,7 +22,7 @@ namespace strata::kernels {
 void mrope_table_set(const int32_t* device_table);
 const int32_t* mrope_table();
 
-#if defined(__CUDACC__)
+#if defined(__CUDACC__) || defined(__HIPCC__)
 /// ggml rope_multi, is_imrope, sections {11, 11, 10, 0}: sector = pair % 32; sector % 3 == 1 -> h (sector < 33),
 /// == 2 -> w (sector < 30), == 0 -> t (sector < 33).  For pairs 0..31 all three bounds hold, so it is pair % 3.
 __device__ __forceinline__ int mrope_pos(const int32_t* tab, int pos, int pair) {
