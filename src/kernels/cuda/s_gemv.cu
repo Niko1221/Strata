@@ -147,14 +147,20 @@ __global__ void s_gemv_q8_split_kernel(const uint8_t* __restrict__ x, const uint
     constexpr int PER_BYTE = 8 / CODE_BITS;
     const int warps_per_block = (int) (blockDim.x >> 5);
     const long long o = (long long) blockIdx.x * warps_per_block + (threadIdx.x >> 5);
-    if (o >= n_out) return;
     const int lane = threadIdx.x & 31;
 
     // THE CODEBOOK, IN SHARED MEMORY.  16 bytes, loaded once per block by the first 16 threads, instead of a
     // divergent constant read per element - measured at 2.12x of this whole kernel (see the note on `kIq4Nl`).
+    //
+    // THE LOAD AND THE BARRIER COME BEFORE THE EARLY RETURN, as in `s_gemv_q8k_kernel`.  The return used to
+    // sit above them, so whenever `n_out % 8 != 0` the last block's surplus warps left before a barrier the
+    // others still waited at - undefined behaviour that every shape in the pack (a multiple of 8) happened to
+    // avoid.  `o` is per-WARP, so the return below keeps whole warps together and the shuffle reduction's
+    // full mask stays valid.
     __shared__ signed char s_iq4nl[16];
     if (threadIdx.x < 16) s_iq4nl[threadIdx.x] = kIq4Nl[threadIdx.x];
     __syncthreads();
+    if (o >= n_out) return;
 
     const long long n_groups = n_in >> group_shift;
     const long long codes_per_row = n_in / PER_BYTE;
@@ -655,8 +661,10 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
                      form.group_elems);
         std::exit(1);
     }
-    if (form.group_elems % 4 != 0) {
-        std::fprintf(stderr, "s_gemv_q8_0_split: group_elems %d is not a multiple of 4\n", form.group_elems);
+    // SIXTEEN, NOT FOUR: a lane-iteration takes QE = 16 consecutive elements under ONE scale (see the kernel),
+    // so a group of 4 or 8 would read the wrong scale for most of them.  The Q8_K launcher already said 16.
+    if (form.group_elems % 16 != 0) {
+        std::fprintf(stderr, "s_gemv_q8_0_split: group_elems %d is not a multiple of 16\n", form.group_elems);
         std::exit(1);
     }
     int group_shift = 0;

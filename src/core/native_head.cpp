@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 
@@ -106,6 +107,7 @@ const NativeEmbed* native_embed() { return g_embed; }
 NativeEmbed::~NativeEmbed() {
     if (dev_owned_) cudaFree(dev_owned_);
     if (host_) cudaFreeHost(host_);
+    else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
 }
 
 bool NativeEmbed::load(const std::string& path, int64_t n_embd, int64_t n_vocab, std::string& err) {
@@ -123,23 +125,46 @@ bool NativeEmbed::load(const std::string& path, int64_t n_embd, int64_t n_vocab,
         row_ = strata::kernels::iq_row_bytes((int) t->type, n_embd);
         bytes_ = (uint64_t) row_ * (uint64_t) n_vocab;
         if (cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+            // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
+            // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM
+            // instead: it costs its size there and reads faster than over PCIe.
+            cudaGetLastError();
             host_ = nullptr;
-            err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB";
-            return false;
+            void* d = nullptr;
+            if (cudaMalloc(&d, bytes_) != cudaSuccess ||
+                cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+                if (d) cudaFree(d);
+                cudaGetLastError();
+                err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
+                return false;
+            }
+            std::fprintf(stderr, "strata: native embedding: cannot pin %llu MiB, kept in VRAM instead\n",
+                         (unsigned long long) (bytes_ >> 20));
+            dev_ = d;
+        } else {
+            std::memcpy(host_, gguf.tensor_data(*t), bytes_);
+            void* d = nullptr;
+            if (cudaHostGetDevicePointer(&d, host_, 0) != cudaSuccess) {
+                err = "native embedding: no device alias for the mapped table";
+                return false;
+            }
+            dev_ = d;
+            // A host-mapped alias is not reliable on this Windows HIP stack, so the rows
+            // the kernels gather live in device memory. The pin-failure path above already
+            // placed them there.
+#if defined(_WIN32) && defined(STRATA_USE_HIP)
+            if (cudaMalloc(&dev_owned_, bytes_) != cudaSuccess) {
+                dev_owned_ = nullptr;
+                err = "native embedding: cannot allocate " + std::to_string(bytes_ >> 20) + " MiB on device";
+                return false;
+            }
+            if (cudaMemcpy(dev_owned_, host_, bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+                err = "native embedding: device upload failed";
+                return false;
+            }
+            dev_ = dev_owned_;
+#endif
         }
-        std::memcpy(host_, gguf.tensor_data(*t), bytes_);
-        // The table is gathered by kernels. A host-mapped alias is not reliable on this
-        // Windows HIP stack, so the rows live in device memory.
-        if (cudaMalloc(&dev_owned_, bytes_) != cudaSuccess) {
-            dev_owned_ = nullptr;
-            err = "native embedding: cannot allocate " + std::to_string(bytes_ >> 20) + " MiB on device";
-            return false;
-        }
-        if (cudaMemcpy(dev_owned_, host_, bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
-            err = "native embedding: device upload failed";
-            return false;
-        }
-        dev_ = dev_owned_;
         type_ = (int) t->type;
         n_embd_ = n_embd;
         n_vocab_ = n_vocab;

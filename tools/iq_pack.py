@@ -308,9 +308,13 @@ def main() -> int:
         blob = per[0] + per[1] + per[2]
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         offset += blob * n_expert
-    with open(out / "native_experts.txt", "w", encoding="utf-8", newline="\n") as fo:
-        fo.write("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
-                 "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
+    # written to a temporary name and renamed only when every layer is in: a stop part-way (a layer split across
+    # shards, #171) left a partial native_experts.txt that the next setup run took as a finished pack (#172)
+    tmp = out / "native_experts.txt.tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fo:
+        fo.write("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
+                 "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it; "
+                 "three names are gate, up, down when a layer is split across shards)\n"
                  % (n_expert, offset, src.name))
         for l, gt, dt, off, blob, ts in layout:
             ws = [model.where[t.name] for t in ts]
@@ -323,6 +327,7 @@ def main() -> int:
             else:
                 line += " " + " ".join(names)
             fo.write(line + "\n")
+    tmp.replace(out / "native_experts.txt")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)

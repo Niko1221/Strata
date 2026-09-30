@@ -18,6 +18,8 @@ __pycache__/
 
 # plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
 *.nsys-rep
+
+# Pi harness metadata (local session state, not project source)
 *.sqlite
 *.npz
 *.occ1

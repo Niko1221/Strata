@@ -480,6 +480,41 @@ class LiveRate(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/metrics", timeout=10) as r:
             return json.loads(r.read())
 
+    def test_prefill_rate_excludes_cached_tokens(self):
+        import io
+        import queue
+        from types import SimpleNamespace
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = SimpleNamespace(stdin=io.StringIO())
+        engine.lines = queue.Queue()
+        engine.can_stop = False
+        engine.max_context = 262144
+        engine.prefill_tok_s_mean = 9999.0
+        engine.lines.put("PP 10000 12000 2000 1000.0")  # 8000 cached, 2000 newly read in two seconds
+        engine.lines.put("DONE 1 12000 4000 10 stop 0 0 8000")
+        gen = engine.generate([1], 1, {}, threading.Event())
+        self.assertIsNone(next(gen))
+        self.assertEqual(engine.progress, (10000, 12000))
+        self.assertEqual(engine.prefill_tok_s_mean, 1000.0)
+        self.svc.engine = engine
+        self.svc.status.update(busy=True, first_token=None)
+        self.assertEqual(self.metrics()["live"]["prefill_tok_s_mean"], 1000.0)
+        self.assertNotIn("prefill_tok_s", self.metrics()["live"])
+        self.assertEqual(self.svc._prefill_tok_s_mean(), 1000.0)
+        self.svc.status.update(first_token=time.time(), generated=1)
+        self.assertEqual(self.svc._prefill_tok_s_mean(), 0.0)
+        self.assertEqual(list(gen), [])
+        timings = request_timings(12000, 1, engine.last)
+        self.assertEqual(timings["prompt_per_second"], 1000.0)
+        engine.lines.put("PP 8000 12000")
+        engine.lines.put("DONE 0 12000 0 0 stop 0 0 12000")
+        gen = engine.generate([1], 1, {}, threading.Event())
+        next(gen)
+        self.assertIsNone(engine.prefill_tok_s_mean)
+        list(gen)
+        self.svc.status["busy"] = False
+        self.assertIsNone(self.metrics()["live"]["prefill_tok_s_mean"])
+
     def test_the_live_number_is_a_rate(self):
         live_samples, stop = [], threading.Event()
 

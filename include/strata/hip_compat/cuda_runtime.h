@@ -75,10 +75,13 @@
 #define cudaSetDevice hipSetDevice
 #define cudaStreamBeginCapture hipStreamBeginCapture
 #define cudaStreamCaptureModeThreadLocal hipStreamCaptureModeThreadLocal
+#define cudaStreamCaptureStatus hipStreamCaptureStatus
+#define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamEndCapture hipStreamEndCapture
+#define cudaStreamIsCapturing hipStreamIsCapturing
 #define cudaStreamNonBlocking hipStreamNonBlocking
 #define cudaStreamQuery hipStreamQuery
 #define cudaStreamSynchronize hipStreamSynchronize
