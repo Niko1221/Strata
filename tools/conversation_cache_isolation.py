@@ -78,7 +78,7 @@ def main():
     if not args.run:
         print(f'Dry run: {args.scenario} isolation; no model loaded or files created.')
         return
-    cfg = json.loads(args.config.read_text())
+    cfg = json.loads(args.config.read_text(encoding='utf-8'))
     native = cfg['args'][cfg['args'].index('--native') + 1]
     geometry = GGUFFile(native).metadata
     width = geometry['qwen4exp.embedding_length']
@@ -92,6 +92,7 @@ def main():
     tail = '\n'.join(f'Record {i}: blue square and green triangle.' for i in range(64))
     A = encode('Conversation A: ' + (image_tokens if args.scenario == 'image' else '') + '\n' + tail)
     B = encode('Unrelated conversation B: name a color.\n' + tail)
+    args.output = args.output.resolve()
     args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     fixtures(args.output, width)
     env = child_env(cfg)
@@ -130,12 +131,12 @@ def main():
                 generate('off-again', A, steering=False)
         finally:
             engine.close()
-        hashes = state_hashes(log.read_text())
+        hashes = state_hashes(log.read_text(encoding='utf-8'))
         require(len(hashes) == len(records), 'missing isolation state hashes')
         for record, state in zip(records, hashes):
             record['state'] = state
         results[label] = records
-    (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+    (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     verify(results, args.scenario)
     print(f'PASS: {args.scenario} identity isolation, output and main-model state parity')
     print(f'Results: {args.output / "results.json"}')
