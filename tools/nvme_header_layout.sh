@@ -2,8 +2,18 @@
 #
 # Sourced by tools/nvme_p0_test.sh and tools/nvme_steps123_test.sh.  Both read a snapshot's ids at
 # `sizeof(NvmeHeader)`, and until step 4 both were TOLD that number by hand: a hardcoded `104`, then `HDR=208`
-# when step 3 widened the header.  Those scripts are edited far more often than they are run, and a header whose
-# size moved is exactly the change a hand-written offset gets wrong while still printing plausible ids.
+# when step 3 widened the header, then `HDR=216` when v4 added the weight-set fingerprint.  Those scripts are
+# edited far more often than they are run, and a header whose size moved is exactly the change a hand-written offset
+# gets wrong while still printing plausible ids.
+#
+# It moved twice more, and exactly ONE oracle - tools/nvme_failure_contract_test.sh - still spelled the number out
+# by hand.  Worth being precise about what that would have cost at v4, because the obvious guess is wrong and the
+# measurement is the reason this file exists: with the real 216-byte header, the old literal computed an offset
+# 8 bytes early, which lands 56 bytes into the GDN segment - still inside it.  So that oracle would have kept
+# corrupting GDN bytes and kept passing: right by luck, not by construction, and drifting 8 bytes per header
+# change on an assertion whose entire job is to be exactly where it says it is.  A passing oracle is not evidence
+# that an oracle tested its own name, and "it still passes" is the strongest argument for leaving a hand-written
+# constant alone.  It is gone.
 #
 # So the number has one spelling - `kNvmeHeaderBytes` / `kNvmeFormatVersion` in
 # include/strata/platform/kv_nvme.hpp - which the `static_assert`s under `NvmeHeader` pin at build time, and this

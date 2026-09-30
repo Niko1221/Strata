@@ -197,6 +197,34 @@ int64_t file_mtime(const std::string& path) {
 
 }  // namespace
 
+uint64_t nvme_weights_fp(const std::vector<std::string>& model_files) {
+    // path bytes || size (int64) || first 64 KiB || last 64 KiB, per file, in the order the engine loads them.
+    // §5.8's formula, verbatim: this is the delta tier's old kv_delta_weights_fp body, MOVED rather than
+    // rewritten, because two copies of a fingerprint are two chances to disagree about what a store is keyed by.
+    uint64_t h = kNvmeFnvBasis;
+    for (const std::string& file : model_files) {
+        h = nvme_fnv1a(h, file.data(), file.size());
+        std::error_code ec;
+        const uint64_t size = (uint64_t) fs::file_size(file, ec);
+        h = nvme_fnv1a(h, &size, sizeof size);
+        FILE* f = std::fopen(file.c_str(), "rb");
+        if (!f) continue;   // an unreadable shard fingerprints as path+size only - still unique enough to refuse
+        char window[1 << 16];
+        const size_t head = (size_t) std::fread(window, 1, sizeof window, f);
+        h = nvme_fnv1a(h, window, head);
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long long sz = ftello(f);
+            const long long tail_start = sz > (long long) sizeof window ? sz - (long long) sizeof window : (long long) head;
+            if (sz > 0 && std::fseek(f, tail_start, SEEK_SET) == 0) {
+                const size_t tail = (size_t) std::fread(window, 1, (size_t) (sz - tail_start), f);
+                h = nvme_fnv1a(h, window, tail);
+            }
+        }
+        std::fclose(f);
+    }
+    return h;
+}
+
 // The two helpers the delta tier reuses, defined here at namespace scope over the anonymous-namespace originals:
 // thin forwarders, so the v3 walk's own code paths are untouched and the delta tier cannot grow a second copy
 // of the array walk or the hash.
@@ -212,7 +240,7 @@ int nvme_kv_array_count(const strata::core::QsaState& st) { return kv_array_coun
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                   const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
-                  const strata::core::ConversationCheckpoint* at, std::string& err) {
+                  const strata::core::ConversationCheckpoint* at, uint64_t weights_fp, std::string& err) {
     // L is the SNAPSHOT length: for a turn-boundary snapshot the running state comes from the checkpoint's blobs
     // (the state AT L), the KV/pooled/dead arrays are truncated to L (their contents below L are untouched by
     // the generation that followed).  `block_pos` is NOT truncated and is not "per-token": it is one int32 per
@@ -270,7 +298,10 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
     h.L = L;
     h.n_imgs = (int64_t) imgs.size();
     h.cvec = cvec ? 1 : 0;
-    h.kv_format = strata::core::qsa_kv_format(ss.qsa_states[0]);
+    // qsa_kv_key, not qsa_kv_format: the KEY must be able to name every format the engine can hold, and
+    // qsa_kv_format refuses a hybrid state outright (a hybrid layout has no block-mover walk - see its comment).
+    h.kv_format = strata::core::qsa_kv_key(ss.qsa_states[0]);
+    h.weights_fp = weights_fp;   // v4: the weights these bytes WERE computed from
     h.geometry = strata::core::conversation_geometry_key(g);   // the shared core's key, not a projection of it
     h.page_size = z.shapes.page_size; h.idx_block = z.shapes.idx_block; h.max_cells = ss.qsa_states[0].max_cells;
     if (!wr(f, &h, sizeof h)) { err = "nvme_dump: header"; std::fclose(f); return false; }
@@ -368,12 +399,13 @@ bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const 
 
 bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err) {
-    return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, nullptr, err);
+               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, uint64_t weights_fp,
+               std::string& err) {
+    return nvme_dump_at(path, ss, mtp_state, g, ids, imgs, cvec, nullptr, weights_fp, err);
 }
 strata::core::ConversationRestore nvme_restore(const char* path, strata::core::SessionState& ss,
                                                strata::core::QsaState& mtp_state, const strata::core::ModelGeometry& g,
-                                               std::vector<int32_t>& ids,
+                                               uint64_t weights_fp, std::vector<int32_t>& ids,
                                                std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                int64_t& L, std::string& err) {
     using Restore = strata::core::ConversationRestore;
@@ -394,7 +426,7 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
         err = "nvme_restore: read"; std::fclose(f); return Restore::invalid;
     }
     std::fclose(f);
-    return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+    return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, weights_fp, ids, imgs, cvec, L, err);
 }
 
 // The restore pass proper, on an IN-MEMORY image: everything after nvme_restore's whole-file read, line for
@@ -402,7 +434,8 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
 // can run the EXISTING validation+apply pass unchanged instead of growing a second one.  No logic moved.
 strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t n, strata::core::SessionState& ss,
                                                      strata::core::QsaState& mtp_state,
-                                                     const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                                     const strata::core::ModelGeometry& g, uint64_t weights_fp,
+                                                     std::vector<int32_t>& ids,
                                                      std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                      int64_t& L, std::string& err) {
     using Restore = strata::core::ConversationRestore;
@@ -433,9 +466,32 @@ strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t
               " - refusing (an older snapshot is re-dumped by the engine that wrote it; nothing converts it)";
         return Restore::invalid;
     }
+    // THE FORMAT KEY IS CHECKED FIRST, and named on its own, because "these bytes are another KV layout" and
+    // "these bytes are another model" are different operator actions.  `qsa_kv_key` - never `qsa_kv_format`,
+    // which REFUSES a hybrid state outright (a hybrid layout has no block-mover walk; see its comment) - is the
+    // live engine's own key, so a file is never compared to the engine with a different function than the one
+    // that wrote it.  k8v4 is a real value here: a store written under --kv k8v4 is keyed apart from every
+    // other format rather than filed as fp16 (816 B/cell read as 1,056).
+    const int live_kv_format = strata::core::qsa_kv_key(ss.qsa_states[0]);
+    if (h.kv_format != live_kv_format) {
+        err = "nvme_restore: KV format mismatch (snapshot written as format " + std::to_string(h.kv_format) +
+              ", this engine holds format " + std::to_string(live_kv_format) +
+              ") - refusing to convert; that is another layout, not a slower copy of this one";
+        return Restore::invalid;
+    }
+    // v4: THE WEIGHT SET.  Same geometry, same prompt, same segment layout - and KV of a different network.  The
+    // integrity digest cannot see this: it proves only that the file was not corrupted on the way to disk, and
+    // no arithmetic over the bytes could tell one network's K/V from another's.  So the file has to SAY, and a
+    // v3 file (which has no such field) is refused by version above rather than read here as "fingerprint 0" -
+    // which is exactly the value a foreign store would otherwise have been accepted on.
+    // This refusal is the recoverable class and provably writes nothing: it is before the first CUDA call, so the
+    // caller's answer is to drop the snapshot and re-prefill.
+    if (h.weights_fp != weights_fp) {
+        err = "nvme_restore: weight-set mismatch (snapshot belongs to different weights) - refusing";
+        return Restore::invalid;
+    }
     if (h.geometry != strata::core::conversation_geometry_key(g) ||
         h.page_size != z.shapes.page_size || h.idx_block != z.shapes.idx_block ||
-        h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
         h.max_cells > ss.qsa_states[0].max_cells) {
         err = "nvme_restore: geometry/format mismatch (refusing to convert)"; return Restore::invalid;
     }
@@ -624,14 +680,16 @@ strata::core::ConversationRestore nvme_restore_apply(const std::vector<NvmeResto
 
 // ================================ the store ================================
 
-bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry& g, int kv_format, std::string& err) {
+bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry& g, int kv_format,
+                       const std::vector<std::string>& model_files, std::string& err) {
     dir_ = dir;
     fmt_ = kv_format;
+    weights_fp_ = nvme_weights_fp(model_files);   // once per process, like the delta tier's own open
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) { err = "kv-nvme: create " + dir + ": " + ec.message(); return false; }
     const strata::kernels::QsaShapes shp = strata::kernels::qsa_real_shapes();
-    size_t skipped = 0, stale = 0; uint32_t stale_version = 0;
+    size_t skipped = 0, stale = 0, foreign_weights = 0; uint32_t stale_version = 0;
     try {
         for (const fs::directory_entry& de : fs::directory_iterator(dir, ec)) {
             if (ec) break;
@@ -650,6 +708,11 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
                     ++stale; stale_version = h.version;
                     continue;
                 }
+                // THE WEIGHT SET, AT SCAN TIME.  A same-geometry snapshot of another model's conversation is
+                // not a candidate: saying so here means it never becomes an entry, never reaches the match, and
+                // never holds a byte against this store's cap - the three ways a foreign file could otherwise
+                // keep the tier looking alive while serving nothing from it.
+                if (h.weights_fp != weights_fp_) { ++foreign_weights; continue; }
                 const uint64_t fb = (uint64_t) de.file_size(ec);
                 // the full geometry key (restore checks it again): another format/shape is left on disk, never converted
                 if (h.kv_format != fmt_ || h.geometry != strata::core::conversation_geometry_key(g) ||
@@ -685,6 +748,15 @@ bool KvNvmeStore::open(const std::string& dir, const strata::core::ModelGeometry
         }
     } catch (const std::exception& ex) { err = std::string("kv-nvme: scan: ") + ex.what(); return false; }
     if (skipped) std::fprintf(stderr, "strata serve: kv-nvme: %zu malformed/foreign snapshot(s) skipped in %s\n", skipped, dir.c_str());
+    // ITS OWN LINE, because this is the case none of the others explains: the files pass every other check and
+    // are still not promoted, and the only reason is that they hold another network's KV.  Sharing one store
+    // directory across model swaps is a normal thing to do, so a silent skip here reads as a broken tier.
+    if (foreign_weights)
+        std::fprintf(stderr, "strata serve: kv-nvme: %zu snapshot(s) in %s belong to a DIFFERENT weight set (same "
+                             "geometry, different weights) and are never promoted - every such request re-prefills. "
+                             "They stay on disk for the build that wrote them; delete them if the model has "
+                             "changed for good\n",
+                     foreign_weights, dir.c_str());
     if (stale)
         std::fprintf(stderr, "strata serve: kv-nvme: %zu snapshot(s) of format version %u in %s: this build writes "
                              "version %u and refuses older files. They stay on disk and are skipped, so nothing can "
@@ -743,7 +815,7 @@ bool KvNvmeStore::dump(const strata::core::SessionState& ss, const strata::core:
     char name[64];
     std::snprintf(name, sizeof name, "kv-%ld-%ld.bin", pid(), seq_++);
     const std::string path = dir_ + "/" + name;
-    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, stored, cvec, at, err)) {
+    if (!nvme_dump_at(path.c_str(), ss, mtp_state, g, key, stored, cvec, at, weights_fp_, err)) {
         std::error_code ec;
         fs::remove(path, ec);   // a failed dump must not leave a partial file for the next scan to admit
         return false;
@@ -775,7 +847,7 @@ strata::core::ConversationRestore KvNvmeStore::restore(const NvmeEntry& e, strat
     std::vector<int32_t> ids;
     std::vector<strata::core::ConversationImageKey> imgs;
     const strata::core::ConversationRestore r =
-        nvme_restore(e.path.c_str(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+        nvme_restore(e.path.c_str(), ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err);
     if (r != strata::core::ConversationRestore::restored) return r;
     if (L != e.L || cvec != e.cvec || imgs != e.imgs) {
         // The file disagreed with the index the scan built - a TOCTOU on the store, not on the device.  It is the

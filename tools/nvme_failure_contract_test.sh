@@ -78,14 +78,26 @@ cp "$OUT/snap.bin" "$OUT/snap_healthy.bin"   # PART 2 restores a HEALTHY file: t
 cp "$OUT/snap.bin" "$STORE/kv-1-1.bin"   # the STORE copy is the one corrupted; snap_healthy stays pristine
 
 echo "== PART 1 (invalid class): corrupt the stored payload, the PROMOTE must refuse and the engine keep serving =="
-# the payload begins after header + ids + image records (no images here): 208 + 4L.  The GDN segment is first.
+# the payload begins after header + ids + image records: $HDR + 4L.  The GDN segment is first.  $HDR is read
+# from kNvmeHeaderBytes by nvme_header_layout, like every other offset in these oracles; this line used to spell 208
+# out by hand.  Worth being exact about what that would have cost after v4, because the obvious guess is wrong: at
+# 208+4L+64 the offset lands 56 bytes into a 216-byte header's payload, not before it, and 56 bytes in is still
+# inside the GDN segment (768 floats here) - so the oracle would have kept corrupting GDN bytes and kept passing,
+# testing the same thing.  The defect was LATENT, not active.  What made it worth fixing is that it was a second
+# spelling of a constant the script had already read one line earlier, and it had been right by luck: 8 bytes of
+# drift per header change, on an assertion whose whole job is to be exactly where it says it is.
 $NVME_PYTHON - "$OUT" <<PYEOF
 import struct, sys
+# $HDR is interpolated here, as $STORE is on the line above - the unquoted heredoc expands the shell's variables
+# into the Python source, which is this script's own convention.  (Passing it as a second argv and reading it back
+# got the index wrong: `python - a b` makes argv ['-', a, b], so the header is argv[2].  It failed loudly, which is
+# the one good thing about a ValueError where an offset is meant.)
 p = "$STORE/kv-1-1.bin"
+hdr = $HDR
 data = bytearray(open(p, "rb").read())
 L = struct.unpack_from("<q", data, 8)[0]
 n_imgs = struct.unpack_from("<i", data, 16)[0]
-off = 208 + 4 * L + 16 * n_imgs + 64      # inside the GDN segment, past the ids and any image records
+off = hdr + 4 * L + 16 * n_imgs + 64      # inside the GDN segment, past the ids and any image records
 for i in range(64):
     data[off + i] ^= 0xA5
 open(p, "wb").write(bytes(data))

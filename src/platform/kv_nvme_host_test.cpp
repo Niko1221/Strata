@@ -158,6 +158,21 @@ void expect_fail(Fn&& fn, const char* must_name) {
 // ================================ the synthetic session ================================
 
 const strata::kernels::QsaShapes SHP = strata::kernels::qsa_real_shapes();   // page_size 4, idx_block 4
+
+/// THE FIXTURE'S OWN WEIGHT SET (§5.8), as a REAL file, because that is what an engine fingerprints and a made-up
+/// number would not exercise the path that matters: the header must hold the SAME hash the store computed from
+/// ITS OWN shard list, and a file that exists and has bytes is the only way to prove it.  `write_weights` replaces
+/// the body, so the "different weights, same geometry" case is one call away - the fixtures below write it twice
+/// and open the store once per weight set, which is the defect itself.
+const char* const kWeightsPath = "/tmp/kv-nvme-host-test-weights.bin";
+void write_weights(const std::string& tag) {
+    std::ofstream f(kWeightsPath, std::ios::binary);
+    f << "kv_nvme_host_test fixture weight set: " << tag << "\n" << std::string(96, 'W');
+    f.close();
+}
+/// The fingerprint of whatever weight set was last written.  Both the store's open() and every dump below call it,
+/// so they cannot disagree - which is the property the v4 binding depends on.
+uint64_t fp() { return strata::platform::nvme_weights_fp({kWeightsPath}); }
 constexpr int64_t MAX_CELLS = 64;                       // 16 pages; 18 pooled rows (kv_plan's max_cells/4 + 2)
 constexpr int64_t L_BOUNDARY = 10;                      // NOT idx_block-aligned: 2 completed blocks + a spare
 constexpr int64_t L_CONSUMED = 26;                      // the boundary plus 16 generated / hidden-reasoning tokens
@@ -466,7 +481,7 @@ void fixture_turn_boundary(const std::string& dir) {
 
     std::string err;
     strata::platform::KvNvmeStore store;
-    ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the store opens");
+    ck(store.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err), "the store opens");
     // the serve loop's own call shape: consumed ids, live pictures, and the boundary as the key
     ck(store.dump(S.ss, S.draft, S.g, consumed, live_imgs, true, &cp, err), "the turn-boundary dump succeeds");
     ck(store.size() == 1, "one snapshot");
@@ -575,7 +590,7 @@ void fixture_turn_boundary(const std::string& dir) {
     // THE NEGATIVE CONTROL that makes the promote meaningful: the SAME session dumped without a boundary is keyed
     // on the consumed ids, and the same request cannot reach it.
     strata::platform::KvNvmeStore full;
-    ck(full.open(dir + "/full", S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the full-state store opens");
+    ck(full.open(dir + "/full", S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err), "the full-state store opens");
     ck(full.dump(S.ss, S.draft, S.g, consumed, live_imgs, true, nullptr, err), "the full-consumed dump succeeds");
     ck_eq(full.entries()[0].L, L_CONSUMED, "a dump without a boundary is keyed on the consumed length");
     ck(strata::platform::kv_nvme_match(full.entries(), next_request, next_imgs, true, 0) == nullptr,
@@ -597,18 +612,18 @@ void fixture_image_filter(const std::string& dir) {
 
     expect_fail([&](std::string& e) {
         return strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary,
-                                              {{3, 1}, {L_BOUNDARY, 2}}, true, &cp, e);
+                                              {{3, 1}, {L_BOUNDARY, 2}}, true, &cp, fp(), e);
     }, "not inside the 10-token prefix");
     ck(last_error.find("start 10") != std::string::npos, "the refusal names the image's start");
     expect_fail([&](std::string& e) {
         return strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary, {{L_CONSUMED, 2}}, true,
-                                              &cp, e);
+                                              &cp, fp(), e);
     }, "not inside the 10-token prefix");
     expect_fail([&](std::string& e) {
-        return strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary, {{-1, 2}}, true, &cp, e);
+        return strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary, {{-1, 2}}, true, &cp, fp(), e);
     }, "not inside the 10-token prefix");
     std::string err;
-    ck(strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary, cp.imgs, true, &cp, err),
+    ck(strata::platform::nvme_dump_at(path.c_str(), S.ss, S.draft, S.g, boundary, cp.imgs, true, &cp, fp(), err),
        "the boundary's own filtered list is accepted");
 }
 
@@ -621,7 +636,7 @@ void fixture_refusals(const std::string& dir) {
     const std::vector<int32_t> boundary = ids_of(L_BOUNDARY);
     std::string err;
     const std::string path = dir + "/snap.bin";
-    ck(strata::platform::nvme_dump(path.c_str(), S.ss, S.draft, S.g, boundary, {}, true, err), "a dump to read back");
+    ck(strata::platform::nvme_dump(path.c_str(), S.ss, S.draft, S.g, boundary, {}, true, fp(), err), "a dump to read back");
     const std::vector<uint8_t> good = slurp(path);
 
     auto restore_from = [&](const std::vector<uint8_t>& bytes, Session& into, std::string& e) {
@@ -632,7 +647,7 @@ void fixture_refusals(const std::string& dir) {
         std::vector<ConversationImageKey> imgs;
         bool cvec = false;
         int64_t L = 0;
-        return strata::platform::nvme_restore(path.c_str(), into.ss, into.draft, into.g, ids, imgs, cvec, L, e) ==
+        return strata::platform::nvme_restore(path.c_str(), into.ss, into.draft, into.g, fp(), ids, imgs, cvec, L, e) ==
                strata::core::ConversationRestore::restored;
     };
 
@@ -642,12 +657,17 @@ void fixture_refusals(const std::string& dir) {
         std::memcpy(v2.data() + 4, &old, 4);
         Session R;
         expect_fail([&](std::string& e) { return restore_from(v2, R, e); }, "version 2");
-        ck(last_error.find("this build writes version 3") != std::string::npos,
+        // derived from the constant, not spelled out: this assertion outlived one version bump already
+        ck(last_error.find("this build writes version " +
+                           std::to_string(strata::platform::kNvmeFormatVersion)) != std::string::npos,
            "the refusal says which version this build writes");
     }
-    {   // another geometry: the shared core's key, one field off (the last of its 18 int64s, at offset 32+17*8)
+    {   // another geometry: the shared core's key, one field off (the last of its 18 int64s).  Its offset MOVED
+        // with v4 (32 -> 40; the weight-set fingerprint took the old geometry's slot), which is why it is computed
+        // from the header's own field instead of left as a literal: a poke at the old 32 would still be refused,
+        // but by the fingerprint check - and the geometry would not be tested at all.
         std::vector<uint8_t> bad = good;
-        bad[32 + 17 * 8] ^= 0xFF;
+        bad[offsetof(NvmeHeader, geometry) + 17 * 8] ^= 0xFF;
         Session R;
         expect_fail([&](std::string& e) { return restore_from(bad, R, e); }, "geometry/format mismatch");
     }
@@ -673,7 +693,7 @@ void fixture_refusals(const std::string& dir) {
         }
         expect_fail([&](std::string& e) {
             return strata::platform::nvme_dump((dir + "/small.bin").c_str(), T.ss, T.draft, T.g, boundary, {},
-                                               true, e);
+                                               true, fp(), e);
         }, "pooled rows");
         ck(last_error.find("needs 3") != std::string::npos && last_error.find("holds 2") != std::string::npos,
            "the refusal names the count it needs and the count the engine has");
@@ -685,7 +705,7 @@ void fixture_refusals(const std::string& dir) {
         cp.gdn.assign(T.z.gdn + 1, 1);   // one byte too many
         expect_fail([&](std::string& e) {
             return strata::platform::nvme_dump_at((dir + "/cp.bin").c_str(), T.ss, T.draft, T.g, cp.ids, {}, true,
-                                                  &cp, e);
+                                                  &cp, fp(), e);
         }, "checkpoint does not fit");
     }
 }
@@ -734,7 +754,7 @@ void fixture_failure_contract(const std::string& dir) {
     S.tag_kv();
     std::string err;
     reset_faults();
-    ck(strata::platform::nvme_dump(path.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, err),
+    ck(strata::platform::nvme_dump(path.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, fp(), err),
        "the failure fixture has a snapshot to mutate");
     const std::vector<uint8_t> good = slurp(path);
     // cudaMemcpy calls the apply pass makes, in order: gdn, ple, then per QSA layer pooled / tail / dead /
@@ -755,8 +775,8 @@ void fixture_failure_contract(const std::string& dir) {
         f.write((const char*) bytes.data(), (std::streamsize) bytes.size());
         f.close();
         Res r;
-        r.kind = strata::platform::nvme_restore(p.c_str(), into.ss, into.draft, into.g, r.ids, r.imgs, r.cvec, r.L,
-                                                r.err);
+        r.kind = strata::platform::nvme_restore(p.c_str(), into.ss, into.draft, into.g, fp(), r.ids, r.imgs, r.cvec,
+                                                r.L, r.err);
         return r;
     };
 
@@ -788,7 +808,7 @@ void fixture_failure_contract(const std::string& dir) {
         expect_recoverable(b, "version 2", "a stale format version is refused");
     }
     {
-        std::vector<uint8_t> b = good; b[32 + 17 * 8] ^= 0xFF;
+        std::vector<uint8_t> b = good; b[offsetof(NvmeHeader, geometry) + 17 * 8] ^= 0xFF;
         expect_recoverable(b, "geometry/format mismatch", "another geometry is refused");
     }
     {
@@ -959,7 +979,7 @@ void fixture_failure_contract(const std::string& dir) {
         const std::string sdir = dir + "/store";
         strata::platform::KvNvmeStore store;
         reset_faults();
-        ck(store.open(sdir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the store opens");
+        ck(store.open(sdir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err), "the store opens");
         ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err), "the store dumps");
         ck_eq(store.size(), 1, "one entry");
         const NvmeEntry& e = store.entries()[0];
@@ -995,7 +1015,7 @@ void fixture_failure_contract(const std::string& dir) {
             // final sync succeeded, which is the proof the contract demands of a recovery - so this one IS
             // recoverable, and the caller may drop the entry and re-read the prompt.
             reset_faults();
-            ck(strata::platform::nvme_dump(e.path.c_str(), S.ss, S.draft, S.g, ids_of(8), {}, true, err),
+            ck(strata::platform::nvme_dump(e.path.c_str(), S.ss, S.draft, S.g, ids_of(8), {}, true, fp(), err),
                "a second, shorter snapshot is written over the stored file");
             Session R;
             R.poison();
@@ -1015,7 +1035,7 @@ void fixture_failure_contract(const std::string& dir) {
         const std::string ddir = dir + "/dumpfail";
         strata::platform::KvNvmeStore store;
         reset_faults();
-        ck(store.open(ddir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the dump-failure store opens");
+        ck(store.open(ddir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err), "the dump-failure store opens");
         Session P;
         P.seed_indexer(13.0f, L_CONSUMED / SHP.idx_block, 14.0f);
         P.poison();
@@ -1050,8 +1070,8 @@ void fixture_stale_store(const std::string& dir) {
     std::string err;
     const std::string snap = dir + "/good.bin";
     reset_faults();
-    ck(strata::platform::nvme_dump(snap.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, err),
-       "the stale-store fixture has a v3 snapshot to copy");
+    ck(strata::platform::nvme_dump(snap.c_str(), S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, fp(), err),
+       "the stale-store fixture has a snapshot to copy");
     const std::vector<uint8_t> good = slurp(snap);
 
     const std::string v2dir = dir + "/v2store";
@@ -1068,10 +1088,10 @@ void fixture_stale_store(const std::string& dir) {
     bool opened = false;
 #ifndef _WIN32
     const std::string noise = capture_stderr([&] {
-        opened = store.open(v2dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err);
+        opened = store.open(v2dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err);
     });
 #else
-    opened = store.open(v2dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err);
+    opened = store.open(v2dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err);
     const std::string noise;
 #endif
     ck(opened, "a store of snapshots this build cannot read is NOT a startup failure: the server still starts");
@@ -1079,7 +1099,9 @@ void fixture_stale_store(const std::string& dir) {
     ck_eq(store.size(), 0, "none of its files become entries, so nothing can be promoted from it");
     ck_eq((int64_t) store.total_bytes(), 0, "and none of its bytes count against the cap");
     ck(noise.find("format version 2") != std::string::npos, "the operator is told the version the store holds");
-    ck(noise.find("this build writes version 3") != std::string::npos, "and the version this build writes");
+    ck(noise.find("this build writes version " + std::to_string(strata::platform::kNvmeFormatVersion)) !=
+           std::string::npos,
+       "and the version this build writes");
     ck(noise.find("refuses older files") != std::string::npos, "and that they are refused, not converted");
     ck(noise.find("every request re-prefills") != std::string::npos, "and that the consequence is a re-prefill");
     ck(noise.find("re-dump them with the binary that wrote them") != std::string::npos,
@@ -1104,7 +1126,7 @@ void fixture_stale_store(const std::string& dir) {
     ck(strata::platform::kv_nvme_match(store.entries(), request, req_imgs, true, 0) == nullptr,
        "a stale store re-prefills: the recoverable condition, proven by the match returning nothing");
 
-    {   // the control that keeps the check above from being vacuous: the SAME files at version 3 do become entries
+    {   // the control that keeps the check above from being vacuous: the SAME files at THIS build's version do
         const std::string v3dir = dir + "/v3store";
         for (int i = 1; i <= 3; ++i) {
             std::ofstream f(v3dir + "/kv-1-" + std::to_string(i) + ".bin", std::ios::binary);
@@ -1113,7 +1135,8 @@ void fixture_stale_store(const std::string& dir) {
         }
         strata::platform::KvNvmeStore live;
         reset_faults();
-        ck(live.open(v3dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the same store at version 3 opens");
+        ck(live.open(v3dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {kWeightsPath}, err),
+           "the same store at this build's version opens");
         ck_eq(live.size(), 3, "and every file becomes an entry");
         ck(strata::platform::kv_nvme_match(live.entries(), request, req_imgs, true, 0) != nullptr,
            "and the same request promotes from it: the skip is the version, not the match");
@@ -1125,7 +1148,7 @@ void fixture_stale_store(const std::string& dir) {
         std::vector<ConversationImageKey> imgs;
         bool cvec = false;
         int64_t L = 0;
-        ck(strata::platform::nvme_restore((v2dir + "/kv-1-1.bin").c_str(), R.ss, R.draft, R.g, ids, imgs, cvec, L,
+        ck(strata::platform::nvme_restore((v2dir + "/kv-1-1.bin").c_str(), R.ss, R.draft, R.g, fp(), ids, imgs, cvec, L,
                                          err) == Restore::invalid,
            "reading one stale file directly is the recoverable class too");
         ck_eq(copy_calls, 0, "with no cudaMemcpy");
@@ -1147,11 +1170,11 @@ void fixture_activity(const std::string& dir) {
     S.seed_indexer(41.0f, L_CONSUMED / SHP.idx_block, 42.0f);
     S.tag_kv();
     std::string err;
-    const int kvf = strata::core::qsa_kv_format(S.layers[0]);
+    const int kvf = strata::core::qsa_kv_key(S.layers[0]);   // the KEY, which is total over the formats
 
     {   // A WRITE, THEN THE IDEMPOTENT RE-DUMP OF IT, THEN THE SUPERSEDE OF A GROWN CONVERSATION
         strata::platform::KvNvmeStore store;
-        ck(store.open(dir + "/report", S.g, kvf, err), "the report store opens");
+        ck(store.open(dir + "/report", S.g, kvf, {kWeightsPath}, err), "the report store opens");
         TierActivity w;
         ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err, &w), "a snapshot is dumped");
         ck(!w.skipped, "a real write does not report a skip");
@@ -1186,7 +1209,7 @@ void fixture_activity(const std::string& dir) {
     {   // THE CAP: the dump that pushes the store over the cap reports the eviction its enforce_cap caused
         const std::string cdir = dir + "/cap";
         strata::platform::KvNvmeStore store;
-        ck(store.open(cdir, S.g, kvf, err), "the cap store opens");
+        ck(store.open(cdir, S.g, kvf, {kWeightsPath}, err), "the cap store opens");
         TierActivity a1;
         ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err, &a1),
            "the first conversation dumps");
@@ -1220,6 +1243,197 @@ void fixture_activity(const std::string& dir) {
     }
 }
 
+// ================================ fixture 7: THE FORMAT KEY - WHICH WEIGHTS, WHICH KV (v4) ================================
+//
+// WHAT v3 GOT WRONG, as a case this fixture has to be able to fail on: the header carried the geometry key, and two
+// weight sets of the same architecture HAVE the same geometry key.  So a whole-session snapshot of another model's
+// conversation had everything it needed to match - same geometry, same prompt, same segment layout, and a digest
+// that verifies because the file was not corrupt on its way to disk - and applied cleanly into a session that had
+// never seen those weights.  Nothing in the file could have noticed: the KV bytes are just bytes, and no arithmetic
+// over them tells one network's K/V from another's.  Only the WRITER knows, so the header has to say.
+//
+// Two questions, kept apart because they are different operator actions:
+//   * another WEIGHT SET, same format -> a different conversation, of a different model
+//   * another KV FORMAT, same weights -> this conversation, under a different storage layout
+// Both are refusals of the RECOVERABLE class: before the first CUDA call, so provably nothing is written and the
+// caller's answer is to re-prefill.  Neither is converted, and there is no repair path - the bytes are wrong in a
+// way no arithmetic can fix.
+void fixture_format_key(const std::string& dir) {
+    using Restore = strata::core::ConversationRestore;
+    Session S;
+    S.seed_indexer(61.0f, L_CONSUMED / SHP.idx_block, 62.0f);
+    S.tag_kv();
+    const std::vector<int32_t> boundary = ids_of(L_BOUNDARY);
+    const int kvf = strata::core::qsa_kv_key(S.layers[0]);
+    std::string err;
+    std::error_code ec;
+
+    // the request every scan below is asked: the stored prefix, strictly longer, one picture past it
+    std::vector<int32_t> request(boundary.begin(), boundary.end());
+    for (int64_t i = 0; i < 6; ++i) request.push_back(900 + i);
+    const std::vector<ConversationImageKey> req_imgs = {{16, 0xCCCC}};
+
+    // ---- the file this engine could legitimately promote: THIS conversation under THESE weights ----
+    write_weights("fixture");
+    const uint64_t own_fp = fp();
+    const std::string snap = dir + "/own.bin";
+    reset_faults();
+    ck(strata::platform::nvme_dump(snap.c_str(), S.ss, S.draft, S.g, boundary, {}, true, own_fp, err),
+       "a snapshot of this conversation under this weight set is written");
+    const std::vector<uint8_t> good = slurp(snap);
+    {   // the header really carries both halves of the key - or every refusal below would be vacuous
+        uint64_t written_fp = 0;
+        std::memcpy(&written_fp, good.data() + offsetof(NvmeHeader, weights_fp), sizeof written_fp);
+        ck(written_fp == own_fp, "the v4 header holds the weight-set fingerprint the dump was given");
+        int32_t written_fmt = 0;
+        std::memcpy(&written_fmt, good.data() + offsetof(NvmeHeader, kv_format), sizeof written_fmt);
+        ck_eq(written_fmt, kvf, "and the KV format key");
+    }
+    {   // the control, so every refusal below is the binding and not the fixture: this store DOES promote its own
+        strata::platform::KvNvmeStore store;
+        ck(store.open(dir + "/own", S.g, kvf, {kWeightsPath}, err), "the store for this weight set opens");
+        ck(store.dump(S.ss, S.draft, S.g, boundary, {}, true, nullptr, err), "and writes its own snapshot");
+        ck_eq(store.size(), 1, "as one entry");
+        ck(strata::platform::kv_nvme_match(store.entries(), request, req_imgs, true, 0) != nullptr,
+           "which the same request promotes: the fixture's store is live, so the nulls below are the binding");
+    }
+
+    {   // ---- SAME GEOMETRY, DIFFERENT WEIGHTS: never promoted ----
+        write_weights("OTHER MODEL, same architecture");   // same geometry; a different file, so a different fp
+        const uint64_t other_fp = fp();
+        ck(other_fp != own_fp, "the two weight sets really do fingerprint differently");
+        const std::string foreign_dir = dir + "/foreign";
+        fs::create_directories(foreign_dir, ec);
+        const std::string foreign = foreign_dir + "/kv-1-1.bin";
+        {   // byte-for-byte a snapshot of a real session.  Only the weights differ.
+            std::ofstream f(foreign, std::ios::binary);
+            f.write((const char*) good.data(), (std::streamsize) good.size());
+        }
+        strata::platform::NvmeHeader fh;
+        std::memcpy(&fh, good.data(), sizeof fh);
+        ck_eq((int64_t) fh.weights_fp, (int64_t) own_fp,
+              "the stored file declares THESE weights, and is served to an engine holding others");
+
+        // and the engine it is served to is THIS one.  Nothing else differs: same geometry, same prompt, same
+        // segment layout, intact digest.
+        strata::platform::KvNvmeStore store;
+        bool opened = false;
+#ifndef _WIN32
+        const std::string noise = capture_stderr([&] { opened = store.open(foreign_dir, S.g, kvf, {kWeightsPath}, err); });
+#else
+        opened = store.open(foreign_dir, S.g, kvf, {kWeightsPath}, err);
+        const std::string noise;
+#endif
+        ck(opened, "a store holding another model's snapshots is NOT a startup failure: the server still starts");
+        ck(err.empty(), "and it is not reported as an error");
+        ck_eq(store.size(), 0, "none of them become entries: same geometry, different weights, no match");
+        ck_eq((int64_t) store.total_bytes(), 0, "and none of its bytes count against the cap");
+        ck(strata::platform::kv_nvme_match(store.entries(), request, req_imgs, true, 0) == nullptr,
+           "so the request re-prefills - the defect's consequence, proven at the match");
+        if (!noise.empty()) {   // the operator has to be told, because no other scan message explains this one
+            ck(noise.find("DIFFERENT weight set") != std::string::npos, "the operator is told why they are skipped");
+            ck(noise.find("never promoted") != std::string::npos, "that they are never promoted");
+            ck(noise.find("re-prefills") != std::string::npos, "and that each request re-prefills instead");
+            ck(noise.find("stay on disk") != std::string::npos, "and that the files are left alone");
+        }
+        int files = 0;
+        for (const auto& de : fs::directory_iterator(foreign_dir))
+            if (de.path().filename().string().rfind("kv-", 0) == 0) ++files;
+        ck_eq(files, 1, "the foreign file stays on disk: refusing it is not deleting it");
+
+        // read directly, the same refusal is the recoverable class with nothing written
+        Session R;
+        R.poison();
+        reset_faults();
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+        ++refusals;
+        // `fp()`, not `own_fp`: the ENGINE is what holds the different weight set here (write_weights above),
+        // and the restore is asked against the live engine's own number - which is how a real engine asks.
+        ck(strata::platform::nvme_restore(foreign.c_str(), R.ss, R.draft, R.g, fp(), ids, imgs, cvec, L, err) ==
+               Restore::invalid,
+           "reading another model's snapshot directly is refused");
+        ck(err.find("weight-set mismatch") != std::string::npos, "named as a weight-set refusal");
+        ck(err.find("different weights") != std::string::npos, "and it says what differs");
+        ck(err.find("refusing") != std::string::npos, "and that it refuses rather than converts");
+        ck_eq(copy_calls, 0, "with no cudaMemcpy");
+        ck_eq(sync_calls, 0, "and no CUDA call at all");
+        ck(R.untouched(), "and nothing written - so the caller's re-prefill starts from a clean session");
+        ck(ids.empty() && imgs.empty(), "and it is handed no prefix from the refused file");
+        ck_no_pending_error("weight-set mismatch");
+    }
+
+    {   // ---- ANOTHER KV FORMAT: k8v4 against int8, both directions ----
+        // The fixture's session is INT8.  A k8v4-headed file is this conversation's bytes under another LAYOUT
+        // (816 B/cell against 1,056): promoting it is not a slow promotion, it is wrong numbers.
+        write_weights("fixture");
+        const int32_t k8v4 = strata::kernels::kKvK8V4;
+        std::vector<uint8_t> k8 = good;
+        std::memcpy(k8.data() + offsetof(NvmeHeader, kv_format), &k8v4, sizeof k8v4);
+        const std::string k8_path = dir + "/k8v4.bin";
+        {   std::ofstream f(k8_path, std::ios::binary);
+            f.write((const char*) k8.data(), (std::streamsize) k8.size());
+        }
+        Session R;
+        R.poison();
+        reset_faults();
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        bool cvec = false;
+        int64_t L = 0;
+        ++refusals;
+        ck(strata::platform::nvme_restore(k8_path.c_str(), R.ss, R.draft, R.g, fp(), ids, imgs, cvec, L, err) ==
+               Restore::invalid,
+           "a k8v4-headed snapshot does not restore into an int8 engine");
+        ck(err.find("KV format mismatch") != std::string::npos, "named as a KV format refusal");
+        ck(err.find("format 3") != std::string::npos, "naming the format the file was written as");
+        ck(err.find("format 1") != std::string::npos, "and the format this engine holds");
+        ck(err.find("refusing to convert") != std::string::npos, "and that it refuses rather than converts");
+        ck_eq(copy_calls, 0, "with no cudaMemcpy");
+        ck(R.untouched(), "and nothing written");
+
+        // THE SCAN KEYS IT APART, so it never becomes an entry in an int8 store
+        const std::string mixed_dir = dir + "/mixed";
+        fs::create_directories(mixed_dir, ec);
+        for (int i = 1; i <= 2; ++i) {
+            const std::string p = mixed_dir + "/kv-" + std::to_string(i) + ".bin";
+            std::ofstream f(p, std::ios::binary);
+            f.write((const char*) k8.data(), (std::streamsize) k8.size());
+        }
+        strata::platform::KvNvmeStore int8_store;
+        ck(int8_store.open(mixed_dir, S.g, kvf, {kWeightsPath}, err), "a store of k8v4 files opens");
+        ck_eq(int8_store.size(), 0, "and none of them become entries in an int8 store");
+
+        // THE OTHER DIRECTION, AND THE POINT OF THE WHOLE SPLIT: a store OPENED AS k8v4 does keep such a file - the
+        // scan trusts the store's own key - but the restore still refuses it, because it compares against the LIVE
+        // engine's key.  The store's key decides what is an entry; the engine's decides what may be applied.  If
+        // the store's key were the only one consulted, pointing an int8 engine at a k8v4 store would promote a
+        // file read at the wrong stride - the exact silent corruption the split exists to prevent.
+        const std::string k8_dir = dir + "/k8store";
+        fs::create_directories(k8_dir, ec);
+        const std::string k8_entry = k8_dir + "/kv-1-1.bin";
+        {   std::ofstream f(k8_entry, std::ios::binary);
+            f.write((const char*) k8.data(), (std::streamsize) k8.size());
+        }
+        strata::platform::KvNvmeStore k8_store;
+        ck(k8_store.open(k8_dir, S.g, k8v4, {kWeightsPath}, err), "a store opened as k8v4 opens");
+        ck_eq(k8_store.size(), 1, "and DOES keep the k8v4 file: the scan matches the store's key");
+        Session Q;
+        Q.poison();
+        reset_faults();
+        ids.clear(); imgs.clear(); cvec = false; L = 0;
+        ++refusals;
+        ck(strata::platform::nvme_restore(k8_entry.c_str(), Q.ss, Q.draft, Q.g, fp(), ids, imgs, cvec, L, err) ==
+               Restore::invalid,
+           "but it still does not restore into an int8 engine: the LIVE key decides, not the store's");
+        ck(err.find("KV format mismatch") != std::string::npos, "for the same named reason");
+        ck_eq(copy_calls, 0, "with no cudaMemcpy");
+        ck(Q.untouched(), "and nothing written");
+    }
+}
+
 /// The row count itself, at the boundaries that matter - including the non-aligned one C3 lives at.
 void fixture_pooled_rows() {
     ck_eq(strata::kernels::qsa_pooled_rows(0, SHP), 0, "an empty prefix owns no rows");
@@ -1242,8 +1456,11 @@ int main() {
     const std::string root = "/tmp/kv-nvme-host-test-" + std::to_string((long) ::getpid());
     std::error_code ec;
     fs::remove_all(root, ec);
+    // the fixture's weight set, written before anything fingerprints it (the stores open with this shard list)
+    write_weights("fixture");
     for (const char* sub : {"/boundary", "/boundary/full", "/images", "/refusals", "/failure", "/failure/store",
-                            "/failure/dumpfail", "/stale", "/stale/v2store", "/stale/v3store"})
+                            "/failure/dumpfail", "/stale", "/stale/v2store", "/stale/v3store", "/key", "/key/own",
+                            "/key/foreign", "/key/mixed", "/key/k8store"})
         fs::create_directories(root + sub, ec);
 
     fixture_pooled_rows();
@@ -1253,8 +1470,11 @@ int main() {
     fixture_failure_contract(root + "/failure");
     fixture_stale_store(root + "/stale");
     fixture_activity(root + "/activity");
+    fixture_format_key(root + "/key");
 
     fs::remove_all(root, ec);
+    std::error_code fec;   // the fixture's weight file sits outside root, so the cleanup does not take it with it
+    fs::remove(kWeightsPath, fec);
     std::printf("kv_nvme_host_test: %d checks passed (%d refusals, %d transfer failures asserted); no CUDA context, "
                 "no model\n",
                 checks, refusals, fatalities);

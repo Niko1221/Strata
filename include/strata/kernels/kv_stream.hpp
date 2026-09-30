@@ -43,7 +43,15 @@ struct KvHostPools {
 
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0.
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2 };
+///
+/// kKvK8V4 IS IN THE KEY, NOT IN THE MOVERS.  The block movers below have no branch for a hybrid state - the K
+/// half is INT8 codes with scales and the V half is rotated Q4_0, so no one (n, len) pair of runs can move both -
+/// and `qsa_kv_format` keeps refusing to hand one out rather than letting it fall through to kKvF16 (a wrong
+/// layout silently applied is worse than a hard stop).  What a hybrid state DOES need is a byte layout that is
+/// distinct from all three others, so anything that KEYS storage (the NVMe tiers' format fields, §5.8's
+/// fingerprint input) can say which one it wrote.  That is what this value is: `qsa_kv_key` returns it, the movers
+/// never see it.
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvK8V4 = 3 };
 
 /// The residency map of a streamed layer, all device memory at fixed addresses (the graphs bake them in).
 struct KvStreamMap {

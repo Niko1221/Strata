@@ -590,7 +590,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
                               ? prev->L / SPAN
                               : 0;   // every sealed chunk fully covered by the previous head; a fork reuses none
 
-    const uint64_t tag = delta_tag(g, strata::core::qsa_kv_format(ss.qsa_states[0]), cvec, weights_fp, BLOCK);
+    const uint64_t tag = delta_tag(g, strata::core::qsa_kv_key(ss.qsa_states[0]), cvec, weights_fp, BLOCK);
 
     const std::string chunks_dir = dir + "/chunks", states_dir = dir + "/states";
     std::error_code ec;
@@ -723,7 +723,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
     h.n_chunks = n_chunks;
     h.n_imgs = (int64_t) imgs.size();
     h.cvec = cvec ? 1 : 0;
-    h.kv_format = strata::core::qsa_kv_format(ss.qsa_states[0]);
+    h.kv_format = strata::core::qsa_kv_key(ss.qsa_states[0]);
     h.page_size = sh.shapes.page_size;
     h.idx_block = sh.shapes.idx_block;
     h.max_cells = ss.qsa_states[0].max_cells;
@@ -769,7 +769,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     ConversationStateSizes z;
     if (!strata::core::conversation_state_sizes(g, z, err)) { err = "kv-delta: " + err; return Restore::invalid; }
     if (h.geometry != strata::core::conversation_geometry_key(g) ||
-        h.kv_format != strata::core::qsa_kv_format(ss.qsa_states[0]) ||
+        h.kv_format != strata::core::qsa_kv_key(ss.qsa_states[0]) ||
         h.page_size != sh.shapes.page_size || h.idx_block != sh.shapes.idx_block ||
         h.block != sh.block || h.max_cells > ss.qsa_states[0].max_cells) {
         err = "kv-delta: manifest " + e.path + ": geometry/format mismatch (refusing to convert)";
@@ -1171,29 +1171,11 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
 // ================================ the store (§5.11-§5.12) ================================
 
 uint64_t kv_delta_weights_fp(const std::vector<std::string>& model_files) {
-    // path bytes || size (int64) || first 64 KiB || last 64 KiB, per file, in the order the engine loads them
-    uint64_t h = kNvmeFnvBasis;
-    for (const std::string& file : model_files) {
-        h = nvme_fnv1a(h, file.data(), file.size());
-        std::error_code ec;
-        const uint64_t size = (uint64_t) fs::file_size(file, ec);
-        h = nvme_fnv1a(h, &size, sizeof size);
-        FILE* f = std::fopen(file.c_str(), "rb");
-        if (!f) continue;   // an unreadable shard fingerprints as path+size only - still unique enough to refuse
-        char window[1 << 16];
-        const size_t head = (size_t) std::fread(window, 1, sizeof window, f);
-        h = nvme_fnv1a(h, window, head);
-        if (std::fseek(f, 0, SEEK_END) == 0) {
-            const long long sz = ftello(f);
-            const long long tail_start = sz > (long long) sizeof window ? sz - (long long) sizeof window : (long long) head;
-            if (sz > 0 && std::fseek(f, tail_start, SEEK_SET) == 0) {
-                const size_t tail = (size_t) std::fread(window, 1, (size_t) (sz - tail_start), f);
-                h = nvme_fnv1a(h, window, tail);
-            }
-        }
-        std::fclose(f);
-    }
-    return h;
+    // THE ONE IMPLEMENTATION IS nvme_weights_fp's (kv_nvme.cpp) - §5.8's formula, byte for byte.  It used to
+    // live here, and the v4 snapshot header needs it too: two writers of KV bytes into ONE store directory must
+    // refuse on ONE definition of "these weights", and a second copy is a second chance to drift.  The name
+    // stays - the delta tier's docs and its manifest field still say it, and no caller is touched.
+    return nvme_weights_fp(model_files);
 }
 
 bool KvDeltaStore::open(const std::string& v3_dir, const ModelGeometry& g, int kv_format,

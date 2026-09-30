@@ -23,7 +23,7 @@ Everything strata needed already existed except the NVMe tier and the automatic 
 copy (`KvHostPools`), the clock-evicted VRAM slots (`kv_stream`), the running-state checkpoint
 (`ConvCheckpoint`), and the longest-prefix resume in the serve loop.
 
-## 2. The snapshot (v3 format, 208-byte header + payload + 8-byte digest footer)
+## 2. The snapshot (v4 format, 216-byte header + payload + 8-byte digest footer)
 
 One whole-session file per conversation turn, keyed by the **exact token prefix** (the consumed
 `ids` are stored verbatim and matched with the same `starts_with` semantics the serve loop already
@@ -49,6 +49,51 @@ Persisted set (the complete state a continuation needs):
 
 Restore is **atomic**: the whole file is read and validated (sizes walked segment-by-segment, then
 the digest) before anything is applied - a corrupt snapshot fails without touching the session.
+
+### 2.1 The format key: which weights, and which KV (v4)
+
+The header carries two fields that say **whose** bytes these are, not just what shape they are:
+
+- `weights_fp` - the weight-set fingerprint (§5.8): FNV-1a over each shard's resolved path, its size and its first
+  and last 64 KiB, computed once per process when the store opens. One implementation, `nvme_weights_fp`, shared
+  by both tiers (`kv_delta_weights_fp` is a forwarder to it).
+- `kv_format` - the KV storage key, now `qsa_kv_key` rather than `qsa_kv_format`. The split is deliberate:
+  `qsa_kv_format` answers *which layout the block movers may walk* and refuses a hybrid state outright, because no
+  (pointer, length) pair of runs can move a K-INT8/V-Q4_0 pool; `qsa_kv_key` answers *which bytes are these* and is
+  total over all four formats, `kKvK8V4` (`--kv k8v4`, 0.1.25) included. Keying storage with the refusing accessor
+  would have meant either crashing on a hybrid session or filing k8v4 as fp16 - 816 B/cell read as 1,056.
+
+**Why this was not already true.** Geometry is a property of the model, and the v3 header carried the shared
+core's 18-field geometry key. But geometry is not identity: two weight sets of the same architecture have the same
+geometry key, the same segment layout and the same prompt, so a v3 snapshot of another model's conversation had
+everything it needed to match, verified its digest, and applied cleanly into a session that had never seen those
+weights. The digest could not have caught it - it proves only that the file was not corrupted on the way to disk,
+and no arithmetic over KV bytes tells one network's attention state from another's. Only the writer knows.
+
+**The refusal.** Both mismatches are `invalid` - the recoverable class, decided *before the first CUDA call*, so
+nothing is written and the caller's answer is to drop the snapshot and re-prefill. Neither is ever converted, and
+there is no repair path: the bytes are wrong in a way no arithmetic can fix. The store's scan checks the
+fingerprint before anything else about a file, so a foreign snapshot never becomes an entry, never reaches the
+match, and never holds a byte against the cap - and it says so in its own line, because a store full of files that
+pass every other check and are still not promoted is a case none of the other scan messages explains.
+
+The store's own key decides what becomes an *entry*; the live engine's key decides what may be *applied*. Both are
+`qsa_kv_key` on the live state, so pointing an engine at a store written under a different `--kv` promotes nothing
+rather than reading a file at the wrong stride.
+
+**What v4 costs.** One re-prefill per conversation after the upgrade. A v3 file is refused by version, before its
+header is read for anything else, and it is never re-read as "fingerprint 0" - which is exactly the value a
+foreign store would otherwise have been accepted on. The old files stay on disk and the operator actions in §5.3
+are unchanged: re-dump them with the binary that wrote them, or delete them and let the store rebuild. The header
+grew from 208 to 216 bytes, which moves every field after `kv_format` by 8; `tools/nvme_header_layout.sh` reads
+the one constant, and the two `static_assert`s under the struct were restated field by field rather than widened,
+because a permissive assert would stop catching exactly the drift they exist to catch.
+
+**Why the delta tier needed none of this.** Its manifest already carried `weights_fp` and `kv_format` and already
+refused a foreign one at match time (§5.8) - it was written after the lesson and took it. What v4 changed there is
+that the snapshot tier now catches up to the delta tier's standard instead of the two tiers disagreeing about what
+they are looking at, which is what made this a correctness gap rather than a missing feature: two writers of KV
+bytes into one store directory, only one of them bound to the weights.
 
 ## 3. The automatic behavior
 

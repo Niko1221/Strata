@@ -35,8 +35,8 @@ namespace strata::platform {
 /// `sizeof`, so the scripts read these two lines (`tools/nvme_header_layout.sh`) and refuse to run if either is
 /// missing - and they also check the version field of the file they are reading against `$NVME_VERSION`, so a
 /// snapshot written by a DIFFERENT build is caught instead of being parsed at the wrong offset.
-inline constexpr uint32_t kNvmeFormatVersion = 3;
-inline constexpr uint64_t kNvmeHeaderBytes = 208;
+inline constexpr uint32_t kNvmeFormatVersion = 4;
+inline constexpr uint64_t kNvmeHeaderBytes = 216;
 
 /// On-disk header.  Carries the geometry + format tag so a restore refuses (never converts) a mismatch.
 ///
@@ -54,11 +54,33 @@ struct NvmeHeader {
     // which for a turn-boundary snapshot is a position the snapshot does not describe, so the two files are not
     // interchangeable even though the segments are the same size in the same order: a reader cannot tell them
     // apart from the bytes.  Version 2 is therefore REFUSED, not reinterpreted.
+    //
+    // v4: THE SNAPSHOT IS BOUND TO THE WEIGHTS THAT WROTE IT, and to the KV storage format it was written in.
+    // Geometry is a property of the MODEL and this header already carried it - but geometry is not identity: two
+    // weight sets of the same architecture have the same geometry key, the same segment layout and the same
+    // prompt, so a v3 snapshot of a DIFFERENT model's conversation matched one, verified its digest and applied
+    // cleanly into a session that had never seen those weights.  Nothing in the file could have detected it -
+    // the KV bytes are just bytes, and the digest only proves the file was not corrupted on the way to disk.
+    // `weights_fp` below is the same fingerprint the delta tier keys its manifests with
+    // (kv_delta_weights_fp), so the two tiers refuse on identical terms by construction rather than by two
+    // implementations agreeing, which is how they would have drifted.  The consequence is the delta tier's: a
+    // same-geometry snapshot from other weights is not a candidate, ever.
+    // Version 3 is REFUSED, not converted - one re-prefill per conversation after the upgrade, and the old files
+    // stay on disk for a build that still speaks v3 (the operator action is unchanged, §5.3).
     uint32_t version = kNvmeFormatVersion;
     int64_t L = 0;                 // ids consumed (the prefix length)
     int64_t n_imgs = 0;
     int32_t cvec = 0;
-    int32_t kv_format = 0;         // strata::kernels::KvFormat (kKvF16 / kKvInt8 / kKvQ4)
+    // strata::kernels::KvFormat (kKvF16 / kKvInt8 / kKvQ4 / kKvK8V4), from `qsa_kv_key`.  v3 filled this from
+    // `qsa_kv_format`, which REFUSES a hybrid state - so it could never have named k8v4 at all, and a store keyed
+    // by the refusing accessor would have had to either crash or file k8v4 as fp16 (816 B/cell read as 1,056).
+    // A key, not a layout: see qsa_kv_key's comment.  Checked field-by-field against the live engine's own key
+    // on scan and again on restore.
+    int32_t kv_format = 0;
+    // THE WEIGHT SET's fingerprint (§5.8): FNV-1a over each shard's path, size and first/last 64 KiB.  The same
+    // computation the delta tier's manifests carry.  A v3 file has no such field: it is refused by version and
+    // never re-read as "fingerprint 0", which is what would silently promote a foreign store.
+    uint64_t weights_fp = 0;
     // ONE geometry identity (collision C9 / step 3): the SHARED CORE's 18-field key, verbatim and in its order -
     // `strata::core::conversation_geometry_key(g)`, the same array `SavedConversation::geometry` holds.  The old
     // tag was a DERIVED PROJECTION of it (n_qsa / n_gdn from n_layers + qsa_interval, idx_dim from idx_key_dim),
@@ -72,18 +94,36 @@ struct NvmeHeader {
 };
 
 // The file IS this struct's bytes, so the layout is the format.  Every field is fixed-width and the struct is
-// padding-free at 208 bytes, which is what lets the ids start at a fixed offset; a field added, widened or
+// padding-free at 216 bytes, which is what lets the ids start at a fixed offset; a field added, widened or
 // REORDERED fails the build rather than silently re-mapping every segment after it.  The integrity footer covers
 // only the payload, so the header - the one thing that can move the whole layout - has to be pinned here.
 static_assert(sizeof(NvmeHeader) == kNvmeHeaderBytes && alignof(NvmeHeader) == 8,
               "the NVMe envelope's header no longer matches kNvmeHeaderBytes: the ids no longer start where a "
               "reader expects (tools/nvme_header_layout.sh reads that constant for the shell oracles)");
-static_assert(offsetof(NvmeHeader, L) == 8 && offsetof(NvmeHeader, geometry) == 32 &&
-                  offsetof(NvmeHeader, page_size) == 176 && offsetof(NvmeHeader, mtp_host) == 200,
+// v4 MOVED EVERY FIELD AFTER `kv_format` by the 8 bytes of `weights_fp` (geometry 32 -> 40, page_size 176 ->
+// 184, mtp_host 200 -> 208).  These numbers are restated deliberately, not widened to a range: the pins exist to
+// catch a field gaining padding or moving by accident, and a permissive assert would stop catching exactly that.
+// The two new fields are pinned too, for the same reason - `weights_fp` sits where `geometry` used to, so a later
+// insertion in either place is a silent re-mapping of everything after it unless both are named here.
+static_assert(offsetof(NvmeHeader, L) == 8 && offsetof(NvmeHeader, kv_format) == 28 &&
+                  offsetof(NvmeHeader, weights_fp) == 32 && offsetof(NvmeHeader, geometry) == 40 &&
+                  offsetof(NvmeHeader, page_size) == 184 && offsetof(NvmeHeader, mtp_host) == 208,
               "the NVMe header gained padding or reordered a field: the file is no longer a described record");
 static_assert(sizeof(strata::core::conversation_geometry_key(strata::core::ModelGeometry{})) ==
                   sizeof(NvmeHeader{}.geometry),
               "the shared core's geometry key and the envelope's copy of it must be the same 18 int64 fields");
+
+/// THE WEIGHT-SET FINGERPRINT (§5.8), the ONE implementation both tiers key on: FNV-1a over each shard's
+/// resolved path bytes, its size (int64), and its first and last 64 KiB - two sequential reads per file at
+/// startup, no false positives across same-geometry-different-weights models.  `files` is the resolved model
+/// shard list in load order; a single-file model matches the §5.8 formula exactly, and an unreadable shard
+/// fingerprints as path+size only, which is still enough to refuse.
+///
+/// It LIVES HERE rather than in the delta tier (it used to live there, as kv_delta_weights_fp, which is now a
+/// forwarder to this) because v4 needs it too: the snapshot tier and the delta tier are two writers of KV bytes
+/// into one store directory, and a rule that is computed twice is a rule that will drift.  Read it once, at the
+/// store's open, and both tiers compare against the same number.
+uint64_t nvme_weights_fp(const std::vector<std::string>& model_files);
 
 /// FNV-1a seeded with `h` (pass kNvmeFnvBasis to start a fresh hash).  Exposed because the delta tier's record
 /// footers and content keys must be THE SAME hash the v3 payload footer uses: a second hash function here would
@@ -131,13 +171,14 @@ int nvme_kv_array_count(const strata::core::QsaState& st);
 bool nvme_dump_at(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                   const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
                   const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
-                  const strata::core::ConversationCheckpoint* at, std::string& err);
+                  const strata::core::ConversationCheckpoint* at, uint64_t weights_fp, std::string& err);
 
 /// The full consumed state at DONE (the Step 0 spike's dump; the automatic store uses nvme_dump_at at the
 /// turn boundary - see the comment above).
 bool nvme_dump(const char* path, const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
                const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
-               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, std::string& err);
+               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec, uint64_t weights_fp,
+               std::string& err);
 
 /// Read a snapshot back into `ss` (and the drafter's state), and say WHICH KIND of failure happened if it did.
 ///
@@ -165,9 +206,14 @@ bool nvme_dump(const char* path, const strata::core::SessionState& ss, const str
 ///
 /// On success `ids`/`imgs`/`cvec`/`L` are the stored prefix; the caller sets the live session from them so the
 /// existing `starts_with` resume path takes over.
+/// `weights_fp` is the live engine's OWN weight-set fingerprint (nvme_weights_fp over the resolved shard list).
+/// A file whose header disagrees with it is REFUSED - the recoverable class, before the first CUDA call, so
+/// nothing is written and the caller re-prefills.  It is never converted and never "repaired": the bytes are KV
+/// of a different network, and no arithmetic can make them this engine's.
 strata::core::ConversationRestore nvme_restore(const char* path, strata::core::SessionState& ss,
                                                strata::core::QsaState& mtp_state,
-                                               const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                               const strata::core::ModelGeometry& g, uint64_t weights_fp,
+                                               std::vector<int32_t>& ids,
                                                std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                int64_t& L, std::string& err);
 
@@ -179,7 +225,8 @@ strata::core::ConversationRestore nvme_restore(const char* path, strata::core::S
 /// this directly.
 strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t n, strata::core::SessionState& ss,
                                                      strata::core::QsaState& mtp_state,
-                                                     const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
+                                                     const strata::core::ModelGeometry& g, uint64_t weights_fp,
+                                                     std::vector<int32_t>& ids,
                                                      std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                      int64_t& L, std::string& err);
 
@@ -332,9 +379,13 @@ struct TierCounters {
 
 class KvNvmeStore {
 public:
-    /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry/format tag
-    /// does not match the live engine (they are left on disk, never converted).
-    bool open(const std::string& dir, const strata::core::ModelGeometry& g, int kv_format, std::string& err);
+    /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry, KV format or
+    /// weight-set fingerprint does not match the live engine (they are left on disk, never converted).
+    /// `model_files` is the resolved shard list nvme_weights_fp is computed from, ONCE per process here - the
+    /// same computation and the same inputs `KvDeltaStore::open` gets, so a store's two tiers refuse on one set
+    /// of terms instead of two that can drift apart.  The shape mirrors the delta tier's `open` for that reason.
+    bool open(const std::string& dir, const strata::core::ModelGeometry& g, int kv_format,
+              const std::vector<std::string>& model_files, std::string& err);
     void set_cap_bytes(int64_t bytes) { cap_ = bytes; }      ///< 0 = unlimited (the default)
     /// Dumps the live session.  Idempotent: an exact match is skipped (its recency is refreshed); the previous
     /// dump of the same growing conversation is superseded (its file deleted) so a conversation stays one file.
@@ -378,6 +429,7 @@ private:
     std::vector<int32_t> last_ids_;                          ///< this process's previous dump (the supersede hint)
     std::string last_path_;
     int fmt_ = 0;
+    uint64_t weights_fp_ = 0;      ///< the live engine's weight set (§5.8): what every entry here must match
     long seq_ = 0;
 };
 

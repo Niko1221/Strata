@@ -635,6 +635,10 @@ std::vector<uint8_t> reassemble(const Session& S, const std::string& delta_dir, 
     v3.n_imgs = (int64_t) imgs.size();
     v3.cvec = h.cvec;
     v3.kv_format = h.kv_format;
+    // v4: the header carries the weight-set fingerprint, and the header is part of the bytes this oracle compares
+    // byte-for-byte against nvme_dump_at's.  It is the SAME `weights_fp` argument the delta records were read
+    // with, so the two writers are being asked to agree about one weight set - which is the §5.2 invariant.
+    v3.weights_fp = weights_fp;
     v3.geometry = h.geometry;
     v3.page_size = h.page_size; v3.idx_block = h.idx_block; v3.max_cells = h.max_cells;
     v3.mtp_host = h.mtp_host;
@@ -753,7 +757,10 @@ void fixture_reader(const std::string& root) {
                                                       WFP, 7, 1, err);
     ck(d_ok, ("the reader's store dumps: " + err).c_str());
     const std::string v3_path = root + "/reader-v3.bin";
-    const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp300.ids, cp300.imgs, true, &cp300, err);
+    // WFP, because this control is RESTORED at WFP below and the header is part of what the two paths must agree
+    // on: a v3 file written at one weight set and read at another is refused, which is the v4 rule, not a bug.
+    const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp300.ids, cp300.imgs, true,
+                                                      &cp300, WFP, err);
     ck(v3_ok, ("the reader's v3 control writes: " + err).c_str());
 
     strata::platform::NvmeEntry e;
@@ -771,7 +778,7 @@ void fixture_reader(const std::string& root) {
         bool cvec1 = false, cvec2 = false;
         int64_t L1 = 0, L2 = 0;
         uint64_t image_bytes = 0;   // what the delta restore staged in RAM (the KV line's staging_bytes)
-        ck(strata::platform::nvme_restore(v3_path.c_str(), R1.ss, R1.draft, R1.g, ids1, imgs1, cvec1, L1, err) ==
+        ck(strata::platform::nvme_restore(v3_path.c_str(), R1.ss, R1.draft, R1.g, WFP, ids1, imgs1, cvec1, L1, err) ==
                Restore::restored, ("the v3 restore of the control file: " + err).c_str());
         ck(strata::platform::delta_restore(e, R2.ss, R2.draft, R2.g, WFP, ids2, imgs2, cvec2, L2, err,
                                            &image_bytes) ==
@@ -1017,6 +1024,13 @@ uint64_t dir_bytes(const std::string& dir) {
 
 // ================================ fixture: the store (Phase 4) ================================
 
+/// THE FIXTURE'S WEIGHT SET for the v3 CONTROL files: the same shard list every `KvDeltaStore`/`KvNvmeStore`
+/// below is opened with, so the two tiers fingerprint identically.  v4 put the fingerprint IN the v3 header, so a
+/// control written at one weight set and read at another would be refused - correctly, and not what these oracles
+/// are testing.  (A control is only ever compared against a delta REASSEMBLY of the same conversation, which
+/// carries the same number.)
+uint64_t control_fp() { return strata::platform::kv_delta_weights_fp({"model.gguf"}); }
+
 void fixture_store(const std::string& root) {
     {   // MIXED-DIR SCAN: v3 snapshots and delta manifests coexist; each store scans its own family into the
         // shared NvmeEntry vocabulary with the right kind
@@ -1028,10 +1042,10 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore v3;
         std::string err;
         strata::platform::KvNvmeStore nov3;
-        ck(v3.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "the v3 store opens");
+        ck(v3.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the v3 store opens");
         ck(v3.dump(S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err), "the v3 half dumps");
         strata::platform::KvDeltaStore delta;
-        ck(delta.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+        ck(delta.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
            ("the delta store opens beside it: " + err).c_str());
         ck(delta.dump(S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err), "the delta half dumps");
         ck_eq((int64_t) v3.size(), 1, "one v3 entry");
@@ -1048,7 +1062,7 @@ void fixture_store(const std::string& root) {
         strata::platform::KvDeltaStore delta;
         std::string err;
         strata::platform::KvNvmeStore nov3;
-        ck(delta.open(root + "/supersede", S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+        ck(delta.open(root + "/supersede", S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
            "the store opens");
         const ConversationCheckpoint cp256 = boundary_checkpoint(S, 256, 256);
         strata::platform::TierActivity a256;
@@ -1088,7 +1102,7 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         {
             strata::platform::KvDeltaStore first;   // "process 1"
-            ck(first.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 1 opens");
+            ck(first.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "process 1 opens");
             const ConversationCheckpoint fa = boundary_checkpoint(S, 300, 300);
             ck(first.dump(S.ss, S.draft, S.g, ids_of(300), {}, true, &fa, err), "A dumps at 300");
         }
@@ -1100,7 +1114,7 @@ void fixture_store(const std::string& root) {
         for (int64_t i = 256; i < 400; ++i) forked[(size_t) i] = 700 + (int32_t) (i % 140);
         {
             strata::platform::KvDeltaStore second;   // "process 2": a restart - nothing superseded
-            ck(second.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "process 2 opens");
+            ck(second.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "process 2 opens");
             ck_eq((int64_t) second.size(), 1, "the scan sees A");
             const ConversationCheckpoint fb = boundary_checkpoint(S, 400, 400);
             strata::platform::TierActivity ab;
@@ -1115,7 +1129,7 @@ void fixture_store(const std::string& root) {
                   "written is all of B's records: with no previous head there is nothing to reuse");
         }
         strata::platform::KvDeltaStore both;
-        ck(both.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "both reopen");
+        ck(both.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "both reopen");
         ck_eq((int64_t) both.size(), 2, "both manifests scanned");
         // evict A: cap = A's bytes exactly (A is the oldest mtime)
         const strata::platform::NvmeEntry* a = nullptr;
@@ -1175,8 +1189,8 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvNvmeStore v3;
         strata::platform::KvDeltaStore delta;
-        ck(v3.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), err), "v3 opens");
-        ck(delta.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "delta opens");
+        ck(v3.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "v3 opens");
+        ck(delta.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "delta opens");
         const ConversationCheckpoint t10 = boundary_checkpoint(S, 10, 8);
         ck(v3.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &t10, err), "v3 dumps (oldest)");
         ::sleep(1);   // mtime resolution is seconds: make the age order real
@@ -1201,20 +1215,20 @@ void fixture_store(const std::string& root) {
         strata::platform::KvNvmeStore nov3;
         {
             strata::platform::KvDeltaStore d;
-            ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+            ck(d.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the store opens");
             const ConversationCheckpoint b10 = boundary_checkpoint(S, 256, 256);
             const ConversationCheckpoint b18 = boundary_checkpoint(S, 600, 600);
             ck(d.dump(S.ss, S.draft, S.g, ids_of(256), {}, true, &b10, err), "A");
             ck(d.dump(S.ss, S.draft, S.g, ids_of(600), {}, true, &b18, err), "B");
         }
         strata::platform::KvDeltaStore d;
-        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store reopens");
+        ck(d.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the store reopens");
         const strata::platform::TierActivity ev = kv_delta_enforce_cap(nov3, d, 1);   // 1 byte: evict everything
         ck_eq((int64_t) d.size(), 1, "down to the last entry (never empty)");
         ck_eq(ev.evicted, 0, "reported as NO eviction: the never-empty policy removed nothing, it did not empty");
         ck_eq(ev.swept, 0, "and the sweep it ran had nothing left to reclaim (open already swept the supersede)");
         strata::platform::KvDeltaStore again;
-        ck(again.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+        ck(again.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
            "and the store still opens and scans clean");
         ck_eq((int64_t) again.size(), 1, "with the survivor as an entry");
     }
@@ -1226,7 +1240,7 @@ void fixture_store(const std::string& root) {
         std::string err;
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvDeltaStore d;
-        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        ck(d.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the store opens");
         const ConversationCheckpoint r10 = boundary_checkpoint(S, 256, 256);
         const ConversationCheckpoint r18 = boundary_checkpoint(S, 600, 600);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(10), {}, true, &r10, err), "A (will go stale)");
@@ -1261,7 +1275,7 @@ void fixture_store(const std::string& root) {
         std::string err;
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvDeltaStore d;
-        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        ck(d.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the store opens");
         const ConversationCheckpoint sb256 = boundary_checkpoint(S, 256, 256);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(256), {}, true, &sb256, err), "A dumps");
         const ConversationCheckpoint sb600 = boundary_checkpoint(S, 600, 600);
@@ -1282,7 +1296,7 @@ void fixture_store(const std::string& root) {
         std::string err;
         strata::platform::KvNvmeStore nov3;
         strata::platform::KvDeltaStore d;
-        ck(d.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the store opens");
+        ck(d.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the store opens");
         const ConversationCheckpoint p10 = boundary_checkpoint(S, 300, 300);
         ck(d.dump(S.ss, S.draft, S.g, ids_of(300), {}, true, &p10, err), "dumped");
         const strata::platform::NvmeEntry e = d.entries()[0];
@@ -1294,7 +1308,8 @@ void fixture_store(const std::string& root) {
         {   // WHAT A PROMOTE STAGES, reported (the KV line's `staging_bytes`): the assembled v3 image.  The v3
             // tier's own file for the SAME boundary IS that image, so the two sizes must agree.
             const std::string v3 = dir + "/p7-v3.bin";
-            ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, p10.ids, p10.imgs, true, &p10, err),
+            ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, p10.ids, p10.imgs, true, &p10,
+                                              control_fp(), err),
                "the p7 v3 control writes");
             Session R0;
             ck(d.restore(e, R0.ss, R0.draft, R0.g, err) == strata::core::ConversationRestore::restored,
@@ -1349,7 +1364,7 @@ void fixture_fuzz(const std::string& root) {
     const uint64_t sfp = strata::platform::kv_delta_weights_fp({"model.gguf"});   // the STORE's fingerprint (the
     // model file does not exist here, so the fp is the path+size hash - the same value the manifests carry)
 
-    std::vector<FuzzConv> live;
+std::vector<FuzzConv> live;
     strata::platform::KvDeltaStore store;
     std::string dir, err;
     auto checkpoint_for = [&](int64_t T) {
@@ -1360,7 +1375,9 @@ void fixture_fuzz(const std::string& root) {
         const std::string v3 = dir + "/.ref-v3";
         ConversationCheckpoint cp = checkpoint_for((int64_t) ids.size());
         cp.ids = ids;   // THE ENGINE'S CONTRACT: the dump keys on the CHECKPOINT's ids - they are one thing
-        ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, ids, imgs, true, &cp, err),
+        // sfp, the store's own fingerprint: the fuzz compares this image against a delta REASSEMBLY byte for
+        // byte, and the header - fingerprint included - is part of those bytes
+        ck(strata::platform::nvme_dump_at(v3.c_str(), S.ss, S.draft, S.g, ids, imgs, true, &cp, sfp, err),
            "the reference v3 dump succeeds");
         return slurp(v3);
     };
@@ -1438,7 +1455,7 @@ void fixture_fuzz(const std::string& root) {
         fs::remove_all(dir, ec);
         fs::create_directories(dir, ec);
         store = strata::platform::KvDeltaStore();
-        ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err), "the fuzz store opens");
+        ck(store.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err), "the fuzz store opens");
         live.clear();
 
         for (long op = 0; op < ops_n; ++op) {
@@ -1487,7 +1504,7 @@ void fixture_fuzz(const std::string& root) {
                 unsetenv("STRATA_DELTA_FAIL_AT");
                 store = strata::platform::KvDeltaStore();   // the relaunch
                 last_dump_ids.clear();                      // a new process has no previous dump of its own
-                ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                ck(store.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
                    "the relaunched store opens clean");
                 sync_model(store);   // C4's both-heads row included: the scan sees whatever the disk holds
             } else if (kind == 5 && !live.empty()) {   // EVICT to a random fraction of the current bytes
@@ -1522,7 +1539,7 @@ void fixture_fuzz(const std::string& root) {
                 if (key.empty()) {   // a manifest: its conversation is gone from the disk
                     store = strata::platform::KvDeltaStore();
                     last_dump_ids.clear();
-                    ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                    ck(store.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
                        "the store reopens after a manifest delete");
                     sync_model(store);
                 } else {   // a chunk or state: every manifest referencing it becomes defective (restore refuses, P7)
@@ -1547,7 +1564,7 @@ void fixture_fuzz(const std::string& root) {
             } else {   // RESTART: a fresh store instance on the same dir (the head tracking resets)
                 store = strata::platform::KvDeltaStore();
                 last_dump_ids.clear();
-                ck(store.open(dir, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                ck(store.open(dir, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
                    "the restarted store opens clean");
             }
 
@@ -1627,7 +1644,7 @@ void fixture_fuzz(const std::string& root) {
                 fs::remove_all(copy, ec);
                 fs::copy(dir, copy, fs::copy_options::recursive, ec);
                 strata::platform::KvDeltaStore sw;
-                ck(sw.open(copy, S.g, strata::core::qsa_kv_format(S.layers[0]), {"model.gguf"}, err),
+                ck(sw.open(copy, S.g, strata::core::qsa_kv_key(S.layers[0]), {"model.gguf"}, err),
                    "the fuzz: the sweep-check copy opens");
                 std::map<std::string, bool> referenced;
                 for (const strata::platform::NvmeEntry& e2 : sw.entries()) {
@@ -1681,7 +1698,10 @@ void fixture_byte_identity(const std::string& root) {
         const std::string v3_path = root + "/v3-" + std::to_string(T) + ".bin";
         const std::string dir = root + "/delta-" + std::to_string(T);
         std::string err;
-        const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err);
+        // at WFP, like the delta dump below it: this oracle asserts the two writers produce the SAME BYTES, and
+        // the header - the weight-set fingerprint included - is part of them
+        const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true,
+                                                          &cp, WFP, err);
         ck(v3_ok, ("the v3 dump writes for T=" + std::to_string(T) + ": " + err).c_str());
         const bool d_ok = strata::platform::delta_dump_at(nullptr, dir, S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp,
                                                           WFP, 1, 1, err);
@@ -1747,7 +1767,8 @@ void fixture_writer_semantics(const std::string& root) {
         const std::string v3_path = root + "/growth-v3.bin";
         const ConversationCheckpoint cp = boundary_checkpoint(S, 600, (int32_t) (600 / SHP.idx_block * SHP.idx_block));
         std::string err;
-        const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true, &cp, err);
+        const bool v3_ok = strata::platform::nvme_dump_at(v3_path.c_str(), S.ss, S.draft, S.g, cp.ids, cp.imgs, true,
+                                                          &cp, WFP, err);
         ck(v3_ok, ("the v3 dump of the grown boundary writes: " + err).c_str());
         const std::vector<uint8_t> want = slurp(v3_path);
         const std::vector<uint8_t> got = reassemble(S, dir, dir + "/log-7-2.manifest", WFP);
@@ -1922,9 +1943,11 @@ void fixture_writer_semantics(const std::string& root) {
                 const ConversationCheckpoint cp10 = boundary_checkpoint(S, 256, 256);
                 const ConversationCheckpoint cp18 = boundary_checkpoint(S, 600, 600);
                 std::string err;
-                const bool a_ok = strata::platform::nvme_dump_at(v3a.c_str(), S.ss, S.draft, S.g, cp10.ids, cp10.imgs, true, &cp10, err);
+                const bool a_ok = strata::platform::nvme_dump_at(v3a.c_str(), S.ss, S.draft, S.g, cp10.ids, cp10.imgs,
+                                                                 true, &cp10, WFP, err);
                 ck(a_ok, ("C4's v3 control a writes: " + err).c_str());
-                const bool b_ok = strata::platform::nvme_dump_at(v3b.c_str(), S.ss, S.draft, S.g, cp18.ids, cp18.imgs, true, &cp18, err);
+                const bool b_ok = strata::platform::nvme_dump_at(v3b.c_str(), S.ss, S.draft, S.g, cp18.ids, cp18.imgs,
+                                                                 true, &cp18, WFP, err);
                 ck(b_ok, ("C4's v3 control b writes: " + err).c_str());
                 if (!(reassemble(S, dir, dir + "/log-7-1.manifest", WFP) == slurp(v3a))) { std::fprintf(stderr, "FAIL: C4: the OLD head no longer reassembles byte-identically\n"); std::exit(1); } ++checks;
                 if (!(reassemble(S, dir, dir + "/log-7-2.manifest", WFP) == slurp(v3b))) { std::fprintf(stderr, "FAIL: C4: the NEW head does not reassemble byte-identically\n"); std::exit(1); } ++checks;

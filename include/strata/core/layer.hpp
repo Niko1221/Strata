@@ -295,6 +295,19 @@ inline int qsa_kv_format(const QsaState& st) {
     }
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
+
+/// THE STORAGE KEY, which is TOTAL: every format gets a distinct value, hybrid included.  Split from
+/// `qsa_kv_format` on purpose - that one answers "which layout may the block movers walk" and refuses a hybrid
+/// state loudly, because it must; this one answers "which bytes are these" and has no such constraint.  Keying
+/// storage with the refusing accessor would have meant either crashing on a hybrid session or, worse, storing
+/// k8v4 under kKvF16 (816 B/cell read as 1,056) - the same-geometry-same-version file that promotes as somebody
+/// else's state.  Both NVMe tiers write this value, so they refuse each other's files on the same terms.
+///
+/// Never call this where a LAYOUT is needed: it answers identity, not layout.
+inline int qsa_kv_key(const QsaState& st) {
+    if (st.kv_hybrid) return strata::kernels::kKvK8V4;
+    return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
+}
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.

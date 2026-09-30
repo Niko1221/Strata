@@ -3752,6 +3752,14 @@ int main(int argc, char** argv) {
         }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
+        // The resolved model shard list, for §5.8's weight-set fingerprint - computed ONCE here and handed to
+        // EVERY writer of KV bytes in this process (both tiers' open, plus the two Step-0 spike flags), because it
+        // is one rule about one weight set: v4 binds the snapshot header to it as well as the delta manifests.  A
+        // store whose two tiers fingerprinted separately could refuse a file in one tier and promote it in the
+        // other, which is the whole defect the binding exists to remove.  Hoisted above the --kv-nvme block
+        // because the spike flags below use it whether or not the tier is on.
+        std::vector<std::string> kv_weight_files = o.native_dense_gguf;
+        if (kv_weight_files.empty() && !o.native_preset.empty()) kv_weight_files = model_shards(o.native_preset);
         // Steps 1-3: open the NVMe cold tier - scan what is already stored, under the byte cap.
         if (!o.kv_nvme.empty()) {
             std::string kerr;
@@ -3759,7 +3767,7 @@ int main(int argc, char** argv) {
             // so the v3 store's own cap stands down - its self-eviction would evict v3 entries without seeing
             // the delta tier's bytes or mtimes
             kvstore.set_cap_bytes(!o.kv_delta && o.kv_nvme_max_gb > 0 ? o.kv_nvme_max_gb * (1LL << 30) : 0);
-            if (!kvstore.open(o.kv_nvme, g, strata::core::qsa_kv_format(ss.qsa_states[0]), kerr)) {
+            if (!kvstore.open(o.kv_nvme, g, strata::core::qsa_kv_key(ss.qsa_states[0]), kv_weight_files, kerr)) {
                 std::fprintf(stderr, "strata serve: kv-nvme: %s\n", kerr.c_str());
                 return 1;
             }
@@ -3768,10 +3776,7 @@ int main(int argc, char** argv) {
                          o.kv_nvme.c_str(), kvstore.size(), (double) kvstore.total_bytes() / (double) (1LL << 30),
                          o.kv_nvme_max_gb > 0 ? std::to_string(o.kv_nvme_max_gb).append(" GB").c_str() : "unlimited");
             if (o.kv_delta) {
-                // the resolved model shard list is the §5.8 fingerprint's input (computed ONCE per process at open)
-                std::vector<std::string> files = o.native_dense_gguf;
-                if (files.empty() && !o.native_preset.empty()) files = model_shards(o.native_preset);
-                if (!deltastore.open(o.kv_nvme, g, strata::core::qsa_kv_format(ss.qsa_states[0]), files, kerr)) {
+                if (!deltastore.open(o.kv_nvme, g, strata::core::qsa_kv_key(ss.qsa_states[0]), kv_weight_files, kerr)) {
                     std::fprintf(stderr, "strata serve: kv-delta: %s\n", kerr.c_str());
                     return 1;
                 }
@@ -3797,7 +3802,8 @@ int main(int argc, char** argv) {
             int64_t rL = 0;
             std::string rerr;
             const strata::core::ConversationRestore got = strata::platform::nvme_restore(
-                o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, r_ids, r_imgs, r_cvec, rL, rerr);
+                o.nvme_restore.c_str(), ss, mtp.kv_state_mut(), g, strata::platform::nvme_weights_fp(kv_weight_files),
+                r_ids, r_imgs, r_cvec, rL, rerr);
             if (got != strata::core::ConversationRestore::restored) {
                 // At startup both classes are fatal for the same reason in reverse: the operator asked for THIS
                 // file, and there is no live session to fall back to.  The message still names which one it was,
@@ -4584,7 +4590,8 @@ int main(int argc, char** argv) {
             if (!o.nvme_dump.empty() && live_ok) {
                 cudaDeviceSynchronize();   // the host KV pools are device-mapped: order the GPU writes first
                 std::string derr;
-                if (!strata::platform::nvme_dump(o.nvme_dump.c_str(), ss, mtp.kv_state(), g, live, live_imgs, cvec_cached, derr))
+                if (!strata::platform::nvme_dump(o.nvme_dump.c_str(), ss, mtp.kv_state(), g, live, live_imgs, cvec_cached,
+                                                strata::platform::nvme_weights_fp(kv_weight_files), derr))
                     std::fprintf(stderr, "strata serve: nvme_dump failed: %s\n", derr.c_str());
                 else
                     std::fprintf(stderr, "strata serve: nvme_dump: wrote %zu tokens to %s\n", live.size(),

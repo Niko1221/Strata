@@ -7,8 +7,11 @@
 // is why every payload here is laid out as exact contiguous slices of the v3 segments - the chunk and State
 // payloads carry no format of their own, only cuts of the v3 walk.
 //
-// The v3 snapshot format stays frozen (kNvmeFormatVersion = 3, NvmeHeader untouched): "v3" is the SNAPSHOT
-// format, and this family is a new record family living in `delta/` under the same store directory.
+// The snapshot format is FROZEN FOR THIS TIER (NvmeHeader is v4 as of the weights binding; the delta record
+// family below is unchanged and still kDeltaFormatVersion 1).  "v3" named the SNAPSHOT format, and this family is
+// a separate record family living in `delta/` under the same store directory.  Nothing here reads an NvmeHeader
+// any more - the restore streams chunks + a State record - but the two tiers share one store directory and now
+// one fingerprint, which is what keeps them from disagreeing about what they are looking at.
 #pragma once
 
 #include <cstddef>
@@ -284,6 +287,8 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, strata::core
 /// same-geometry-different-weights models.  Recorded in every manifest and checked at MATCH time (a delta entry
 /// whose fingerprint differs is not a candidate - the same treatment as cvec), never per chunk.  `files` is the
 /// resolved model shard list; a single-file model matches the §5.8 formula exactly.
+/// A FORWARDER to `nvme_weights_fp` (kv_nvme.hpp), which has held §5.8's formula since the v4 snapshot header
+/// needed it too.  One implementation, so a store's two tiers cannot drift on what "these weights" means.
 uint64_t kv_delta_weights_fp(const std::vector<std::string>& model_files);
 
 /// The delta tier's automatic layer: a `delta/` directory beside the v3 store's snapshots, scanned at startup
