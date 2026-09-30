@@ -1041,6 +1041,31 @@ class SharingTheGpu(unittest.TestCase):
         self.assertEqual(self.chat()[0], 200)
         self.assertTrue(mark.exists())
 
+    def test_vision_encoder_unloads_and_starts_first(self):
+        order = []
+
+        class FakeVision:
+            running = True
+
+            def alive(self):
+                return self.running
+
+            def unload(self):
+                self.running = False
+
+            def restart(self):
+                order.append("vision")
+                self.running = True
+
+        engine_restart = self.engine.restart
+        self.engine.restart = lambda: (order.append("engine"), engine_restart())
+        self.svc.vision = FakeVision()
+        self.assertEqual(self.svc.unload(), "unloaded")
+        self.assertFalse(self.svc.vision.alive())
+        self.assertEqual(self.chat()[0], 200)
+        self.assertEqual(order, ["vision", "engine"])             # the encoder first, as at a start
+        self.assertTrue(self.svc.vision.alive())
+
     def test_off_by_default(self):
         self.assertEqual((self.svc.idle_unload_s, self.svc.min_free_vram_mib, self.svc.before_load), (0, 0, None))
         self.assertEqual(self.req("/health")[1]["loaded"], True)

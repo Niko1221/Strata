@@ -418,14 +418,37 @@ class Vision:
         if cfg.get("max_tokens"):
             args += ["--max-tokens", str(cfg["max_tokens"])]
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
+        self.spawn = (args, log, env)                   # to start it again after an unload
+        self.stopped = False
+        self._start()
+        self.lock = threading.Lock()
+        self.cache: dict[str, tuple[Path, int]] = {}
+
+    def _start(self):
+        args, log, env = self.spawn
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log or subprocess.DEVNULL,
                                      text=True, encoding="utf-8", bufsize=1, env=env)
         contain(self.proc)
         line = self.proc.stdout.readline()
         if not line.startswith("READY"):
             raise RuntimeError("the vision encoder did not start: " + line.strip())
-        self.lock = threading.Lock()
-        self.cache: dict[str, tuple[Path, int]] = {}
+        self.stopped = False
+
+    def alive(self) -> bool:
+        return not self.stopped and self.proc.poll() is None
+
+    def unload(self):
+        """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
+        self.close()
+        self.stopped = True
+
+    def restart(self):
+        """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
+        self._start()
 
     @staticmethod
     def load(source: str) -> bytes:
@@ -618,6 +641,9 @@ class Service:
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
 
+    def _vision_down(self) -> bool:
+        return self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
+
     def free_vram_mib(self) -> int | None:
         """Free VRAM on the engine's (first) GPU, from NVML; None when it can't be read (then nothing is refused)."""
         try:
@@ -635,7 +661,7 @@ class Service:
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
-        if self.loaded():
+        if self.loaded() and not self._vision_down():
             return
         if self.before_load:
             cmd = self.before_load
@@ -653,6 +679,11 @@ class Service:
             if free is not None and free < self.min_free_vram_mib:
                 raise GpuBusy(f"the GPU is in use by another program: {free} MiB of VRAM free, the model needs "
                               f"{self.min_free_vram_mib} (min_free_vram_mib) - it stays unloaded until that is free")
+        if self._vision_down():                         # first, as at a start: a GPU encoder takes its VRAM before
+            print("[strata] starting the vision encoder again ...", flush=True)   # the engine sizes its cache
+            self.vision.restart()
+        if self.loaded():
+            return
         if getattr(self.engine, "unloaded", False):
             print("[strata] loading the model again (it was unloaded) ...", flush=True)
         else:
@@ -664,7 +695,7 @@ class Service:
 
     def load(self):
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
-        if self.loaded():
+        if self.loaded() and not self._vision_down():
             return
         with self.fifo:
             self.ensure_loaded()
@@ -685,6 +716,8 @@ class Service:
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
             self.engine.unload()
+            if self.vision is not None and hasattr(self.vision, "unload"):
+                self.vision.unload()
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
