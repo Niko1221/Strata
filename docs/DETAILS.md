@@ -391,11 +391,9 @@ is a cap, not a recommendation for every machine.
 The shared snapshot core validates all layers and checkpoints before applying any
 state. Invalid entries are discarded; transfer/synchronization failure is fatal
 rather than permission to continue with partial state. Indexer spare keys and the
-moving spare row are preserved, including checkpoint rewinds. These development
-changes and the optional disk-tier boundary are described in the
-[shared-core proposal](plans/shared-conversation-snapshots.md).
+moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes and evictions. Snapshots are not
-persisted across restarts. See [the design and validation gates](plans/shared-conversation-snapshots.md).
+persisted across restarts.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
