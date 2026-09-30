@@ -1,9 +1,16 @@
-// src/kernels/iq_parity.cpp - plan v0.3 P6: the i-quant kernels against gguf-py on real rows.
+// src/kernels/iq_parity.cpp - plan v0.3 P6: the i-quant kernels against gguf-py on generated rows.
 //
-//     python tools/iq_fixture.py --out logs/iq_fixture && build/iq_parity logs/iq_fixture
+//     python tools/iq_fixture.py --out <dir> && build/iq_parity <dir>
 //
-// Dequant must match gguf-py's values to fp32 rounding; the MMVQ dot (q8_1 activations) must match the float
-// matrix-vector product within the activation rounding (a few 1e-3 relative).
+// The fixtures are GENERATED (deterministic; TODO 24) - tools/iq_fixture.py writes each type's raw block
+// bytes and the gguf-py dequantized reference (Q2_0, this repository's type 42, is dequantized by
+// tools/gguf_writer.py's codec instead - gguf-py has no such type).  Dependencies: python3 with numpy and
+// the vendored gguf-py that setup downloads (the pinned llama.cpp zip; third_party/ is gitignored).
+//
+// What is compared, and how: the dequant parity is a MEASURED relative error (sum|got-ref| / sum|ref|) -
+// bitwise equality is not claimed and not required; on the generated fixtures it measures 0.00e+00.  The
+// MMVQ dot (q8_1 activations) must match the float matrix-vector product over that reference within the
+// activation rounding (a few 1e-3 relative).
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 
@@ -24,7 +31,13 @@ int main(int argc, char** argv) {
     for (const char* nm : names) {
         std::FILE* f = std::fopen((dir + "/" + nm + ".bin").c_str(), "rb");
         std::FILE* g = std::fopen((dir + "/" + nm + ".f32").c_str(), "rb");
-        if (!f || !g) { std::printf("%-8s missing fixture\n", nm); ++failures; continue; }
+        if (!f || !g) {
+            std::printf("%-8s missing fixture: %s/%s.bin or %s/%s.f32 - generate the fixtures first with "
+                        "python tools/iq_fixture.py --out %s (deterministic; see the tool's --help)\n",
+                        nm, dir.c_str(), nm, dir.c_str(), nm, dir.c_str());
+            ++failures;
+            continue;
+        }
         int hdr[3];
         std::fread(hdr, 4, 3, f);
         const int type = hdr[0], rows = hdr[1], cols = hdr[2];
