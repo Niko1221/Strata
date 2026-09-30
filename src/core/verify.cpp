@@ -797,7 +797,7 @@ std::string Verifier::profile_report() {
                                           "k/v+norm-rope", "kv+idx append", "q+q-idx", "scores+topk", "kv-resolve",
                                           "attention", "gate", "", "out-proj", "hc-read1+router", "shared+quant",
                                           "waitA", "VRAM hits", "waitB", "PCIe grp", "waitCPU", "copy+combine",
-                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "", ""};
+                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "", "", ""};
     std::string out;
     char b[80];
     double total = 0;
@@ -1056,6 +1056,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         cudaMemcpy(prof_h_.data(), prof_, prof_h_.size() * 8, cudaMemcpyDeviceToHost);
         const int64_t L = g.n_layers;
         auto at = [&](int64_t l, int i) { return prof_h_[(size_t) (l * kProfPer + i)]; };
+        // D8: the derived columns below read stamps the hc-read kernels write themselves or the next
+        // layer's first.  A slot no kernel stamped is 0 and its unsigned difference wrapped to ~1e19 ns -
+        // which is why (gap)/head/hc0 printed ~1e14 ms per window.  A missing or out-of-order stamp now
+        // contributes nothing.
+        const auto gap = [](unsigned long long to, unsigned long long from) {
+            return (from != 0 && to != 0 && to >= from) ? (double) (to - from) : 0.0;
+        };
         for (int64_t l = 0; l < L; ++l) {
             const int kind = is_qsa_layer(g, l) ? 1 : 0;
             unsigned long long prev = at(l, 0);
@@ -1065,13 +1072,16 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 prof_sum_[kind][i] += (double) (x - prev);
                 prev = x;
             }
-            if (l + 1 < L) prof_sum_[kind][25] += (double) (at(l + 1, 0) - at(l, 24));
-            prof_sum_[kind][27] += (double) (at(l, 27) - at(l, 0));    // hc-read0: norm
-            prof_sum_[kind][28] += (double) (at(l, 28) - at(l, 27));   //           down
-            prof_sum_[kind][29] += (double) (at(l, 1) - at(l, 28));    //           up
-            prof_sum_[kind][1] -= (double) (at(l, 1) - at(l, 0));      // (hc-read0 shown split)
+            if (l + 1 < L) prof_sum_[kind][25] += gap(at(l + 1, 0), at(l, 24));
+            const double dn = gap(at(l, 27), at(l, 0)), dd = gap(at(l, 28), at(l, 27)), du = gap(at(l, 1), at(l, 28));
+            if (dn > 0 && dd > 0 && du > 0) {   // the split exists: show it split, not twice
+                prof_sum_[kind][27] += dn;      // hc-read0: norm
+                prof_sum_[kind][28] += dd;      //           down
+                prof_sum_[kind][29] += du;      //           up (through both halves, as before)
+                prof_sum_[kind][1] -= gap(at(l, 1), at(l, 0));   // (hc-read0 shown split)
+            }
         }
-        prof_sum_[0][26] += (double) (at(L, 1) - at(L, 0));
+        prof_sum_[0][26] += gap(at(L, 1), at(L, 0));
         ++prof_windows_;
     }
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
