@@ -196,6 +196,61 @@ class ImageMarkers(unittest.TestCase):
             svc.embeddings.path.unlink(missing_ok=True)
 
 
+class StatusNeedsTheKey(unittest.TestCase):
+    """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
+
+    def test_status(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.api_key = "k3y"
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}/status"
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(base, timeout=10)
+            self.assertEqual(e.exception.code, 401)
+            e.exception.close()
+            req = urllib.request.Request(base, headers={"Authorization": "Bearer k3y"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual(r.status, 200)
+                self.assertNotIn("tail", json.loads(r.read()))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class ToolCallTerminators(unittest.TestCase):
+    """#210: a value that contains </parameter> or </tool_call> (a file documenting the call format) is kept whole."""
+    CONTENT = ("Close each value with </parameter> and the call with </function></tool_call>.\n"
+               "<parameter=x>\nnot a parameter\n</parameter>\nend")
+    SCHEMA = [{"name": "write", "parameters": {"properties": {"path": {"type": "string"},
+                                                              "content": {"type": "string"}}}}]
+
+    def run_parser(self, stream_tools, step):
+        from serve.frontend import OutputParser
+        text = ("</think>\n\n<tool_call>\n<function=write>\n<parameter=path>\ndoc.md\n</parameter>\n"
+                f"<parameter=content>\n{self.CONTENT}\n</parameter>\n</function>\n</tool_call>")
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        return evs
+
+    def test_values_keep_the_terminators(self):
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    evs = self.run_parser(stream_tools, step)
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(calls[0].arguments, {"path": "doc.md", "content": self.CONTENT})
+                    self.assertFalse([e for e in evs if e.kind == "content" and e.text.strip()])
+                    if stream_tools:
+                        streamed = "".join(e.text for e in evs if e.kind == "tool_args")
+                        self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
+
+
 class ClientShapes(unittest.TestCase):
     """What real clients send: Claude Code posts /v1/messages?beta=true (issue #55) and puts hook context into the
     conversation as a mid-conversation system message (issue #56); some OpenAI clients send a late developer message."""

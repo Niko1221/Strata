@@ -148,7 +148,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (hits.d_res == nullptr || hits.cache_base == nullptr || hits.blob <= 0) {
-        err = "verify: needs the profile-filled VRAM expert tier (--expert-profile and --expert-cache)";
+        err = "verify: needs the profile-filled VRAM expert tier (--expert-profile and --expert-cache); with "
+              "--expert-cache auto, no VRAM was left for it: lower --max-context, use --kv k8v4 or images on the CPU";
         return false;
     }
     std::string why;
@@ -850,11 +851,12 @@ bool Verifier::capture(int T, std::string& err) {
             if (ty == cudaGraphNodeTypeKernel) {
                 cudaKernelNodeParams kp{};
                 if (cudaGraphKernelNodeGetParams(nd, &kp) == cudaSuccess) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && CUDART_VERSION >= 12030
+                    // HIP has no kernel-name lookup; CUDA's arrived in 12.3 (upstream's guard)
                     const char* fn = nullptr;
                     if (cudaFuncGetName(&fn, kp.func) == cudaSuccess && fn) name = fn;
 #else
-                    (void) kp;   // HIP has no kernel-name lookup; the dump keeps the type tag
+                    (void) kp;   // no kernel-name lookup here: the dump keeps the type tag
 #endif
                 }
             } else if (ty == cudaGraphNodeTypeMemcpy) name = "memcpy";

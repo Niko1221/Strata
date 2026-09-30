@@ -58,11 +58,13 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 27)                # v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 28)                # v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
+    # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
+    # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
+    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen",)},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
                "arena_gb": 35.5},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
@@ -607,6 +609,18 @@ def download(url, dst: Path, what=None):
     ok(f"{what or dst.name} downloaded")
 
 
+def whole_shard(s: Path) -> bool:
+    """A shard as long as its own tensor directory says (check_shards' test, without stopping setup)."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    try:
+        g = GGUFFile(s)
+        return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
+                                                     default=0)
+    except (OSError, ValueError, struct.error):
+        return False
+
+
 def check_shards(shards):
     """Every shard present and whole, or setup stops naming the file and the numbers.  Whole means as long as
     its own tensor directory says (the header is read, the data is not): a truncated copy (--gguf-dir, a .part
@@ -638,7 +652,9 @@ def get_llama_cpp():
     tmp = ROOT / "third_party" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+        # llama.cpp's own web UI (tools/ui) is not used, and its deep paths passed Windows' 260-character limit in a
+        # folder like Downloads\Strata-main\Strata-main (#206)
+        f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
     top = next(tmp.iterdir())
     shutil.rmtree(llama, ignore_errors=True)
     # PR #63: on Windows a rename can fail with PermissionError while an antivirus scanner still holds a file of the
@@ -948,7 +964,8 @@ def update_installed_engine(url_base) -> None:
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     nvcc, cuda_v = find_nvcc()
-    need_cuda = (12, 8) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
+    # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
+    need_cuda = (13, 0) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
     vcvars = find_vcvars() if WIN else None
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
@@ -1243,7 +1260,18 @@ def data_folder(requested: str | None) -> tuple:
         warn(f"cannot use {dest} for the model files ({e}): keeping them in {ROOT}")
         dest = ROOT
     elsewhere = []
-    for folder in [ROOT, *other_installs(settings)]:
+    # #198: the data folder remembered before (a --data-dir to a new place) is a source too, and so is a Strata-data
+    # folder nested in any of them (an install that kept its models one level down)
+    sources = [ROOT, *other_installs(settings)]
+    if settings.get("data_dir") and Path(settings["data_dir"]) != dest:
+        sources.append(Path(settings["data_dir"]))
+    sources += [f / "Strata-data" for f in list(sources) if (f / "Strata-data") != dest]
+    seen = set()
+    for folder in sources:
+        key = os.path.normcase(str(folder))
+        if key in seen:
+            continue
+        seen.add(key)
         if folder == dest or not has_data(folder):
             continue
         if not same_drive(folder, dest):
@@ -1416,14 +1444,21 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
-          layer_split=None) -> int:
+          layer_split=None, keep=None) -> int:
+    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
+    keep = {k: v for k, v in (keep or {}).items() if v is not None}
+    if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
+        cfg.update(keep)
+        cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+        ok("saved for this model: " + ", ".join("api key" if k == "api_key" else f"{k.replace('_', ' ')} {v}"
+                                                for k, v in keep.items()))
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1]:
-        refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]))
+        refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD: one card, numbered as HIP numbers them
@@ -1489,17 +1524,24 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
 OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}   # to 0.1.26: 27 Han tokens
 
 
-def refresh_draft_vocab(rt: Path) -> None:
-    """The draft layer's token subset (data/draft_vocab.bin) in the MTP folder: copied when missing, and an older
-    shipped one is replaced, so an update reaches existing installs (0.1.27 added the CJK scripts, #137)."""
-    new, dst = ROOT / "data" / "draft_vocab.bin", rt / "draft_vocab.bin"
+DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin"}
+
+
+def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
+    """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137) or `en`
+    (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster).
+    Copied when missing or when a shipped subset other than the chosen one is there; a subset made by hand is kept."""
+    new, dst = ROOT / "data" / DRAFT_VOCABS.get(choice, "draft_vocab.bin"), rt / "draft_vocab.bin"
     if not new.exists() or not rt.is_dir():
         return
     if dst.exists():
         old = hashlib.sha256(dst.read_bytes()).hexdigest()
-        if old not in OLD_DRAFT_VOCABS or old == hashlib.sha256(new.read_bytes()).hexdigest():
+        shipped = OLD_DRAFT_VOCABS | {hashlib.sha256((ROOT / "data" / f).read_bytes()).hexdigest()
+                                      for f in DRAFT_VOCABS.values() if (ROOT / "data" / f).exists()}
+        if old not in shipped or old == hashlib.sha256(new.read_bytes()).hexdigest():
             return
-        ok("draft layer: the token subset now includes Chinese, Japanese and Korean")
+        ok("draft layer: the token subset " + ("with Chinese, Japanese and Korean" if choice == "cjk" else
+                                               "for English and code (less VRAM)"))
     shutil.copyfile(new, dst)
 
 
@@ -1531,7 +1573,7 @@ def write_run_script(model, cfg_path, port):
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
-                          " ".join(f'"{x}"' for x in serve) + "\r\npause\r\n", encoding="utf-8")
+                          " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8")
     else:
         script = ROOT / f"run-{model.lower()}.sh"
         script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
@@ -1578,6 +1620,9 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
+    ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
+                    help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
+                         "and code only (~110 MiB less VRAM, English answers 1-2%% faster)")
     ap.add_argument("--low-ram", choices=["auto", "on", "off"], default="auto",
                     help="map the model's experts from its folder instead of copying them into RAM (for a PC with a big "
                          "GPU and little RAM); auto: when the experts would not fit the RAM")
@@ -1637,19 +1682,22 @@ def main() -> int:
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
         calibrate_config(pick_cfg)
-        return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+        return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
-            return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+            return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
         say(f"  {len(have) + 1}) install another model / change settings")
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
-            return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+            return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
 
     # ---- 1. the PC
     step(1, "checking your PC")
@@ -1861,6 +1909,9 @@ def main() -> int:
                 models_dir, shards = cand[0].parent, cand
                 ok(f"model files found in {models_dir}")
                 break
+    for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
+        if s.exists() and not done(s) and whole_shard(s):
+            mark(s, "whole (checked against its own tensor directory)")
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
         (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
@@ -1956,7 +2007,7 @@ def main() -> int:
              "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
         run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
             env=env)
-    refresh_draft_vocab(rt)
+    refresh_draft_vocab(rt, a.draft_vocab or "cjk")
     ok(f"MTP draft layer: {rt}")
 
     # ---- 7. the start script
@@ -2016,6 +2067,8 @@ def main() -> int:
         cfg["host"] = a.host
     if a.api_key:
         cfg["api_key"] = a.api_key
+    if a.draft_vocab:
+        cfg["draft_vocab"] = a.draft_vocab
     if vision != "none":
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
                          "gpu": vision == "gpu", "max_tokens": VISION[vision]["max_tokens"]}
