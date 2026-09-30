@@ -94,7 +94,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             ffp[k] = ff[k].data();
         }
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
-        if (cpu::iq512_supported(f.gu_type)) {
+        // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
+        // iq512_supported alone - that would leave the format untested on every CPU.
+        if (cpu::iq512_supported(f.gu_type) || cpu::iq256_supported(f.gu_type)) {
             // ggml's own vec_dot, same Q8_K activations: the reference for both multi-token kernels
             // (float-order differences only)
             const auto* tc = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
