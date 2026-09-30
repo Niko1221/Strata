@@ -314,6 +314,7 @@ private:
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
+    uint8_t* arg_scratch_ = nullptr;   ///< argmax_rows' partials and counters
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
     // the PLE block's projections (keys T * NG_HC_DIM, values T * n_embd) and the rest of the block's rows

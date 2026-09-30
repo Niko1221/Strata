@@ -7,6 +7,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -400,6 +401,142 @@ void map_ids(int32_t* ids, const int32_t* table, int n, void* stream) {
 void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* stream) {
     row_top_prob_kernel<<<n_rows, 1024, 0, (cudaStream_t) stream>>>(logits, n_vocab, ids, probs);
     check("row_top_prob");
+}
+
+namespace {
+
+constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 8;
+
+// the larger value, on equality the lower index: sampler_greedy_kernel's order
+__device__ __forceinline__ void arg_take(float ov, int oi, float& bv, int& bi) {
+    if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+}
+
+// a block's (value, index) pick, in thread 0; `none` is the index of no candidate
+__device__ __forceinline__ void arg_block(float& bv, int& bi, int none) {
+    __shared__ float sv[32];
+    __shared__ int si[32];
+    for (int off = 16; off > 0; off >>= 1) {
+        const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+        const int oi = __shfl_down_sync(0xffffffffu, bi, off);
+        arg_take(ov, oi, bv, bi);
+    }
+    const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
+    if (lane == 0) { sv[warp] = bv; si[warp] = bi; }
+    __syncthreads();
+    if (warp == 0) {
+        const int nw = (int) (blockDim.x >> 5);
+        bv = lane < nw ? sv[lane] : __int_as_float(0xff800000);
+        bi = lane < nw ? si[lane] : none;
+        for (int off = 16; off > 0; off >>= 1) {
+            const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+            const int oi = __shfl_down_sync(0xffffffffu, bi, off);
+            arg_take(ov, oi, bv, bi);
+        }
+    }
+}
+
+// A row's scratch, whatever the launch's row count (one scratch serves windows of every size): its counter, then
+// the blocks' values and indices.
+struct ArgRow {
+    unsigned counter;
+    unsigned pad[3];
+    float v[kArgMaxBlocks];
+    int i[kArgMaxBlocks];
+};
+
+// grid (blocks, rows): block b scans [b * per_block, +per_block) of its row
+__global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int per_block, ArgRow* __restrict__ rows,
+                                   int32_t* out) {
+    const int row = (int) blockIdx.y, b = (int) blockIdx.x, nb = (int) gridDim.x;
+    unsigned* counter = &rows[row].counter;
+    float* pv = rows[row].v;
+    int* pi = rows[row].i;
+    const float* l = logits + (size_t) row * n;
+    const int lo = b * per_block, hi = min(n, lo + per_block);
+    float bv = __int_as_float(0xff800000);   // -inf
+    int bi = n;
+    for (int v = lo + (int) threadIdx.x; v < hi; v += (int) blockDim.x) {
+        const float s = l[v];
+        if (s > bv) { bv = s; bi = v; }
+    }
+    arg_block(bv, bi, n);
+    __shared__ bool last;
+    if (threadIdx.x == 0) {
+        pv[b] = bv;
+        pi[b] = bi;
+        __threadfence();
+        last = atomicAdd(counter, 1u) == (unsigned) (nb - 1);
+    }
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    bv = __int_as_float(0xff800000);
+    bi = n;
+    if ((int) threadIdx.x < nb) {
+        bv = ((volatile const float*) pv)[threadIdx.x];
+        bi = ((volatile const int*) pi)[threadIdx.x];
+    }
+    arg_block(bv, bi, n);
+    if (threadIdx.x == 0) {
+        out[row] = bi < n ? bi : 0;   // no value above -inf: 0, as the one-block kernel
+        *counter = 0;
+    }
+}
+
+// a row's top-probability scratch: its counter, then its 32 warps' sums
+struct TopRow {
+    unsigned counter;
+    unsigned pad[3];
+    float parts[32];
+};
+
+// grid (kTopBlocks, rows), 1024 / kTopBlocks threads: thread j of block b is row_top_prob's thread b * blockDim + j
+__global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int n_vocab, const int32_t* __restrict__ ids,
+                                          float* __restrict__ probs, TopRow* __restrict__ rows) {
+    const int row = (int) blockIdx.y;
+    float* parts = rows[row].parts;
+    const float* l = logits + (size_t) row * n_vocab;
+    const float m = l[ids[row]];
+    const int vt = (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    float s = 0.0f;
+    for (int i = vt; i < n_vocab; i += 1024) s += __expf(l[i] - m);
+    for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+    if ((threadIdx.x & 31) == 0) parts[vt >> 5] = s;
+    __threadfence();
+    __syncthreads();
+    __shared__ bool last;
+    if (threadIdx.x == 0) last = atomicAdd(&rows[row].counter, 1u) == (unsigned) (gridDim.x - 1);
+    __syncthreads();
+    if (!last || threadIdx.x != 0) return;
+    __threadfence();
+    float tot = 0.0f;
+    for (int w = 0; w < 32; ++w) tot += ((volatile const float*) parts)[w];
+    probs[row] = 1.0f / tot;
+    rows[row].counter = 0;
+}
+
+}  // namespace
+
+uint64_t argmax_rows_scratch_bytes(int n_rows) { return (uint64_t) n_rows * sizeof(ArgRow); }
+
+void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream) {
+    if (n_rows <= 0) return;
+    const int nb = std::min(kArgMaxBlocks, std::max(1, (n + 4095) / 4096));
+    const int per_block = (n + nb - 1) / nb;
+    argmax_rows_kernel<<<dim3((unsigned) nb, (unsigned) n_rows), kArgThreads, 0, (cudaStream_t) stream>>>(
+        logits, n, per_block, (ArgRow*) scratch, out);
+    check("argmax_rows");
+}
+
+uint64_t row_top_prob_scratch_bytes(int n_rows) { return (uint64_t) n_rows * sizeof(TopRow); }
+
+void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* scratch,
+                        void* stream) {
+    if (n_rows <= 0) return;
+    row_top_prob_split_kernel<<<dim3(kTopBlocks, (unsigned) n_rows), 1024 / kTopBlocks, 0, (cudaStream_t) stream>>>(
+        logits, n_vocab, ids, probs, (TopRow*) scratch);
+    check("row_top_prob_split");
 }
 
 namespace {

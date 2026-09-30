@@ -220,6 +220,8 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         x_bf16_ = b.take<uint16_t>(N);
         out_ids_ = b.take<int32_t>(T + 4);
         probs_ = b.take<float>(T + 4);
+        arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
+        top_scratch_ = b.take<uint8_t>(strata::kernels::row_top_prob_scratch_bytes((int) T));
         dummy_inj_ = b.take<float>(HC);
     };
     Bump count;
@@ -417,11 +419,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
         native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
-        SamplerParams sp;
-        sp.greedy = true;
-        sp.temperature = 0.0f;
-        sample_tokens(head_logits_, T, (int) nv, nullptr, 0, sp, out_ids_, cs);
-        row_top_prob(head_logits_, T, (int) nv, out_ids_, probs_, cs);
+        argmax_rows(head_logits_, T, (int) nv, arg_scratch_, out_ids_, cs);
+        row_top_prob_split(head_logits_, T, (int) nv, out_ids_, probs_, top_scratch_, cs);
         if (sub) map_ids(out_ids_, dvocab_, T, cs);
     } catch (const std::exception& e) {
         err = std::string("mtp: ") + e.what();

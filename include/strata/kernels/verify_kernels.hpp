@@ -86,6 +86,17 @@ void gather_rows(const uint8_t* src, int64_t row_bytes, const int32_t* ids, int6
 void map_ids(int32_t* ids, const int32_t* table, int n, void* stream);
 /// probs[t] = softmax(logits[t])[ids[t]] for n_rows rows of n_vocab (the probability of each row's argmax).
 void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* stream);
+/// out[t] = the argmax of row t (n floats a row; ties to the lowest index, NaN never picked, 0 when no value is above
+/// -inf): bitwise sample_tokens' greedy pick.  Up to 128 blocks a row scan slices of it, the row's last block merges
+/// their picks.  `scratch`: argmax_rows_scratch_bytes(n_rows), zero before the first launch (each launch leaves it
+/// so).  Graph-capturable.
+uint64_t argmax_rows_scratch_bytes(int n_rows);
+void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream);
+/// row_top_prob over 8 blocks a row, each computing 4 of its 32 warps' sums, the row's last block adding the 32 in
+/// order: bitwise row_top_prob.  `scratch`: row_top_prob_scratch_bytes(n_rows), zero before the first launch.
+uint64_t row_top_prob_scratch_bytes(int n_rows);
+void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* scratch,
+                        void* stream);
 /// Dense-attention step records for `n` cells: [cell, cell+1, (cell+1)/4, cell+1] from cells[i] (device memory).
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream);
 /// A sliding attention window: for `n` step records (kStepCount ints each, n_kv at [1]) the selection becomes the

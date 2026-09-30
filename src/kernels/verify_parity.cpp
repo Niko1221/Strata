@@ -17,6 +17,7 @@
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/sampler.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/shared_expert.hpp"
@@ -1233,6 +1234,66 @@ int test_prefill_gdn(std::mt19937& rng, cudaStream_t s) {
     return bad;
 }
 
+// argmax_rows against sample_tokens' greedy pick and row_top_prob_split against row_top_prob, bitwise: rows of both
+// vocabularies with ties at the maximum (the lowest index wins), NaN, -inf, a row with no value above -inf, and
+// launches repeated on one scratch (each must leave its counters at zero)
+int test_argmax(std::mt19937& rng, cudaStream_t s) {
+    using namespace strata::kernels;
+    int bad = 0;
+    std::normal_distribution<float> nd(0.0f, 4.0f);
+    uint8_t* sa = dev<uint8_t>(argmax_rows_scratch_bytes(8));   // one scratch for every row count, as in the engine
+    uint8_t* st = dev<uint8_t>(row_top_prob_scratch_bytes(8));
+    check(cudaMemset(sa, 0, argmax_rows_scratch_bytes(8)), "memset");
+    check(cudaMemset(st, 0, row_top_prob_scratch_bytes(8)), "memset");
+    for (const int n : {248320, 40525, 4097, 33}) {
+        for (const int rows : {4, 8, 1, 3, 8, 2}) {
+            std::vector<float> h((size_t) rows * n);
+            for (float& v : h) v = nd(rng);
+            for (int r = 0; r < rows; ++r) {
+                float* row = h.data() + (size_t) r * n;
+                const int a = (int) (rng() % n), b = (int) (rng() % n);
+                row[a] = row[b] = 40.0f;                       // a tie at the maximum
+                row[(int) (rng() % n)] = std::nanf("");        // never picked
+                row[(int) (rng() % n)] = -INFINITY;
+                if (r == 2)                                    // no value above -inf: 0
+                    for (int i = 0; i < n; ++i) row[i] = i % 7 ? -INFINITY : std::nanf("");
+            }
+            float* d_l = dev<float>(h.size());
+            up(d_l, h);
+            int* d_ref = dev<int>(rows);
+            int32_t* d_out = dev<int32_t>(rows);
+            float* d_p1 = dev<float>(rows);
+            float* d_p2 = dev<float>(rows);
+            SamplerParams sp;
+            sp.greedy = true;
+            sp.temperature = 0.0f;
+            sample_tokens(d_l, rows, n, nullptr, 0, sp, d_ref, s);
+            row_top_prob(d_l, rows, n, d_ref, d_p1, s);
+            for (int rep = 0; rep < 3; ++rep) {
+                argmax_rows(d_l, rows, n, sa, d_out, s);
+                row_top_prob_split(d_l, rows, n, d_out, d_p2, st, s);
+                check(cudaStreamSynchronize(s), "argmax");
+                const std::vector<int> ref = down(d_ref, rows);
+                const std::vector<int32_t> out = down(d_out, rows);
+                const std::vector<float> p1 = down(d_p1, rows), p2 = down(d_p2, rows);
+                for (int r = 0; r < rows; ++r)
+                    if (ref[r] != out[r] || std::memcmp(&p1[r], &p2[r], 4) != 0) {
+                        if (bad < 5)
+                            std::printf("  argmax n %d rows %d row %d: %d / %d, p %.9g / %.9g\n", n, rows, r, ref[r],
+                                        out[r], p1[r], p2[r]);
+                        ++bad;
+                    }
+            }
+            cudaFree(d_l); cudaFree(d_ref); cudaFree(d_out); cudaFree(d_p1); cudaFree(d_p2);
+        }
+    }
+    cudaFree(sa);
+    cudaFree(st);
+    std::printf("argmax_rows, row_top_prob_split: %s\n",
+                bad ? "MISMATCH" : "bitwise equal to the one-block kernels (ties, NaN, -inf, 1-8 rows on one scratch)");
+    return bad;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1260,6 +1321,7 @@ int main(int argc, char** argv) {
     bad += test_ple_tokens(rng, s);
     bad += test_decode_attn(rng, s);
     bad += test_prefill_gdn(rng, s);
+    bad += test_argmax(rng, s);
     cudaStreamDestroy(s);
     std::printf("verify_parity: %s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;

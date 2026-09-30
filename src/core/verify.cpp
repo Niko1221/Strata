@@ -273,6 +273,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
+        arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
         hist_snap_ = b.take<float>(T * HS);
         const uint64_t PD = (uint64_t) strata::kernels::NG_HC_DIM;
         ple_key_ = b.take<float>(T * PD); ple_val_ = b.take<float>(T * N); ple_nkey_ = b.take<float>(T * PD);
@@ -959,10 +960,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
-        SamplerParams sp;
-        sp.greedy = true;
-        sp.temperature = 0.0f;
-        sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
+        argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
     }
     if (host_rows_) copy_from_mapped(m_rows_, R_, (int64_t) T * HC * N, cs);   // a plain copy kernel, here to host
     stamp(g.n_layers, 3, cs);
