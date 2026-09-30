@@ -25,6 +25,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "stager.hpp"
 
 #include <cuda_runtime.h>
 
@@ -134,124 +135,7 @@ struct Alloc {
 // left the GPU without queued work while each ~2 MB memcpy ran (~15 s of a 32K prompt on IQ3_S).  Job j - a layer's
 // j-th unpinned expert, in launch order - lands in host buffer j % kRing, which is free again once the DMA of job
 // j - kRing (recorded by the launching thread, `issued`) is done.
-struct Stager {
-    // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
-    // DMAs of the unpinned experts' blobs
-    int kRing = 16;
-    struct Job { const uint8_t* src; size_t bytes; };
-    std::vector<uint8_t*> buf;
-    std::vector<char> pinned;
-    std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
-    std::vector<cudaEvent_t> dma_done;
-    std::vector<Job> jobs;
-    std::unique_ptr<std::atomic<int>[]> ready;
-    size_t ready_cap = 0;
-    // gen << 32 | n << 16 | next index: a claim is a CAS on the generation it woke for (a thread late from the
-    // previous layer can never take a job of this one - the expert pool's issue #29 lesson)
-    std::atomic<uint64_t> head{0};
-    std::atomic<int> issued{0}, active{0};
-    uint32_t gen = 0;
-    bool quit = false;
-    std::mutex mu;
-    std::condition_variable cv;
-    std::vector<std::thread> threads;
-    int device = 0;
-
-    bool init(size_t blob_bytes, int nthreads) {
-        if (const char* v = std::getenv("STRATA_STAGER_RING")) kRing = std::clamp(std::atoi(v), 2, 256);
-        buf.assign((size_t) kRing, nullptr);
-        pinned.assign((size_t) kRing, 0);
-        dma_done.assign((size_t) kRing, nullptr);
-        pageable.resize(kRing);
-        for (int i = 0; i < kRing; ++i) {
-            pinned[i] = cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
-            if (!pinned[i]) {
-                cudaGetLastError();
-                pageable[(size_t) i].resize(blob_bytes);
-                buf[i] = pageable[(size_t) i].data();
-            }
-            if (cudaEventCreateWithFlags(&dma_done[i], cudaEventDisableTiming) != cudaSuccess) return false;
-        }
-        cudaGetDevice(&device);
-        for (int t = 0; t < nthreads; ++t) threads.emplace_back([this] { work(); });
-        return true;
-    }
-    ~Stager() {
-        finish();
-        { std::lock_guard<std::mutex> lk(mu); quit = true; }
-        cv.notify_all();
-        for (auto& t : threads) t.join();
-        for (int i = 0; i < kRing; ++i) {
-            if (dma_done[i]) cudaEventDestroy(dma_done[i]);
-            if (buf[i] && pinned[i]) cudaFreeHost(buf[i]);
-        }
-    }
-    void work() {
-        cudaSetDevice(device);
-        uint32_t seen = 0;
-        for (;;) {
-            {
-                std::unique_lock<std::mutex> lk(mu);
-                cv.wait(lk, [&] { return quit || gen != seen; });
-                if (quit) return;
-                seen = gen;
-            }
-            for (;;) {
-                active.fetch_add(1, std::memory_order_acq_rel);
-                const int j = claim(seen);
-                if (j < 0) { active.fetch_sub(1, std::memory_order_acq_rel); break; }
-                const int b = j % kRing;
-                if (j >= kRing) {
-                    while (issued.load(std::memory_order_acquire) <= j - kRing) std::this_thread::yield();
-                    cudaEventSynchronize(dma_done[b]);
-                }
-                std::memcpy(buf[b], jobs[(size_t) j].src, jobs[(size_t) j].bytes);
-                ready[(size_t) j].store(1, std::memory_order_release);
-                active.fetch_sub(1, std::memory_order_acq_rel);
-            }
-        }
-    }
-    int claim(uint32_t g) {
-        uint64_t cur = head.load(std::memory_order_acquire);
-        for (;;) {
-            if ((uint32_t) (cur >> 32) != g) return -1;
-            const int n = (int) ((cur >> 16) & 0xffff), j = (int) (cur & 0xffff);
-            if (j >= n) return -1;
-            if (head.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_acquire)) return j;
-        }
-    }
-    /// A layer's jobs; the previous layer's are finished (finish()).
-    void start(std::vector<Job>&& js) {
-        if (js.empty()) return;
-        std::lock_guard<std::mutex> lk(mu);
-        jobs = std::move(js);
-        if (ready_cap < jobs.size()) {
-            ready_cap = jobs.size() * 2;
-            ready.reset(new std::atomic<int>[ready_cap]);
-        }
-        for (size_t i = 0; i < jobs.size(); ++i) ready[i].store(0, std::memory_order_relaxed);
-        issued.store(0);
-        ++gen;
-        head.store((uint64_t) gen << 32 | (uint64_t) jobs.size() << 16, std::memory_order_release);
-        cv.notify_all();
-    }
-    /// Job j's bytes, in a pinned buffer (waits for the copy).
-    const uint8_t* wait(int j) {
-        while (!ready[(size_t) j].load(std::memory_order_acquire)) std::this_thread::yield();
-        return buf[j % kRing];
-    }
-    /// The launching thread queued job j's DMA on `copy`: its buffer is free once that is done.
-    void issued_one(int j, cudaStream_t copy) {
-        cudaEventRecord(dma_done[j % kRing], copy);
-        issued.store(j + 1, std::memory_order_release);
-    }
-    /// No job is running after this (the end of a layer, or an early return in the middle of one).
-    void finish() {
-        head.store((uint64_t) gen << 32, std::memory_order_release);   // n = 0: nothing more to claim
-        issued.store(1 << 30, std::memory_order_release);
-        while (active.load(std::memory_order_acquire) != 0) std::this_thread::yield();
-    }
-};
+using detail::Stager;
 
 struct Prefill::Impl {
     const core::WeightTable* wt = nullptr;
@@ -1106,7 +990,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 }
             }
             for (int64_t l = LE; l <= g.n_layers; ++l) seq_start[(size_t) l] = seq.size();
-            m.stager->start(std::move(js));
+            m.stager->start(std::move(js), true);
         }
         struct StagerDone {
             Stager* st;
@@ -1154,11 +1038,51 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             ~IssuerJoin() { if (t->joinable()) { stop->store(true); t->join(); } }
         } issuer_join{&a_stop, &issuer};
         const bool threaded_issue = stream_all && issuer_on;
+        // The terminal copied/used event covers earlier operations on the same
+        // ordered stream. Publish only after recording copied. A group cannot
+        // cross either ring wrap or mix direct, pinned staging and pageable sources.
+        std::vector<size_t> completion_end;
+        int completion_batch = 1;
+        int stage_completion_batch = 1;
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+        if (threaded_issue) if (const char* v = std::getenv("STRATA_HIP_COPY_BATCH"))
+            completion_batch = std::clamp(std::atoi(v), 1, std::min(32, m.ring));
+        if (threaded_issue) if (const char* v = std::getenv("STRATA_HIP_STAGE_COPY_BATCH"))
+            stage_completion_batch = std::clamp(std::atoi(v), 1, std::min(m.ring, m.stager->kRing));
+#endif
+        if (completion_batch > 1 || stage_completion_batch > 1) {
+            completion_end.resize(seq.size());
+            for (size_t begin = 0; begin < seq.size();) {
+                size_t end = begin + 1;
+                if (seq[begin].job < 0) {
+                    const size_t limit = std::min({seq.size(),begin+(size_t)completion_batch,
+                        begin+(size_t)m.ring-begin%(size_t)m.ring});
+                    while (end < limit && seq[end].job < 0) ++end;
+                } else if (stage_completion_batch > 1 && m.stager->pinned[seq[begin].job%m.stager->kRing]) {
+                    // Host DMA ownership fences remain independent. Stop before
+                    // either ring wraps so an entire group can be prepared without
+                    // requiring a source buffer owned by this same group's DMA.
+                    const size_t limit = std::min({seq.size(),begin+(size_t)stage_completion_batch,
+                        begin+(size_t)m.ring-begin%(size_t)m.ring,
+                        begin+(size_t)m.stager->kRing-(size_t)seq[begin].job%(size_t)m.stager->kRing});
+                    while (end < limit && seq[end].job == seq[begin].job+(int)(end-begin) &&
+                           m.stager->pinned[seq[end].job%m.stager->kRing]) ++end;
+                }
+                for (size_t i = begin; i < end; ++i) completion_end[i] = end;
+                begin = end;
+            }
+        }
+        uint64_t copy_slot_waits = 0, copy_completion_events = 0;
+        uint64_t direct_copied = 0, staged_copied = 0, direct_waits = 0, staged_waits = 0;
+        uint64_t iss_bytes = 0, iss_dma_bytes = 0;
         if (threaded_issue) {
             issuer = std::thread([&] {
                 const core::OnDevice od(m.device);
                 for (size_t idx = 0; idx < seq.size(); ++idx) {
-                    while (idx >= a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
+                    const size_t end = completion_end.empty() ? idx + 1 : completion_end[idx];
+                    const bool first = idx == 0 || completion_end.empty() || completion_end[idx - 1] != end;
+                    // Wait until every prior use in this group has been recorded.
+                    while (end > a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
                         if (a_stop.load(std::memory_order_acquire)) return;
                         std::this_thread::yield();
                     }
@@ -1166,20 +1090,31 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
-                    if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[sl], 0);
+                    const int last_sl = (int) ((end - 1) % (size_t) m.ring);
+                    if (first && m.stage_live[last_sl]) {
+                        cudaStreamWaitEvent(m.copy, m.used[last_sl], 0);
+                        ++copy_slot_waits;
+                        (en.job < 0 ? direct_waits : staged_waits)++;
+                    }
                     if (en.job < 0) {
                         cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
                         ++iss_dma;
+                        iss_dma_bytes += bytes;
                     } else {
                         const uint8_t* hb = m.stager->wait(en.job);
                         cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
                         m.stager->issued_one(en.job, m.copy);
                     }
-                    cudaEventRecord(m.copied[sl], m.copy);
+                    if (idx + 1 == end) {
+                        cudaEventRecord(m.copied[last_sl], m.copy);
+                        ++copy_completion_events;
+                        (en.job < 0 ? direct_copied : staged_copied)++;
+                    }
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
-                    a_issued.store(idx + 1, std::memory_order_release);
+                    iss_bytes += bytes;
+                    if (idx + 1 == end) a_issued.store(end, std::memory_order_release);
                 }
             });
         } else if (stream_all) {
@@ -1720,7 +1655,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                 const int sl = (int) (k % (size_t) m.ring);
                                 pt.mark(kPfWaitCopy, cs);
                                 wait_issued(k);
-                                cudaStreamWaitEvent(m.cs, m.copied[sl], 0);
+                                const int complete_sl = completion_end.empty() ? sl :
+                                    (int) ((completion_end[k] - 1) % (size_t) m.ring);
+                                cudaStreamWaitEvent(m.cs, m.copied[complete_sl], 0);
                                 if (!compute(j, m.stage_dev[sl], sl)) return false;
                                 consumed = ++k;
                                 give_back(consumed);
@@ -1782,6 +1719,23 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             stats_.ms_experts_host += iss_ms;
             stats_.experts_streamed += iss_streamed;
             stats_.experts_dma += iss_dma;
+        }
+        if (threaded_issue && pt.on) {
+            std::fprintf(stderr, "prefill copy scheduling: completion_batch=%d slot_waits=%llu copied_events=%llu stage_completion_batch=%d\n",
+                         completion_batch, (unsigned long long) copy_slot_waits,
+                         (unsigned long long) copy_completion_events, stage_completion_batch);
+            std::fprintf(stderr, "prefill copy groups: direct_copied=%llu direct_slot_waits=%llu staged_copied=%llu staged_slot_waits=%llu\n",
+                         (unsigned long long) direct_copied, (unsigned long long) direct_waits,
+                         (unsigned long long) staged_copied, (unsigned long long) staged_waits);
+            std::fprintf(stderr, "prefill staging fences: jobs=%zu batch=%d records=%llu host_waits=%llu errors=%llu\n",
+                         m.stager->jobs.size(), m.stager->fence_batch,
+                         (unsigned long long) m.stager->fence_records,
+                         (unsigned long long) m.stager->fence_waits.load(),
+                         (unsigned long long) m.stager->fence_errors.load());
+            std::fprintf(stderr, "prefill expert traffic: copies=%lld direct_copies=%lld staged_copies=%lld expert_h2d_bytes=%llu direct_pinned_bytes=%llu host_staged_bytes=%llu\n",
+                         (long long) iss_streamed, (long long) iss_dma, (long long) (iss_streamed - iss_dma),
+                         (unsigned long long) iss_bytes, (unsigned long long) iss_dma_bytes,
+                         (unsigned long long) (iss_bytes - iss_dma_bytes));
         }
         stats_.tokens += T;
         pt.mark(kPfStart, cs);
