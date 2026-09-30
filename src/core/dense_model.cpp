@@ -32,6 +32,9 @@ constexpr uint32_t kF32 = 0, kF16 = 1, kBF16 = 30;
 // The GGUF types a quantized weight may have: exactly what native_mmvq takes.
 const char* kSupported = "Q4_0, Q5_0, Q8_0, Q2_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS";
 
+// defined below: dequantizes contiguous blocks of any type the host knows (F32/F16/BF16 and the quantized ones)
+bool dequant_row(uint32_t type, const uint8_t* src, int n, float* out);
+
 struct QMat {
     void* dev = nullptr;
     int type = -1;
@@ -46,7 +49,9 @@ struct Layer {
     // GDN mixer
     QMat qkv, z, ssm_out;
     float *conv_w = nullptr, *dt = nullptr, *ssm_a = nullptr, *ssm_norm = nullptr;
-    float *alpha_w = nullptr, *beta_w = nullptr;
+    float *alpha_w = nullptr, *beta_w = nullptr;   // F32/F16/BF16 files
+    QMat alpha_q, beta_q;                          // quantized files (Q8_0 in the Unsloth GGUFs)
+    bool ab_quant = false;
     float *state = nullptr, *conv_state = nullptr;
     // attention mixer
     QMat q, k, v, o;
@@ -133,8 +138,11 @@ struct DenseModel::Impl {
         case kF16: strata::dequantize_f16(src, host.data(), (int) n); break;
         case kBF16: strata::dequantize_bf16(src, host.data(), (int) n); break;
         default:
-            err = "dense model: " + name + " is " + upper_type(f->tensor->type) + ", expected F32, F16 or BF16";
-            return false;
+            if (n > (uint64_t) INT_MAX || !dequant_row(f->tensor->type, src, (int) n, host.data())) {
+                err = "dense model: " + name + " is " + upper_type(f->tensor->type) +
+                      ", which cannot be read as floats (expected F32, F16, BF16 or a quantized type)";
+                return false;
+            }
         }
         if (!alloc(out, n * 4, err, name.c_str())) return false;
         const cudaError_t s = cudaMemcpy(*out, host.data(), n * 4, cudaMemcpyHostToDevice);
@@ -377,10 +385,25 @@ bool DenseModel::load(const std::string& path, int64_t max_context, std::string&
                 if (!I.upload_floats(I.find(p + "ssm_conv1d.weight"), p + "ssm_conv1d.weight", (uint64_t) C * cfg_.ssm_d_conv, &L.conv_w, err) ||
                     !I.upload_floats(I.find_any({"ssm_dt.bias", "ssm_dt"}, p), p + "ssm_dt.bias", cfg_.ssm_v_heads, &L.dt, err) ||
                     !I.upload_floats(I.find_any({"ssm_a", "ssm_a.weight"}, p), p + "ssm_a", cfg_.ssm_v_heads, &L.ssm_a, err) ||
-                    !I.upload_floats(I.find(p + "ssm_norm.weight"), p + "ssm_norm.weight", cfg_.ssm_state, &L.ssm_norm, err) ||
-                    !I.upload_floats(I.find(p + "ssm_alpha.weight"), p + "ssm_alpha.weight", (uint64_t) cfg_.n_embd * cfg_.ssm_v_heads, &L.alpha_w, err) ||
-                    !I.upload_floats(I.find(p + "ssm_beta.weight"), p + "ssm_beta.weight", (uint64_t) cfg_.n_embd * cfg_.ssm_v_heads, &L.beta_w, err))
+                    !I.upload_floats(I.find(p + "ssm_norm.weight"), p + "ssm_norm.weight", cfg_.ssm_state, &L.ssm_norm, err))
                     return false;
+                {   // alpha / beta: a float matrix in some files, Q8_0 (or another block type) in the Unsloth ones
+                    const Found* fa = I.find(p + "ssm_alpha.weight");
+                    const Found* fb = I.find(p + "ssm_beta.weight");
+                    if (!fa || !fb) { err = "dense model: " + at + "missing ssm_alpha.weight / ssm_beta.weight"; return false; }
+                    auto is_float = [](uint32_t t) { return t == kF32 || t == kF16 || t == kBF16; };
+                    if (is_float(fa->tensor->type) != is_float(fb->tensor->type)) {
+                        err = "dense model: " + at + "ssm_alpha and ssm_beta have different kinds of type"; return false;
+                    }
+                    L.ab_quant = !is_float(fa->tensor->type);
+                    if (L.ab_quant) {
+                        if (!I.upload_mat(fa, p + "ssm_alpha.weight", cfg_.n_embd, cfg_.ssm_v_heads, L.alpha_q, total, err) ||
+                            !I.upload_mat(fb, p + "ssm_beta.weight", cfg_.n_embd, cfg_.ssm_v_heads, L.beta_q, total, err))
+                            return false;
+                    } else if (!I.upload_floats(fa, p + "ssm_alpha.weight", (uint64_t) cfg_.n_embd * cfg_.ssm_v_heads, &L.alpha_w, err) ||
+                               !I.upload_floats(fb, p + "ssm_beta.weight", (uint64_t) cfg_.n_embd * cfg_.ssm_v_heads, &L.beta_w, err))
+                        return false;
+                }
                 const uint64_t sbytes = (uint64_t) cfg_.ssm_state * cfg_.ssm_v_heads * cfg_.ssm_state * 4;
                 const uint64_t cbytes = (uint64_t) C * (cfg_.ssm_d_conv - 1) * 4;
                 if (!I.alloc(&L.state, sbytes, err, "GDN state") || !I.alloc(&L.conv_state, cbytes, err, "conv state")) return false;
@@ -484,8 +507,13 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
                 native_gdn_conv_silu(L.conv_state, I.qkv, L.conv_w, I.conv_out, I.h, C, cfg_.ssm_d_conv, s);
                 native_gdn_l2_norm(I.h, KH, S, eps, s);
                 native_gdn_l2_norm(I.h + qk, KH, S, eps, s);
-                dense_gemv_f32(L.alpha_w, I.xn, I.alpha, E, VH, s);
-                dense_gemv_f32(L.beta_w, I.xn, I.beta, E, VH, s);
+                if (L.ab_quant) {           // xn is still quantized in the shared q8_1 scratch: nothing overwrote it
+                    I.gemv(L.alpha_q, I.alpha, s);
+                    I.gemv(L.beta_q, I.beta, s);
+                } else {
+                    dense_gemv_f32(L.alpha_w, I.xn, I.alpha, E, VH, s);
+                    dense_gemv_f32(L.beta_w, I.xn, I.beta, E, VH, s);
+                }
                 native_gdn_beta_gate(I.beta, VH, s);
                 native_gdn_gate(I.alpha, L.dt, L.ssm_a, I.gate, VH, s);
                 GdnShapes gs{S, KH, VH};
