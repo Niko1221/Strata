@@ -127,9 +127,6 @@ bool cpu_avx2_ok() {
     }();
     return ok;
 }
-    }();
-    return ok;
-}
 
 std::string cpu_name() {
     unsigned r[12] = {};
@@ -138,7 +135,7 @@ std::string cpu_name() {
     __cpuid(x, (int) 0x80000000u);
     if ((unsigned) x[0] < 0x80000004u) return "unknown";
     for (unsigned i = 0; i < 3; ++i) {
-        __cpuidex(x, (int) (0x80000002u + i));
+        __cpuid(x, (int) (0x80000002u + i));
         for (int j = 0; j < 4; ++j) r[i * 4 + j] = (unsigned) x[j];
     }
 #else

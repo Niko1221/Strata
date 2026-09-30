@@ -1,9 +1,9 @@
-// src/kernels/cpu/s2_avx1_parity.cpp - LOCAL PORT (Z620): proves the CANONICAL Q2_0 expert path against a
+// src/kernels/cpu/s2_avx1_parity.cpp - proves the CANONICAL Q2_0 expert path against a
 // scalar reference written independently in a plain translation unit.
 //
 // WHY A SECOND TEST, AND WHY IT CANNOT REUSE UPSTREAM'S
 // ------------------------------------------------------
-// The first local test (q2_avx1_parity.cpp) covers the NATIVE pack layout.  This one covers the CANONICAL
+// The first test (q2_avx1_parity.cpp) covers the NATIVE pack layout.  This one covers the CANONICAL
 // layout, which is the one a recommended Q2_0 / IQ2_XS install actually produces and the one pool.cpp runs:
 //     CANONICAL: codes and scales in SEPARATE arrays - ROW_GU = 640 B of codes per row (16 B per 64-weight
 //                block) and SC_GU*2 = 80 B of fp16 scales per row.
@@ -207,7 +207,7 @@ std::string fmt(const char* label, double err, double tol) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
-    std::printf("CANONICAL Q2_0 expert path, AVX1 vs an independent scalar reference (LOCAL PORT, Z620)\n");
+    std::printf("CANONICAL Q2_0 expert path, AVX1 vs an independent scalar reference \n");
 #if defined(__AVX512F__) || defined(__AVX2__)
     std::printf("  WARNING: this TU has a per-file ISA flag, so a pass would not prove the kernel runs on a\n"
                 "          CPU without it.  It must be built with no per-file ISA flag.\n");

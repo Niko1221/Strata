@@ -1,4 +1,4 @@
-// src/kernels/cpu/q2_avx1.cpp - LOCAL PORT (Z620): the Q2_0 expert rows and the activation quantizer for CPUs
+// src/kernels/cpu/q2_avx1.cpp - the Q2_0 expert rows and the activation quantizer for CPUs
 // with AVX but no AVX2 and no FMA3 (Sandy Bridge / Westmere-era Xeons, i.e. Xeon E5-2600 v1).
 //
 // WHY THIS FILE EXISTS
