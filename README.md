@@ -1,231 +1,88 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata for Radeon RX 9070</h1>
 
-<p align="center"><b>Windows HIP fork: Qwen3.8-Flash-Next on an AMD Radeon RX 9070</b><br>
-ROCm 10 · gfx1201 · 16 GB VRAM · 128K context · fork of Niko1221/Strata</p>
+<p align="center"><b>HIP engine for the RX 9070 series (gfx1201), on Windows with ROCm 10</b><br>
+Also builds for RX 9060 (gfx1200) and RX 7900 XT/XTX (gfx1100) · fork of <a href="https://github.com/Niko1221/Strata">Niko1221/Strata</a></p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
-<sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
+This branch is the Radeon path. It compiles Strata's wave32 HIP backend and runs
+[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) on an AMD GPU.
+The NVIDIA one-click installer and its published speeds belong to
+[upstream](https://github.com/Niko1221/Strata). They are not the results of this tree.
 
-This fork builds Strata's HIP engine on Windows with ROCm 10 and runs
-**[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** on an AMD Radeon RX 9070
-(`gfx1201`, 16 GB). The measured rate on that card is about **20 tokens per second**, not the
-upstream NVIDIA figure below.
+A tested Windows engine for gfx1201 is attached to
+[win-gfx1201-2026-09-30](https://github.com/jagsan-cyber/Strata/releases/tag/win-gfx1201-2026-09-30).
+`strata.exe` still needs a ROCm 10 runtime on `PATH`. It does not include the model.
 
-- **Free and open source.**
+## Cards
 
-> **Jump to:** [How fast?](#how-fast-is-it) · [Which model?](#which-model-should-i-pick) · [Install](#install) ·
-> [Using it](#using-it) · [Problems?](#something-went-wrong) · [How it works](#how-does-it-work) ·
-> [All the details](docs/DETAILS.md)
+| Card | Architecture | In this branch |
+| --- | --- | --- |
+| Radeon RX 9070 / 9070 XT | gfx1201 | built and run on Windows, ROCm 10 |
+| Radeon RX 9060 | gfx1200 | same wave32 backend, not measured here |
+| Radeon RX 7900 XT / XTX | gfx1100 | same backend; upstream's Linux numbers are in [AMD_HIP_PERFORMANCE.md](docs/AMD_HIP_PERFORMANCE.md) |
 
----
+One GPU. No image input on this backend. gfx1201 has no hipBLASLt tuning table, so dense prefill uses hipBLAS.
 
-## How fast is it?
+## Measured on an RX 9070
 
-Measured on this fork: Windows 11, Radeon RX 9070 16 GB, Core i7-12700, 96 GB RAM, ROCm 10.0.0,
-Unsloth UD-Q3_K_XL, MTP on, context 131072, FP16 KV kept on the GPU.
+Windows 11, RX 9070 16 GB, Core i7-12700 (AVX2, no AVX-512), 96 GB RAM, ROCm 10.0.0.
+Model: Unsloth Qwen3.8-Flash-Next UD-Q3_K_XL. MTP on (`--spec 4`, `--spec-min-p 0.5`).
+Context 131072. KV is FP16 and stays on the GPU, so the expert cache is smaller than at 8K.
 
-| | This PC |
+| | RX 9070, this pack |
 | --- | ---: |
-| Writes a long answer (128K window) | 19.6 tokens/s |
-| Writes a short answer | about 20-29 tokens/s |
-| Reads a 4445-token prompt | 238 tokens/s |
+| Long reply, 128K window | 19.6 tokens/s (28,377 tokens) |
+| Short reply | about 20–29 tokens/s |
+| Read a 4,445-token prompt | 238 tokens/s |
 | MTP drafts kept | 73% (18,272 of 24,916) |
-| Experts resident on the GPU | 2,357 of 24,576 (4.97 GiB) |
+| Experts on the GPU at 128K | 2,357 of 24,576 (4.97 GiB) |
+| Expert-cache hits on that reply | 70% |
+| VRAM free after load | 498 MiB |
+| Experts in RAM | 52 GiB |
 
-The long-answer row is one 28,377-token reply. The expert cache hit rate on that run was 70%.
-A 16 GB card at 128K with FP16 KV cannot hold the expert count the upstream 12 GB NVIDIA setup holds.
+At 8K context the same card held 3,914 experts (8.25 GiB). The drop at 128K is the FP16 KV cache, not a missing kernel.
 
-Upstream's published table is a different machine (RTX 5070 12 GB, Ryzen 5 7600, 64 GB RAM) and the official packs:
+## What this branch adds
 
-| Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
-| --- | ---: | ---: | ---: |
-| **Q2_0** | 93 tokens/s | 74 tokens/s | 2,170 tokens/s |
-| **IQ2_XS** | 79 tokens/s | 63 tokens/s | 2,090 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 49 tokens/s | 1,750 tokens/s |
-| **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |
-| **Coder** (IQ1_M) | 55 tokens/s | 43 tokens/s | 2,180 tokens/s |
+- Windows host build with ROCm 10's clang. CMake will not mix MSVC with Clang HIP. Setup prefers a ROCm tree that contains the card's bitcode (`rocm-sdk`, then `ROCM_PATH`, `HIP_PATH`, then `C:\Program Files\AMD\ROCm`).
+- Wave32 targets gfx1100, gfx1200, and gfx1201.
+- Unsloth's 3-shard GGUF: gate, up, and down of one layer may sit in different shards. Q8_0 expert rows and the Q8_0 embedding have a GPU dot.
+- An F32 `ple_conv1d` is converted to FP16 at startup. The conv kernels read FP16.
+- After a successful hipBLAS GEMM on gfx1201, a leftover invalid-argument error is cleared so a long prompt does not abort the process.
 
-Those prompt rates are for a 32K-token prompt. Full upstream tables are in the
-[details](docs/DETAILS.md#speed-measured). AMD notes: [AMD HIP](docs/AMD_HIP.md).
+Build and pack notes: [docs/AMD_HIP.md](docs/AMD_HIP.md).
 
-Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
-(about 5-10 minutes; on the PC above it made the Coder 7% faster).
+## Build
 
-**Two or three NVIDIA cards?** Just run `START-HERE.bat`: it lists your cards, says which ones Strata can use, and
-asks whether to share the model across them (recommended when two can). An install made on one card asks once at
-its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
-card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
-pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+ROCm 10 with the gfx1201 bitcode, CMake, Ninja, and git. On Windows the C and C++ compilers are ROCm's `clang.exe` and `clang++.exe`, not `cl.exe`.
 
-## Which model should I pick?
+```sh
+cmake -S . -B build-hip \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1201 \
+  -DCMAKE_C_COMPILER="$ROCM/lib/llvm/bin/clang.exe" \
+  -DCMAKE_CXX_COMPILER="$ROCM/lib/llvm/bin/clang++.exe"
+cmake --build build-hip --target strata
+```
 
-**The size** (the same model, compressed more or less):
+`$ROCM` is the ROCm 10 tree (the `rocm-sdk` devel prefix, or `ROCM_PATH`). Put that tree's `bin`, `lib`, and `lib/llvm/bin` on `PATH` before starting the engine.
 
-| Model | RAM+VRAM Requirements | Speed | Quality |
-| --- | ---: | --- | --- |
-| **Q2_0** | 37.6 GB | fastest | good |
-| **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
-| **IQ3_XXS** | 47.0 GB | slower | great |
-| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests (original model only) |
+## Run
 
-**Will it fit?** Shard 1 is the part of the model that gets loaded when it starts: its experts go into your **RAM**,
-the rest onto your graphics card (the second shard, a 29 GB lookup table, stays on the SSD). So it fits when your
-**RAM is at least shard 1 + about 10 GB** for Windows and your other programs. With 64 GB of RAM every size fits
-(IQ3_S with little else open); with 48 GB, Q2_0 and IQ2_XS. A bigger graphics card makes it faster, but it doesn't
-lower the RAM needed.
+Serve the pack you built. The engine used for the table above was started with:
 
-**The version:**
+- `--pack` the native pack, `--native` and `--ple-gguf` pointing at the weight shard
+- `--expert-cache auto`, `--prefill auto`, `--max-context 131072`
+- `--mtp` the packed draft runtime, `--spec 4`, `--spec-min-p 0.5`
 
-- **Qwen3.8-Flash-Next** - the original.
-- **[Coder](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF)** - ISTA-DASLab's coding
-  version: half of the experts removed, keeping the ones that code, tool use and images need (91% of the full model's
-  SWE-bench Verified score, 99% of LiveCodeBench, by its authors). One size (IQ1_M: its experts stored like IQ3_S):
-  shard 1 is **29.6 GB**, so it fits a PC with **32 GB of RAM**, runs 262K context on 64 GB, and reads long prompts
-  the fastest of all. Weaker outside coding.
-- **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)** - a fine-tune by UkisAI
-  that thinks much shorter before answering, so you get the answer sooner, with about the same quality. Same speed per
-  token, and about the same RAM as the same size of the original (no IQ3_S). Its own license applies (see its page).
+KV was left at the default FP16, fully resident. `--kv int8` and `--kv-resident 32768` are the upstream knobs that give the expert cache its VRAM back at 64K and above. They were not on for the numbers in the table.
 
-Not sure? Take **IQ2_XS** - or the **Coder** if you mainly write code, or have 32-48 GB of RAM. You can add another
-one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./setup.sh --setup`).
+The browser API is OpenAI-compatible (`/v1/chat/completions`). This machine's server listens on port 8095. Upstream's installer uses 8080.
 
-For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
-It needs an explicit packing conversion and is not an installer menu option.
+## Upstream
 
-An **AMD Radeon RX 7900 XT / XTX, RX 9060 or RX 9070** works too (experimental), on Linux or Windows:
-`./setup.sh --backend hip` or `START-HERE.bat --backend hip`, chosen by itself on a PC with no NVIDIA card Strata
-can use. It compiles the engine against ROCm (one GPU, no images yet). Details: [AMD HIP](docs/AMD_HIP.md).
-
-## Install
-
-**You need:** an NVIDIA RTX 20, 30, 40 or 50 card with 12 GB of VRAM or more (RTX 20 since 0.1.27), enough RAM for the size you pick (above;
-a big GPU makes up for less RAM - the [low-RAM mode](docs/DETAILS.md)),
-~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux. The only thing you
-install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
-App). Everything else - Python, the engine, the model - is set up for you.
-
-**Windows**
-
-1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
-2. Double-click **`START-HERE.bat`**.
-3. Answer a few questions - or just press Enter each time for the recommended choice:
-   - **Which model and size?** The original or Swift 1.5, and Q2_0, IQ2_XS, IQ3_XXS or IQ3_S - see [above](#which-model-should-i-pick)
-   - **How much context?** How much text it can keep in mind at once (it suggests one for your card)
-   - **Images?** Whether it should also read pictures
-   - **Experimental speed projection?** Off unless you say yes - [read what it does](docs/DETAILS.md#experimental-speed-projection-experimental-off-by-default) first
-
-Then it downloads everything (the model is ~70 GB, so the first time takes a while - you can stop and it picks up
-where it left off) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080`.
-
-> **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
-> loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
-> window. The window tells you what it is doing.
-
-**Next time**, just double-click `START-HERE.bat` again: it starts right away, nothing is downloaded twice. Close its
-window to stop the model.
-
-**Updating:** download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` in it. The
-model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy finds them and sets itself up
-the same way - nothing big is downloaded again.
-
-**Linux:** run `./setup.sh` - same questions, same result.
-
-## Using it
-
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
-
-- **In the browser:** `http://127.0.0.1:8080` - the Strata app (it opens by itself when the model starts): **Chat**, a
-  live **Monitor** of the model and your GPU/CPU/RAM, and **About** with the settings and addresses.
-- **Chat in the terminal:** `.venv\Scripts\python chat.py`
-- **Your apps and coding agents:** add it as an "OpenAI-compatible" provider with base URL
-  **`http://127.0.0.1:8080/v1`**, any API key and any model name. Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages`.
-- **Thinking:** the model thinks before it answers. Choose **off, low, medium or high** - in the chat page menu, with
-  `/think low` in `chat.py`, or with your app's "reasoning effort" setting. Off is fastest; high is best for hard questions.
-- **Pictures:** in the chat page click **Picture**; in `chat.py` type `/image <path>`; in apps just attach them.
-- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`, then open the
-  address the server window prints; see the [details](docs/DETAILS.md#using-it).
-- **Experimental speed projection (off by default):** an experimental control vector that setup can turn on; it
-  changes how the model answers - read [what it does](docs/DETAILS.md#experimental-speed-projection-experimental-off-by-default) first.
-
-**Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute per
-30,000 tokens); after that it keeps the conversation and reads only what is new, so follow-ups start in seconds.
-
-## Something went wrong?
-
-**My PC froze, or got very slow, the first time Strata started.**
-That's normal while it starts, most of all the first time. Strata loads 35-55 GB into your RAM, locks part of it for
-the graphics card, and works out how much of the model fits on your GPU. The mouse can freeze for a few minutes. **Wait, and don't close the
-window.** The next starts are much faster. Still frozen after 10 minutes? Restart the PC, close other programs
-(browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0 or IQ2_XS).
-
-**It stopped while downloading or installing.**
-Run `START-HERE.bat` again. It continues where it stopped.
-
-**It says the NVIDIA driver is too old.**
-Update it (NVIDIA App or [nvidia.com/drivers](https://www.nvidia.com/drivers)), restart the PC, and run
-`START-HERE.bat` again.
-
-**It says port 8080 is already in use.**
-Strata is already running. Look for its window.
-
-**It's very slow and the disk light keeps blinking.**
-Your PC is out of free RAM. Close other programs, or pick a smaller size (Q2_0 or IQ2_XS).
-
-**An answer stopped with "the engine stopped unexpectedly".**
-Usually not enough RAM (on Linux the system then stops the engine). Just send your message again: Strata starts the
-engine by itself. If it keeps happening, close other programs or pick a smaller size.
-
-**It says the prompt exceeds the context.**
-The conversation is longer than the context you chose. Start a new chat, or run `SETUP.bat` and pick more
-context.
-
-**Still stuck?** Look in the [full troubleshooting table](docs/DETAILS.md#troubleshooting), or open an issue and
-attach `strata-<model>.log` from the Strata folder.
-
-## How does it work?
-
-Models like this one normally run on servers with hundreds of gigabytes of graphics memory. Your graphics card has
-12-24 GB. Strata makes it fit by **sharing the work across your whole PC** - the same idea as a kitchen, where the
-things you use all the time stay on the counter and the rest waits in the pantry.
-
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
-
-- **The model is a team of 24,576 small specialists ("experts"),** and each word it writes needs only 10 of them.
-  So it doesn't have to have all of them on the graphics card at once.
-- **Your graphics card** does the part of the work needed for every word, and keeps the few thousand experts that
-  are asked most often. It keeps learning which ones those are while you use it.
-- **Your RAM** holds every expert. When a word needs one the card doesn't have, **your processor** works on it -
-  at the same time as the graphics card, so neither waits for the other.
-- **Your SSD** holds a big lookup table; the model only reads a few small rows of it per word.
-
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
-
-- **Guess, then check.** A small, fast helper built into the model guesses the next few words, and the big model
-  checks all the guesses in one go. It keeps the ones it agrees with and writes the next word itself - so one step
-  often produces several words. The helper only guesses - the big model decides every word - so you get the same
-  quality answer, 1.6-1.8x sooner.
-- **Long texts are read in big pieces** (up to 8,192 tokens - pieces of words - at a time), which is why a long
-  document or code base is read at over 1,000 tokens per second.
-
-Want the full picture? The [details](docs/DETAILS.md#how-it-works) explain every part and its numbers, and the
-[paper](docs/paper/Strata-Paper.pdf) tells the whole story, with the measurements behind it.
-
-## Credits
-
-- Model: [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team; compressed versions by
-  [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF);
-  [Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) by UkisAI. Their licenses apply
-  to the model files.
-- Built with parts of [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT). Ideas from
-  [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
-  [HyperQwen](https://github.com/syv-ai/HyperQwen). More in the [details](docs/DETAILS.md#credits-and-licenses).
+[Niko1221/Strata](https://github.com/Niko1221/Strata) is the project this fork is taken from: the NVIDIA installer, the model menu, and the RTX 5070 speed tables. Engine behavior that this branch does not change is documented in [docs/DETAILS.md](docs/DETAILS.md).
 
 ## License
 
-Strata is open source under the [MIT License](LICENSE). A few parts carry their own licenses: `third_party/ggml`
-(MIT, llama.cpp / ggml), the web app's font (SIL Open Font License 1.1) and the experimental speed projection's
-vector in `data/experimental-speed-projection` (Qwen Community License 1.0, from the model's activations). The
-models are not part of this repository; each model's own license applies to its files.
+[MIT](LICENSE). `third_party/ggml` is MIT (llama.cpp / ggml). Model files are not in this repository; each model's own license applies.

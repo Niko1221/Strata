@@ -1,9 +1,10 @@
-# Experimental AMD HIP backend (gfx1100, gfx1200, gfx1201)
+# Radeon HIP backend (RX 9070 / gfx1201, RX 9060 / gfx1200, RX 7900 / gfx1100)
 
-This is an opt-in source build. The NVIDIA installer and CUDA build remain the
-default. Wave32 targets are the RX 7900 XT/XTX (`gfx1100`), the RX 9060
-(`gfx1200`) and the RX 9070 (`gfx1201`). Wave64 and mixed AMD/NVIDIA execution
-are outside this contribution.
+This fork's engine is the wave32 HIP build. The card it was run on is the
+RX 9070 (`gfx1201`) under Windows and ROCm 10. The same backend also targets
+the RX 9060 (`gfx1200`) and the RX 7900 XT/XTX (`gfx1100`). Wave64 and mixed
+AMD/NVIDIA execution are outside this tree. The NVIDIA installer lives in
+[upstream](https://github.com/Niko1221/Strata).
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
 RDNA3's signed integer dot instruction for quantized kernels, and supplies
