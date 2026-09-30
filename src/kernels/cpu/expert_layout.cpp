@@ -247,6 +247,70 @@ void cpu_require_expert_support_any() {
     std::exit(1);
 }
 
+// ================================ LOCAL PORT: the canonical expert path, dispatched ================
+//
+// `pool.cpp` is the CPU expert worker loop and it calls `s2_expert_vnni_q` / `s2_expert_gu_rows` /
+// `s2_expert_down_rows` and their `_multi` forms directly.  All of those are DEFINED in `expert.cpp`, a
+// translation unit compiled with `/arch:AVX512`, so on a CPU without AVX-512 calling them is not merely
+// slow - it is a trap.  Upstream's answer is to refuse the CPU at startup (`cpu_require_expert_support`).
+//
+// This adds the missing middle: each entry point picks the AVX-512 original or the AVX1 port.  Two
+// properties matter and both come from where the dispatch LIVES:
+//
+//   * it is in this TU, which carries no per-file ISA flag, so evaluating `cpu_avx512_ok()` is safe
+//     anywhere.  Putting the same check in `expert.cpp` would risk the compiler emitting AVX-512 into
+//     the check itself.
+//   * the AVX-512 originals are only CALLED when `cpu_avx512_ok()` has already returned true, which is
+//     exactly the condition under which calling them is defined.  On a Sandy Bridge the branch is not
+//     taken and the AVX1 port runs instead.
+//
+// Each wrapper is a straight forward-through: the AVX1 and AVX-512 versions have the same contract, and
+// the parity test (s2_avx1_parity.cpp) checks that claim against an independent reference rather than
+// taking it on trust.
+
+// The AVX-512 originals, renamed from s2_expert_* in expert.cpp so these can be told apart.  The rename
+// is the only change to that file and it is mechanical.
+
+void s2_expert_vnni_q_any(const uint8_t* blob, const ActQ& a1, float* out, ExpertScratch& ws) {
+    if (cpu_avx512_ok()) s2_expert_vnni_q(blob, a1, out, ws);
+    else s2_expert_vnni_q_avx1(blob, a1, out, ws);
+}
+
+void s2_expert_gu_rows_any(const uint8_t* blob, const ActQ& a1, float* ff, int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_gu_rows(blob, a1, ff, r0, r1);
+    else s2_expert_gu_rows_avx1(blob, a1, ff, r0, r1);
+}
+
+void s2_expert_down_rows_any(const uint8_t* blob, const ActQ& a2, float* out, int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_down_rows(blob, a2, out, r0, r1);
+    else s2_expert_down_rows_avx1(blob, a2, out, r0, r1);
+}
+
+void s2_expert_gu_rows_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* ff, int r0,
+                                 int r1) {
+    if (cpu_avx512_ok()) s2_expert_gu_rows_multi(blob, a1, n_tokens, ff, r0, r1);
+    else s2_expert_gu_rows_multi_avx1(blob, a1, n_tokens, ff, r0, r1);
+}
+
+void s2_expert_down_rows_multi_any(const uint8_t* blob, const ActQ* const* a2, int n_tokens, float* const* out,
+                                   int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_down_rows_multi(blob, a2, n_tokens, out, r0, r1);
+    else s2_expert_down_rows_multi_avx1(blob, a2, n_tokens, out, r0, r1);
+}
+
+void s2_expert_vnni_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
+                              ExpertScratchMulti& ws) {
+    // The experimental oracle contract (`expert_set_oracle_q8_0`) is implemented only in the AVX-512 TU,
+    // and it is off by default, so on this CPU fall back to one full expert per token rather than
+    // pretending the two agree.  Upstream's own multi path does the same thing for this flag.
+    if (expert_oracle_q8_0_enabled()) {
+        for (int t = 0; t < n_tokens; ++t) s2_expert_vnni_q_any(blob, *a1[t], out[t], ws.single);
+        return;
+    }
+    if (cpu_avx512_ok()) s2_expert_vnni_multi(blob, a1, n_tokens, out, ws);
+    else s2_expert_vnni_multi_avx1(blob, a1, n_tokens, out, ws);
+}
+
 #if !defined(STRATA_NATIVE_EXPERTS)
 // Without ggml-cpu no native pack loads (expert_layout_load refuses), so these are never reached.
 bool native_experts_available() noexcept { return false; }
