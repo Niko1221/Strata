@@ -378,8 +378,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
 #if !defined(__HIPCC__)
-    if (fp32_ && N >= 32 && K > 0) {
+    if (fp32_ && N >= 32 && K > 0 && N >= (K + 15) / 16) {
         // Volta/Turing lack native BF16 GEMM. Expand exactly, then use SGEMM for wide products.
+        // Retain GemmEx for deep, narrow projections: tiling overhead regressed N=320, K=10240 on V100.
         const int64_t rows = std::min<int64_t>(T, std::min<int64_t>(1024, BF16_FP32_CAPACITY / K / 2));
         if (rows > 0) {
             float* xf = fp32_;

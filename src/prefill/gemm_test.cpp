@@ -86,7 +86,7 @@ void run(bool external, bool fail, bool pre_ampere) {
 #endif
             if (external) gemm.rebind(nullptr, 0, workspace.ptr, 32u << 20);
             for (const auto& shape : std::vector<std::vector<int>>{{1, 35, 47}, {17, 35, 47}, {33, 35, 47},
-                                                                 {1031, 35, 47}, {3, 4103, 4097}, {17, 4, 47}})
+                                                                 {1031, 35, 47}, {3, 4103, 4097}, {17, 4, 47}, {3, 35, 577}})
                 parity(gemm, shape[0], shape[1], shape[2]);
 #if defined(STRATA_TEST_WRAP_CUDA_MALLOC)
             if (fp32_allocations != expected)
