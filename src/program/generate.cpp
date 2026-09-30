@@ -1329,20 +1329,61 @@ int main(int argc, char** argv) {
                          o.rope_scaling.c_str());
             return 2;
         }
-        // 0 is the absent default; an explicit factor must extend, not shrink
-        if (o.rope_scale > 0 && o.rope_scale < 1.0) {
-            std::fprintf(stderr, "strata generate: --rope-scale %g must be >= 1 (it extends the context, not shrinks it)\n",
-                         o.rope_scale);
+        // 0 is the absent default; an explicit factor must be finite and extend, not shrink.  NaN passes
+        // every range comparison, and != 0 reads an explicit NaN as supplied, so finiteness is its own check.
+        if (o.rope_scale != 0 && (!std::isfinite(o.rope_scale) || o.rope_scale < 1.0)) {
+            std::fprintf(stderr, "strata generate: --rope-scale must be a finite number >= 1 (it extends the "
+                                 "context, not shrinks it; got %g)\n", o.rope_scale);
             return 2;
         }
-        if (o.rope_freq_base != 0 && o.rope_freq_base <= 1.0) {
-            std::fprintf(stderr, "strata generate: --rope-freq-base must be a base above 1 (0 = the model's)\n");
+        if (o.rope_freq_base != 0 && (!std::isfinite(o.rope_freq_base) || o.rope_freq_base <= 1.0)) {
+            std::fprintf(stderr, "strata generate: --rope-freq-base must be a finite base above 1 (0 = the model's; "
+                                 "got %g)\n", o.rope_freq_base);
             return 2;
         }
-        if (o.rope_freq_scale < 0 || o.yarn_orig_ctx < 0 || o.yarn_ext_factor < -1.0 || o.yarn_attn_factor <= 0 ||
-            o.yarn_beta_fast <= 0 || o.yarn_beta_slow <= 0) {
-            std::fprintf(stderr, "strata generate: invalid rope scaling knob (see usage: --yarn-ext-factor <0 = auto, "
-                                 "--yarn-orig-ctx 0 = default, the rest positive)\n");
+        if (o.rope_freq_scale != 0 && !std::isfinite(o.rope_freq_scale)) {
+            std::fprintf(stderr, "strata generate: --rope-freq-scale must be a finite number of at least 0 "
+                                 "(0 = 1/--rope-scale; got %g)\n", o.rope_freq_scale);
+            return 2;
+        }
+        if (o.rope_freq_scale < 0) {
+            std::fprintf(stderr, "strata generate: --rope-freq-scale must be at least 0 (0 = 1/--rope-scale; got %g)\n",
+                         o.rope_freq_scale);
+            return 2;
+        }
+        if (o.yarn_orig_ctx != 0 && !std::isfinite(o.yarn_orig_ctx)) {
+            std::fprintf(stderr, "strata generate: --yarn-orig-ctx must be a finite number of at least 1 "
+                                 "(0 = the model's; got %g)\n", o.yarn_orig_ctx);
+            return 2;
+        }
+        if (o.yarn_orig_ctx < 0) {
+            std::fprintf(stderr, "strata generate: --yarn-orig-ctx must be at least 0 (0 = the model's; got %g)\n",
+                         o.yarn_orig_ctx);
+            return 2;
+        }
+        if (o.yarn_ext_factor != -1.0 && !std::isfinite(o.yarn_ext_factor)) {
+            std::fprintf(stderr, "strata generate: --yarn-ext-factor must be a finite number of at least 0 "
+                                 "(-1 = auto; got %g)\n", o.yarn_ext_factor);
+            return 2;
+        }
+        if (o.yarn_ext_factor < -1.0) {
+            std::fprintf(stderr, "strata generate: --yarn-ext-factor must be at least -1 (-1 = auto; got %g)\n",
+                         o.yarn_ext_factor);
+            return 2;
+        }
+        if (!std::isfinite(o.yarn_attn_factor) || o.yarn_attn_factor <= 0) {
+            std::fprintf(stderr, "strata generate: --yarn-attn-factor must be a finite number above 0 (got %g)\n",
+                         o.yarn_attn_factor);
+            return 2;
+        }
+        if (!std::isfinite(o.yarn_beta_fast) || o.yarn_beta_fast <= 0) {
+            std::fprintf(stderr, "strata generate: --yarn-beta-fast must be a finite number above 0 (got %g)\n",
+                         o.yarn_beta_fast);
+            return 2;
+        }
+        if (!std::isfinite(o.yarn_beta_slow) || o.yarn_beta_slow <= 0) {
+            std::fprintf(stderr, "strata generate: --yarn-beta-slow must be a finite number above 0 (got %g)\n",
+                         o.yarn_beta_slow);
             return 2;
         }
     }
@@ -1466,6 +1507,14 @@ int main(int argc, char** argv) {
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
+                if (!std::isfinite(gguf_rope_base) || !std::isfinite(gguf_rope_factor) ||
+                    !std::isfinite(gguf_rope_orig_ctx)) {
+                    std::fprintf(stderr, "strata generate: %s carries a non-finite rope key (rope.freq_base %g, "
+                                         "rope.scaling.factor %g, rope.scaling.original_context_length %g) - the "
+                                         "model file's rope metadata must be finite\n",
+                                 o.native_preset.c_str(), gguf_rope_base, gguf_rope_factor, gguf_rope_orig_ctx);
+                    return 2;
+                }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
                              o.native_preset.c_str(), e.what());
@@ -1499,6 +1548,14 @@ int main(int argc, char** argv) {
         rope_cfg.attn_factor = o.yarn_attn_factor;
         rope_cfg.beta_fast = o.yarn_beta_fast;
         rope_cfg.beta_slow = o.yarn_beta_slow;
+        // THE VALIDATION GATE: the resolved config - CLI, model file and derived constants alike - is
+        // checked for finiteness and the ranges the formulas need BEFORE any table is built or any
+        // rotation kernel sees it.  NaN slips through every range comparison, so the earlier knob checks
+        // are not enough on their own.
+        if (const std::string rope_err = strata::kernels::rope_scaling_validate(rope_cfg); !rope_err.empty()) {
+            std::fprintf(stderr, "strata generate: rope scaling: %s\n", rope_err.c_str());
+            return 2;
+        }
         strata::kernels::rope_scaling_set(rope_cfg);
         if (rope_cfg.type != RST::None) {
             const char* tn = rope_cfg.type == RST::YaRN ? "yarn" : "linear";

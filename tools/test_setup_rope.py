@@ -64,6 +64,14 @@ class ResolveRope(unittest.TestCase):
         self.assertEqual(setup.resolve_rope(131072, "yarn", 2.0), ("yarn", 2.0))
         self.assertEqual(setup.resolve_rope(131072, "linear", 1.75), ("linear", 1.75))
 
+    # ---- non-finite factors are rejected, in the window and out of it (TODO 5)
+    def test_non_finite_scales_are_rejected(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                setup.resolve_rope(524288, "yarn", bad)
+            with self.assertRaises(ValueError):
+                setup.resolve_rope(131072, "linear", bad)
+
     # ---- an explicit none past the trained range is refused with an explanation, not overridden
     def test_explicit_none_past_trained_is_refused(self):
         with self.assertRaises(ValueError) as cm:

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import math
 import json
 import os
 import platform
@@ -1612,6 +1613,8 @@ def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
     past the trained range (the setup will not configure a run it knows is out of spec) rather than
     silently overridden.
     """
+    if scale is not None and not math.isfinite(scale):
+        raise ValueError("--rope-scale must be a finite number (got %r)" % scale)
     if ctx <= trained:
         if scale is not None and scaling in (None, "none"):
             raise ValueError("--rope-scale needs --rope-scaling linear or yarn (the chosen context fits the "

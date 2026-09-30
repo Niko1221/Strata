@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cmath>
+#include <string>
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_ROPE_SCALING_HD __host__ __device__
@@ -131,6 +132,47 @@ STRATA_ROPE_SCALING_HD inline void rope_scaled_angle(float theta_extrap, float f
     }
     cos_out = cosf(theta) * mscale;
     sin_out = sinf(theta) * mscale;
+}
+
+/// The one validation gate for a RESOLVED configuration: every floating-point field, every derived
+/// constant and every value as the kernels consume it (float), finite and inside the ranges the formulas
+/// need.  NaN passes every range comparison, so the ranges alone are not enough, and a finite value can
+/// still be invalid (a freq_base that turns to inf in float, a freq_scale of 0).  Returns an empty string
+/// when the config is usable, else "<parameter>: <reason>".  Runs once after the CLI, the model file and
+/// the defaults have met and before any table is built or rotation kernel launched; the per-kernel
+/// wrappers re-check their own arguments defensively.  corr_dims needs no check of its own: with
+/// orig_ctx >= 1, betas > 0 and a finite base above 1 its logarithm's argument is positive and finite.
+inline std::string rope_scaling_validate(const RopeScaling& sc) {
+    if (!std::isfinite(sc.freq_base) || sc.freq_base <= 1.0)
+        return "rope.freq_base must be a finite number above 1";
+    if (!std::isfinite(sc.factor) || sc.factor < 1.0)
+        return "rope.scale (the extension factor) must be a finite number of at least 1";
+    if (!std::isfinite(sc.freq_scale_in) || sc.freq_scale_in < 0.0)
+        return "--rope-freq-scale must be a finite number of at least 0 (0 = 1/factor)";
+    if (!std::isfinite(sc.orig_ctx) || sc.orig_ctx < 1.0)
+        return "the trained context (--yarn-orig-ctx / rope.scaling.original_context_length) must be a finite "
+               "number of at least 1";
+    if (!std::isfinite(sc.ext_factor) || sc.ext_factor < 0.0)
+        return "--yarn-ext-factor must be a finite number of at least 0 (0 = off, -1 = auto)";
+    if (!std::isfinite(sc.attn_factor) || sc.attn_factor <= 0.0)
+        return "--yarn-attn-factor must be a finite number above 0";
+    if (!std::isfinite(sc.beta_fast) || sc.beta_fast <= 0.0)
+        return "--yarn-beta-fast must be a finite number above 0";
+    if (!std::isfinite(sc.beta_slow) || sc.beta_slow <= 0.0)
+        return "--yarn-beta-slow must be a finite number above 0";
+    const double fs = sc.freq_scale();
+    if (!std::isfinite(fs) || fs <= 0.0)
+        return "the resolved freq_scale must be a finite number above 0";
+    const double ms = sc.mscale();
+    if (!std::isfinite(ms) || ms <= 0.0)
+        return "the resolved mscale must be a finite number above 0";
+    if (const float fb = (float) sc.freq_base; !std::isfinite(fb) || fb <= 1.0f)
+        return "rope.freq_base must stay a finite number above 1 in the float precision the kernels use";
+    if (const float fsf = (float) fs; !std::isfinite(fsf) || fsf <= 0.0f)
+        return "the resolved freq_scale must stay a finite number above 0 in the float precision the kernels use";
+    if (const float msf = (float) ms; !std::isfinite(msf) || msf <= 0.0f)
+        return "the resolved mscale must stay a finite number above 0 in the float precision the kernels use";
+    return "";
 }
 
 /// The process's one rope configuration.  Set it ONCE at startup, after the CLI and the model file
