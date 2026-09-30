@@ -12,6 +12,14 @@ namespace strata::prefill {
 // ---- hyper-connection (n_embd 2560, hc 4, hc_lr 320)
 /// xn[t, c*2560 + d] = R[t,c,d] * rsqrt(mean_d R[t,c,:]^2 + eps) * w_norm[c*2560 + d]; also its BF16 image.
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream);
+/// gr_norm without the FP32 rows: the row scales rs[t*4 + c] and the BF16 image; gr_mix_r reads R instead.
+void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream);
+/// gr_mix with xn recomputed from R, rs and w_norm as gr_norm computes it (the same bits).
+void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
+              int64_t T, void* stream, uint16_t* mixed_h = nullptr);
+/// gr_write (no partial), then gr_norm_rs of the written rows with the next read's norm weights, R read once.
+void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm, float eps,
+                      float* rs, uint16_t* xn16, int64_t T, void* stream);
 /// lo16[t, k] = bf16(silu(lo[t, k] / hc))
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream);
 /// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (any of them may be null).

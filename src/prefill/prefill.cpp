@@ -60,9 +60,9 @@ struct Bufs {
     float *R = nullptr, *bo_moe = nullptr, *inj_f = nullptr, *w = nullptr, *ple_emb = nullptr;
     uint16_t* mixed_h = nullptr;
     int32_t *ids = nullptr, *steps = nullptr;
-    // a sub-chunk's: the mixer's BF16 input, its output, the mixer half's injection
+    // a sub-chunk's: the mixer's BF16 input, its output, the mixer half's injection, a read's row scales
     uint16_t* mixed_bf = nullptr;
-    float *bo = nullptr, *inj_a = nullptr;
+    float *bo = nullptr, *inj_a = nullptr, *rs = nullptr;
     // the union: what one step needs at a time
     float* emb = nullptr;
     float *xn = nullptr, *lo = nullptr, *gated = nullptr;
@@ -100,6 +100,7 @@ Bufs layout(Alloc& a, int64_t T, int64_t cap, int64_t max_blocks, bool offload) 
     b.mixed_bf = a.take<uint16_t>(p * N);
     b.bo = a.take<float>(p * N);
     b.inj_a = a.take<float>(p * HC);
+    b.rs = a.take<float>(p * HC);
     const uint64_t u0 = a.used;
     uint64_t u1 = u0;
     auto next = [&] { u1 = std::max(u1, a.used); a.used = u0; };
@@ -477,7 +478,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 uint16_t* mixed_h = b.mixed_h + t0 * N;
                 for (int half = 0; half < 2; ++half) {
                     mark(half == 0 ? kPsHcRead : kPsHcFfn);
-                    // ---- the hyper-connection read of this half
+                    // ---- the hyper-connection read of this half (the FFN half's norm came with the mixer's write)
                     const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
                     const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
                                       su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
@@ -485,12 +486,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                           *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
                     if (!wn || !wd || !wu || !wi) return false;
                     float* inj = half == 0 ? b.inj_a : b.inj_f + t0 * HC;
-                    gr_norm(b.R + t0 * D, (const float*) wn->data, EPS, b.xn, b.xn16, P, m.cs);
+                    if (half == 0) gr_norm_rs(b.R + t0 * D, (const float*) wn->data, EPS, b.rs, b.xn16, P, m.cs);
                     if (!bf16_proj(m.gemm, wd, b.xn16, b.lo, P, sd, err)) return false;
                     gr_silu(b.lo, b.lo16, P, m.cs);
                     if (!bf16_proj(m.gemm, wu, b.lo16, b.gated, P, su, err)) return false;
                     if (!bf16_proj(m.gemm, wi, b.xn16, inj, P, si, err)) return false;
-                    gr_mix(b.xn, b.gated, nullptr, b.mixed_bf, P, m.cs, mixed_h);
+                    gr_mix_r(b.R + t0 * D, b.rs, (const float*) wn->data, b.gated, nullptr, b.mixed_bf, P, m.cs,
+                             mixed_h);
                     if (half == 1) break;
 
                     if (!qsa) {
@@ -574,9 +576,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         gate_attn(b.attn, b.Qf, b.attn_h, P, m.cs);
                         if (!native_proj(wo, b.attn_h, b.bo, P, v.name("attn_output.weight"), err)) return false;
                     }
-                    // ---- the hyper-connection write of the mixer half
+                    // ---- the hyper-connection write of the mixer half, with the FFN half's norm
                     mark(kPsHcFfn);
-                    gr_write(b.R + t0 * D, b.bo, b.inj_a, HC, P, m.cs);
+                    const core::WeightRef* wfn = need(v, "hc_ffn_norm.weight", err);
+                    if (!wfn) return false;
+                    gr_write_norm_rs(b.R + t0 * D, b.bo, b.inj_a, HC, (const float*) wfn->data, EPS, b.rs, b.xn16, P,
+                                     m.cs);
                 }
                 // ---- the FFN half's input is ready: its trip to the second GPU starts here
                 if (m.offload) {
