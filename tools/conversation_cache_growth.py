@@ -76,7 +76,7 @@ def main():
     if not a.run:
         print('Dry run: paired full/incremental captures; growth, interruption, rewind and branch; no model loaded.')
         return
-    cfg = json.loads(a.config.read_text())
+    cfg = json.loads(a.config.read_text(encoding='utf-8'))
     tok_path = Path(cfg['tokenizer'])
     tok = load_tokenizer(tok_path)
     template = ChatTemplate(tok_path / 'chat_template.jinja')
@@ -147,7 +147,7 @@ def main():
             engine.close()
             engine.proc.wait(timeout=30)
             engine.log.close()
-        log_text = log.read_text()
+        log_text = log.read_text(encoding='utf-8')
         hashes = state_hashes(log_text)
         require(len(hashes) == len(arm['records']), 'missing state fingerprints')
         for record, state in zip(arm['records'], hashes):
@@ -159,10 +159,10 @@ def main():
         arm['draft_verifications'] = log_text.count('SNAPSHOT_VERIFY draft=')
         arm['request_digest'] = hashlib.sha256(json.dumps(results['requests'], sort_keys=True).encode()).hexdigest()
         results['arms'].append(arm)
-        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
         print('DONE', name, flush=True)
     verify(results)
-    (a.output / 'passed.json').write_text(json.dumps({'passed': True, 'request_digest': results['request_digest']}) + '\n')
+    (a.output / 'passed.json').write_text(json.dumps({'passed': True, 'request_digest': results['request_digest']}) + '\n', encoding='utf-8')
     print('PASS: growth and rewind preserve output/state; repeated captures reuse unchanged KV bytes')
 
 

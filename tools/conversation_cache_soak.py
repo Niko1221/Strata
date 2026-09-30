@@ -78,7 +78,7 @@ def main():
         print(f'Dry run: {args.cycles} known-answer A/B/A cycles; approximate lengths {lengths}.')
         print('No model loaded or files created. Use --run only in an exclusive GPU test window.')
         return
-    cfg = json.loads(args.config.read_text())
+    cfg = json.loads(args.config.read_text(encoding='utf-8'))
     path = Path(cfg['tokenizer'])
     tok = load_tokenizer(path)
     template = ChatTemplate(path / 'chat_template.jinja')
@@ -117,7 +117,7 @@ def main():
         def generate(ids, count):
             nonlocal hash_count
             output = [t for t in engine.generate(ids, count, {'temperature': 0}, threading.Event()) if t is not None]
-            text = log.read_text()
+            text = log.read_text(encoding='utf-8')
             hashes = state_hashes(text)
             require(len(hashes) == hash_count + 1 and int(hashes[-1]['L']) >= len(ids), 'missing current state fingerprint')
             hash_count += 1
@@ -125,7 +125,7 @@ def main():
             occupancy = re.findall(r'parked=\d+ bytes=(\d+)', text)
             rss = None
             try:
-                match = re.search(r'^VmRSS:\s+(\d+) kB', Path(f'/proc/{engine.proc.pid}/status').read_text(), re.M)
+                match = re.search(r'^VmRSS:\s+(\d+) kB', Path(f'/proc/{engine.proc.pid}/status').read_text(encoding='utf-8'), re.M)
                 if match:
                     rss = int(match[1]) * 1024
             except OSError:
@@ -160,7 +160,7 @@ def main():
         finally:
             engine.close()
             # Keep partial evidence on failure; verify rejects incomplete runs.
-            (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+            (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     verify(results)
     print('PASS: 30+ known-answer A/B/A cycles, streamed/near-limit KV, exact state/output, stable retained payload')
 

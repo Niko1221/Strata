@@ -109,7 +109,7 @@ def main():
     if not a.run:
         print('Dry run: upstream and disabled candidates; identical inputs/settings, known answers and state parity.')
         return
-    cfg = json.loads(a.config.read_text())
+    cfg = json.loads(a.config.read_text(encoding='utf-8'))
     tok_path = Path(cfg['tokenizer'])
     tok = load_tokenizer(tok_path)
     tpl_path = tok_path / 'chat_template.jinja'
@@ -176,7 +176,7 @@ def main():
             engine.proc.wait(timeout=30)
             engine.log.close()
         arm['request_digest'] = hashlib.sha256(json.dumps(results['requests'], sort_keys=True).encode()).hexdigest()
-        log_text = log.read_text()
+        log_text = log.read_text(encoding='utf-8')
         hashes = state_hashes(log_text, candidate=index != 0)
         require(len(hashes) == len(arm['records']), f'{name}: missing state hashes')
         for record, fingerprint in zip(arm['records'], hashes):
@@ -184,10 +184,10 @@ def main():
         arm['cache_events'] = [line for line in log_text.splitlines() if any(mark in line for mark in
                                ('conversation cache: parked', 'disk cache: spilled', 'SNAPSHOT_VERIFY'))]
         results['arms'].append(arm)
-        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
         print(f'DONE {name}', flush=True)
     verify(results)
-    (a.output / 'passed.json').write_text(json.dumps({'passed': True, 'request_digest': results['request_digest']}) + '\n')
+    (a.output / 'passed.json').write_text(json.dumps({'passed': True, 'request_digest': results['request_digest']}) + '\n', encoding='utf-8')
     print('PASS: untouched upstream versus disabled engines; identical tokens, main state, reuse and known answers')
 
 
