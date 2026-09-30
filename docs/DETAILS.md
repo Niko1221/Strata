@@ -483,14 +483,18 @@ requires serve mode and enabled RAM/prompt caching. The disk MiB quota includes
 temporary writes; the entry limit defaults to 128. A zero disk MiB quota (the default)
 or zero disk slots disables persistence without touching the cache directory.
 
-The engine owns `strata-conversations-v1` below the configured directory and locks
+The engine owns `strata-conversations-v2` below the configured directory and locks
 it against another writer. Files contain conversation content. Snapshots are written
 only when evicted from RAM, not on every turn or shutdown: the latest active turn is
 not guaranteed to survive a restart. Matching persisted entries can be restored
 after restart; corrupt, incompatible or unadmitted entries fall back to ordinary
 prompt processing. Startup hashes model/runtime assets, adding I/O; changing assets,
 the executable or bound settings/paths can invalidate reuse. The frontend supplies
-its actual tokenizer/template paths automatically.
+its actual tokenizer/template paths automatically. The v2 envelope preserves the
+session layer range and bounds its identity directory. Identity checks include
+resolved RoPE settings and the per-layer expert quantization layout; a mismatch
+logs the first differing field before state is read or applied. Older draft v1
+snapshots are not reused and their directory is left untouched.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /

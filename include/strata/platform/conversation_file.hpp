@@ -8,9 +8,21 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace strata::platform {
-using ConversationIdentity = std::array<uint8_t, 32>;
+using ConversationDigest = std::array<uint8_t, 32>;
+struct ConversationIdentityField {
+    std::string name;
+    ConversationDigest digest{};
+    bool operator==(const ConversationIdentityField&) const = default;
+};
+struct ConversationIdentity {
+    ConversationDigest digest{};
+    std::vector<ConversationIdentityField> fields;
+    bool operator==(const ConversationIdentity&) const = default;
+};
+using ConversationSettings = std::vector<std::pair<std::string, std::string>>;
 // Optional heartbeat for callers with request watchdogs. Reports completed I/O
 // progress, never a timer that could hide an operation stuck in the kernel.
 using ConversationIoProgress = void (*)() noexcept;
@@ -21,7 +33,7 @@ struct ConversationAsset {
 
 // Hash complete asset contents and normalized runtime settings, not paths or samples.
 // Assets must remain immutable from model loading through snapshot use.
-bool conversation_identity(const std::vector<ConversationAsset>& assets, const std::string& settings,
+bool conversation_identity(const std::vector<ConversationAsset>& assets, const ConversationSettings& settings,
                            ConversationIdentity& identity, std::string& error);
 
 // Little-endian envelope of the shared image. No CUDA, model-state sizing or restore
@@ -29,7 +41,7 @@ bool conversation_identity(const std::vector<ConversationAsset>& assets, const s
 // This format deliberately refuses the experimental #52 v3/native-struct files.
 bool conversation_file_write(std::ostream& stream, const core::SavedConversation& image,
                              const ConversationIdentity& identity, std::string& error, ConversationIoProgress progress = nullptr);
-bool conversation_file_size(const core::SavedConversation& image, uint64_t& bytes, std::string& error);
+bool conversation_file_size(const core::SavedConversation& image, const ConversationIdentity& identity, uint64_t& bytes, std::string& error);
 // Reads directly into one staged image; no second whole-file buffer. Budget covers
 // vector payload/capacity and a fixed codec allowance, not allocator/RSS overhead.
 // Unknown RAM telemetry declines admission; failure leaves output unchanged.

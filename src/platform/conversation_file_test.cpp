@@ -25,7 +25,7 @@ bool same(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
         a.stage_parts.empty() && b.stage_parts.empty();
 }
 bool same(const SavedConversation& a, const SavedConversation& b) {
-    if (a.geometry != b.geometry || a.cvec != b.cvec || !same(a.live, b.live) ||
+    if (a.geometry != b.geometry || a.layer_lo != b.layer_lo || a.layer_hi != b.layer_hi || a.cvec != b.cvec || !same(a.live, b.live) ||
         a.checkpoints.size() != b.checkpoints.size() || a.kv.size() != b.kv.size()) return false;
     for (size_t i = 0; i < a.checkpoints.size(); ++i)
         if (!same(a.checkpoints[i], b.checkpoints[i])) return false;
@@ -42,6 +42,7 @@ bool same(const SavedConversation& a, const SavedConversation& b) {
 SavedConversation fixture() {
     SavedConversation s;
     for (size_t i = 0; i < s.geometry.size(); ++i) s.geometry[i] = int64_t(i) - 8;
+    s.layer_lo = 7; s.layer_hi = 48;
     s.cvec = false;
     s.live.ids = {1, -1, INT32_MIN, INT32_MAX};
     s.live.imgs = {{INT64_MIN, UINT64_MAX}, {3, 0x123456789abcdef0ULL}};
@@ -108,7 +109,7 @@ void write(const std::filesystem::path& path, const std::string& bytes) {
 std::string hex(const ConversationIdentity& identity) {
     constexpr char digits[] = "0123456789abcdef";
     std::string out;
-    for (uint8_t b : identity) { out += digits[b >> 4]; out += digits[b & 15]; }
+    for (uint8_t b : identity.digest) { out += digits[b >> 4]; out += digits[b & 15]; }
     return out;
 }
 struct CountingBuffer : std::stringbuf {
@@ -124,18 +125,18 @@ struct CountingBuffer : std::stringbuf {
 
 int main() {
     ConversationIdentity id{};
-    for (size_t i = 0; i < id.size(); ++i) id[i] = uint8_t(i);
+    for (size_t i = 0; i < id.digest.size(); ++i) id.digest[i] = uint8_t(i);
     const auto source = fixture();
     const auto bytes = encode(source, id);
     uint64_t measured = 0;
     std::string sizing_error;
-    check(conversation_file_size(source, measured, sizing_error) && measured == bytes.size(), "quota reservation equals encoded fixture length");
-    const auto bound = integer(bytes, 40);
-    check(bytes.substr(0, 8) == std::string("STRSNAP\1", 8), "versioned magic");
-    check(integer(bytes, 48) == uint64_t(-8), "geometry signed bits are little endian");
-    check(integer(bytes, 192) == 0, "steering field");
-    check(integer(bytes, 200) == 4, "live token count");
-    check(uint8_t(bytes[212]) == 255 && uint8_t(bytes[215]) == 255, "negative tokens keep all bits");
+    check(conversation_file_size(source, id, measured, sizing_error) && measured == bytes.size(), "quota reservation equals encoded fixture length");
+    const auto bound = integer(bytes, 48);
+    check(bytes.substr(0, 8) == std::string("STRSNAP\2", 8), "versioned magic");
+    check(integer(bytes, 56) == uint64_t(-8), "geometry signed bits are little endian");
+    check(integer(bytes, 216) == 0, "steering field");
+    check(integer(bytes, 224) == 4, "live token count");
+    check(uint8_t(bytes[236]) == 255 && uint8_t(bytes[239]) == 255, "negative tokens keep all bits");
     check(bound >= source.bytes(), "portable allocation bound covers decoded payload");
     std::string error;
     SavedConversation decoded;
@@ -150,7 +151,7 @@ int main() {
         canonical.kv[0].k.resize(17*1024*1024,71);
         const auto encoded = encode(segmented,id);
         check(encoded == encode(canonical,id), "disk bytes are independent of incremental buffer segmentation");
-        const auto staging = integer(encoded,40);
+        const auto staging = integer(encoded,48);
         std::istringstream read(encoded,std::ios::binary);
         SavedConversation roundtrip;
         check(conversation_file_read(read,id,staging,staging+17,17,roundtrip,error), "read segmented snapshot within exact staging bound");
@@ -161,7 +162,7 @@ int main() {
     rejected(bytes, id, bound, std::nullopt);
     rejected(bytes, id, bound, 16, 17);
     rejected(bytes, id, bound, UINT64_MAX, UINT64_MAX);
-    auto foreign = id; foreign[0] ^= 1;
+    auto foreign = id; foreign.digest[0] ^= 1;
     rejected(bytes, foreign);
     rejected(bytes + 'x', id);
     for (size_t n = 0; n < bytes.size(); ++n) rejected(bytes.substr(0, n), id);
@@ -169,10 +170,10 @@ int main() {
         auto damaged = bytes; damaged[i] ^= 1; rejected(damaged, id);
     }
     auto corrupt = bytes;
-    set_integer(corrupt, 200, UINT64_MAX); rejected(corrupt, id);
-    corrupt = bytes; set_integer(corrupt, 40, UINT64_MAX); rejected(corrupt, id);
-    corrupt = bytes; set_integer(corrupt, 40, kConversationFileWorkspace); rejected(corrupt, id);
-    corrupt = bytes; set_integer(corrupt, 192, 2); rejected(corrupt, id);
+    set_integer(corrupt, 224, UINT64_MAX); rejected(corrupt, id);
+    corrupt = bytes; set_integer(corrupt, 48, UINT64_MAX); rejected(corrupt, id);
+    corrupt = bytes; set_integer(corrupt, 48, kConversationFileWorkspace); rejected(corrupt, id);
+    corrupt = bytes; set_integer(corrupt, 216, 2); rejected(corrupt, id);
 
     auto unsupported = source; unsupported.live.stage_parts.emplace_back();
     std::ostringstream output;
@@ -184,7 +185,7 @@ int main() {
     broken.setstate(std::ios::badbit);
     check(!conversation_file_read(broken, id, bound, bound, 0, decoded, error), "read failure is reported");
     const auto empty = encode({}, id);
-    check(conversation_file_size({}, measured, sizing_error) && measured == empty.size(), "empty envelope reservation includes framing");
+    check(conversation_file_size({}, id, measured, sizing_error) && measured == empty.size(), "empty envelope reservation includes framing");
     std::istringstream empty_input(empty);
     check(conversation_file_read(empty_input, id, 1 << 20, 1 << 21, 0, decoded, error), "empty envelope round trip");
     check(same(decoded, {}), "empty image replaces earlier output");
@@ -196,7 +197,7 @@ int main() {
     indexed.checkpoints[0].ids.resize(2); indexed.checkpoints[0].imgs.clear();
     indexed.checkpoints[1].ids.resize(4);
     const auto indexed_bytes = encode(indexed, id);
-    const auto indexed_bound = integer(indexed_bytes, 40);
+    const auto indexed_bound = integer(indexed_bytes, 48);
     std::ostringstream progressing;
     heartbeats = 0;
     check(conversation_file_write(progressing, indexed, id, error, heartbeat) && heartbeats >= 3,
@@ -261,27 +262,67 @@ int main() {
     write(asset, content);
     write(moved, content);
     ConversationIdentity initial, other;
-    check(conversation_identity({{"weights", asset}}, "kv=int8", initial, error), "hash whole asset");
-    check(conversation_identity({{"weights", moved}}, "kv=int8", other, error) && other == initial,
+    check(conversation_identity({{"weights", asset}}, {{"settings", "kv=int8"}}, initial, error), "hash whole asset");
+    check(conversation_identity({{"weights", moved}}, {{"settings", "kv=int8"}}, other, error) && other == initial,
           "relocating unchanged assets preserves identity");
     ConversationIdentity repeated, copied;
-    check(conversation_identity({{"weights", asset}, {"embedding", asset}}, "kv=int8", repeated, error) &&
-          conversation_identity({{"weights", asset}, {"embedding", moved}}, "kv=int8", copied, error) && repeated == copied,
+    check(conversation_identity({{"weights", asset}, {"embedding", asset}}, {{"settings", "kv=int8"}}, repeated, error) &&
+          conversation_identity({{"weights", asset}, {"embedding", moved}}, {{"settings", "kv=int8"}}, copied, error) && repeated == copied,
           "deduplicated reads retain each role and match independently copied assets");
     content[100000] = 'b'; write(moved, content);
-    check(conversation_identity({{"weights", moved}}, "kv=int8", other, error) && other != initial,
+    check(conversation_identity({{"weights", moved}}, {{"settings", "kv=int8"}}, other, error) && other != initial,
           "middle content change with same size and ends invalidates identity");
-    check(conversation_identity({{"tokenizer", asset}}, "kv=int8", other, error) && other != initial,
+    check(conversation_identity({{"tokenizer", asset}}, {{"settings", "kv=int8"}}, other, error) && other != initial,
           "asset role participates in identity");
-    check(conversation_identity({{"weights", asset}}, "kv=k8v4", other, error) && other != initial,
+    check(conversation_identity({{"weights", asset}}, {{"settings", "kv=k8v4"}}, other, error) && other != initial,
           "runtime settings participate in identity");
-    check(conversation_identity({{"weights", asset}, {"tokenizer", moved}}, "kv=int8", other, error) && other != initial,
+    check(conversation_identity({{"weights", asset}, {"tokenizer", moved}}, {{"settings", "kv=int8"}}, other, error) && other != initial,
           "additional assets participate in identity");
     other = initial;
-    check(!conversation_identity({{"weights", temp.path / "missing"}}, "kv=int8", other, error), "missing asset fails closed");
+    check(!conversation_identity({{"weights", temp.path / "missing"}}, {{"settings", "kv=int8"}}, other, error), "missing asset fails closed");
     check(other == initial, "failed hash preserves caller identity");
-    check(conversation_identity({}, "fixture-settings", other, error), "fixed identity fixture");
+    check(conversation_identity({}, {{"settings", "fixture-settings"}}, other, error), "fixed identity fixture");
     // Independently computed with Python hashlib and struct.pack('<Q', length).
-    check(hex(other) == "aeeb88a7414a67200c4e756d5e9ab4a7f8510a7190193a0a418b66488efef8ce", "identity uses SHA-256 with framed fields");
+    check(hex(other) == "f163e269d671c03aadd2dd4206b143ca682709d3e2a16a407bae95a95e2b70b1", "identity uses SHA-256 with framed fields");
+    // Named identity mismatches are rejected before any state payload is read.
+    const ConversationSettings settings{{"engine-version", "0.1.30"}, {"geometry", "48"},
+        {"expert-quant/0", "IQ3_S"}, {"kv-format", "int8"}, {"kv-resident", "32768"},
+        {"split", "single"}, {"prefill-chunk", "8192"}, {"spec", "1"},
+        {"steering", "none"}, {"rope-factor", "1"}};
+    ConversationIdentity named;
+    check(conversation_identity({{"weights", asset}}, settings, named, error), "named layout identity");
+    const auto named_bytes = encode(indexed, named);
+    check(conversation_file_size(indexed, named, measured, error) && measured == named_bytes.size(),
+          "identity directory included in disk quota reservation");
+    std::istringstream named_input(named_bytes);
+    check(conversation_file_read(named_input, named, indexed_bound, indexed_bound, 0, decoded, error) && same(decoded, indexed),
+          "named identity and layer range survive round trip");
+    for (size_t i = 0; i < settings.size(); ++i) {
+        auto changed = settings; changed[i].second += "changed";
+        ConversationIdentity expected;
+        check(conversation_identity({{"weights", asset}}, changed, expected, error), "changed layout fixture");
+        const auto reason = "snapshot identity differs: runtime/" + settings[i].first;
+        CountingBuffer buffer(named_bytes); std::istream read(&buffer);
+        const auto sentinel = decoded;
+        check(!conversation_file_read(read, expected, indexed_bound, indexed_bound, 0, decoded, error) && error == reason,
+              "read reports first differing layout field");
+        check(same(decoded, sentinel) && buffer.read_bytes < 2048, "identity refusal reads no state and preserves output");
+        std::istringstream probe(named_bytes);
+        check(!conversation_file_match(probe, expected, indexed_bound, {1, 2, 3}, {}, false, match, error) && error == reason,
+              "prefix probe reports first differing layout field");
+    }
+    write(asset, "different weights");
+    check(conversation_identity({{"weights", asset}}, settings, other, error), "changed weight content");
+    std::istringstream weight_input(named_bytes);
+    check(!conversation_file_read(weight_input, other, indexed_bound, indexed_bound, 0, decoded, error) &&
+          error == "snapshot identity differs: asset/weights", "asset rejection names its role");
+    auto excessive = named_bytes; set_integer(excessive, 40, UINT64_MAX); rejected(excessive, named);
+    auto long_name = named_bytes; set_integer(long_name, 48, UINT64_MAX); rejected(long_name, named);
+    auto legacy = named_bytes; legacy[7] = 1; rejected(legacy, named);
+    check(!conversation_identity({}, {{"kv", "int8"}, {"kv", "k8v4"}}, other, error), "duplicate identity names rejected");
+    check(!conversation_identity({}, {{"bad\nname", "value"}}, other, error), "identity names cannot inject log lines");
+    ConversationSettings many;
+    for (unsigned i = 0; i < 257; ++i) many.emplace_back(std::to_string(i), "x");
+    check(!conversation_identity({}, many, other, error), "identity metadata is bounded");
     std::printf("conversation_file_test: %d checks passed\n", checks);
 }

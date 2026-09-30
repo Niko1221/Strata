@@ -18,7 +18,7 @@ public:
     ConversationStore(const ConversationStore&) = delete;
     ConversationStore& operator=(const ConversationStore&) = delete;
 
-    // Owns root/strata-conversations-v1, with an exclusive process-lifetime lock.
+    // Owns root/strata-conversations-v2, with an exclusive process-lifetime lock.
     // Quotas include all identities and any in-progress snapshot in that directory.
     // Failed open leaves the store closed. A zero quota disables it without I/O.
     bool open(const std::filesystem::path& root, const ConversationIdentity& identity,
@@ -27,6 +27,8 @@ public:
     void close();
     // Protect a selected disk hit while RAM admission evicts other images. If
     // retaining it prevents quota admission, decline the spill instead.
+    // Exact envelope bytes, including this store's identity directory.
+    bool encoded_size(const core::SavedConversation& image, uint64_t& bytes, std::string& error) const;
     bool put(const core::SavedConversation& image, std::string& error, const Candidate* protected_entry = nullptr);
     bool best(const std::vector<int64_t>& prompt, const std::vector<core::ConversationImageKey>& images,
               bool cvec, uint64_t staging_limit, const std::vector<std::filesystem::path>& excluded,

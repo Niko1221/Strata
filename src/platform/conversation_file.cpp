@@ -20,7 +20,7 @@ using core::ConversationImageKey;
 using core::ConversationKv;
 using core::ConversationBuffer;
 using core::SavedConversation;
-constexpr std::array<uint8_t, 8> magic{'S','T','R','S','N','A','P',1};
+constexpr std::array<uint8_t, 8> magic{'S','T','R','S','N','A','P',2};
 // GPU state blobs retain their native scalar representation.
 static_assert(std::endian::native == std::endian::little);
 // These portable allowances also bound vector-object storage before resize.
@@ -39,8 +39,8 @@ struct Digest {
         if (n && EVP_DigestUpdate(ctx.get(), p, n) != 1)
             throw std::runtime_error("SHA-256 update failed");
     }
-    ConversationIdentity finish() {
-        ConversationIdentity out;
+    ConversationDigest finish() {
+        ConversationDigest out;
         unsigned n = 0;
         if (EVP_DigestFinal_ex(ctx.get(), out.data(), &n) != 1 || n != out.size())
             throw std::runtime_error("SHA-256 finalization failed");
@@ -246,53 +246,102 @@ struct Probe {
 };
 } // namespace
 
-bool conversation_identity(const std::vector<ConversationAsset>& assets, const std::string& settings,
+bool conversation_identity(const std::vector<ConversationAsset>& assets, const ConversationSettings& settings,
                            ConversationIdentity& identity, std::string& error) {
     try {
-        Digest hash;
-        auto text = [&](const std::string& value) {
-            const auto n = little(value.size()); hash.update(n.data(), n.size());
-            hash.update(value.data(), value.size());
+        ConversationIdentity result;
+        auto field = [&](const std::string& name, const ConversationDigest& digest) {
+            if (result.fields.size() == 256 || name.empty() || name.size() > 128 ||
+                name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:-") != std::string::npos)
+                throw std::runtime_error("invalid or excessive snapshot identity fields");
+            if (std::any_of(result.fields.begin(), result.fields.end(), [&](const auto& f) { return f.name == name; }))
+                throw std::runtime_error("duplicate snapshot identity field: " + name);
+            result.fields.push_back({name, digest});
         };
-        text("strata-conversation-state-v1"); text(settings);
-        const auto count = little(assets.size()); hash.update(count.data(), count.size());
+        for (const auto& [name, value] : settings) {
+            Digest hash; hash.update(value.data(), value.size());
+            field("runtime/" + name, hash.finish());
+        }
         std::array<char, 32768> buffer;
-        std::map<std::filesystem::path, std::pair<uint64_t, ConversationIdentity>> contents;
+        std::map<std::filesystem::path, ConversationDigest> contents;
         for (const auto& asset : assets) {
-            text(asset.role);
-            // The same GGUF often supplies embeddings, dense layers, PLE and
-            // experts. Read it once within this invocation, never reuse a stale
-            // fingerprint from an earlier process or file-stat-only cache.
+            // Hash each complete file once per startup, even when several roles
+            // share a GGUF. Never trust a file-stat-only cache across processes.
             const auto path = std::filesystem::canonical(asset.path);
             auto [entry, fresh] = contents.try_emplace(path);
             if (fresh) {
                 std::ifstream f(path, std::ios::binary);
                 if (!f) throw std::runtime_error("cannot open identity asset: " + path.string());
                 Digest content;
-                uint64_t size = 0;
                 while (f) {
                     f.read(buffer.data(), buffer.size());
-                    const auto n = static_cast<size_t>(f.gcount());
-                    content.update(buffer.data(), n); add(size, n);
+                    content.update(buffer.data(), static_cast<size_t>(f.gcount()));
                 }
                 if (f.bad() || !f.eof()) throw std::runtime_error("cannot read identity asset: " + path.string());
-                entry->second = {size, content.finish()};
+                entry->second = content.finish();
             }
-            const auto n = little(entry->second.first); hash.update(n.data(), n.size());
-            const auto& sum = entry->second.second; hash.update(sum.data(), sum.size());
+            field("asset/" + asset.role, entry->second);
         }
-        identity = hash.finish();
+        Digest hash;
+        const std::string domain = "strata-conversation-state-v2";
+        hash.update(domain.data(), domain.size());
+        for (const auto& f : result.fields) {
+            const auto n = little(f.name.size()); hash.update(n.data(), n.size());
+            hash.update(f.name.data(), f.name.size()); hash.update(f.digest.data(), f.digest.size());
+        }
+        result.digest = hash.finish();
+        identity = std::move(result);
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
+
+namespace {
+uint64_t identity_bytes(const ConversationIdentity& identity) {
+    if (identity.fields.size() > 256) throw std::runtime_error("too many snapshot identity fields");
+    uint64_t bytes = 32 + 8;
+    for (const auto& field : identity.fields) {
+        if (field.name.empty() || field.name.size() > 128)
+            throw std::runtime_error("invalid snapshot identity field name");
+        add(bytes, 8 + field.name.size() + field.digest.size());
+    }
+    return bytes;
+}
+void write_identity(Writer& w, const ConversationIdentity& identity) {
+    w.bytes(identity.digest.data(), identity.digest.size()); w.integer(identity.fields.size());
+    for (const auto& f : identity.fields) {
+        w.integer(f.name.size()); w.bytes(f.name.data(), f.name.size()); w.bytes(f.digest.data(), f.digest.size());
+    }
+}
+template<class Input> void check_identity(Input& input, const ConversationIdentity& expected) {
+    ConversationDigest stored;
+    input.bytes(stored.data(), stored.size());
+    const auto count = input.integer();
+    if (count > 256) throw std::runtime_error("invalid snapshot identity field count");
+    // Compare in bounded stack storage before admitting or decoding any state.
+    for (size_t i = 0; i < count; ++i) {
+        const auto length = input.integer();
+        if (!length || length > 128) throw std::runtime_error("invalid snapshot identity field name");
+        std::array<char, 128> name{}; ConversationDigest digest;
+        input.bytes(name.data(), size_t(length)); input.bytes(digest.data(), digest.size());
+        if (i >= expected.fields.size()) throw std::runtime_error("snapshot identity differs: extra field");
+        const auto& field = expected.fields[i];
+        if (field.name.size() != length || !std::equal(field.name.begin(), field.name.end(), name.begin()) || digest != field.digest)
+            throw std::runtime_error("snapshot identity differs: " + field.name);
+    }
+    if (count < expected.fields.size()) throw std::runtime_error("snapshot identity differs: " + expected.fields[count].name);
+    if (stored != expected.digest) throw std::runtime_error("snapshot identity differs: digest");
+}
+} // namespace
 
 bool conversation_file_write(std::ostream& stream, const SavedConversation& image,
                              const ConversationIdentity& identity, std::string& error, ConversationIoProgress progress) {
     try {
         const auto bound = allocation_bound(image);
+        identity_bytes(identity);
         Writer w{stream, {}, {progress}};
-        w.bytes(magic.data(), magic.size()); w.bytes(identity.data(), identity.size()); w.integer(bound);
+        w.bytes(magic.data(), magic.size()); write_identity(w, identity); w.integer(bound);
         for (int64_t n : image.geometry) w.integer(std::bit_cast<uint64_t>(n));
+        w.integer(std::bit_cast<uint64_t>(image.layer_lo)); w.integer(std::bit_cast<uint64_t>(image.layer_hi));
         w.integer(image.cvec ? 1 : 0);
         w.checkpoint(image.live);
         w.integer(image.checkpoints.size());
@@ -312,10 +361,10 @@ bool conversation_file_write(std::ostream& stream, const SavedConversation& imag
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
-bool conversation_file_size(const SavedConversation& image, uint64_t& bytes, std::string& error) {
+bool conversation_file_size(const SavedConversation& image, const ConversationIdentity& identity, uint64_t& bytes, std::string& error) {
     try {
         // Header, geometry, steering, checkpoint/KV counts and integrity footer.
-        uint64_t total = 8 + 32 + 8 + 18 * 8 + 8 + 8 + 8 + 32;
+        uint64_t total = 8 + identity_bytes(identity) + 8 + 18 * 8 + 16 + 8 + 8 + 8 + 32;
         auto checkpoint = [&](const ConversationCheckpoint& c) {
             if (!c.stage_parts.empty()) throw std::runtime_error("layer-split snapshots are unsupported");
             add(total, 8 * 8); // token/image counts, retention counter, five blob lengths
@@ -339,11 +388,9 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
     try {
         Reader r{stream, {}, 0, {progress}};
         std::array<uint8_t, 8> tag;
-        ConversationIdentity stored;
         r.bytes(tag.data(), tag.size());
         if (tag != magic) throw std::runtime_error("unsupported conversation snapshot format");
-        r.bytes(stored.data(), stored.size());
-        if (stored != identity) throw std::runtime_error("snapshot model/settings identity differs");
+        check_identity(r, identity);
         const uint64_t bound = r.integer();
         if (bound < kConversationFileWorkspace || bound > staging_limit ||
             !core::conversation_memory_admit(available, bound, floor))
@@ -351,6 +398,7 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
         r.remaining = bound - kConversationFileWorkspace;
         SavedConversation image;
         for (auto& n : image.geometry) n = r.signed_integer();
+        image.layer_lo = r.signed_integer(); image.layer_hi = r.signed_integer();
         const auto cvec = r.integer();
         if (cvec > 1) throw std::runtime_error("invalid snapshot steering state");
         image.cvec = cvec != 0;
@@ -366,7 +414,7 @@ bool conversation_file_read(std::istream& stream, const ConversationIdentity& id
             kv.page_size = r.signed_integer(); kv.pooled_rows = r.signed_integer(); kv.idx_dim = r.signed_integer();
             for (auto* v : {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled}) r.blob(*v);
         }
-        ConversationIdentity footer;
+        ConversationDigest footer;
         if (!stream.read(reinterpret_cast<char*>(footer.data()), footer.size()) || footer != r.digest.finish())
             throw std::runtime_error("snapshot integrity check failed");
         if (stream.peek() != std::char_traits<char>::eof() || stream.bad())
@@ -387,16 +435,14 @@ bool conversation_file_match(std::istream& stream, const ConversationIdentity& i
         if (end < std::streampos(0) || !stream.seekg(0)) throw std::runtime_error("cannot measure snapshot file");
         Probe p{stream, static_cast<uint64_t>(end), 0, {progress}};
         std::array<uint8_t, 8> tag;
-        ConversationIdentity stored;
         p.bytes(tag.data(), tag.size());
         if (tag != magic) throw std::runtime_error("unsupported conversation snapshot format");
-        p.bytes(stored.data(), stored.size());
-        if (stored != identity) throw std::runtime_error("snapshot model/settings identity differs");
+        check_identity(p, identity);
         const uint64_t bound = p.integer();
         if (bound < kConversationFileWorkspace || bound > staging_limit)
             throw std::runtime_error("snapshot staging admission denied");
         p.allocation_remaining = bound - kConversationFileWorkspace;
-        p.skip(18 * 8); // geometry is validated by the shared core after selection
+        p.skip(18 * 8 + 16); // geometry and session layer range is validated by the shared core after selection
         const auto steering = p.integer();
         if (steering > 1) throw std::runtime_error("invalid snapshot steering state");
         ConversationFileMatch found{0, false, bound};

@@ -199,7 +199,7 @@ bool ConversationStore::open(const fs::path& root, const ConversationIdentity& i
     if (!bytes || !slots) return true;
     try {
         if (root.empty()) throw std::runtime_error("snapshot directory is empty");
-        const auto directory = fs::absolute(root / "strata-conversations-v1").lexically_normal();
+        const auto directory = fs::absolute(root / "strata-conversations-v2").lexically_normal();
         fs::create_directories(directory.parent_path());
         if (fs::create_directory(directory))
             fs::permissions(directory, fs::perms::owner_all, fs::perm_options::replace);
@@ -221,11 +221,16 @@ bool ConversationStore::open(const fs::path& root, const ConversationIdentity& i
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+bool ConversationStore::encoded_size(const core::SavedConversation& image, uint64_t& bytes, std::string& error) const {
+    if (!impl_) { error = "snapshot store is closed"; return false; }
+    return conversation_file_size(image, impl_->identity, bytes, error);
+}
+
 bool ConversationStore::put(const core::SavedConversation& image, std::string& error, const Candidate* protected_entry) {
     if (!impl_) { error = "disk conversation cache is disabled"; return false; }
     try {
         uint64_t bytes = 0;
-        if (!conversation_file_size(image, bytes, error)) return false;
+        if (!encoded_size(image, bytes, error)) return false;
         if (bytes > impl_->budget) { error = "snapshot exceeds disk quota"; return false; }
         if (protected_entry && !impl_->owns(*protected_entry))
             throw std::runtime_error("protected snapshot candidate is unavailable");
@@ -269,6 +274,8 @@ bool ConversationStore::best(const std::vector<int64_t>& prompt, const std::vect
             const bool compatible = conversation_file_match(file, impl_->identity, staging_limit, prompt, images,
                                                              cvec, match, ignored, impl_->progress);
             if (impl_->progress) impl_->progress();
+            if (!compatible && ignored.rfind("snapshot identity differs:", 0) == 0)
+                std::fprintf(stderr, "strata serve: disk cache: %s; re-reading prompt if no compatible entry exists\n", ignored.c_str());
             if (!compatible || match.tokens == 0) continue;
             const auto modified = entry.last_write_time();
             if (match.tokens > found.match.tokens || (match.tokens == found.match.tokens &&

@@ -17,7 +17,7 @@ def fixture(path='batched'):
     def proof(disk=False):
         return dict(verified=[dict(draft='0123456789abcdef', cells=100, mode=mode, source='disk', resident=64 if mode == 2 else 4096)] if disk else [],
                     draft_prefill=[dict(path='batched' if mode == 0 else 'token', mode=mode, cells=99)],
-                    spills=1 if disk else 0, promotion_skips=0, integrity_failures=0,
+                    identity_mismatches=[], spills=1 if disk else 0, promotion_skips=0, integrity_failures=0,
                     parks=[dict(parked=1, bytes=1234)] if disk else [])
     phases = {
         'baseline': dict(info={**info, 'conversation_cache_mib': 0, 'conversation_disk_mib': 0},
@@ -27,6 +27,7 @@ def fixture(path='batched'):
     }
     for name in ('restart', 'admission', 'foreign', 'corrupt'):
         phases[name] = dict(info=info.copy(), records=[record('return', 100 if name == 'restart' else 0)], evidence=proof(name == 'restart'))
+    phases['foreign']['evidence']['identity_mismatches'] = ['asset/tokenizer/vocab.json']
     phases['admission']['info']['conversation_cache_min_free_mib'] = 999999
     phases['admission']['evidence']['promotion_skips'] = 1
     phases['corrupt']['evidence']['integrity_failures'] = 1
@@ -66,6 +67,8 @@ class DiskGate(unittest.TestCase):
             'disk entry limit exceeded': lambda d: d['phases']['restart'].update(disk_counts=[9]),
             'missing disk occupancy': lambda d: d['phases']['restart'].update(disk_bytes=[]),
             'foreign reused': lambda d: d['phases']['foreign']['records'][0].update(reused=100),
+            'no identity diagnostic': lambda d: d['phases']['foreign']['evidence'].update(identity_mismatches=[]),
+            'wrong identity diagnostic': lambda d: d['phases']['foreign']['evidence'].update(identity_mismatches=['digest']),
             'no identity change': lambda d: d.update(foreign_asset_after=d['foreign_asset_before']),
             'no corrupted file': lambda d: d.update(corrupted_files=0),
             'no integrity rejection': lambda d: d['phases']['corrupt']['evidence'].update(integrity_failures=0),

@@ -26,6 +26,7 @@ def evidence(text):
             r'SNAPSHOT_VERIFY draft=([0-9a-f]{16}) cells=(\d+) mode=(\d+) source=(ram|disk) resident=(\d+)', text)],
         'draft_prefill': [dict(path=p, mode=int(m), cells=int(c)) for p, m, c in re.findall(
             r'DRAFT_PREFILL path=(batched|token) mode=(\d+) cells=(\d+)', text)],
+        'identity_mismatches': re.findall(r'snapshot identity differs: ([A-Za-z0-9_./:-]+)', text),
         'spills': text.count('disk cache: spilled '),
         'promotion_skips': text.count('disk cache: promotion skipped '),
         'integrity_failures': text.count('snapshot integrity check failed'),
@@ -75,6 +76,8 @@ def verify(results):
     require(phases['admission']['info']['conversation_cache_min_free_mib'] == results['denial_floor_mib'],
             'admission phase did not use the requested floor')
     require(results['foreign_asset_before'] != results['foreign_asset_after'], 'tokenizer identity was not changed')
+    require('asset/tokenizer/vocab.json' in phases['foreign']['evidence']['identity_mismatches'],
+            'foreign tokenizer rejection did not identify the first changed asset')
     require(results['corrupted_files'] > 0, 'no persisted files were corrupted')
     fingerprints = []
     for name in ('producer', 'restart', 'admission', 'foreign', 'corrupt'):
@@ -164,7 +167,7 @@ def main():
                'disk_mib': a.disk_mib, 'draft_path': a.draft_path, 'denial_floor_mib': limit}
     continuation = None
     def files():
-        return sorted((disk / 'strata-conversations-v1').glob('*.snap'))
+        return sorted((disk / 'strata-conversations-v2').glob('*.snap'))
     def save():
         (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     for phase in ('baseline', 'producer', 'restart', 'admission', 'foreign', 'corrupt'):

@@ -100,13 +100,13 @@ ConversationStore::Candidate best(ConversationStore& store, int32_t branch, size
 }
 size_t count_files(const fs::path& root, const char* extension) {
     size_t count = 0;
-    for (const auto& entry : fs::directory_iterator(root / "strata-conversations-v1"))
+    for (const auto& entry : fs::directory_iterator(root / "strata-conversations-v2"))
         if (entry.path().extension() == extension) ++count;
     return count;
 }
 uint64_t disk_bytes(const fs::path& root) {
     uint64_t size = 0;
-    for (const auto& entry : fs::directory_iterator(root / "strata-conversations-v1"))
+    for (const auto& entry : fs::directory_iterator(root / "strata-conversations-v2"))
         if (entry.path().extension() == ".snap" || entry.path().extension() == ".tmp") size += entry.file_size();
     return size;
 }
@@ -171,7 +171,7 @@ int main() {
     check(count_files(root, ".snap") == 1, "startup enforces changed entry quota");
 
     const auto other_root = temp.path / "foreign";
-    ConversationIdentity foreign{}; foreign[0] = 1;
+    ConversationIdentity foreign{}; foreign.digest[0] = 1;
     ConversationStore other;
     check(other.open(other_root, foreign, size * 3, 3, error) && other.put(a, error), "write foreign identity");
     other.close();
@@ -192,8 +192,8 @@ int main() {
     check(other.put(fixture(20, 2), error), "write shorter valid candidate");
     check(best(other, 20, 4, {valid.path}).match.tokens == 2, "failed candidate exclusion exposes next valid prefix");
 
-    const auto interrupted = other_root / "strata-conversations-v1" / (std::string(32, 'a') + ".tmp");
-    const auto unrelated = other_root / "strata-conversations-v1" / "user-notes.tmp";
+    const auto interrupted = other_root / "strata-conversations-v2" / (std::string(32, 'a') + ".tmp");
+    const auto unrelated = other_root / "strata-conversations-v2" / "user-notes.tmp";
     { std::ofstream f(interrupted); f << "incomplete snapshot"; }
     { std::ofstream f(unrelated); f << "leave this file alone"; }
     other.close();
@@ -258,7 +258,7 @@ int main() {
     const auto quota_root = temp.path / "quota";
     ConversationStore quota;
     check(quota.open(quota_root, {}, size * 3, 3, error), "prepare quota observation");
-    observed_directory = quota_root / "strata-conversations-v1";
+    observed_directory = quota_root / "strata-conversations-v2";
     for (int32_t branch : {10, 20, 30, 40, 50}) check(quota.put(fixture(branch), error), "write while observing temporary disk usage");
     observed_directory.clear();
     check(peak_bytes == size * 3 && peak_entries == 3, "quota holds during writes including temporary file, not only afterward");

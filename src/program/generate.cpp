@@ -3773,17 +3773,55 @@ int main(int argc, char** argv) {
 #else
                 asset("engine", fs::read_symlink("/proc/self/exe"));
 #endif
-                std::ostringstream settings;
-                settings.imbue(std::locale::classic());
-                settings << "shared-image-v1 engine=" STRATA_VERSION "\n" << std::setprecision(17);
-                auto field = [&](const std::string& value) { settings << value.size() << ':' << value << '\n'; };
-                // Bind all inference flags, including experimental arithmetic flags.
-                // Retention/path knobs do not alter state and may change on restart.
+                strata::platform::ConversationSettings settings;
+                auto field = [&](const std::string& name, const auto&... values) {
+                    std::ostringstream value;
+                    value.imbue(std::locale::classic()); value << std::setprecision(17);
+                    ((value << values << ' '), ...);
+                    settings.emplace_back(name, value.str());
+                };
+                field("schema", "shared-image-v2"); field("engine-version", STRATA_VERSION);
+                const auto geometry = strata::core::conversation_geometry_key(g);
+                for (size_t i = 0; i < geometry.size(); ++i) field("geometry/" + std::to_string(i), geometry[i]);
+                field("session-layers", ss.layer_lo, ss.layer_hi);
+                field("kv-format", o.kv); field("kv-resident", o.kv_resident);
+                field("split", o.layer_split, o.split_device, n_stages);
+                field("prefill-chunk", o.prefill_chunk);
+                field("expert-slots", xcache.slots()); field("pcie-frac", o.pcie_frac);
+                field("spec", o.spec, o.mtp_max_t, o.mtp_window);
+                field("vision", o.vision);
+                field("rope-type", int(rope_cfg.type)); field("rope-base", rope_cfg.freq_base);
+                field("rope-factor", rope_cfg.factor); field("rope-freq-scale", rope_cfg.freq_scale_in);
+                field("rope-orig-ctx", rope_cfg.orig_ctx); field("rope-ext-factor", rope_cfg.ext_factor);
+                field("rope-attn-factor", rope_cfg.attn_factor);
+                field("rope-beta", rope_cfg.beta_fast, rope_cfg.beta_slow);
+                field("expert-layout", layout.native, layout.n_layers, layout.n_expert);
+                for (size_t i = 0; i < layout.fmt.size(); ++i) {
+                    const auto& f = layout.fmt[i];
+                    field("expert-quant/" + std::to_string(i), f.gu_type, f.d_type, f.gu_act, f.d_act,
+                          f.n_embd, f.n_ff, f.gu_row, f.d_row, f.up_off, f.down_off, f.bytes);
+                }
+                auto kv_identity = [&](const std::string& name, const strata::core::QsaState& kv) {
+                    field(name, kv.max_cells, kv.n_slots, kv.kv_mode, kv.kv_int8, kv.kv_q4, kv.kv_hybrid);
+                };
+                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) kv_identity("kv/" + std::to_string(i), ss.qsa_states[i]);
+                kv_identity("draft-kv", mtp.kv_state());
+                int device = 0, runtime = 0, driver = 0;
+                cudaDeviceProp properties{};
+                if (cudaGetDevice(&device) != cudaSuccess || cudaGetDeviceProperties(&properties, device) != cudaSuccess ||
+                    cudaRuntimeGetVersion(&runtime) != cudaSuccess || cudaDriverGetVersion(&driver) != cudaSuccess)
+                    throw std::runtime_error("cannot identify GPU runtime");
+                field("gpu-runtime", device, properties.name, properties.major, properties.minor, runtime, driver);
+                field("cpu-avx512", strata::kernels::cpu::cpu_avx512_ok());
+                // Retain strict argument binding for inference flags not listed above.
+                // Cache retention/path knobs may change without changing model state.
+                std::ostringstream arguments;
                 for (int i = 1; i < argc; ++i) {
                     const std::string arg = argv[i];
                     if (arg.rfind("--conversation-cache-", 0) == 0) { ++i; continue; }
-                    field(arg);
+                    arguments << arg.size() << ':' << arg << '\n';
                 }
+                field("arguments", arguments.str());
                 char** environment = nullptr;
 #ifdef _WIN32
                 if (_get_environ(&environment) != 0) throw std::runtime_error("cannot identify engine environment");
@@ -3794,28 +3832,15 @@ int main(int argc, char** argv) {
                 for (char** e = environment; e && *e; ++e)
                     if (std::strncmp(*e, "STRATA_", 7) == 0) environment_settings.emplace_back(*e);
                 std::sort(environment_settings.begin(), environment_settings.end());
-                for (const auto& value : environment_settings) field(value);
+                for (const auto& value : environment_settings) {
+                    const auto equal = value.find('=');
+                    field("env/" + value.substr(0, equal), value.substr(equal + 1));
+                }
                 if (const char* tuning = std::getenv("STRATA_HIPBLASLT_TUNING")) asset("hip/gemm-tuning", tuning);
-                for (const auto value : strata::core::conversation_geometry_key(g)) settings << value << ' ';
-                settings << "\nresolved " << o.prefill_chunk << ' ' << xcache.slots() << ' ' << o.pcie_frac << ' '
-                         << o.spec << ' ' << o.mtp_max_t << ' ' << o.mtp_window << ' ' << o.kv << ' ' << o.vision << '\n';
-                auto kv_identity = [&](const strata::core::QsaState& kv) {
-                    settings << kv.max_cells << ' ' << kv.n_slots << ' ' << kv.kv_mode << ' '
-                             << kv.kv_int8 << ' ' << kv.kv_q4 << ' ' << kv.kv_hybrid << '\n';
-                };
-                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) kv_identity(ss.qsa_states[i]);
-                kv_identity(mtp.kv_state());
-                int device = 0, runtime = 0, driver = 0;
-                cudaDeviceProp properties{};
-                if (cudaGetDevice(&device) != cudaSuccess || cudaGetDeviceProperties(&properties, device) != cudaSuccess ||
-                    cudaRuntimeGetVersion(&runtime) != cudaSuccess || cudaDriverGetVersion(&driver) != cudaSuccess)
-                    throw std::runtime_error("cannot identify GPU runtime");
-                field(properties.name);
-                settings << properties.major << ' ' << properties.minor << ' ' << runtime << ' ' << driver << '\n';
                 strata::platform::ConversationIdentity identity;
                 std::string disk_error;
                 std::fprintf(stderr, "strata serve: disk cache: hashing complete model assets and runtime identity\n");
-                if (!strata::platform::conversation_identity(assets, settings.str(), identity, disk_error) ||
+                if (!strata::platform::conversation_identity(assets, settings, identity, disk_error) ||
                     !conversation_disk.open(o.conversation_disk, identity, uint64_t(o.conversation_disk_mib) * 1024 * 1024,
                                             size_t(o.conversation_disk_slots), disk_error,
                                             []() noexcept { strata::core::progress_beat(); }))
@@ -3837,7 +3862,7 @@ int main(int argc, char** argv) {
                 const auto started = Clock::now();
                 std::string error;
                 uint64_t file_bytes = 0;
-                if (!strata::platform::conversation_file_size(image, file_bytes, error) ||
+                if (!disk.store->encoded_size(image, file_bytes, error) ||
                     !disk.store->put(image, error, disk.protected_entry))
                     std::fprintf(stderr, "strata serve: disk cache: dropped eviction (%s)\n", error.c_str());
                 else std::fprintf(stderr, "strata serve: disk cache: spilled %zu tokens bytes=%llu in %.1f ms\n",
@@ -4523,7 +4548,7 @@ int main(int argc, char** argv) {
                             uint64_t file_bytes = 0;
                             if (loaded.tokens <= std::max(resume, parked.tokens) ||
                                 !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), disk_error) ||
-                                !strata::platform::conversation_file_size(*incoming, file_bytes, disk_error)) {
+                                !conversation_disk.encoded_size(*incoming, file_bytes, disk_error)) {
                                 std::fprintf(stderr, "strata serve: disk cache: invalid or stale candidate (%s)\n", disk_error.c_str());
                                 incoming.reset();
                             } else {
