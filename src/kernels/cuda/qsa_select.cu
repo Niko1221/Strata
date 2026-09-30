@@ -429,6 +429,52 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     }
 }
 
+
+// dual-3090 (session 8): the decode window's scores - every key block read ONCE for all the window's queries (the
+// grid above is (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer, each key re-read per query).  A fixed
+// grid strides over the blocks; per (block, query) the same arithmetic in the same order as block_scores_kernel.
+constexpr int MQ = 8;
+__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(const float* __restrict__ pooled,
+                                                                              const float* __restrict__ dead,
+                                                                              const float* __restrict__ q_idx,
+                                                                              const int32_t* __restrict__ steps, int nq,
+                                                                              int64_t max_blocks, float* __restrict__ out) {
+    __shared__ __align__(16) float qs[MQ * IDX_HEADS * IDX_DIM];
+    __shared__ int64_t s_nkv[MQ], s_nbid[MQ];
+    for (int i = threadIdx.x; i < nq * IDX_HEADS * IDX_DIM; i += blockDim.x) qs[i] = q_idx[i];
+    if (threadIdx.x < nq) {
+        s_nkv[threadIdx.x] = steps[threadIdx.x * kStepCount + kStepNKv];
+        s_nbid[threadIdx.x] = steps[threadIdx.x * kStepCount + kStepNBid];
+    }
+    __syncthreads();
+    int64_t top = 0;
+    for (int q = 0; q < nq; ++q) top = s_nbid[q] > top ? s_nbid[q] : top;
+    const int lane = threadIdx.x & 31;
+    const int64_t wstride = (int64_t) gridDim.x * SCORE_WARPS;
+    for (int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5); b <= top && b < max_blocks; b += wstride) {
+        const float4 kp = *reinterpret_cast<const float4*>(pooled + b * IDX_DIM + lane * 4);
+        const float4 kd = *reinterpret_cast<const float4*>(dead + lane * 4);
+        for (int qi = 0; qi < nq; ++qi) {
+            const int64_t n_bid = s_nbid[qi];
+            if (b > n_bid) continue;
+            const float4 k4 = (b == n_bid) ? kd : kp;
+            const float* q = qs + qi * IDX_HEADS * IDX_DIM + lane * 4;
+            float score = 0.0f;
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const float4 q4 = *reinterpret_cast<const float4*>(q + h * IDX_DIM);
+                float d = k4.x * q4.x + k4.y * q4.y + k4.z * q4.z + k4.w * q4.w;
+#pragma unroll
+                for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffffu, d, o);
+                score += d > 0.0f ? d : 0.0f;
+            }
+            if (lane == 0) {
+                if (b == n_bid && s_nkv[qi] % R != 0) score += 1e9f;
+                out[qi * max_blocks + b] = score;
+            }
+        }
+    }
+}
 }  // namespace
 
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
@@ -439,6 +485,14 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         std::exit(1);
     }
     // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
+    static const bool multi = [] { const char* v = std::getenv("STRATA_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
+    if (multi && nq <= MQ && active_blocks <= 0) {   // the decode window (a captured graph: no active count)
+        block_scores_multi_kernel<<<256, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
+                                                                                     max_blocks, scores);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores multi: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
     const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
     const dim3 grid((unsigned) ((reach + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
     block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, max_blocks,
