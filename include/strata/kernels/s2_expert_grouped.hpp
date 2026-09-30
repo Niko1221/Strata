@@ -110,6 +110,19 @@ void moe_hit_select_multi(const int32_t* ids, const int32_t* res_row, int n, int
 void moe_hit_grouped_s2_multi(const uint8_t* blob_base, const int32_t* slot_index, const int32_t* dst_index,
                               const int32_t* d_count, int64_t cap, int64_t blob_bytes, const uint8_t* x_q8_0,
                               const float* x_scales, int k_per_token, void* scratch, float* out, void* stream);
+/// The per-hit kernels (`moe_hit_grouped_s2`, `_dev`, `_multi`) and the grouped ones (`moe_grouped_s2`)
+/// were rewritten with bitwise-identical outputs: conflict-free staged activations, `hx` once per chunk, wide loads,
+/// two rows per warp.  The previous kernels stay for A/B: `STRATA_OLD_GROUPED=1` in the environment selects them,
+/// and so does `moe_grouped_select_old(1)`; `0` forces the new ones, `-1` returns to the environment.  The environment
+/// variable is read once, on first use; the kernel choice is made at each launch (so a captured graph keeps the
+/// kernels chosen at capture).  Use `moe_grouped_select_old` to switch at runtime.  `STRATA_GROUPED_PAIR_MIN_HITS=N`
+/// (read once too) keeps the previous per-hit kernels below N hits of capacity; a forced choice overrides it.  The
+/// new kernels also need 4-byte aligned activations and scratch, and the per-hit ones an 8-byte aligned arena and
+/// slot size; otherwise the previous kernels run.
+void moe_grouped_select_old(int old);
+/// Which kernels the last call of the entry points above launched: 1 = new, 0 = previous, -1 = none since the
+/// previous query (the query clears it).  For the parity test, which must know the path it compared was taken.
+int moe_grouped_last_path();
 void moe_hit_grouped_s2_cpu_order(const uint8_t* blob_base, const int32_t* slot_index,
                                  const int32_t* dst_index, int64_t n_hits, int64_t blob_bytes,
                                  const uint8_t* x_q8_0, void* scratch, float* out, void* stream,

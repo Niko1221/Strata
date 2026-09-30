@@ -513,6 +513,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(cvec_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME cvec_parity COMMAND cvec_parity)
 
+  # The rewritten per-hit and grouped expert kernels vs the previous ones, bitwise (GPU, synthetic, no model).
+  # `--bench` adds previous/new timings on engine-like shapes.
+  add_executable(s2_expert_grouped_parity src/kernels/s2_expert_grouped_parity.cpp)
+  target_include_directories(s2_expert_grouped_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(s2_expert_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME s2_expert_grouped_parity COMMAND s2_expert_grouped_parity --selftest)
+
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp")
     add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
