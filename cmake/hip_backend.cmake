@@ -7,8 +7,8 @@ endif()
 # Validated on real cards: gfx1100 (RX 7900 XT / XTX) and gfx1201 (RX 9070 / 9070 XT, Radeon AI PRO R9700).
 # The other RDNA3 / RDNA4 wave32 chips have the same LDS limit and dot4 instruction and build the same code, but
 # the maintainers have not run them (community reports: gfx1102 #192, gfx1200 #176).
-set(_strata_hip_validated gfx1100 gfx1201)
-set(_strata_hip_unvalidated gfx1101 gfx1102 gfx1200)
+set(_strata_hip_validated gfx1100 gfx1101 gfx1201)
+set(_strata_hip_unvalidated gfx1102 gfx1200)
 set(STRATA_HIP_ARCH_LIST "")
 foreach(_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
   string(REGEX REPLACE ":.*$" "" _base "${_arch}")      # gfx1100:xnack- -> gfx1100
@@ -17,7 +17,7 @@ foreach(_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
     message(WARNING "Strata HIP: ${_base} builds, but it is not validated on a real card yet; please report results")
   else()
     message(FATAL_ERROR
-      "Strata HIP supports wave32 gfx1100 and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "
+      "Strata HIP supports wave32 gfx1100, gfx1101, and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "
       "CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
   endif()
   list(APPEND STRATA_HIP_ARCH_LIST "${_base}")

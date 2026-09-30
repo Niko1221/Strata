@@ -1,6 +1,6 @@
-# Experimental AMD HIP backend (gfx1100, gfx1201)
+# Experimental AMD HIP backend (gfx1100, gfx1101, gfx1201)
 
-This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
+This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100), the RX 7800 XT (RDNA3, gfx1101) and the
 RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)).
 It is opt-in; the NVIDIA installer and CUDA build remain the default. Other AMD
 architectures, wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
@@ -15,7 +15,7 @@ This does not claim bit-identical model answers across backends. See
 
 ## Install with setup (recommended)
 
-On Linux with an RX 7900 XT / XTX or an RX 9070 / 9070 XT / Radeon AI PRO R9700 and the kernel's amdgpu driver
+On Linux with an RX 7800 XT / RX 7900 XT / XTX or an RX 9070 / 9070 XT / Radeon AI PRO R9700 and the kernel's amdgpu driver
 (no ROCm install needed):
 
 ```sh
@@ -50,7 +50,7 @@ table. VRAM occupancy alone is not a throughput measurement.
 cmake -S . -B build-hip \
   -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1100
+  -DCMAKE_HIP_ARCHITECTURES=gfx1100;gfx1101
 cmake --build build-hip --target strata -j2
 ```
 

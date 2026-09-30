@@ -1,6 +1,7 @@
 # RX 7900 XTX support and performance evidence
 
-This opt-in Linux `gfx1100` backend supersedes the initial support in
+This opt-in Linux `gfx1100` / `gfx1101` (RDNA3 wave32) backend supersedes the
+initial support in
 [PR #94](https://github.com/Niko1221/Strata/pull/94). It retains HIP runtime and
 wave32 integer-dot compatibility, native mmap layout validation, and MTP, then
 adds HIP MMQ, optional calibrated dense hipBLASLt GEMM, native prefill batching,
@@ -21,8 +22,10 @@ export STRATA_PREFILL_RING=96
 export STRATA_IO_THREADS=32
 ```
 
-The supplied table is calibrated for gfx1100 and hipBLASLt version 100100.
-It is not a universal ROCm tuning table. The runtime guards architecture,
+The supplied tables are calibrated per architecture and hipBLASLt version:
+`gfx1100-hipblaslt-100100.txt` (gfx1100, 100100) and
+`gfx1101-hipblaslt-100401.txt` (gfx1101, 100401).
+They are not universal ROCm tuning tables. The runtime guards architecture,
 library version and actual shape/stride/workspace requirements, falling back
 when a table entry is unavailable or incompatible. HIP MMQ is opt-in at runtime. Default CUDA selection is preserved.
 
