@@ -478,11 +478,17 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
             gr_write(R_ + (size_t) t * HC * N, y_ + t * N, inj2_ + t * HC, gs, R_ + (size_t) t * HC * N, cs);
         }
         // ---- the final mixer and the main model's head
-        for (int t = 0; t < T; ++t)
-            gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
-                    sample_ + t * N, dummy_inj_, cs);
+        {
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = 0; t < T; ++t) {
+                fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = false;
+                fa[t].w_norm = f32("hyper_connection_mixer.hc_norm.weight");
+                fa[t].w_down = bf16("hyper_connection_mixer.input_mix_weight_down.weight");
+                fa[t].w_up = bf16("hyper_connection_mixer.input_mix_weight_up.weight");
+                fa[t].eps = EPS; fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = sample_ + t * N;
+            }
+            fused_gr_read_multi(fa, T, grs_, cs);
+        }
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;

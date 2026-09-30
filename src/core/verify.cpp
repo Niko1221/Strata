@@ -954,14 +954,25 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
                         *hu = wt.find("output_hc_up.weight");
         if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
-        for (int t = 0; t < T; ++t) {
-            BlockBuffers bb = ss.block;
-            bb.R = Rt(t);
-            bb.mixed = head_mixed_ + t * N;
-            if (head_ != nullptr && head_->loaded()) {
-                if (!lm_head_mix(wt, g, bb, cs, err)) return false;
-            } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
+        if (head_ != nullptr && head_->loaded()) {   // the final mixer, the window's tokens in one read
+            if (hn->kind != WeightKind::F32 || hd->kind != WeightKind::Bf16InF32 || hu->kind != WeightKind::Bf16InF32) {
+                err = "verify: the output_hc_* weights have the wrong engine forms";
                 return false;
+            }
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = 0; t < T; ++t) {
+                fa[t].R = Rt(t); fa[t].R_out = Rt(t); fa[t].apply = false;
+                fa[t].w_norm = (const float*) hn->data; fa[t].w_down = (const uint16_t*) hd->data;
+                fa[t].w_up = (const uint16_t*) hu->data; fa[t].eps = EPS;
+                fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = head_mixed_ + t * N;
+            }
+            fused_gr_read_multi(fa, T, grs_, cs);
+        } else {
+            for (int t = 0; t < T; ++t) {
+                BlockBuffers bb = ss.block;
+                bb.R = Rt(t);
+                bb.mixed = head_mixed_ + t * N;
+                if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) return false;
             }
         }
         if (head_ != nullptr && head_->loaded()) {
