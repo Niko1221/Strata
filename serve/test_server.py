@@ -251,6 +251,92 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class UnfinishedToolCall(unittest.TestCase):
+    """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
+    finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
+    CALL = ("</think>\n\n<tool_call>\n<function=write>\n<parameter=path>\nnotes.txt\n</parameter>\n"
+            "<parameter=content>\n")
+    CUT = CALL + "first half of the fi"                            # the model's turn ends here
+    WHOLE = CALL + "all of it\n</parameter>\n</function>\n</tool_call>"
+    PROPS = {"path": {"type": "string"}, "content": {"type": "string"}}
+
+    def test_parser(self):
+        from serve.frontend import OutputParser
+        schema = [{"name": "write", "parameters": {"properties": self.PROPS}}]
+        for text, content in ((self.CUT, None), (self.WHOLE, "all of it"),
+                              (self.WHOLE[:-len("</tool_call>")], "all of it")):   # only </tool_call> missing: whole
+            for step in (1, 7, 10_000):
+                with self.subTest(end=text[-12:], step=step):
+                    p = OutputParser(thinking=True, tools=schema, stream_tools=True)
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish()
+                    streamed = "".join(e.text for e in evs if e.kind == "tool_args")
+                    calls = [e for e in evs if e.kind == "tool_call"]
+                    if content is None:
+                        self.assertEqual((calls, streamed), ([], '{"path":"notes.txt","content":"first half of the fi'))
+                    else:
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(json.loads(streamed), {"path": "notes.txt", "content": content})
+
+    def answers(self, script):
+        """(finish reason, the call's arguments) from OpenAI and Anthropic, whole and streamed, for the model's `script`."""
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        tools = {"openai": [{"type": "function", "function": {"name": "write", "parameters": {
+                     "type": "object", "properties": self.PROPS}}}],
+                 "anthropic": [{"name": "write", "input_schema": {"type": "object", "properties": self.PROPS}}]}
+        out = {}
+        try:
+            for api, path in (("openai", "/v1/chat/completions"), ("anthropic", "/v1/messages")):
+                for stream in (False, True):
+                    body = {"model": "x", "max_tokens": 500, "stream": stream, "tools": tools[api],
+                            "messages": [{"role": "user", "content": "save my notes"}]}
+                    req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={
+                        "Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        raw = r.read().decode()
+                    if stream:
+                        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+                        if api == "openai":
+                            out[api, stream] = (evs[-1]["choices"][0]["finish_reason"], "".join(
+                                (tc.get("function") or {}).get("arguments") or "" for e in evs
+                                for tc in e["choices"][0]["delta"].get("tool_calls") or []))
+                        else:
+                            out[api, stream] = (evs[-2]["delta"]["stop_reason"], "".join(
+                                e["delta"]["partial_json"] for e in evs if e["type"] == "content_block_delta"
+                                and e["delta"]["type"] == "input_json_delta"))
+                    elif api == "openai":
+                        c = json.loads(raw)["choices"][0]
+                        out[api, stream] = (c["finish_reason"], [tc["function"]["arguments"]
+                                                                 for tc in c["message"].get("tool_calls") or []])
+                    else:
+                        m = json.loads(raw)
+                        out[api, stream] = (m["stop_reason"], [b["input"] for b in m["content"] if b["type"] == "tool_use"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        return out
+
+    def test_a_cut_call(self):
+        cut = '{"path":"notes.txt","content":"first half of the fi'
+        self.assertEqual(self.answers(self.CUT), {
+            ("openai", False): ("stop", [cut]), ("openai", True): ("stop", cut),
+            ("anthropic", False): ("end_turn", []),                      # no input to give: the call is left out
+            ("anthropic", True): ("end_turn", cut)})
+
+    def test_a_whole_call(self):
+        whole = {"path": "notes.txt", "content": "all of it"}
+        a = self.answers(self.WHOLE)
+        self.assertEqual((a["openai", False][0], [json.loads(x) for x in a["openai", False][1]]), ("tool_calls", [whole]))
+        self.assertEqual((a["openai", True][0], json.loads(a["openai", True][1])), ("tool_calls", whole))
+        self.assertEqual(a["anthropic", False], ("tool_use", [whole]))
+        self.assertEqual((a["anthropic", True][0], json.loads(a["anthropic", True][1])), ("tool_use", whole))
+
+
 class ClientShapes(unittest.TestCase):
     """What real clients send: Claude Code posts /v1/messages?beta=true (issue #55) and puts hook context into the
     conversation as a mid-conversation system message (issue #56); some OpenAI clients send a late developer message."""

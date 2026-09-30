@@ -1064,6 +1064,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     yield chunk({"role": "assistant", "content": ""})
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
+    finished = set()                               # ... and the ones whose final tool_call came (#211)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
             yield None
@@ -1085,14 +1086,16 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             elif ev.kind == "tool_args":
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
             elif ev.kind == "tool_call" and ev.call.id in streamed:
-                continue
+                finished.add(ev.call.id)
             elif ev.kind == "tool_call":
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
-            finish = "tool_calls" if calls and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
+            # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
+            whole = calls and streamed.keys() <= finished
+            finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
@@ -1149,7 +1152,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     def close():
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    streamed = set()
+    streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
             yield None
@@ -1161,6 +1164,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                                               "delta": {"type": "input_json_delta", "partial_json": ev.text}}
                 continue
             if ev.kind == "tool_call" and ev.call.id in streamed:
+                finished.add(ev.call.id)
                 continue
             want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
             if ev.kind not in ("tool_call", "tool_start") and not ev.text:
@@ -1193,7 +1197,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         else:
             if open_kind is not None:
                 yield close()
-            stop = "tool_use" if used_tool and x["finish"] == "stop" else \
+            stop = "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
             # which is cache_read_input_tokens (message_start could only say the whole prompt)
@@ -1224,7 +1228,10 @@ def anthropic_collect(events) -> dict:
                 b["_json"] = b.get("_json", "") + d["partial_json"]
         elif name == "content_block_stop" and blocks and "_json" in blocks[-1]:
             b = blocks[-1]
-            b["input"] = json.loads(b.pop("_json") or "{}")
+            try:
+                b["input"] = json.loads(b.pop("_json") or "{}")
+            except ValueError:                     # a call the output ended inside (#211): it has no input to give
+                blocks.pop()
         elif name == "message_delta":
             msg["stop_reason"] = e["delta"]["stop_reason"]
             msg["usage"].update(e["usage"])
