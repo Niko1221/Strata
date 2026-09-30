@@ -1,12 +1,14 @@
-# Experimental AMD HIP backend (gfx1100, gfx1201)
+# Experimental AMD HIP backend (gfx1100, gfx1201, gfx1030)
 
 This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
-RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)).
+RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)). The RX 6800 / 6900
+series (RDNA2, gfx1030) builds and runs too, reported by a community machine and not yet validated by the
+maintainers (see [RDNA2](#rdna2-gfx1030)).
 It is opt-in; the NVIDIA installer and CUDA build remain the default. Other AMD
 architectures, wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
-RDNA3/RDNA4's signed integer dot instruction for quantized kernels, and supplies
+RDNA2/RDNA3/RDNA4's signed integer dot instruction for quantized kernels, and supplies
 wave32 shuffle/packed-byte operations. CUDA-only QSA matrix instructions have
 an ordered FP32 fallback. Prefill supports both dequantization plus hipBLAS GEMM and opt-in HIP ggml MMQ.
 An optional, calibrated hipBLASLt path accelerates dense projections (per-architecture tables in `tools/hip`).
@@ -27,7 +29,8 @@ On Linux with an RX 7900 XT / XTX or an RX 9070 / 9070 XT / Radeon AI PRO R9700 
 - **ROCm:** a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS is used when present. Otherwise
   (or when it is older than 7.0) ROCm is installed into `.venv` from AMD's TheRock wheels (~10 GB, no sudo), pinned
   to the version this backend was tested with, from the card family's index: `gfx110X-dgpu` for gfx1100,
-  `gfx120X-all` for gfx1201 (`STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX` override them).
+  `gfx120X-all` for gfx1201, `gfx103X-all` for gfx1030 (`STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX` override
+  them; the gfx1030 index is not checked to carry the pinned version: a system ROCm 7 is the tested path there).
 - **Engine:** compiled on your PC for the card's architecture (10-20 minutes, once; again after a `git pull` that
   changes it, or when you pick a card of another architecture). This needs a C++ compiler and git
   (`sudo apt install build-essential git`).
@@ -55,7 +58,7 @@ cmake --build build-hip --target strata -j2
 ```
 
 `CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1201`, or a list such as `"gfx1100;gfx1201"` (one binary for both).
-gfx1101, gfx1102 and gfx1200 (the same wave32, 64 KiB LDS and dot4 instruction) build with a warning: they have
+gfx1030, gfx1101, gfx1102 and gfx1200 (wave32 and 64 KiB LDS; gfx1030 has the older `v_dot4_i32_i8`) build with a warning: they have
 not been validated on a real card here. At startup the engine and `strata-device` compare each GPU they use
 (`gcnArchName` up to the `:` feature suffix) with the architectures the binary was compiled for, and require
 wave32. A binary carried to another card stops with the card's name, its architecture and the build's list,
@@ -168,6 +171,38 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** gfx1200 (RX 9060 XT; a community report is #176), images, long contexts beyond 16K,
   answer-quality benchmarks.
+
+## RDNA2 (gfx1030)
+
+The RX 6800 / 6800 XT / 6900 XT / 6950 XT run the same kernels: wave32 and 64 KiB of LDS per workgroup. The one
+difference is the dot instruction: RDNA2 has no `v_dot4_i32_iu8` (gfx11 and newer), so
+`dp4a` uses the plain signed `v_dot4_i32_i8` through `__builtin_amdgcn_sdot4`, which compiles to a single
+`v_dot4c_i32_i8` (same signed x signed byte products, modulo 2^32). There is no WMMA; the QSA scorer takes the
+same ordered FP32 fallback as gfx1100. CMake lists gfx1030 as unvalidated (the build warns) until a maintainer has
+run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx1030), an i7-13700KF (8 P-cores and
+8 E-cores, AVX2, no AVX-512), 63 GB RAM, NixOS, ROCm 7.2.3 from nixpkgs (clang 22, hipBLAS 3.2).
+
+- **Build and tests** (engine 0.1.26): a complete HIP build for gfx1030, made by hand with cmake and ROCm's own
+  `clang++` (the nixpkgs ROCm is not an `/opt/rocm` tree, so setup's `build_engine_hip` was not exercised; the
+  binary was placed in `engine/` for setup to use). All 28 registered ctest tests pass on the card, including
+  `hip_device_selftest`. An engine 0.1.30 build of this branch configures, builds and runs clean on the same card;
+  the speeds below are measured on it.
+- **End to end** (Swift 1.5 IQ3_XXS, `--context 131072` with `--kv-resident 32768 --adapt-every 1
+  --vram-reserve-mib 1024`, 200 greedy tokens): 38-42 tok/s decode with the default 15 CPU pool workers (one per
+  physical core except the host thread; 8 workers: 36; 24 = every logical core: 27), consistent even with the
+  131,072-token context full.
+- **Prefill** (the same 15-worker configuration): 246 tok/s on a 2,000-token prompt, 330-339 tok/s at the auto
+  8,192-token chunk (7,997 and 15,967 tokens; time to first token 8.9 and 48.3 s), 133 tok/s on a 522-token
+  prompt - short prompts are fixed overhead (19-25 tok/s on 34 tokens). Decode after a 16K prefill holds at
+  45.5 tok/s.
+- **16 GB card:** the expert cache holds 6,310 slots (10.2 GiB) at 16K context and 5,247 slots at 131,072, where
+  setup keeps the KV cache in VRAM because IQ3_XXS needs about 60 GB of RAM plus the cache to stream it. The
+  `--pcie-frac 0` and `--adapt-every 0` of the 7900 XTX configuration in
+  [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md) cost 8.6 and 13.6 tok/s here (30 with the defaults): keep the
+  defaults on a 16 GB card.
+- **hipBLASLt:** ROCm's hipBLASLt ships no gfx1030 kernels, so there is no table and the plain hipBLAS path runs.
+- **Not validated:** gfx1031 / gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
+  `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks.
 
 ## Tuning table
 
