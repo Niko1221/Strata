@@ -778,8 +778,63 @@ void fixture_reader(const std::string& root) {
                Restore::restored, ("the delta restore: " + err).c_str());
         ck_eq(L1, 300, "the v3 restore's length");
         ck_eq(L2, 300, "the delta restore's length");
-        ck_eq((int64_t) image_bytes, (int64_t) slurp(v3_path).size(),
-              "the delta restore staged the SAME whole-file image the v3 tier reads (the C10 cost, reported)");
+        // THE BOUNDED STAGING (restore-perf handoff §3, B2).  There is no assembled image any more, so the
+        // fixture no longer asserts the whole-file C10 cost; it asserts the bound the path now promises: the
+        // State record it read, the pooled-row staging, and ONE payload buffer per worker - NOT the conversation.
+        // Everything in that bound is computable from the store on disk, which is what keeps the assertion honest.
+        {
+            int64_t state_bytes = 0, chunk_bytes = 0;
+            for (const auto& de : fs::directory_iterator(dir + "/states"))
+                if (de.is_regular_file()) state_bytes += (int64_t) de.file_size();
+            for (const auto& de : fs::directory_iterator(dir + "/chunks"))
+                if (de.is_regular_file())
+                    chunk_bytes = std::max<int64_t>(chunk_bytes, (int64_t) de.file_size());
+            const int64_t rowsT = strata::kernels::qsa_pooled_rows(300, SHP);
+            const int64_t pooled_bound = (int64_t) S.g.n_qsa_layers() * rowsT * S.g.idx_key_dim * 4;
+            const int64_t bound = state_bytes + pooled_bound + 4 * chunk_bytes;
+            ck((int64_t) image_bytes > 0 && (int64_t) image_bytes <= bound,
+               "the restore staged ONLY the State record + the pooled rows + one buffer per worker (bounded staging)");
+            ck((int64_t) image_bytes <= (int64_t) slurp(v3_path).size() * 2,
+               "and nothing like a second copy of the conversation");
+        }
+        // R4: the streamed applies are the v3 walk's DEVICE segments in its ORDER and under its NAMES, so the
+        // fault matrix can still count and skip them: gdn, ple, then pooled/tail/dead/block_pos per layer, then
+        // one spare-row re-publish per layer - the same 2 + n_layers * 5 the v3 fixture pins.
+        reset_faults();
+        {
+            Session R3;
+            std::vector<int32_t> ids3;
+            std::vector<ConversationImageKey> imgs3;
+            bool cvec3 = false;
+            int64_t L3 = 0;
+            std::string e3;
+            ck(strata::platform::delta_restore(e, R3.ss, R3.draft, R3.g, WFP, ids3, imgs3, cvec3, L3, e3) ==
+                   Restore::restored, ("the streamed restore for the apply count: " + e3).c_str());
+            ck_eq(copy_calls, 2 + (int) S.g.n_qsa_layers() * 5,
+                  "the streamed apply pass makes exactly the v3 walk's device copies (2 + n_layers x 5)");
+            ck_eq(sync_calls, 2, "the pre-apply and final syncs, and no more");
+        }
+        // ... and the fault hook still skips them BY NAME: the Nth copy is the layer's pooled rows, the last is
+        // the spare-row re-publish, and both are `transfer_failed` with the segment named.
+        for (const int64_t nth : {(int64_t) 3, (int64_t) (2 + (int64_t) S.g.n_qsa_layers() * 5)}) {
+            reset_faults();
+            fail_copy = (int) nth;
+            Session R4;
+            std::vector<int32_t> ids4;
+            std::vector<ConversationImageKey> imgs4;
+            bool cvec4 = false;
+            int64_t L4 = 0;
+            std::string e4;
+            const Restore r4 =
+                strata::platform::delta_restore(e, R4.ss, R4.draft, R4.g, WFP, ids4, imgs4, cvec4, L4, e4);
+            ck(r4 == Restore::transfer_failed, ("the streamed apply fails transfer at copy " + std::to_string(nth)).c_str());
+            ck(e4.find("nvme_restore") != std::string::npos,
+               "and the message is the v3 apply pass's own");
+            ck(e4.find(nth == 3 ? "pooled" : "spare pooled row") != std::string::npos,
+               "naming the segment the fault skipped (pooled rows / the spare-row re-publish)");
+            ck_no_pending_error("the streamed fault left no CUDA error pending");
+        }
+        reset_faults();
         ck(ids1 == ids2 && imgs1 == imgs2 && cvec1 == cvec2, "the two restores hand back the same prefix and images");
         for (int64_t i = 0; i < S.g.n_qsa_layers(); ++i) {
             const Store& a = R1.stores[(size_t) i];
@@ -1242,8 +1297,10 @@ void fixture_store(const std::string& root) {
             Session R0;
             ck(d.restore(e, R0.ss, R0.draft, R0.g, err) == strata::core::ConversationRestore::restored,
                "the entry restores while every record it references is on disk");
-            ck_eq((int64_t) d.last_image_bytes(), (int64_t) slurp(v3).size(),
-                  "the store reports the image its restore staged");
+            ck_eq((int64_t) d.size(), 1, "the entry is in the store");
+            const uint64_t staged = d.last_image_bytes();
+            ck(staged > 0 && staged <= (uint64_t) slurp(v3).size() * 2,
+               "the store reports the BOUNDED staging its streaming restore allocated (B2: no assembled image)");
         }
         fs::remove(dir + "/delta/chunks/" + strata::platform::delta_key_name(refs[0].key) + ".bin");
         Session R;

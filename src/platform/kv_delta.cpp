@@ -820,115 +820,187 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         }
     }
 
-    // ---- step 3: assemble the EXACT v3 image in one buffer (the whole-file staging the v3 restore already
-    // does - the measured, accepted C10 cost), interleaving chunk and State slices per the v3 walk's order.
-    // Phase A: the walk RECORDS each chunk slice's destination (the workers place them as they read), while
-    // every State-side and header put is written here, on the caller's thread - the destination offsets are
-    // byte-for-byte the ones the sequential assembly produced (same walk, same running offset).
+    // ---- step 3: THE STREAMING VALIDATION (docs/nvme-delta-restore-handoff.md §3, B2).  There is no assembled
+    // image any more, so nvme_restore_image's own layout walk and digest verdict cannot run - this must be a
+    // STRICT SUPERSET of what they refused: the manifest's header/count/lattice facts, every chunk's
+    // existence/size/key/range/digest (in the workers, below), the slice math against the LIVE arrays, and the
+    // State's sections against delta_state_payload_bytes (step 2).  All of it happens BEFORE the first CUDA call,
+    // so every refusal here is `invalid`: recoverable, zero CUDA calls, nothing written.
+    if (h.L < 1) {
+        err = "kv-delta: manifest " + e.path + ": malformed header sizes (L " + std::to_string(h.L) + ")";
+        return Restore::invalid;
+    }
+    if ((int64_t) ids.size() != T) {
+        err = "kv-delta: manifest " + e.path + ": " + std::to_string(ids.size()) +
+              " ids against header L " + std::to_string(T) + " (malformed header sizes)";
+        return Restore::invalid;
+    }
+    // the LATTICE: one chunk per sealed span, no more, no fewer - a manifest listing fewer would have left holes
+    // in the assembled image (zero bytes the digest would have blessed), and one listing more read past the sealed
+    // prefix.  The image walk caught both as a layout mismatch; here it is arithmetic.
+    const int64_t want_chunks = S / (sh.block * K);
+    if ((int64_t) refs.size() != want_chunks) {
+        err = "kv-delta: manifest " + e.path + ": " + std::to_string(refs.size()) +
+              " chunks, the sealed prefix [" + std::to_string(S) + ") needs " + std::to_string(want_chunks) +
+              " (lattice mismatch - refusing)";
+        return Restore::invalid;
+    }
+    // the walk this path replaces set L from the image's header as soon as the header validated; the manifest's
+    // L is the same fact, and it is reported the same way - set here, before any refusal below
+    L = T;
+    const int64_t rowsT = strata::kernels::qsa_pooled_rows(T, sh.shapes);
+    // the same refusal kv_nvme.cpp's snapshot_pooled_rows makes: a prefix whose pooled rows do not fit the live
+    // array would have been caught by the image walk's segment sizing; streaming would write past the array
+    if (rowsT > ss.qsa_states[0].idx_pooled_rows) {
+        err = "kv-delta: manifest " + e.path + ": pooled rows: a " + std::to_string(T) +
+              "-token prefix needs " + std::to_string(rowsT) + " indexer pooled rows, this engine's array holds " +
+              std::to_string(ss.qsa_states[0].idx_pooled_rows) + " - refusing";
+        return Restore::invalid;
+    }
+
+    // ---- step 4: THE LAYOUT FACTS, the same arithmetic the assembly walked with - every destination below is a
+    // (host array, page offset) or a (staged device buffer, row offset) computed from these, in the writer's own
+    // cut.  TWO STRIDE FAMILIES, as the assembly had: a chunk's section strides by its OWN per-array slice
+    // (pages_per_chunk pages), the State's by the TAIL's (st_pages pages); they coincided only when a chunk was
+    // one block.
     const bool has_ple = ss.ple_hist != nullptr;
     const int64_t pagesT = (T + sh.shapes.page_size - 1) / sh.shapes.page_size;
-    const int64_t rowsT = strata::kernels::qsa_pooled_rows(T, sh.shapes);
     const int64_t idx4 = g.idx_key_dim * 4;
     const int n_arrays = nvme_kv_array_count(ss.qsa_states[0]);
     int64_t widths[4] = {0, 0, 0, 0};
     for (int k = 0; k < n_arrays; ++k) widths[k] = nvme_kv_host_array(ss.qsa_states[0], g.head_dim, k).w;
     const int64_t page_kv = g.n_head_kv * sh.shapes.page_size;
-    const int64_t st_pages = pagesT - S / sh.shapes.page_size;   // the State record's tail-page count per array
-    const int64_t st_rows = rowsT - S / sh.shapes.idx_block;
-    // per-layer strides, chunk side and state side; the drafter's arrays ride after the layers in BOTH
-    int64_t ch_arrays = 0, st_arrays = 0, dr_slice = 0;
+    const int64_t sealed_pages = S / sh.shapes.page_size;   // where the State's tail begins
+    const int64_t st_pages = pagesT - sealed_pages;         // the State's tail-page count per array
+    const int64_t sealed_rows = S / sh.shapes.idx_block;
+    const int64_t st_rows = rowsT - sealed_rows;
+    const int64_t n_layers = g.n_qsa_layers();
+    // the POOLED ROWS per chunk scale with the chunk's SPAN (K blocks), not with one block - sh.rows_per_chunk is
+    // the per-BLOCK count (docs/nvme-kv-cache-design.md §5.4)
+    const int64_t rows_per_chunk = sh.span / sh.shapes.idx_block;
+    int64_t ch_arrays = 0, st_arrays = 0;
     for (int k = 0; k < n_arrays; ++k) {
         ch_arrays += pages_per_chunk * page_kv * widths[k];
         st_arrays += st_pages * page_kv * widths[k];
-        dr_slice += pages_per_chunk * page_kv * widths[k];
     }
-    const int64_t ch_stride = ch_arrays + (sh.span / sh.shapes.idx_block) * idx4;   // the chunk's span of rows
+    const int64_t ch_stride = ch_arrays + rows_per_chunk * idx4;   // the chunk's span of rows
     const int64_t st_stride = st_arrays + st_rows * idx4 + (int64_t) (z.tail + z.dead + z.block_pos);
-    const int64_t st_drafter_base = (int64_t) z.gdn + (has_ple ? (int64_t) z.ple : 0) + g.n_qsa_layers() * st_stride;
-    int64_t arr_total = 0;
-    for (int k = 0; k < n_arrays; ++k) arr_total += pagesT * page_kv * widths[k];
-    const size_t payload_bytes = sizeof(NvmeHeader) + (size_t) T * 4 +
-                                 imgs.size() * sizeof(ConversationImageKey) + z.gdn + (has_ple ? z.ple : 0) +
-                                 (size_t) g.n_qsa_layers() *
-                                     (size_t) (arr_total + rowsT * idx4 + (int64_t) (z.tail + z.dead + z.block_pos)) +
-                                 (size_t) arr_total +   // the drafter: T <= max_cells, so the ring covers the prefix
-                                 sizeof(uint64_t);
-    std::vector<uint8_t> buf(payload_bytes, 0);
+    const int64_t st_drafter_base = (int64_t) z.gdn + (has_ple ? (int64_t) z.ple : 0) + n_layers * st_stride;
+    // the drafter's LIVE window: the v3 walk applies ceil(min(L, max_cells) / page) pages and no more, so the
+    // streaming path places exactly that many pages and leaves the rest of the ring alone
+    const int64_t mtp_pages = (std::min<int64_t>(T, mtp_state.max_cells) + sh.shapes.page_size - 1) /
+                              sh.shapes.page_size;
 
-    // each chunk's placement plan: (destination in the image, source offset in the chunk's payload, bytes).
-    // The workers' writes are DISJOINT by construction - every destination comes from this one walk.
-    struct ChunkSlice { size_t dest, src, bytes; };
-    std::vector<std::vector<ChunkSlice>> chunk_plans(refs.size());
-
-    NvmeHeader v3;
-    v3.L = T;
-    v3.n_imgs = (int64_t) imgs.size();
-    v3.cvec = h.cvec;
-    v3.kv_format = h.kv_format;
-    v3.geometry = h.geometry;
-    v3.page_size = h.page_size; v3.idx_block = h.idx_block; v3.max_cells = h.max_cells;
-    v3.mtp_host = h.mtp_host;
-    size_t at = 0;
-    auto put = [&](const void* p, size_t n) { std::memcpy(buf.data() + at, p, n); at += n; };
-    auto put_chunk = [&](int64_t j, size_t src, size_t n) {   // recorded, not written: a worker places it
-        chunk_plans[(size_t) j].push_back({at, src, n});
-        at += n;
-    };
-    put(&v3, sizeof v3);
-    put(ids.data(), (size_t) T * 4);
-    if (!imgs.empty()) put(imgs.data(), imgs.size() * sizeof(ConversationImageKey));
-    put(state.data(), z.gdn);                       // gdn: the State record's first slice
-    if (has_ple) put(state.data() + z.gdn, z.ple);  // then ple, when the session has PLE history
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
-        const size_t ch_base = (size_t) (i * ch_stride);
+    // ---- step 5: THE DEVICE SEGMENTS, staged small, in the v3 walk's ORDER and NAMES (R4).  The pooled rows are
+    // the only bytes that cannot land in one copy where they belong: they live on the device and each chunk
+    // holds only its own span of rows, so each layer's rows are staged here - the chunks' rows [0, sealed_rows)
+    // concatenated in chunk order, then the State's tail rows [sealed_rows, rowsT) - and applied as ONE pooled
+    // segment per layer, exactly the shape the v3 walk applies.  gdn/ple/tail/dead/block_pos point straight into
+    // the State record, which is already in host memory.  This staging (~20 MB at 142k tokens) plus the State
+    // record and one payload buffer per worker IS the restore's entire transient allocation.
+    std::vector<uint8_t> pooled_stage((size_t) (n_layers * rowsT * idx4));
+    std::vector<NvmeRestoreApply> applies;
+    applies.reserve((size_t) (2 + n_layers * 4));
+    applies.push_back({ss.gdn_state, state.data(), (size_t) z.gdn, true, "gdn"});
+    if (has_ple) applies.push_back({ss.ple_hist, state.data() + z.gdn, (size_t) z.ple, true, "ple"});
+    for (int64_t i = 0; i < n_layers; ++i) {
+        strata::core::QsaState& st = ss.qsa_states[i];
         const size_t st_base = (size_t) (z.gdn + (has_ple ? (int64_t) z.ple : 0) + i * st_stride);
-        int64_t ch_off = 0, st_off = 0;
-        for (int k = 0; k < n_arrays; ++k) {
-            const size_t slice = (size_t) (pages_per_chunk * page_kv * widths[k]);
-            for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-                put_chunk(j, ch_base + (size_t) ch_off, slice);
-            put(state.data() + st_base + (size_t) st_off, (size_t) (st_pages * page_kv * widths[k]));
-            ch_off += (int64_t) slice;
-            st_off += (int64_t) (st_pages * page_kv * widths[k]);
-        }
-        const size_t rows_slice = (size_t) ((sh.span / sh.shapes.idx_block) * idx4);
-        for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-            put_chunk(j, ch_base + (size_t) ch_off, rows_slice);
-        put(state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
-        st_off += (int64_t) (st_rows * idx4);
-        put(state.data() + st_base + (size_t) st_off, z.tail);   st_off += (int64_t) z.tail;
-        put(state.data() + st_base + (size_t) st_off, z.dead);   st_off += (int64_t) z.dead;
-        put(state.data() + st_base + (size_t) st_off, z.block_pos);
-    }
-    {   // the drafter: the chunks' pages for [0, S) plus the State record's tail pages, per non-null array.
-        // TWO offsets: the chunk's drafter section strides by the CHUNK's per-array slice (span/page pages),
-        // while the State's drafter section strides by the TAIL's per-array slice (st_pages pages) - one
-        // running offset was correct only when a chunk was ONE block (the strides then coincided), and the
-        // K-grouping turned the difference into silently wrong scale-array bytes.
-        const size_t ch_drafter = (size_t) (g.n_qsa_layers() * ch_stride);
-        int64_t ch_dr = 0, st_dr = 0;
-        for (int k = 0; k < n_arrays; ++k) {
-            const size_t csz = (size_t) (pages_per_chunk * page_kv * widths[k]);
-            const size_t ssz = (size_t) (st_pages * page_kv * widths[k]);
-            for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-                put_chunk(j, ch_drafter + (size_t) ch_dr, csz);
-            put(state.data() + st_drafter_base + (size_t) st_dr, ssz);
-            ch_dr += (int64_t) csz;
-            st_dr += (int64_t) ssz;
-        }
+        applies.push_back({st.idx_pooled, pooled_stage.data() + (size_t) (i * rowsT * idx4),
+                           (size_t) (rowsT * idx4), true, "pooled"});
+        size_t off = st_base + (size_t) st_arrays + (size_t) (st_rows * idx4);
+        applies.push_back({st.idx_tail, state.data() + off, (size_t) z.tail, true, "tail"});
+        off += (size_t) z.tail;
+        applies.push_back({st.idx_dead, state.data() + off, (size_t) z.dead, true, "dead"});
+        off += (size_t) z.dead;
+        applies.push_back({st.idx_block_pos, state.data() + off, (size_t) z.block_pos, true, "block_pos"});
     }
 
-    // ---- step 3.5: THE FAN-OUT (the restore-perf handoff's Phase A).  N workers (std::thread + an atomic
-    // index, no new dependency) each take the next chunk: open/read of the payload, the FNV digest check, the
-    // slice-math size check, and the placement memcpys into the image - host reads, digests and copies only,
-    // NO CUDA (R2).  A worker keeps ONE payload buffer and reuses it across chunks.  Any refusal aborts the
-    // restore as `invalid` with the chunk named; the error reported is the FIRST failure in CHUNK ORDER
-    // (lowest index), collected and chosen after the join, so the refusals stay deterministic despite the
-    // pool.  nvme_restore_image itself still runs on the caller's thread, after the join.
+    // ---- step 6: the State's own bytes, placed HERE on the caller's thread: the per-layer KV tail pages and the
+    // pooled tail rows, then the drafter's tail pages - the same bytes, at page offset sealed_pages / row offset
+    // sealed_rows, which is where the writer cut them.  `zero` is the refusal path's undo (below): same ranges,
+    // memset, so a refusal leaves the session as it found it.
+    auto place_state = [&](bool zero) {
+        for (int64_t i = 0; i < n_layers; ++i) {
+            strata::core::QsaState& st = ss.qsa_states[i];
+            const size_t st_base = (size_t) (z.gdn + (has_ple ? (int64_t) z.ple : 0) + i * st_stride);
+            int64_t st_off = 0;
+            for (int k = 0; k < n_arrays; ++k) {
+                const int64_t bytes = st_pages * page_kv * widths[k];
+                uint8_t* dst = (uint8_t*) nvme_kv_host_array(st, g.head_dim, k).p +
+                               (size_t) (sealed_pages * page_kv * widths[k]);
+                if (zero) std::memset(dst, 0, (size_t) bytes);
+                else
+                    std::memcpy(dst, state.data() + st_base + (size_t) st_off, (size_t) bytes);
+                st_off += bytes;
+            }
+            uint8_t* rows_dst = pooled_stage.data() + (size_t) ((i * rowsT + sealed_rows) * idx4);
+            if (zero) std::memset(rows_dst, 0, (size_t) (st_rows * idx4));
+            else
+                std::memcpy(rows_dst, state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
+        }
+        int64_t st_dr = 0;
+        for (int k = 0; k < n_arrays; ++k) {
+            const int64_t bytes = st_pages * page_kv * widths[k];
+            const NvmeKvArr ka = nvme_kv_host_array(mtp_state, g.head_dim, k);
+            const int64_t pages = std::min<int64_t>(st_pages, mtp_pages - sealed_pages);
+            if (ka.p && pages > 0) {
+                uint8_t* dst = (uint8_t*) ka.p + (size_t) (sealed_pages * page_kv * widths[k]);
+                if (zero) std::memset(dst, 0, (size_t) (pages * page_kv * widths[k]));
+                else
+                    std::memcpy(dst, state.data() + st_drafter_base + (size_t) st_dr,
+                                (size_t) (pages * page_kv * widths[k]));
+            }
+            st_dr += bytes;
+        }
+    };
+    place_state(false);
+
+    // ---- step 7: THE FAN-OUT.  N workers (std::thread + an atomic index, no new dependency) each take the next
+    // chunk: open/read, the FNV digest check, the slice-math size check, and the PLACEMENT - host memcpys of the
+    // chunk's KV pages at their page offset, its drafter pages, and its pooled rows into the staging.  Host
+    // reads, digests and memcpys only, NO CUDA (R2); each worker keeps ONE payload buffer and reuses it; the
+    // destinations are disjoint by construction (per (layer, chunk, array)).
+    // `payload == nullptr` is the SAME placement run as a zeroing memset - the refusal path's undo (below).
+    auto place_chunk = [&](int64_t j, const uint8_t* payload) {
+        const int64_t page0 = refs[(size_t) j].a / sh.shapes.page_size;   // this chunk's first KV page
+        const size_t ch_drafter = (size_t) (n_layers * ch_stride);
+        for (int64_t i = 0; i < n_layers; ++i) {
+            strata::core::QsaState& st = ss.qsa_states[i];
+            const size_t ch_base = (size_t) (i * ch_stride);
+            int64_t ch_off = 0;
+            for (int k = 0; k < n_arrays; ++k) {
+                const size_t bytes = (size_t) (pages_per_chunk * page_kv * widths[k]);
+                uint8_t* dst = (uint8_t*) nvme_kv_host_array(st, g.head_dim, k).p +
+                               (size_t) (page0 * page_kv * widths[k]);
+                if (payload) std::memcpy(dst, payload + ch_base + (size_t) ch_off, bytes);
+                else std::memset(dst, 0, bytes);
+                ch_off += (int64_t) bytes;
+            }
+            uint8_t* rows_dst = pooled_stage.data() + (size_t) ((i * rowsT + j * rows_per_chunk) * idx4);
+            const size_t rows_bytes = (size_t) (rows_per_chunk * idx4);
+            if (payload) std::memcpy(rows_dst, payload + ch_base + (size_t) ch_off, rows_bytes);
+            else std::memset(rows_dst, 0, rows_bytes);
+        }
+        const int64_t dr_pages = std::min<int64_t>(pages_per_chunk, mtp_pages - page0);
+        if (dr_pages > 0) {
+            int64_t ch_dr = 0;
+            for (int k = 0; k < n_arrays; ++k) {
+                const size_t bytes = (size_t) (dr_pages * page_kv * widths[k]);
+                uint8_t* dst = (uint8_t*) nvme_kv_host_array(mtp_state, g.head_dim, k).p +
+                               (size_t) (page0 * page_kv * widths[k]);
+                if (nvme_kv_host_array(mtp_state, g.head_dim, k).p) {
+                    if (payload) std::memcpy(dst, payload + ch_drafter + (size_t) ch_dr, bytes);
+                    else std::memset(dst, 0, bytes);
+                }
+                ch_dr += (int64_t) (pages_per_chunk * page_kv * widths[k]);
+            }
+        }
+    };
     std::atomic<int64_t> next_j(0);
     std::atomic<bool> any_failed(false);
     std::vector<std::string> chunk_errs(refs.size());
-    std::atomic<uint64_t> read_back_chunks(0);
+    std::atomic<uint64_t> read_back_chunks(0);   // the timing line's read volume: every chunk payload placed
     {
         const int64_t n_workers = std::min<int64_t>(4, (int64_t) refs.size());
         auto worker = [&](int) {
@@ -953,42 +1025,59 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                     any_failed.store(true, std::memory_order_relaxed);
                     return;
                 }
-                for (const ChunkSlice& s : chunk_plans[(size_t) j])
-                    std::memcpy(buf.data() + s.dest, payload.data() + s.src, s.bytes);
+                place_chunk(j, payload.data());
                 read_back_chunks.fetch_add((uint64_t) payload.size(), std::memory_order_relaxed);
             }
         };
         std::vector<std::thread> pool;
         for (int64_t w = 0; w < n_workers; ++w) pool.emplace_back(worker, (int) w);
-        for (std::thread& t : pool) t.join();   // the join barrier: the image is complete only after this
+        for (std::thread& t : pool) t.join();   // the join barrier: the placed bytes are complete only after this
     }
-    for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
-        if (!chunk_errs[(size_t) j].empty()) {
-            err = chunk_errs[(size_t) j];   // the LOWEST failing index - deterministic despite the pool
+    const double t_chunks = delta_ms_since(t_start);
+    {
+        // THE REFUSAL UNDO: the streaming path wrote verified chunks into the host arrays before it knew about a
+        // LATER chunk's refusal, so it puts those exact ranges back to zero - a fresh session comes back
+        // all-zero, which is what the refusal contract means, and a used session keeps everything the caller
+        // (which re-reads the whole prompt after a refusal - resume=0) is about to rewrite anyway.  The staged
+        // device bytes are simply dropped: the apply pass never ran, so the device was never touched.
+        int64_t first_bad = -1;
+        for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
+            if (!chunk_errs[(size_t) j].empty()) { first_bad = j; break; }
+        if (first_bad >= 0) {
+            place_state(true);
+            for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
+                if (chunk_errs[(size_t) j].empty()) place_chunk(j, nullptr);
+            for (int64_t i = 0; i < n_layers; ++i)   // the pooled staging the applied chunks filled
+                std::memset(pooled_stage.data() + (size_t) (i * rowsT * idx4), 0,
+                            (size_t) (sealed_rows * idx4));
+            err = chunk_errs[(size_t) first_bad];   // the LOWEST failing index - deterministic despite the pool
             return Restore::invalid;
         }
     }
-    const double t_chunks = delta_ms_since(t_start);
-    // the RAM this promote stages, for the record (the KV line's staging_bytes): reported only once every
-    // refusal is past, so a refused restore stages NOTHING (P6's counter side - the fixture asserts it).
-    if (image_bytes) *image_bytes = payload_bytes;
-    // the walk must land exactly on the footer - an assembly bug here would otherwise hide behind the digest
-    // check as a mysterious "corrupt" verdict, so it refuses loudly instead
-    if (at + sizeof(uint64_t) != payload_bytes) {
-        err = "kv-delta: internal: assembled " + std::to_string(at) + " payload bytes, sized " +
-              std::to_string(payload_bytes - sizeof(uint64_t));
-        return Restore::invalid;
+    // THE RAM this promote staged, for the record (the KV line's staging_bytes).  No assembled image any more:
+    // what the path allocates is the State record it read, the pooled-row staging, and one payload buffer per
+    // worker - the bounded staging the maintainer asked for, reported honestly rather than as a whole snapshot.
+    if (image_bytes) {
+        const int64_t n_workers = std::min<int64_t>(4, (int64_t) refs.size());
+        const int64_t chunk_bytes = refs.empty() ? 0
+                                                 : delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[0].a);
+        *image_bytes = (uint64_t) (state.size() + pooled_stage.size() + (size_t) (n_workers * chunk_bytes));
     }
-    // the digest covers the payload only, never the header nor the footer itself (the v3 restore's own rule)
-    const uint64_t digest = nvme_fnv1a(kNvmeFnvBasis, buf.data() + sizeof(NvmeHeader),
-                                       payload_bytes - sizeof(NvmeHeader) - sizeof(uint64_t));
-    std::memcpy(buf.data() + payload_bytes - sizeof digest, &digest, sizeof digest);
 
+    // ---- step 8: THE APPLY PASS, the v3 choreography, reached through nvme_restore_apply with OUR applies list
+    // (B1's extraction): pre-apply sync, the applies in the v3 walk's order and names, the per-layer spare-row
+    // re-publish, the drafter ring refill, the PLE window, the final sync.  The prefix facts come from the
+    // manifest (the image's own header is gone); copies, because the pass assigns them back into the same
+    // vectors it was handed.
+    strata::platform::Sizes v3z;
+    v3z.shapes = sh.shapes;
+    v3z.state = z;
+    const std::vector<int32_t> ids_apply = ids;
+    const std::vector<ConversationImageKey> imgs_apply = imgs;
     const double t_assemble = delta_ms_since(t_start);
-    // ---- step 4: the EXISTING validation+apply pass, unchanged - layout walk, drift diagnostics, digest,
-    // apply, the STATE_HASH gate; the failure classes are its own (§5.10 step 4)
-    const strata::core::ConversationRestore rc =
-        nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+    const strata::core::ConversationRestore rc = nvme_restore_apply(
+        applies, ss, mtp_state, g, v3z, ids_apply.data(), T, imgs.empty() ? nullptr : imgs_apply.data(),
+        (int64_t) imgs.size(), h.cvec != 0, ids, imgs, cvec, err);
     if (delta_timing_on()) {
         // one line, all phases: read-back volume for context, then ms per phase, then the process's peak RSS
         // (VmHWM) beside the RSS the process held at entry, so the promote's OWN transient is the difference.
@@ -996,8 +1085,8 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         uint64_t hwm_mb = 0, now_mb = 0;
         delta_rss_mb(hwm_mb, now_mb);
         std::fprintf(stderr,
-                     "strata serve: kv-delta restore timing: manifest %.1f ms, read+digest %.1f ms, "
-                     "assemble %.1f ms, apply %.1f ms, rss peak %llu MB (entry %llu MB), T %lld, %lld chunks, "
+                     "strata serve: kv-delta restore timing: manifest %.1f ms, read+digest+place %.1f ms, "
+                     "stage %.1f ms, apply %.1f ms, rss peak %llu MB (entry %llu MB), T %lld, %lld chunks, "
                      "%.2f GiB read\n",
                      t_manifest, t_chunks - t_manifest, t_assemble - t_chunks,
                      delta_ms_since(t_start) - t_assemble, (unsigned long long) hwm_mb,

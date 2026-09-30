@@ -295,7 +295,12 @@ Results:
   supervisor-restart recovery.
 - **Restore staging, measured (`tools/nvme_restore_rss_probe.sh`)**: restoring a 964 MiB snapshot (58,513
   tokens) peaks at 45,605 MiB RSS over a 43,548 MiB steady-state engine - a ~2 GiB transient on a 62 GiB host,
-  roughly twice the file size. This is the number that sizes the chunked-`pread` fix in §7.
+  roughly twice the file size. This is the number that sizes the chunked-`pread` fix in §7. **The delta tier no
+  longer pays it**: its streaming restore memcpy's each chunk's KV pages and drafter pages straight into the host
+  arrays as the chunk is read and stages only the device-bound bytes (the State record, the pooled rows, one
+  payload buffer per worker) - measured on a 143,495-token conversation (560 chunks, 2.15 GiB read): **2.7 s
+  wall, ~150 MB staged, a ~340 MB process peak** against the assembled path's 7.4 s and ~4.4 GB, and bit-exact
+  against the v3 tier's own restore of the same boundary (`STATE_HASH`, all nine fields, §5.2).
 - **No base regression from the tier**: `tools/needle_bench.py` (1k/32k, tier off in both configs) is identical
   across the pre-tier and converge binaries - 6/6 found, same timings.
 - **GPU parity suite**: 26/28 with a free GPU; the two failures are environmental/upstream (`ple_parity` needs a
@@ -404,8 +409,10 @@ binding here too - a number on the page must be a number an oracle already measu
 - **Store fill** = `(entries_bytes + delta_bytes) / cap`, shown beside `disk_free_bytes` from
   `shutil.disk_usage(dir)`: the cap is a policy the user set, free space is what actually stops the tier.
 - **Overhead is three costs, not one**: `dump_ms` (server occupancy at `DONE`), `promote_ms` (the TTFT price paid
-  instead of a re-prefill), and `staging_bytes` plus the engine's own process RSS (the ~2 GiB transient measured
-  above, now visible as a bump in the hardware series).
+  instead of a re-prefill), and `staging_bytes` plus the engine's own process RSS. On the v3 tier that transient
+  is the ~2 GiB measured above; the delta tier's restore reads each chunk straight into the arrays it belongs in
+  and stages only the State record + the pooled rows + one buffer per worker (measured: ~150 MB of staging, a
+  ~340 MB process peak over a 46 GiB engine, on a 143k-token promote).
 - **Endurance** is cumulative bytes written since the engine started, quoted with §10.2's ratio -
   `(total_tokens × 16 KB + 118 MB) / (new_tokens × 16 KB + 118 MB)`, ~6.5× at the production average turn - **not**
   the handoff's 33×.
@@ -418,7 +425,9 @@ binding here too - a number on the page must be a number an oracle already measu
 - **Restore reads the whole file into RAM** (atomicity) - a streamed `pread` directly into the
   pinned buffers with size-then-digest validation would halve promote time and drop the transient
   buffer. This is the path to sub-second TTFT for 128K sessions (currently ~2-4 s cold). **Measured**
-  (§6): a 964 MiB snapshot costs ~2 GiB of transient RSS over the engine's 43.5 GiB steady state.
+  (§6): a 964 MiB v3 snapshot costs ~2 GiB of transient RSS over the engine's 43.5 GiB steady state; the
+  delta tier's streaming restore has already taken its own half of this (§6's restore-staging bullet) - what
+  §7 still owes is the v3 path's copy-and-validate.
 - **Layer-split sessions are not snapshot-able** (§3) - the envelope carries the primary stage only, the
   dump refuses a split session, and the serve loop does not promote under a split. Disk support would be a
   version bump with the stage blobs as first-class segments.
@@ -521,8 +530,12 @@ Each item below was a real incompatibility between the two designs when the work
   note: the conversion boundary forbids serializing C++ structs; `NvmeHeader` still *is* one (fixed-width
   fields, layout pinned by `static_assert`s on size and offsets), and the header sits outside the digest with
   its layout pinned at compile time instead. That is the honest remaining divergence from the strict boundary.
-- **C10 - physical-RAM admission**: NOT settled. The restore still reads the whole file (§7, measured ~2 GiB
-  transient); the core's `conversation_available_memory` / `conversation_memory_admit` are imported dormant
+- **C10 - physical-RAM admission**: NOT settled, but the DELTA half is. Its streaming restore
+  (`docs/nvme-delta-restore-handoff.md` §3, B2) reads each chunk straight into the destination arrays - no
+  assembled image, no second hash pass - so the "bounded read staging" the maintainer asked for is real and
+  measured: ~150 MB of staging and a ~340 MB process peak for a 143k-token promote, where the assembled path
+  cost ~4.4 GB. What is still open is the v3 path's whole-file staging (~2 GiB transient, §7) and the core's
+  `conversation_available_memory` / `conversation_memory_admit`, which are imported dormant
   (`conversation_memory.cpp` builds only the memory fixture, not the engine).
 - **C11 - metrics**: settled as a build (§7): `TierActivity` out-params, the per-request `KV` line and the
   `KV start=1` store state, `serve/kvcache.py`'s parse + store walk behind `GET /cache` and `/metrics`, and the

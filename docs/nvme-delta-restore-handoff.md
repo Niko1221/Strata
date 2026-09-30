@@ -46,6 +46,9 @@ block, and the live server at :8080 runs `--kv-delta 1` with `STRATA_WATCHDOG_S=
 
 ## 1. Where the restore time goes (measured, 142k-token promote ≈ 10 s ≈ 14k tok/s; v3 ≈ 50k)
 
+**Status: A, B1 and B2 are landed on `nvme-kv-cache` (2026-09-30); the table below is the BEFORE picture, kept
+for the record.**  The measured before/after pair is under it.
+
 **Before, re-measured on the merged binary (Phase 0's own line, on-device, 2026-09-30; `GEN`-driven
 143,495-token conversation, 560 chunks, 2.15 GiB read, server stopped):**
 
@@ -57,6 +60,20 @@ strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest 3115.3 ms, a
 ≈ 7.4 s wall ≈ 19k tok/s, and the promote's own transient = 50,606 − 46,202 ≈ **4.4 GB** — the §1 cost model
 below is confirmed phase-by-phase (read+digest and assemble are the two ~2.5 s blocks A and B attack; the
 ~1.9 s apply is the inherited v3 choreography, unchanged).
+
+**After B2 (the streaming restore, landed):**
+
+```
+strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest+place 2637.7 ms, stage 0.0 ms,
+                                                  apply 24.2 ms, rss peak 46597 MB (entry 46257 MB), T 143495, 560 chunks, 2.15 GiB read
+```
+
+≈ 2.7 s wall ≈ **53k tok/s** (the v3 tier's ~50k is the bar), and the process's own transient peak ≈ 340 MB
+against the assembled path's 4.4 GB.  The apply phase fell from 1,888 ms to 24 ms because the second hash pass
+over the assembled image is gone - the apply is now the memcpy/H2D/syncs and nothing else.  **Bit-exact against
+the v3 tier at this scale**: the v3 cascade's own snapshot of the same boundary (L=143,495), restored by
+`--nvme-restore`, prints the SAME `STATE_HASH` line as the streamed delta promote - all nine fields, including
+`stale` and the `ple_prev` window (`docs/nvme-kv-cache-design.md` §5.2).
 
 | step | v3 restore | delta restore (today) |
 |---|---|---|
