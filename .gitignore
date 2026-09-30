@@ -26,7 +26,7 @@ td.log
 # created by setup.py on the user's machine
 /.venv/
 /build/
-/third_party/llama.cpp/
+/third_party/llama.cpp
 /models/
 /packs/
 /mtp/
@@ -47,3 +47,5 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+# Generated conversation snapshots, wherever the disk cache is configured
+strata-conversations-v1/
