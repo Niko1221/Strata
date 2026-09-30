@@ -49,3 +49,4 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+tools/fnvaudit
