@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -161,7 +162,8 @@ bool f32_weight(const WeightTable & t, const std::string & name, int64_t n,
     return true;
 }
 
-void free_ptr(void *& p) {
+template<typename T>
+void free_ptr(T *& p) {
     if (p) cudaFree(p);
     p = nullptr;
 }
@@ -331,7 +333,7 @@ Qwen35Runtime::~Qwen35Runtime() {
     free_ptr(token_dev_);
     if (gdn_states_) cudaFree(gdn_states_);
     gdn_states_ = nullptr;
-    qwen35_rope_free(rope_cos_, rope_sin_, rope_pos_);
+    kernels::qwen35_rope_free(rope_cos_, rope_sin_, rope_pos_);
     rope_cos_ = rope_sin_ = nullptr;
     rope_pos_ = nullptr;
     if (stream_) cudaStreamDestroy((cudaStream_t)stream_);
@@ -419,7 +421,7 @@ bool Qwen35Runtime::init(const std::string & pack_dir, int64_t max_context, int6
     if (!cmalloc(reinterpret_cast<void **>(&ffn_up_q8_0_), q8_0_bytes(qg_.n_ff), "allocate ffn q8_0")) return false;
     if (!cmalloc(reinterpret_cast<void **>(&attn_q8_0_), q8_0_bytes(qdim), "allocate attention q8_0")) return false;
 
-    qwen35_rope_init(max_context_, &rope_cos_, &rope_sin_, &rope_pos_);
+    kernels::qwen35_rope_init(max_context_, &rope_cos_, &rope_sin_, &rope_pos_);
 
     // Use the already parity-tested scalar GDN path. The dense model does not use
     // the existing Flash-Next native expert/QSA switches.
@@ -597,9 +599,9 @@ bool Qwen35Runtime::eval_layer(int64_t layer, float * hidden, std::string & err)
 
         strata::kernels::qwen35_rms_norm_weighted(attn_q_, qnorm, qg_.n_head, qg_.head_dim, RMS_EPS, st);
         strata::kernels::qwen35_rms_norm_weighted(attn_k_, knorm, qg_.n_head_kv, qg_.head_dim, RMS_EPS, st);
-        qwen35_rope_set_pos(rope_pos_, current_position_, st);
-        qwen35_rope_apply(attn_q_, qg_.n_head, qg_.head_dim, rope_cos_, rope_sin_, rope_pos_, st);
-        qwen35_rope_apply(attn_k_, qg_.n_head_kv, qg_.head_dim, rope_cos_, rope_sin_, rope_pos_, st);
+        kernels::qwen35_rope_set_pos(rope_pos_, current_position_, st);
+        kernels::qwen35_rope_apply(attn_q_, qg_.n_head, qg_.head_dim, rope_cos_, rope_sin_, rope_pos_, st);
+        kernels::qwen35_rope_apply(attn_k_, qg_.n_head_kv, qg_.head_dim, rope_cos_, rope_sin_, rope_pos_, st);
 
         const int full_index = (int)(layer / qg_.full_attention_interval);
         const uint64_t kv_one_bytes =
@@ -610,7 +612,7 @@ bool Qwen35Runtime::eval_layer(int64_t layer, float * hidden, std::string & err)
         uint16_t * cache_k = reinterpret_cast<uint16_t *>(kv);
         uint16_t * cache_v = reinterpret_cast<uint16_t *>(kv + kv_one_bytes);
 
-        qwen35_full_attention_step(attn_q_, attn_k_, attn_v_, cache_k, cache_v,
+        kernels::qwen35_full_attention_step(attn_q_, attn_k_, attn_v_, cache_k, cache_v,
                                    current_position_, max_context_,
                                    qg_.n_head, qg_.n_head_kv, qg_.head_dim,
                                    attn_gate_, attn_scores_, attn_out_, st);
@@ -620,7 +622,7 @@ bool Qwen35Runtime::eval_layer(int64_t layer, float * hidden, std::string & err)
                   (prefix + "attn_output.weight").c_str()))
             return false;
     } else {
-        const int gi = gdn_index_for(qg_, layer);
+        const int gi = (int)(layer - (layer + 1) / qg_.full_attention_interval);
         const uint64_t state_stride =
             ((uint64_t)qg_.ssm_state_size * qg_.ssm_v_heads * qg_.ssm_state_size +
              (uint64_t)qg_.ssm_conv_channels * (qg_.ssm_d_conv - 1)) * sizeof(float);
@@ -650,7 +652,7 @@ bool Qwen35Runtime::eval_layer(int64_t layer, float * hidden, std::string & err)
               qg_.n_embd, qg_.n_ff, st, err, ffn_gate_name.c_str())) return false;
     if (!gemv(*wu, hidden, gdn_.x_q8_0, gdn_.x_q8k, ffn_up_,
               qg_.n_embd, qg_.n_ff, st, err, ffn_up_name.c_str())) return false;
-    qwen35_silu_mul(ffn_gate_, ffn_up_, ffn_hidden_, qg_.n_ff, st);
+    kernels::qwen35_silu_mul(ffn_gate_, ffn_up_, ffn_hidden_, qg_.n_ff, st);
 
     if (!gemv(*wd, ffn_hidden_, gdn_.x_q8_0, gdn_.x_q8k, attn_out_,
               qg_.n_ff, qg_.n_embd, st, err, ffn_down_name.c_str())) return false;

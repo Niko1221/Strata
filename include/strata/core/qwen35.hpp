@@ -61,7 +61,7 @@ public:
                   std::vector<int32_t>& output, std::string& finish, std::string& err);
 
     int64_t max_context() const { return max_context_; }
-    int64_t vocab_size() const { return g_.vocab_size; }
+    int64_t vocab_size() const { return qg_.vocab_size; }
 
 private:
     struct LayerSlot {
