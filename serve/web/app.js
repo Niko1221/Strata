@@ -140,7 +140,7 @@ $("metrics").innerHTML = METRICS.map(metricCard).join("");
 // "Store used" is the engine's CAP ACCOUNTING, "On disk" (the state card) is the directory's footprint.
 const CACHE_METRICS = [
   {key: "store", label: "Store used", icon: "cache", series: "store_bytes",
-   title: "What the engine's LRU compares against the cap. A chunk shared by three manifests counts once per manifest, on purpose, so the cap cannot lie about the disk. The footprint the volume actually holds is the \"On disk\" row below - a different quantity, never merged with this one."},
+   title: "What the engine's LRU compares against the cap - a SAWTOOTH, not a footprint: a chunk shared by three manifests counts once per manifest, so this number drifts above the disk as shared references accumulate (the safe direction - the cap over-evicts, never under-evicts), and every sweep snaps the books back to the disk. It equals the \"On disk\" row below only right after a sweep - a coincidence the page must not present as an invariant. The two quantities are never merged."},
   {key: "write", label: "Written/turn", icon: "download", unit: "MB", series: "write_mb", tone: "info",
    title: "What this turn's cascade wrote (dump_bytes), and its mean over the sampled turns."},
   {key: "read", label: "Read/promote", icon: "disk", unit: "MB", series: "read_mb", tone: "info",

@@ -281,9 +281,12 @@ class KvCache:
     # ------------------------------------------------------------------------ what it reports
 
     def _promotable_locked(self) -> dict:
-        """The engine's own store numbers - CAP ACCOUNTING, not a footprint (design §6): the delta tier counts a
-        chunk shared by three manifests once per manifest, on purpose, so the cap cannot lie about the disk.
-        The walk's `on_disk` is the OTHER quantity, and the two are never merged."""
+        """The engine's own store numbers - CAP ACCOUNTING, a SAWTOOTH, not a footprint (design §6): the delta
+        tier counts a chunk shared by three manifests once per manifest, so `delta_bytes` drifts ABOVE the disk
+        as shared references accumulate (the safe direction - over-evict, never under-evict), and every sweep
+        recomputes the total from the disk and snaps the books back. The walk's `on_disk` is the OTHER quantity;
+        the two agree exactly only right after a sweep, which is a coincidence, not an invariant, and they are
+        never merged."""
         s = self.store
         entries, delta_entries = s.get("entries"), s.get("delta_entries")
         entries_bytes, delta_bytes = s.get("entries_bytes"), s.get("delta_bytes")
