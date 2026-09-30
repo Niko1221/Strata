@@ -16,6 +16,8 @@ New here? Start with the [README](../README.md) - it has everything you need to 
 
 The Strata-V100 measurements use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5 3600
 (6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20 with the prefill-speed PR merged (2026-09-28).
+The fork's engine is now based on upstream 0.1.30 (merged 2026-09-30) with the V100 work preserved; the
+rows below predate that merge and are re-measured with `bench/run_v100_bench.py` on the merged engine.
 Runtime settings are a 262,144-token context, int8 KV cache, automatic prefill, five CPU pool workers, a
 calibrated 0.28 PCIe fraction, and MTP speculative decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft
 floor 0.70). Each row is a separate, uncached OpenAI-compatible chat-completion request with a unique-prefix

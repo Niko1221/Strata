@@ -26,6 +26,15 @@
 > sessions), so the table shows the cool-idle measurement. Raw rows and notes:
 > [`bench/results/2026-09-29-volta-prompt-attn`](bench/results/2026-09-29-volta-prompt-attn).
 > [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
+>
+> The engine is now based on upstream **0.1.30** (merged 2026-09-30) with the V100 work
+> preserved and adapted: the Volta prompt attention also serves the K8V4 hybrid KV cache,
+> the fused hyper-connection kernels write FP16 bits on Volta, and the sm_70 floor stands
+> in CMake, the runtime device check and setup.  New upstream features available on the
+> V100: the tensor-core QSA selector (with its portable fallback), 1024-token prefill
+> chunks, the multi-GPU session carve, rope scaling, the conversation cache, idle unload
+> and the low-RAM resident variant.  The table above was measured on the pre-merge branch;
+> re-run [`bench/run_v100_bench.py`](bench/run_v100_bench.py) on the merged engine.
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
 one NVIDIA card (12-24 GB) + 64 GB of RAM · Windows or Linux · one click to install</p>
