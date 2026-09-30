@@ -34,6 +34,12 @@ add_library(strata_hip_runtime INTERFACE)
 target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1)
+# RDNA3 matrix instructions (v_wmma_*) exist only on gfx11, and the macro cannot be inferred from the compiler:
+# measured on ROCm 7, the HOST pass of a HIP compile does not define __gfx1100__ even though it does define
+# __HIP_DEVICE_COMPILE__, so an `#if defined(__gfx1100__)` guard in the kernels compiled their returning-false
+# stubs for the symbol the engine links and the WMMA path silently never ran.  The build supplies the macro, and
+# CMAKE_HIP_ARCHITECTURES is already pinned to gfx1100 above (the file errors out on anything else).
+target_compile_definitions(strata_hip_runtime INTERFACE STRATA_WMMA_GFX11=1)
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
 foreach(_language IN ITEMS CXX HIP)
   target_compile_options(strata_hip_runtime INTERFACE

@@ -101,6 +101,38 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 The installer supports this backend (see "Install with setup" above). The vision helper and multi-GPU layer
 splits are NVIDIA-only for now.
 
+## RDNA3 WMMA kernels for the gfx1100 prefill
+
+gfx11 has matrix instructions (`v_wmma_*`) for fp16 and bf16 that this backend was not using, because the
+CUDA-shaped code reached dense projections through BLAS and the prompt attention through CUDA-only QSA matrix
+instructions (for which the ordered FP32 fallback was the HIP path). Two native paths replace that on gfx1100:
+
+* **`src/prefill/wmma_gemm.{cu,h}`** - dense GEMM over the RDNA3 WMMA fragment layout (16x16x16, wave32 "doubled"
+  inputs), templated for `_Float16` and `__bfloat16`, dispatched from `Gemm::f16` and `Gemm::bf16` ahead of the
+  BLAS fallback. Both kernels are exact against an fp64 reference on exactly-representable inputs (checked across
+  the prompt shapes), and the fp16/bf16 paths leave the 8-token seed run bit-identical.
+* **`src/kernels/cuda/qsa_prompt_attn.cu`** - the prompt attention itself on WMMA (scores 16x32 in two waves,
+  output four warps over 64 dimensions) instead of the emulated scalar path.
+
+Each has an A/B switch, which is how they were measured: `STRATA_WMMA_GEMM=0` disables both dense GEMMs,
+`STRATA_WMMA_BF16=0` disables only the bf16 one, and `STRATA_PA_WMMA=0` selects the emulated attention. The build
+supplies `STRATA_WMMA_GFX11` for the HIP targets (see `cmake/hip_backend.cmake`), because the host pass of a HIP
+compile does not define `__gfx1100__` and a compiler-macro guard would silently build the returning-false stubs.
+
+Measured against an unmodified build of this branch with the same flags (the documented measured configuration
+above), on one RX 7900 XTX with a 6-core host over PCIe 4.0 x16: prefill 601 against 444 tok/s at 1K, 1,178 against
+778 at 4K and 1,527 against 778 at 32K - **+35 %, +51 % and +96 %** - with decode unchanged inside the noise (41.7
+against 42.6, 41.0 against 42.7, 54.9 against 55.2).  In the kernels' own A/B switches on the same host (1K prompt,
+32 generated tokens): 616.5 tok/s with both on, 597.6 with `STRATA_PA_WMMA=0`, 387.1 with `STRATA_WMMA_GEMM=0` and
+369.0 with both off.
+
+`tests/hip/prefill_wmma_gemm_parity.cpp` covers both entry points against a double-precision host reference over
+440 shapes x 4 beta/ldy configurations x 2 dtypes, including the partial tiles and the shapes the kernels decline
+(K not a multiple of 16, ldy < N, beta outside {0,1}); it passes.  The fp16 comparison allows 4 ULP because the
+matrix core accumulates in fp32 but rounds toward zero while the reference rounds to nearest - every delta seen on
+this hardware is <= 1 ULP and toward zero, and bf16 inputs compare exactly.  `STRATA_WMMA_PARITY_EXACT=1` demands bit
+equality instead.
+
 ## Original backend validation (PR #94)
 
 The following is historical validation of the original backend, not a fresh

@@ -2,6 +2,10 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 
+#ifdef STRATA_USE_HIP
+#include "wmma_gemm.h"
+#endif
+
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
@@ -341,6 +345,18 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                 float beta) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
+#ifdef STRATA_USE_HIP
+    // STRATA_WMMA_GEMM=0 is the A/B arm: force the hipblasGemmEx path even where WMMA would be used.
+    // STRATA_WMMA_BF16=0 exists so the bf16 increment can be measured separately from the fp16 one.  The arch
+    // macro that gates the implementation comes from the build (see wmma_gemm.cu); if it is absent the call
+    // returns false and this falls through, so a non-gfx11 build cannot silently run empty stubs.
+    static const bool wmma_on = std::getenv("STRATA_WMMA_GEMM") == nullptr;
+    static const bool bf16_on = std::getenv("STRATA_WMMA_BF16") == nullptr;
+    if (wmma_on && bf16_on && T >= 16 && (beta == 0.0f || beta == 1.0f) &&
+        strata_wmma_gemm_bf16(X, W, Y, T, N, K, ldy, beta, stream_)) {
+        return;
+    }
+#endif
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
@@ -359,6 +375,16 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                float beta) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
+#ifdef STRATA_USE_HIP
+    // STRATA_WMMA_GEMM=0 is the A/B arm: force the hipblasGemmEx path even where WMMA would be used.  The
+    // arch macro that gates the implementation comes from the build (see wmma_gemm.cu); if it is absent the
+    // call returns false and this falls through, so a non-gfx11 build cannot silently run empty stubs.
+    static const bool wmma_on = std::getenv("STRATA_WMMA_GEMM") == nullptr;
+    if (wmma_on && T >= 16 && (beta == 0.0f || beta == 1.0f) &&
+        strata_wmma_gemm_f16(X, W, Y, T, N, K, ldy, beta, stream_)) {
+        return;
+    }
+#endif
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
