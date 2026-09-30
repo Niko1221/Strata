@@ -50,29 +50,16 @@ or synchronization failures may leave partial GPU state, so the engine reports
 an error and exits rather than continuing inference. Publish resume metadata
 only after successful restore. Validation is not a transactional GPU rollback.
 
-## NVMe integration contract
+## Optional disk tier
 
-The disk adapter must consume this representation and restore through this core,
-without another state-copy implementation. Spill immutable snapshots on RAM
-eviction; disabled persistence performs no filesystem operations. A disk hit
-competes with active/RAM prefixes and must reserve an explicit bounded staging
-allocation plus physical RAM headroom before reading.
+The disk adapter consumes the same snapshot representation and restore path.
+Persistence writes on RAM eviction, so the latest active turn is not guaranteed
+to survive a crash. Files contain conversation content. Windows admission tests
+retain @midhatn's original authorship; Windows execution remains untested here.
+See the [validation record](shared-conversation-upstream-validation.md) for the
+Linux acceptance results and reproduction commands.
 
-Persist a versioned portable envelope, not native C++ objects. Bind exact weights,
-tokenizer, steering configuration, geometry, KV format (including K8V4) and state
-schema. Read, integrity-check and validate the same staged bytes before applying
-them. Atomic publication must reject interrupted, truncated, corrupt and foreign
-entries. A failed spill may drop the already-evicted entry; it must not exceed
-RAM limits or stop inference. Eviction-only persistence does not promise that
-the latest active turn survives a crash. Files contain conversation content.
-
-The adapter is being integrated from @maedoc's #52; full-model disk restart,
-compatibility and eviction/promotion tests remain required.
-Windows admission coverage includes @midhatn's contribution, preserved with its
-original authorship. See the [validation record](shared-conversation-upstream-validation.md)
-for results, commands, and hardware limits.
-
-The dependent NVMe branch now provides `conversation_file.hpp`: a little-endian
+`conversation_file.hpp` defines a little-endian
 envelope with a SHA-256 footer covering header and payload, and a full-content
 asset/settings identity. It rejects #52's experimental native-struct v3 files.
 It writes the shared image directly and decodes into one admitted image; it has
@@ -105,7 +92,8 @@ disables persistence without filesystem I/O. An enabled disk tier requires
 
 Startup hashes complete pack, native GGUF, PLE, draft, tokenizer and steering
 assets, plus the engine executable. Shared files are read once per startup,
-without a persistent file-stat fingerprint cache. Identity also binds inference
+without a persistent file-stat fingerprint cache. This adds cold-start I/O: the
+test model has about 78 GiB of native GGUF assets alone. Identity also binds inference
 arguments, `STRATA_*` environment settings, resolved geometry/KV layout, GPU/runtime
 and expert/prefill settings. This is deliberately strict: changed paths or unrelated
 inference options may cause misses. Assets must remain immutable while loaded.
@@ -122,8 +110,6 @@ they may sacrifice reuse after staging has evicted RAM entries. GPU transfer
 failure remains fatal. Successful promotion updates disk LRU. The RAM limit
 reserves 64 KiB for disk operations, and decoded staging includes a further codec
 allowance; these limits cover vector storage, not allocator or process RSS.
-
-The integration builds on Linux with CUDA and passes host tests. Full-model restart, output/state parity and pressure validation remain open.
 
 For model validation, `STRATA_SNAPSHOT_VERIFY=1` records which draft-prefill path
 ran and compares restored draft KV bytes with the saved image immediately after
@@ -151,7 +137,8 @@ The persisted identity covers the following inputs before a candidate can load:
 Changing an identity input refuses reuse before GPU application. The identity is
 an opaque digest: it does **not** report the first differing input field. Host
 fixtures cover changed asset contents/settings and a foreign identity with the
-same snapshot prefix. Model-level changed-weight/quant coverage remains pending.
+same snapshot prefix. Model runs reject a changed tokenizer; no full-model
+weight swap or cross-quantization cache exchange was run.
 Strict argument binding can also reject compatible states after a path change.
 
 Token positions and snapshot KV cells use absolute sequence order. KV cells are
@@ -162,8 +149,8 @@ numbers, streaming replacement metadata and scorer selection ranks are not
 serialized as authoritative KV: streamed snapshots use the full host pool,
 restore invalidates the streaming map, and draft rings are rematerialized from
 logical pages into resident slots. Hybrid K8V4 with streaming/rings is refused.
-The draft read-back diagnostic checks resident ring materialization; its real
-GPU run is still outstanding.
+GPU fixtures and the 68,571-token disk restart gate verify restored draft ring
+bytes after wrapping its 32,840 resident cells.
 
 Page-level deduplication, manifests and incremental durability are separate
 follow-up designs. This adapter writes whole images only on RAM eviction.
