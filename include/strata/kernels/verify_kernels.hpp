@@ -94,8 +94,14 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
 /// -inf): bitwise sample_tokens' greedy pick.  Up to 128 blocks a row scan slices of it, the row's last block merges
 /// their picks.  `scratch`: argmax_rows_scratch_bytes(n_rows), zero before the first launch (each launch leaves it
 /// so).  Graph-capturable.
+/// With `out_val` each pick's logit too (-inf when no value is above it).
 uint64_t argmax_rows_scratch_bytes(int n_rows);
-void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream);
+void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream,
+                 float* out_val = nullptr);
+/// *flag += 1 once the stream's earlier work is visible to the host (mapped memory).  Graph-capturable.
+void mapped_bump(uint32_t* flag, void* stream);
+/// dst row t (n floats) = a row t (na floats) then b row t (n - na floats), for `rows` rows.
+void join_rows(float* dst, int64_t n, const float* a, int64_t na, const float* b, int rows, void* stream);
 /// row_top_prob over 8 blocks a row, each computing 4 of its 32 warps' sums, the row's last block adding the 32 in
 /// order: bitwise row_top_prob.  `scratch`: row_top_prob_scratch_bytes(n_rows), zero before the first launch.
 uint64_t row_top_prob_scratch_bytes(int n_rows);

@@ -32,6 +32,7 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/split_head.hpp"
 #include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
@@ -117,6 +118,12 @@ public:
     const float* final_R_host() const { return h_rows_; }
     /// The head's logits of the last window's first `T` tokens, T * n_vocab floats, copied to host memory `out`.
     bool copy_logits(int T, float* out, std::string& err) const;
+    /// The head's rows [split, n_vocab) on another GPU (`head` then holds rows [0, split)): the window hands the head's
+    /// input over, and `run` keeps each token's larger pick.  Set before `init`.
+    void set_split_head(SplitHead* sh) { shead_ = sh; }
+    /// Whole logits rows after every window (copy_logits, --window-logits): with a split head the second GPU's part
+    /// then copies its rows back.  Set before `init`.
+    void set_logits_wanted(bool on) { logits_wanted_ = on; }
 
     /// Where the pool publishes each layer's PCIe share of the misses; give it to the dispatch
     /// (`ExpertDispatch::plan`) before the first `run`.
@@ -203,6 +210,12 @@ private:
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
+    float* h_val_ = nullptr;     float* m_val_ = nullptr;       // their logits (a split head's merge)
+    SplitHead* shead_ = nullptr;
+    bool logits_wanted_ = false;
+    int64_t head_rows_ = 0;                                     // the head's rows here: n_vocab, or the split
+    float* head_full_ = nullptr;                                // T whole logits rows (a split head, when wanted)
+    uint32_t hand_n_ = 0, done_n_ = 0;                          // the split head's counts so far
     float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k

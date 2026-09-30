@@ -267,9 +267,22 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
     if (!wo) { err = "mtp: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
     if (head == nullptr || !head->loaded()) { err = "mtp: the draft layer needs the native head (--native)"; return false; }
+    if (dhead_ == nullptr && !bind_head(head, err)) return false;
+    if (dhead_ == nullptr && head->rows() != n_vocab_) {
+        err = "mtp: the main head holds part of the vocabulary and the draft layer has no draft head of its own";
+        return false;
+    }
     if (head_logits_ == nullptr &&
         cudaMalloc((void**) &head_logits_, (size_t) max_t_ * (size_t) n_vocab_ * sizeof(float)) != cudaSuccess) {
         err = "mtp: the draft logits do not fit";
+        return false;
+    }
+    return true;
+}
+
+bool MtpDrafter::bind_head(const NativeHead* head, std::string& err) {
+    if (head == nullptr || !head->loaded()) {
+        err = "mtp: the draft layer needs the native head (--native)";
         return false;
     }
     // the draft head's token subset, when tools/draft_vocab.py wrote one

@@ -27,6 +27,11 @@ public:
     int type() const { return type_; }
     /// Bytes of one vocabulary row.
     size_t row_bytes() const { return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0; }
+    /// The rows held: all of the vocabulary, or the first ones after keep_rows.
+    int64_t rows() const { return n_out_; }
+    /// Keeps rows [0, rows) (the rest of the head runs on another GPU: split_head.hpp) and frees the others' VRAM.
+    /// `run` then refuses: it would give part of a token's logits.
+    bool keep_rows(int64_t rows, std::string& err);
 
 private:
     void* weights_ = nullptr;
@@ -34,6 +39,7 @@ private:
     uint64_t bytes_ = 0;
     int n_in_ = 0, n_out_ = 0;
     int type_ = -1;
+    bool part_ = false;
 };
 
 /// Plan v0.3 P6: `token_embd.weight` in its GGUF form (the IQ model files), in mapped pinned host memory: a row

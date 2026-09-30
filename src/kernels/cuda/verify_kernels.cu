@@ -470,7 +470,7 @@ struct ArgRow {
 
 // grid (blocks, rows): block b scans [b * per_block, +per_block) of its row
 __global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int per_block, ArgRow* __restrict__ rows,
-                                   int32_t* out) {
+                                   int32_t* out, float* out_val) {
     const int row = (int) blockIdx.y, b = (int) blockIdx.x, nb = (int) gridDim.x;
     unsigned* counter = &rows[row].counter;
     float* pv = rows[row].v;
@@ -503,8 +503,22 @@ __global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int 
     arg_block(bv, bi, n);
     if (threadIdx.x == 0) {
         out[row] = bi < n ? bi : 0;   // no value above -inf: 0, as the one-block kernel
+        if (out_val != nullptr) out_val[row] = bv;
         *counter = 0;
     }
+}
+
+__global__ void mapped_bump_kernel(uint32_t* flag) {
+    __threadfence_system();
+    *(volatile uint32_t*) flag = *(volatile uint32_t*) flag + 1u;
+}
+
+__global__ void join_rows_kernel(float* __restrict__ dst, int64_t n, const float* __restrict__ a, int64_t na,
+                                 const float* b) {
+    const int64_t t = blockIdx.y;
+    const int64_t nb = n - na;
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
+        dst[t * n + i] = i < na ? a[t * na + i] : ((const volatile float*) b)[t * nb + i - na];
 }
 
 // a row's top-probability scratch: its counter, then its 32 warps' sums
@@ -543,16 +557,26 @@ __global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int 
 
 uint64_t argmax_rows_scratch_bytes(int n_rows) { return (uint64_t) n_rows * sizeof(ArgRow); }
 
-void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream) {
+void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t* out, void* stream, float* out_val) {
     if (n_rows <= 0) return;
     const int nb = std::min(kArgMaxBlocks, std::max(1, (n + 4095) / 4096));
     const int per_block = (n + nb - 1) / nb;
     argmax_rows_kernel<<<dim3((unsigned) nb, (unsigned) n_rows), kArgThreads, 0, (cudaStream_t) stream>>>(
-        logits, n, per_block, (ArgRow*) scratch, out);
+        logits, n, per_block, (ArgRow*) scratch, out, out_val);
     check("argmax_rows");
 }
 
 uint64_t row_top_prob_scratch_bytes(int n_rows) { return (uint64_t) n_rows * sizeof(TopRow); }
+
+void mapped_bump(uint32_t* flag, void* stream) {
+    mapped_bump_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag);
+    check("mapped_bump");
+}
+
+void join_rows(float* dst, int64_t n, const float* a, int64_t na, const float* b, int rows, void* stream) {
+    join_rows_kernel<<<dim3(128, (unsigned) rows), 256, 0, (cudaStream_t) stream>>>(dst, n, a, na, b);
+    check("join_rows");
+}
 
 void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* scratch,
                         void* stream) {

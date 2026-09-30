@@ -18,6 +18,7 @@
 #include "strata/core/adaptive_tier.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/second_gpu.hpp"
+#include "strata/core/split_head.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
@@ -68,6 +69,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <set>
@@ -240,6 +242,7 @@ struct Options {
     int second_gpu_reserve_mib = 2048;
     double second_gpu_min_mb = 4.0;   ///< a layer's misses from which it takes its share (smaller: the CPU is quicker)
     double second_gpu_prefetch_mb = 12.0;   ///< per layer, the likeliest experts no GPU holds copied to it ahead (0 = off)
+    double head_split = 0.45;                ///< the second GPU's share of the head's rows (0: all on the main GPU)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -370,6 +373,8 @@ void usage() {
                  "  --second-gpu-prefetch-mb M  per layer, copy its likeliest experts that no GPU holds (the next\n"
                  "                       layer's router on this layer's input), up to M MiB, to it while the RAM is idle\n"
                  "                       (default 12: ~0.28 ms at its ~48 GB/s; 0 = off)\n"
+                 "  --head-split F       with --second-gpu: its share of the output head's rows (default 0.45;\n"
+                 "                       each GPU streams its part after the last layer; 0 = all on the main GPU)\n"
                  "  --no-prompt-offload  with --second-gpu: the prompt path streams the experts the main GPU's cache\n"
                  "                       lacks to the main GPU instead of computing them on the second\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
@@ -889,6 +894,7 @@ int main(int argc, char** argv) {
         else if (a == "--second-gpu-reserve-mib") o.second_gpu_reserve_mib = std::atoi(next("--second-gpu-reserve-mib"));
         else if (a == "--second-gpu-min-mb") o.second_gpu_min_mb = std::atof(next("--second-gpu-min-mb"));
         else if (a == "--second-gpu-prefetch-mb") o.second_gpu_prefetch_mb = std::atof(next("--second-gpu-prefetch-mb"));
+        else if (a == "--head-split") o.head_split = std::atof(next("--head-split"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
@@ -1413,6 +1419,7 @@ int main(int argc, char** argv) {
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
     const int64_t n_vocab = wo->ne1;
     strata::core::NativeHead native_head;
+    std::unique_ptr<strata::core::SplitHead> split_head;
     if (!o.native_head_gguf.empty()) {
         std::vector<std::string> head_shards;
         try {
@@ -1427,6 +1434,27 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata generate: native head, type %d, %llu bytes\n", native_head.type(),
                      (unsigned long long) native_head.weight_bytes());
+        // the head's last rows on the second GPU (split_head.hpp): each GPU streams its part after the last layer.
+        // The drafter gathers its draft head's rows first; without one it needs the whole head here.
+        if (o.second_gpu >= 0 && o.head_split > 0.0 && o.head_split < 1.0 && o.spec >= 2) {
+            const int64_t split = (int64_t) ((1.0 - o.head_split) * (double) n_vocab) / 256 * 256;
+            auto sh = std::make_unique<strata::core::SplitHead>();
+            std::string e2;
+            const bool ok = (o.mtp.empty() || mtp.bind_head(&native_head, e2)) &&
+                            (o.mtp.empty() || mtp.has_draft_head()) &&
+                            sh->init(o.second_gpu, o.main_gpu, head_shards, g.n_embd, n_vocab, split, o.max_window(),
+                                     e2) &&
+                            native_head.keep_rows(split, e2);
+            if (ok) {
+                std::fprintf(stderr, "strata generate: the head's rows %lld-%lld on the second GPU (%.0f MiB), the "
+                                     "first %lld here\n", (long long) split, (long long) n_vocab,
+                             (double) sh->bytes() / 1048576.0, (long long) split);
+                split_head = std::move(sh);
+            } else {
+                std::fprintf(stderr, "strata generate: the head stays on the main GPU: %s\n",
+                             e2.empty() ? "the draft layer has no draft head of its own" : e2.c_str());
+            }
+        }
     }
     // ---- R4's slot storage.  Allocated AFTER the weights, the session and the head, so `cudaMemGetInfo` inside
     // `open` sees the memory this process actually has left rather than the card's idle figure - and refuses with
@@ -2432,6 +2460,7 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();
         vh.slots = xcache.slots();
         vh.blob = thits.blob;
+        ver.set_split_head(split_head.get());
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.max_window(), err) ||
             !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
@@ -3285,6 +3314,8 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();
         vh.slots = xcache.slots();
         vh.blob = thits.blob;
+        ver.set_split_head(split_head.get());
+        ver.set_logits_wanted(!o.window_logits.empty());
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.max_window(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;

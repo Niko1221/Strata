@@ -80,6 +80,10 @@ public:
                float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
 
     /// The first round: one cell (`cell`) from `R_row` (device) and `token` -> T-1 drafts.
+    /// The draft head's rows gathered from the main head now (before the main GPU keeps only part of it); `bind`
+    /// then takes them as they are.
+    bool bind_head(const NativeHead* head, std::string& err);
+    bool has_draft_head() const { return dhead_ != nullptr; }
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                      float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
 

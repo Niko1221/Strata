@@ -110,7 +110,8 @@ Verifier::~Verifier() {
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     if (stamps_) cudaFree(stamps_);
-    void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
+    void* hosts[] = {h_tok_, h_val_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_,
+                     h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_pids_, h_pw_, h_pseq_, h_pleflag_, h_rows_, h_res_, h_flag2_,
                      h_list2_, h_xk_, h_xq1_};
     for (void* h : hosts)
@@ -158,6 +159,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
+    head_rows_ = (head != nullptr && head->loaded()) ? head->rows() : n_vocab_;
+    if (head_rows_ != n_vocab_ && (shead_ == nullptr || shead_->split() != head_rows_)) {
+        err = "verify: the head holds part of the vocabulary without its other part";
+        return false;
+    }
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
@@ -181,6 +187,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
               mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
               mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+              mapped(T * 4 + 16, (void**) &h_val_, (void**) &m_val_) &&
               mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
               mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
               mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) &&
@@ -274,6 +281,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
         arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
+        if (shead_ != nullptr) head_full_ = b.take<float>(T * (uint64_t) n_vocab_);
         one_ = b.take<int32_t>(4);
         hist_snap_ = b.take<float>(T * HS);
         const uint64_t PD = (uint64_t) strata::kernels::NG_HC_DIM;
@@ -958,19 +966,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (head_ != nullptr && head_->loaded()) {
             try {
+                if (shead_ != nullptr) {   // the second GPU's part starts once the host sees the count
+                    copy_from_mapped(shead_->input(), head_mixed_, (int64_t) T * N, cs);
+                    mapped_bump(shead_->handoff(), cs);
+                }
                 if (T >= 2) {
                     native_quantize_q8_1_il(head_mixed_, xq_, xil_, (int) N, T, cs);
-                    native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, head_logits_, (int) N, (int) n_vocab_, T, cs);
+                    native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, head_logits_, (int) N, (int) head_rows_,
+                                   T, cs);
                 } else {
                     native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
-                    native_mmvq(head_->type(), head_->weights(), xq_, head_logits_, (int) N, (int) n_vocab_, T, cs);
+                    native_mmvq(head_->type(), head_->weights(), xq_, head_logits_, (int) N, (int) head_rows_, T, cs);
                 }
             } catch (const std::exception& e) {
                 err = std::string("verify head: ") + e.what();
                 return false;
             }
         }
-        argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
+        argmax_rows(head_logits_, T, (int) head_rows_, arg_scratch_, m_out_, cs, m_val_);
     }
     if (host_rows_) copy_from_mapped(m_rows_, R_, (int64_t) T * HC * N, cs);   // a plain copy kernel, here to host
     stamp(g.n_layers, 3, cs);
@@ -1255,14 +1268,39 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         _mm_pause();
     }
     settle(true);
+    const bool sampled = head_sampling_ && ((!sampling_.greedy && sampling_.temperature > 0.0f) || hist_d_ != nullptr);
+    const bool whole = shead_ != nullptr && (logits_wanted_ || sampled);
+    if (shead_ != nullptr) {   // the head's input is handed over after the last layer: the second GPU's part then
+        ++hand_n_;
+        const Clock::time_point h0 = Clock::now();
+        while (*(volatile uint32_t*) shead_->handoff() < hand_n_) {
+            _mm_pause();
+            if (ms_since(h0) > 5000.0) {
+                err = std::string("verify: the head's input never came (") + cudaGetErrorString(cudaStreamQuery(cs_)) +
+                      ")";
+                return false;
+            }
+        }
+        if (!shead_->submit(T, whole, err)) return false;
+        ++done_n_;
+    }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
     cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
+    if (shead_ != nullptr) {   // each token's larger logit; on equality this GPU's, the lower index
+        if (!shead_->wait(done_n_, err)) return false;
+        for (int t = 0; t < T; ++t) {
+            const float v1 = ((volatile float*) h_val_)[t], v2 = ((volatile const float*) shead_->val())[t];
+            if (v2 > v1) ((volatile int32_t*) h_out_)[t] = (int32_t) (shead_->split() + shead_->idx()[t]);
+        }
+        if (whole) join_rows(head_full_, n_vocab_, head_logits_, head_rows_, shead_->logits(), T, cs_);
+    }
     // a sampled or penalized request: the head's sampling again, after the graph (see set_sampling)
-    if (head_sampling_ && ((!sampling_.greedy && sampling_.temperature > 0.0f) || hist_d_ != nullptr)) {
+    if (sampled) {
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
-        sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);
+        sample_tokens(shead_ != nullptr ? head_full_ : head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_,
+                      cs_);
         if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "verify: the head sampling failed"; return false; }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
@@ -1302,7 +1340,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 }
 
 bool Verifier::copy_logits(int T, float* out, std::string& err) const {
-    if (cudaMemcpyAsync(out, head_logits_, (size_t) T * (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+    if (shead_ != nullptr && !logits_wanted_) { err = "verify: the logits need set_logits_wanted"; return false; }
+    const float* src = shead_ != nullptr ? head_full_ : head_logits_;
+    if (cudaMemcpyAsync(out, src, (size_t) T * (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
                         cs_) != cudaSuccess ||
         cudaStreamSynchronize(cs_) != cudaSuccess) {
         err = std::string("verify: reading the logits back: ") + cudaGetErrorString(cudaGetLastError());
