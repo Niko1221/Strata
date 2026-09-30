@@ -1,0 +1,468 @@
+{
+ "name": "base-split",
+ "gpu": "0,1",
+ "layer_split": "auto",
+ "extra": [],
+ "env": [],
+ "load_s": 54.0,
+ "smi_loaded": "0, 10198 MiB, 11264 MiB\n1, 9234 MiB, 11264 MiB",
+ "smi_end": "0, 10276 MiB, 11264 MiB\n1, 9296 MiB, 11264 MiB",
+ "runs": [
+  {
+   "kind": "decode",
+   "tag": "story",
+   "rep": 0,
+   "completion": 450,
+   "wall_s": 13.08,
+   "head": "The fog had been thick for three days, swallowing the horizon whole. Elias, the "
+  },
+  {
+   "kind": "decode",
+   "tag": "code",
+   "rep": 0,
+   "completion": 330,
+   "wall_s": 13.0,
+   "head": "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"Least Rec"
+  },
+  {
+   "kind": "decode",
+   "tag": "explain",
+   "rep": 0,
+   "completion": 450,
+   "wall_s": 12.92,
+   "head": "TCP congestion control is a mechanism designed to prevent network congestion by "
+  },
+  {
+   "kind": "decode",
+   "tag": "story",
+   "rep": 1,
+   "completion": 450,
+   "wall_s": 13.74,
+   "head": "The fog had been thick for three days, swallowing the horizon whole. Elias, the "
+  },
+  {
+   "kind": "decode",
+   "tag": "code",
+   "rep": 1,
+   "completion": 450,
+   "wall_s": 15.06,
+   "head": "```python\nclass LRUCache:\n    \"\"\"\n    Least Recently Used (LRU) cache with O(1) "
+  },
+  {
+   "kind": "decode",
+   "tag": "explain",
+   "rep": 1,
+   "completion": 450,
+   "wall_s": 13.04,
+   "head": "TCP congestion control is a mechanism designed to prevent network congestion by "
+  },
+  {
+   "kind": "prompt",
+   "len": "2k",
+   "prompt_tokens": 2742,
+   "found": true,
+   "wall_s": 7.31
+  },
+  {
+   "kind": "prompt",
+   "len": "8k",
+   "prompt_tokens": 8385,
+   "found": true,
+   "wall_s": 17.24
+  },
+  {
+   "kind": "prompt",
+   "len": "16k",
+   "prompt_tokens": 15963,
+   "found": true,
+   "wall_s": 30.1
+  },
+  {
+   "kind": "prompt",
+   "len": "30k",
+   "prompt_tokens": 29453,
+   "found": true,
+   "wall_s": 55.46
+  }
+ ],
+ "requests": [
+  {
+   "n": 15,
+   "reused": 0,
+   "read": 15,
+   "pp_ms": 604,
+   "pp_tps": 24.8,
+   "gen": 10,
+   "dec_ms": 399,
+   "dec_tps": 25.1,
+   "acc": 7,
+   "off": 7,
+   "hit": 41.3,
+   "stages": [
+    {
+     "st": 0,
+     "win": 7,
+     "wait": 13.61,
+     "pool": 56.921,
+     "host": 1.081,
+     "commit": 0.612
+    },
+    {
+     "st": 1,
+     "win": 7,
+     "wait": 7.633,
+     "pool": 33.119,
+     "host": 0.0,
+     "commit": 0.341
+    }
+   ]
+  },
+  {
+   "n": 43,
+   "reused": 0,
+   "read": 43,
+   "pp_ms": 1352,
+   "pp_tps": 31.8,
+   "gen": 450,
+   "dec_ms": 11723,
+   "dec_tps": 38.4,
+   "acc": 213,
+   "off": 380,
+   "hit": 80.3,
+   "stages": [
+    {
+     "st": 0,
+     "win": 251,
+     "wait": 11.709,
+     "pool": 19.363,
+     "host": 0.749,
+     "commit": 0.606
+    },
+    {
+     "st": 1,
+     "win": 251,
+     "wait": 6.89,
+     "pool": 8.599,
+     "host": 0.0,
+     "commit": 0.354
+    }
+   ]
+  },
+  {
+   "n": 43,
+   "reused": 0,
+   "read": 43,
+   "pp_ms": 1635,
+   "pp_tps": 26.3,
+   "gen": 330,
+   "dec_ms": 11364,
+   "dec_tps": 29.0,
+   "acc": 231,
+   "off": 271,
+   "hit": 48.1,
+   "stages": [
+    {
+     "st": 0,
+     "win": 360,
+     "wait": 12.2,
+     "pool": 31.105,
+     "host": 0.764,
+     "commit": 0.657
+    },
+    {
+     "st": 1,
+     "win": 360,
+     "wait": 6.938,
+     "pool": 15.098,
+     "host": 0.0,
+     "commit": 0.352
+    }
+   ]
+  },
+  {
+   "n": 39,
+   "reused": 0,
+   "read": 39,
+   "pp_ms": 1323,
+   "pp_tps": 29.5,
+   "gen": 450,
+   "dec_ms": 11597,
+   "dec_tps": 38.8,
+   "acc": 281,
+   "off": 375,
+   "hit": 72.1,
+   "stages": [
+    {
+     "st": 0,
+     "win": 538,
+     "wait": 12.283,
+     "pool": 30.512,
+     "host": 0.763,
+     "commit": 0.653
+    },
+    {
+     "st": 1,
+     "win": 538,
+     "wait": 6.886,
+     "pool": 14.862,
+     "host": 0.0,
+     "commit": 0.366
+    }
+   ]
+  },
+  {
+   "n": 43,
+   "reused": 0,
+   "read": 43,
+   "pp_ms": 1507,
+   "pp_tps": 28.5,
+   "gen": 450,
+   "dec_ms": 12230,
+   "dec_tps": 36.8,
+   "acc": 208,
+   "off": 401,
+   "hit": 79.2,
+   "stages": [
+    {
+     "st": 0,
+     "win": 787,
+     "wait": 12.13,
+     "pool": 26.965,
+     "host": 0.715,
+     "commit": 0.637
+    },
+    {
+     "st": 1,
+     "win": 787,
+     "wait": 6.852,
+     "pool": 12.872,
+     "host": 0.0,
+     "commit": 0.357
+    }
+   ]
+  },
+  {
+   "n": 43,
+   "reused": 0,
+   "read": 43,
+   "pp_ms": 1587,
+   "pp_tps": 27.1,
+   "gen": 450,
+   "dec_ms": 13467,
+   "dec_tps": 33.4,
+   "acc": 301,
+   "off": 401,
+   "hit": 61.2,
+   "stages": [
+    {
+     "st": 0,
+     "win": 943,
+     "wait": 12.343,
+     "pool": 29.704,
+     "host": 0.707,
+     "commit": 0.64
+    },
+    {
+     "st": 1,
+     "win": 943,
+     "wait": 6.898,
+     "pool": 14.439,
+     "host": 0.0,
+     "commit": 0.364
+    }
+   ]
+  },
+  {
+   "n": 39,
+   "reused": 0,
+   "read": 39,
+   "pp_ms": 1337,
+   "pp_tps": 29.2,
+   "gen": 450,
+   "dec_ms": 11703,
+   "dec_tps": 38.5,
+   "acc": 279,
+   "off": 378,
+   "hit": 72.0,
+   "stages": [
+    {
+     "st": 0,
+     "win": 1123,
+     "wait": 12.387,
+     "pool": 29.659,
+     "host": 0.632,
+     "commit": 0.644
+    },
+    {
+     "st": 1,
+     "win": 1123,
+     "wait": 6.881,
+     "pool": 14.447,
+     "host": 0.0,
+     "commit": 0.364
+    }
+   ]
+  },
+  {
+   "n": 2742,
+   "reused": 0,
+   "read": 2742,
+   "pp_ms": 7021,
+   "pp_tps": 390.5,
+   "gen": 5,
+   "dec_ms": 278,
+   "dec_tps": 18.0,
+   "acc": 3,
+   "off": 3,
+   "hit": 19.0,
+   "stages": [
+    {
+     "st": 0,
+     "win": 1126,
+     "wait": 12.391,
+     "pool": 29.794,
+     "host": 0.633,
+     "commit": 0.644
+    },
+    {
+     "st": 1,
+     "win": 1126,
+     "wait": 6.883,
+     "pool": 14.523,
+     "host": 0.0,
+     "commit": 0.364
+    }
+   ]
+  },
+  {
+   "n": 8385,
+   "reused": 0,
+   "read": 8385,
+   "pp_ms": 16872,
+   "pp_tps": 497.0,
+   "gen": 6,
+   "dec_ms": 336,
+   "dec_tps": 17.8,
+   "acc": 6,
+   "off": 6,
+   "hit": 26.7,
+   "stages": [
+    {
+     "st": 0,
+     "win": 1130,
+     "wait": 12.398,
+     "pool": 29.911,
+     "host": 0.632,
+     "commit": 0.644
+    },
+    {
+     "st": 1,
+     "win": 1130,
+     "wait": 6.886,
+     "pool": 14.595,
+     "host": 0.0,
+     "commit": 0.364
+    }
+   ]
+  },
+  {
+   "n": 15963,
+   "reused": 0,
+   "read": 15963,
+   "pp_ms": 29709,
+   "pp_tps": 537.3,
+   "gen": 6,
+   "dec_ms": 336,
+   "dec_tps": 17.9,
+   "acc": 3,
+   "off": 6,
+   "hit": 30.9,
+   "stages": [
+    {
+     "st": 0,
+     "win": 1134,
+     "wait": 12.406,
+     "pool": 30.013,
+     "host": 0.632,
+     "commit": 0.644
+    },
+    {
+     "st": 1,
+     "win": 1134,
+     "wait": 6.889,
+     "pool": 14.666,
+     "host": 0.0,
+     "commit": 0.363
+    }
+   ]
+  },
+  {
+   "n": 29453,
+   "reused": 0,
+   "read": 29453,
+   "pp_ms": 55028,
+   "pp_tps": 535.2,
+   "gen": 6,
+   "dec_ms": 333,
+   "dec_tps": 18.0,
+   "acc": 6,
+   "off": 6,
+   "hit": 34.2,
+   "stages": [
+    {
+     "st": 0,
+     "win": 1138,
+     "wait": 12.413,
+     "pool": 30.103,
+     "host": 0.632,
+     "commit": 0.644
+    },
+    {
+     "st": 1,
+     "win": 1138,
+     "wait": 6.892,
+     "pool": 14.725,
+     "host": 0.0,
+     "commit": 0.363
+    }
+   ]
+  }
+ ],
+ "startup": [
+  "strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)",
+  "strata generate: PCIe probe: 12.6 GB/s host->device -> pcie_frac 0.27 (default 0.55)",
+  "strata generate: layer split: CUDA1 PCIe probe 12.6 GB/s -> pcie_frac 0.27",
+  "strata generate: layer split: CUDA1 holds its weights, session and head; 6.54 GiB free",
+  "strata generate: expert arena: mlock failed (raise ulimit -l); cudaHostRegister limited to 8 GiB for CUDA1; 12 slices pinned (7 GiB); MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages",
+  "strata generate: layer split auto: CUDA0 68 SMs at 1.54 GHz -> 0.69 ms per layer, 4.67 GiB for experts",
+  "strata generate: layer split auto: CUDA1 68 SMs at 1.54 GHz -> 0.69 ms per layer, 2.53 GiB for experts",
+  "strata generate: layer split auto: K=31 - predicted 42.2 ms per decode window; the caches hold 5374 of 24576 profiled pairs (~95.2% of the routed mass)",
+  "strata generate: expert cache auto: 6.84 GiB free, 700 MiB reserved -> 3322 slots",
+  "strata generate: expert cache 3545 slots, 4.67 GiB of VRAM; policy is",
+  "strata generate: layer split: CUDA1 runs layers 31-47, expert cache 1829 slots (2.53 GiB), 1829 of its 8704 profiled pairs; slot 0 verified",
+  "strata generate: layer split: CUDA0 runs layers 0-30",
+  "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)",
+  "strata serve: layer split: layers 0-30 (CUDA0), 31-47 (CUDA1), one hand-off per window",
+  "strata serve: 621 MiB of VRAM free with everything loaded",
+  "strata serve: decode expert cache hit rate: 41.3% (2142 hits / 5183 lookups)",
+  "strata serve: decode expert cache hit rate: 80.3% (235254 hits / 292904 lookups)",
+  "strata serve: decode expert cache hit rate: 48.1% (83452 hits / 173471 lookups)",
+  "strata serve: decode expert cache hit rate: 72.1% (185586 hits / 257486 lookups)",
+  "strata serve: decode expert cache hit rate: 79.2% (241684 hits / 305094 lookups)",
+  "strata serve: decode expert cache hit rate: 61.2% (157863 hits / 257798 lookups)",
+  "strata serve: decode expert cache hit rate: 72.0% (187146 hits / 259752 lookups)",
+  "strata serve: decode expert cache hit rate: 19.0% (441 hits / 2317 lookups)",
+  "strata serve: decode expert cache hit rate: 26.7% (1114 hits / 4165 lookups)",
+  "strata serve: decode expert cache hit rate: 30.9% (1291 hits / 4174 lookups)",
+  "strata serve: decode expert cache hit rate: 34.2% (1430 hits / 4182 lookups)"
+ ],
+ "decode_mean_tps": 35.82,
+ "decode_ms_per_window": 67.56,
+ "decode_mean_hit": 68.82,
+ "prompt_tps": {
+  "2742": 390.5,
+  "8385": 497.0,
+  "15963": 537.3,
+  "29453": 535.2
+ }
+}

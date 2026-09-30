@@ -118,6 +118,23 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   expert, the per-layer GPU time decides.
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
 
+Qwen3.8-Flash-Next IQ2_XS on 2 x RTX 2080 Ti 11 GB (Turing, sm_75; i7-7700K, 64 GB, Linux), 32K
+context; details in `bench/results/2026-09-30-layer-split-2080ti/`:
+
+| | Prompt 2.7K / 8K / 16K / 29K tok/s | Decode tok/s | Decode hits |
+|---|---|---|---|
+| one 2080 Ti | 618 / 712 / 795 / 801 | 33.9 | 64% |
+| 2 x 2080 Ti, 0.1.24 split (auto, K=31) | 391 / 497 / 537 / 535 | 35.8 | 69% |
+| 2 x 2080 Ti, layer split (auto, K=25) | 609-627 / 826-829 / 1,120-1,126 / 1,290 | 45.3-47.3 | 80-82% |
+
+- **Decode there is bound by the CPU pool** (4 cores, AVX2), so the second card pays through the experts its cache
+  holds and through the PCIe share of the misses. Both needed the arena pinned whole and the prompt buffers lent
+  from the caches instead of reserved on every card.
+- **Prompts** now read in the same 6144-token chunks as one card, and each card streams its own layers' experts
+  over its own link: +61% over one card at 29K.
+- On 0.1.27 (its larger draft subset included): one card 35.7 tok/s decode and 457-834 tok/s prompts, the split
+  47.3 and 459-1,304.
+
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +

@@ -1,0 +1,165 @@
+{
+ "name": "rb-lend-one",
+ "gpu": "0",
+ "layer_split": "auto",
+ "extra": [
+  "--mtp",
+  "/tmp/claude-1000/-data-HF-Models/33437202-b854-4d10-83e6-e52e19efecdb/scratchpad/mtp-rt-new",
+  "--adapt-every",
+  "0",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0"
+ ],
+ "env": [],
+ "load_s": 81.0,
+ "smi_loaded": "0, 10506 MiB, 11264 MiB\n1, 1 MiB, 11264 MiB",
+ "story_same": true,
+ "code_same": true,
+ "needle_found": true,
+ "prompt_tokens": 15776,
+ "outputs": [
+  "The fog had been thick for three days, swallowing the horizon whole. Elias, the solitary keeper of the Black Rock Light, sat in his small stone cottage, listening to the rhythmic *thump-thump* of the waves against the base of the tower. He was a man of few words, preferring the company of the sea to the chatter of the mainland. His life was defined by routine: winding the clockwork mechanism, polishing the brass lens, and watching the beam sweep across the dark water like a silent, sweeping arm.\n\nIt was on the fourth morning, when the fog finally began to lift, that he noticed something unnatural on the rocks below. A green glass bottle, half-buried in the wet sand, caught the first pale rays of the emerging sun. Elias descended the spiral stairs, his boots crunching on the gravel. He picked up the bottle, wiping away the salt crust. It was old, the glass clouded with age, but the cork was sealed",
+  "The fog had been thick for three days, swallowing the horizon whole. Elias, the solitary keeper of the Black Rock Light, sat in his small stone cottage, listening to the rhythmic *thump-thump* of the waves against the base of the tower. He was a man of few words, preferring the company of the sea to the chatter of the mainland. His life was defined by routine: winding the clockwork mechanism, polishing the brass lens, and watching the beam sweep across the dark water like a silent, sweeping arm.\n\nIt was on the fourth morning, when the fog finally began to lift, that he noticed something unnatural on the rocks below. A green glass bottle, half-buried in the wet sand, caught the first pale rays of the emerging sun. Elias descended the spiral stairs, his boots crunching on the gravel. He picked up the bottle, wiping away the salt crust. It was old, the glass clouded with age, but the cork was sealed",
+  "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"Least Recently Used cache with O(1) get and put operations.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        \"\"\"Return the value for key if present, otherwise -1.\n        Marks the key as most recently used.\"\"\"\n        if key not in self.cache:\n            return -1\n        # Move key to end (most recently used)\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        \"\"\"Insert or update key-value pair. Evicts least recently used\n        entry if capacity is exceeded.\"\"\"\n        if key in self.cache:\n            # Update value and mark as most recently used\n            self.cache.move_to",
+  "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"Least Recently Used cache with O(1) get and put operations.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        \"\"\"Return the value for key if present, otherwise -1.\n        Marks the key as most recently used.\"\"\"\n        if key not in self.cache:\n            return -1\n        # Move key to end (most recently used)\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        \"\"\"Insert or update key-value pair. Evicts least recently used\n        entry if capacity is exceeded.\"\"\"\n        if key in self.cache:\n            # Update value and mark as most recently used\n            self.cache.move_to"
+ ],
+ "smi_end": "0, 10586 MiB, 11264 MiB\n1, 1 MiB, 11264 MiB",
+ "requests": [
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1641,
+   "pp_tps": 22.5,
+   "gen": 200,
+   "dec_ms": 11136,
+   "dec_tps": 18.0,
+   "acc": 98,
+   "off": 171,
+   "hit": 16.7,
+   "stages": [
+    {
+     "st": 0,
+     "win": 112,
+     "wait": 17.355,
+     "pool": 88.172,
+     "host": 0.829,
+     "commit": 0.779
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1257,
+   "pp_tps": 29.4,
+   "gen": 200,
+   "dec_ms": 9276,
+   "dec_tps": 21.6,
+   "acc": 132,
+   "off": 182,
+   "hit": 25.9,
+   "stages": [
+    {
+     "st": 0,
+     "win": 192,
+     "wait": 18.513,
+     "pool": 94.951,
+     "host": 0.844,
+     "commit": 0.806
+    }
+   ]
+  },
+  {
+   "n": 15776,
+   "reused": 0,
+   "read": 15776,
+   "pp_ms": 19612,
+   "pp_tps": 804.4,
+   "gen": 4,
+   "dec_ms": 338,
+   "dec_tps": 11.8,
+   "acc": 3,
+   "off": 6,
+   "hit": 28.5,
+   "stages": [
+    {
+     "st": 0,
+     "win": 197,
+     "wait": 18.536,
+     "pool": 94.629,
+     "host": 0.84,
+     "commit": 0.806
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1379,
+   "pp_tps": 26.8,
+   "gen": 200,
+   "dec_ms": 11034,
+   "dec_tps": 18.1,
+   "acc": 98,
+   "off": 171,
+   "hit": 16.7,
+   "stages": [
+    {
+     "st": 0,
+     "win": 309,
+     "wait": 18.162,
+     "pool": 92.23,
+     "host": 0.54,
+     "commit": 0.798
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1259,
+   "pp_tps": 29.4,
+   "gen": 200,
+   "dec_ms": 9283,
+   "dec_tps": 21.5,
+   "acc": 132,
+   "off": 182,
+   "hit": 25.9,
+   "stages": [
+    {
+     "st": 0,
+     "win": 389,
+     "wait": 18.613,
+     "pool": 94.884,
+     "host": 0.431,
+     "commit": 0.808
+    }
+   ]
+  }
+ ],
+ "startup": [
+  "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages",
+  "strata generate: expert cache auto: 5.65 GiB free, 700 MiB reserved -> 3531 slots",
+  "strata generate: expert cache 3694 slots, 4.97 GiB of VRAM; policy is",
+  "strata serve: prompt chunk auto: 6144 tokens",
+  "strata serve: the prompt path borrows 2640 cache slots (3.54 GiB)",
+  "strata serve: 313 MiB of VRAM free with everything loaded",
+  "strata serve: decode expert cache hit rate: 16.7% (21836 hits / 131040 lookups)",
+  "strata serve: decode expert cache hit rate: 25.9% (31331 hits / 120960 lookups)",
+  "strata serve: decode expert cache hit rate: 28.5% (1230 hits / 4320 lookups)",
+  "strata serve: decode expert cache hit rate: 16.7% (21836 hits / 131040 lookups)",
+  "strata serve: decode expert cache hit rate: 25.9% (31331 hits / 120960 lookups)"
+ ],
+ "decode_mean_tps": 19.8,
+ "decode_ms_per_window": 119.79,
+ "decode_mean_hit": 21.3,
+ "prompt_tps": {
+  "15776": 804.4
+ }
+}

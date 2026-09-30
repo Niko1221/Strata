@@ -1,0 +1,226 @@
+{
+ "name": "v2-k18",
+ "gpu": "0,1",
+ "layer_split": "18",
+ "extra": [],
+ "env": [],
+ "load_s": 72.0,
+ "smi_loaded": "0, 10378 MiB, 11264 MiB\n1, 10314 MiB, 11264 MiB",
+ "smi_end": "0, 10420 MiB, 11264 MiB\n1, 10384 MiB, 11264 MiB",
+ "runs": [
+  {
+   "kind": "decode",
+   "tag": "story",
+   "rep": 0,
+   "completion": 450,
+   "wall_s": 11.35,
+   "head": "The fog had been thick for three days, swallowing the horizon whole. Elias, the "
+  },
+  {
+   "kind": "decode",
+   "tag": "code",
+   "rep": 0,
+   "completion": 450,
+   "wall_s": 13.27,
+   "head": "```python\nclass LRUCache:\n    \"\"\"\n    Least Recently Used (LRU) cache with O(1) "
+  },
+  {
+   "kind": "decode",
+   "tag": "explain",
+   "rep": 0,
+   "completion": 450,
+   "wall_s": 11.65,
+   "head": "TCP congestion control is a mechanism designed to prevent network congestion by "
+  },
+  {
+   "kind": "prompt",
+   "len": "16k",
+   "prompt_tokens": 15935,
+   "found": true,
+   "wall_s": 16.89
+  }
+ ],
+ "requests": [
+  {
+   "n": 15,
+   "reused": 0,
+   "read": 15,
+   "pp_ms": 643,
+   "pp_tps": 23.3,
+   "gen": 10,
+   "dec_ms": 300,
+   "dec_tps": 33.4,
+   "acc": 7,
+   "off": 7,
+   "hit": 57.8,
+   "stages": [
+    {
+     "st": 0,
+     "win": 7,
+     "wait": 8.139,
+     "pool": 24.889,
+     "host": 1.167,
+     "commit": 0.37
+    },
+    {
+     "st": 1,
+     "win": 7,
+     "wait": 13.115,
+     "pool": 53.78,
+     "host": 0.001,
+     "commit": 0.611
+    }
+   ]
+  },
+  {
+   "n": 45,
+   "reused": 0,
+   "read": 45,
+   "pp_ms": 1063,
+   "pp_tps": 42.3,
+   "gen": 450,
+   "dec_ms": 10283,
+   "dec_tps": 43.8,
+   "acc": 210,
+   "off": 405,
+   "hit": 88.2,
+   "stages": [
+    {
+     "st": 0,
+     "win": 256,
+     "wait": 9.76,
+     "pool": 5.365,
+     "host": 0.843,
+     "commit": 0.351
+    },
+    {
+     "st": 1,
+     "win": 256,
+     "wait": 12.525,
+     "pool": 13.335,
+     "host": 0.0,
+     "commit": 0.507
+    }
+   ]
+  },
+  {
+   "n": 45,
+   "reused": 0,
+   "read": 45,
+   "pp_ms": 1237,
+   "pp_tps": 36.4,
+   "gen": 450,
+   "dec_ms": 12032,
+   "dec_tps": 37.4,
+   "acc": 304,
+   "off": 367,
+   "hit": 73.7,
+   "stages": [
+    {
+     "st": 0,
+     "win": 411,
+     "wait": 9.833,
+     "pool": 9.44,
+     "host": 0.955,
+     "commit": 0.373
+    },
+    {
+     "st": 1,
+     "win": 411,
+     "wait": 12.439,
+     "pool": 23.235,
+     "host": 0.0,
+     "commit": 0.531
+    }
+   ]
+  },
+  {
+   "n": 41,
+   "reused": 0,
+   "read": 41,
+   "pp_ms": 1212,
+   "pp_tps": 33.8,
+   "gen": 450,
+   "dec_ms": 10433,
+   "dec_tps": 43.1,
+   "acc": 273,
+   "off": 395,
+   "hit": 83.4,
+   "stages": [
+    {
+     "st": 0,
+     "win": 595,
+     "wait": 10.201,
+     "pool": 8.856,
+     "host": 0.966,
+     "commit": 0.377
+    },
+    {
+     "st": 1,
+     "win": 595,
+     "wait": 12.384,
+     "pool": 23.842,
+     "host": 0.0,
+     "commit": 0.536
+    }
+   ]
+  },
+  {
+   "n": 15935,
+   "reused": 0,
+   "read": 15935,
+   "pp_ms": 16569,
+   "pp_tps": 961.7,
+   "gen": 6,
+   "dec_ms": 261,
+   "dec_tps": 23.0,
+   "acc": 6,
+   "off": 6,
+   "hit": 42.1,
+   "stages": [
+    {
+     "st": 0,
+     "win": 599,
+     "wait": 10.191,
+     "pool": 8.895,
+     "host": 0.962,
+     "commit": 0.377
+    },
+    {
+     "st": 1,
+     "win": 599,
+     "wait": 12.393,
+     "pool": 24.043,
+     "host": 0.0,
+     "commit": 0.536
+    }
+   ]
+  }
+ ],
+ "startup": [
+  "strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 18)",
+  "strata generate: PCIe probe: 12.6 GB/s host->device -> pcie_frac 0.27 (default 0.55)",
+  "strata generate: layer split: CUDA1 PCIe probe 12.7 GB/s -> pcie_frac 0.27",
+  "strata generate: layer split: CUDA1 holds its weights, session and head; 6.54 GiB free",
+  "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages",
+  "strata generate: expert cache auto: 6.79 GiB free, 700 MiB reserved -> 4342 slots",
+  "strata generate: expert cache 4674 slots, 6.11 GiB of VRAM; policy is",
+  "strata generate: layer split: CUDA1 runs layers 18-47, expert cache 3557 slots (4.84 GiB), 3557 of its 15360 profiled pairs; slot 0 verified",
+  "strata generate: layer split: CUDA0 runs layers 0-17",
+  "strata serve: prompt chunk auto: 6144 tokens",
+  "strata serve: the prompt path borrows 2708 cache slots (3.54 GiB), 2605 (3.54 GiB) on CUDA1",
+  "strata serve: layer split: layers 0-17 (CUDA0), 18-47 (CUDA1), one hand-off per window",
+  "strata serve: 441 MiB of VRAM free with everything loaded",
+  "strata serve: decode expert cache hit rate: 57.8% (2838 hits / 4913 lookups)",
+  "strata serve: decode expert cache hit rate: 88.2% (268933 hits / 305067 lookups)",
+  "strata serve: decode expert cache hit rate: 73.7% (172181 hits / 233675 lookups)",
+  "strata serve: decode expert cache hit rate: 83.4% (222341 hits / 266543 lookups)",
+  "strata serve: decode expert cache hit rate: 42.1% (1621 hits / 3853 lookups)"
+ ],
+ "decode_mean_tps": 41.43,
+ "decode_ms_per_window": 58.17,
+ "decode_mean_hit": 81.77,
+ "prompt_tps": {
+  "15935": 961.7
+ }
+}

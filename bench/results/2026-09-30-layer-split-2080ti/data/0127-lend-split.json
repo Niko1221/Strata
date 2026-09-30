@@ -1,0 +1,213 @@
+{
+ "name": "rb-lend-split",
+ "gpu": "0,1",
+ "layer_split": "auto",
+ "extra": [
+  "--mtp",
+  "/tmp/claude-1000/-data-HF-Models/33437202-b854-4d10-83e6-e52e19efecdb/scratchpad/mtp-rt-new",
+  "--adapt-every",
+  "0",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0"
+ ],
+ "env": [],
+ "load_s": 90.0,
+ "smi_loaded": "0, 10368 MiB, 11264 MiB\n1, 10306 MiB, 11264 MiB",
+ "story_same": true,
+ "code_same": true,
+ "needle_found": true,
+ "prompt_tokens": 15776,
+ "outputs": [
+  "The fog had been thick for three days, swallowing the horizon whole. Elias, the keeper of the lonely Sentinel Point Lighthouse, sat in his small, damp kitchen, listening to the rhythmic *thump-thump* of the foghorn. It was a sound that had become as familiar to him as his own heartbeat.\n\nHe was mending a net when he noticed something bobbing against the base of the lighthouse\u2019s stone foundation. It wasn\u2019t a piece of driftwood or a tangled knot of seaweed. It was a bottle, green glass, sealed with wax that had long since cracked.\n\nElias waded out into the shallow, freezing water, his boots squelching in the mud. He retrieved the bottle and brought it inside, placing it on the table beside his cold tea. The label was faded, but the paper inside was surprisingly intact. He carefully extracted the scroll, his hands trembling slightly\u2014not from the cold, but from the sudden intrusion of the past",
+  "The fog had been thick for three days, swallowing the horizon whole. Elias, the keeper of the lonely Sentinel Point Lighthouse, sat in his small, damp kitchen, listening to the rhythmic *thump-thump* of the foghorn. It was a sound that had become as familiar to him as his own heartbeat.\n\nHe was mending a net when he noticed something bobbing against the base of the lighthouse\u2019s stone foundation. It wasn\u2019t a piece of driftwood or a tangled knot of seaweed. It was a bottle, green glass, sealed with wax that had long since cracked.\n\nElias waded out into the shallow, freezing water, his boots squelching in the mud. He retrieved the bottle and brought it inside, placing it on the table beside his cold tea. The label was faded, but the paper inside was surprisingly intact. He carefully extracted the scroll, his hands trembling slightly\u2014not from the cold, but from the sudden intrusion of the past",
+  "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"Least Recently Used cache with O(1) get and put operations.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        # Move the accessed key to the end (most recently used)\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            # Update value and move to end (most recently used)\n            self.cache.move_to_end(key)\n            self.cache[key] = value\n        else:\n            if len(self.cache) >= self.capacity:\n                # Evict the least recently used item (first in OrderedDict)\n",
+  "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"Least Recently Used cache with O(1) get and put operations.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        # Move the accessed key to the end (most recently used)\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            # Update value and move to end (most recently used)\n            self.cache.move_to_end(key)\n            self.cache[key] = value\n        else:\n            if len(self.cache) >= self.capacity:\n                # Evict the least recently used item (first in OrderedDict)\n"
+ ],
+ "smi_end": "0, 10414 MiB, 11264 MiB\n1, 10350 MiB, 11264 MiB",
+ "requests": [
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1186,
+   "pp_tps": 31.2,
+   "gen": 200,
+   "dec_ms": 8947,
+   "dec_tps": 22.4,
+   "acc": 97,
+   "off": 155,
+   "hit": 34.1,
+   "stages": [
+    {
+     "st": 0,
+     "win": 116,
+     "wait": 8.748,
+     "pool": 32.371,
+     "host": 0.763,
+     "commit": 0.417
+    },
+    {
+     "st": 1,
+     "win": 116,
+     "wait": 7.676,
+     "pool": 31.707,
+     "host": 0.0,
+     "commit": 0.371
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 953,
+   "pp_tps": 38.8,
+   "gen": 200,
+   "dec_ms": 6810,
+   "dec_tps": 29.4,
+   "acc": 143,
+   "off": 167,
+   "hit": 42.6,
+   "stages": [
+    {
+     "st": 0,
+     "win": 185,
+     "wait": 9.568,
+     "pool": 36.44,
+     "host": 0.789,
+     "commit": 0.437
+    },
+    {
+     "st": 1,
+     "win": 185,
+     "wait": 8.32,
+     "pool": 35.01,
+     "host": 0.0,
+     "commit": 0.388
+    }
+   ]
+  },
+  {
+   "n": 15776,
+   "reused": 0,
+   "read": 15776,
+   "pp_ms": 14834,
+   "pp_tps": 1063.5,
+   "gen": 4,
+   "dec_ms": 249,
+   "dec_tps": 16.0,
+   "acc": 3,
+   "off": 6,
+   "hit": 55.5,
+   "stages": [
+    {
+     "st": 0,
+     "win": 190,
+     "wait": 9.587,
+     "pool": 36.169,
+     "host": 0.786,
+     "commit": 0.436
+    },
+    {
+     "st": 1,
+     "win": 190,
+     "wait": 8.332,
+     "pool": 34.766,
+     "host": 0.0,
+     "commit": 0.388
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 1130,
+   "pp_tps": 32.7,
+   "gen": 200,
+   "dec_ms": 9008,
+   "dec_tps": 22.2,
+   "acc": 97,
+   "off": 155,
+   "hit": 34.1,
+   "stages": [
+    {
+     "st": 0,
+     "win": 306,
+     "wait": 9.263,
+     "pool": 34.931,
+     "host": 0.493,
+     "commit": 0.429
+    },
+    {
+     "st": 1,
+     "win": 306,
+     "wait": 8.076,
+     "pool": 33.866,
+     "host": 0.0,
+     "commit": 0.382
+    }
+   ]
+  },
+  {
+   "n": 37,
+   "reused": 0,
+   "read": 37,
+   "pp_ms": 917,
+   "pp_tps": 40.4,
+   "gen": 200,
+   "dec_ms": 6762,
+   "dec_tps": 29.6,
+   "acc": 143,
+   "off": 167,
+   "hit": 42.6,
+   "stages": [
+    {
+     "st": 0,
+     "win": 375,
+     "wait": 9.587,
+     "pool": 36.427,
+     "host": 0.41,
+     "commit": 0.436
+    },
+    {
+     "st": 1,
+     "win": 375,
+     "wait": 8.342,
+     "pool": 35.017,
+     "host": 0.0,
+     "commit": 0.388
+    }
+   ]
+  }
+ ],
+ "startup": [
+  "strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)",
+  "strata generate: layer split: CUDA1 holds its weights, session and head; 6.54 GiB free",
+  "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages",
+  "strata generate: layer split auto: CUDA0 68 SMs at 1.54 GHz -> 0.69 ms per layer, 6.11 GiB for experts",
+  "strata generate: layer split auto: CUDA1 68 SMs at 1.54 GHz -> 0.69 ms per layer, 4.77 GiB for experts",
+  "strata generate: layer split auto: K=25 - predicted 40.5 ms per decode window; the caches hold 8124 of 24576 profiled pairs (~96.7% of the routed mass)",
+  "strata generate: expert cache auto: 6.79 GiB free, 700 MiB reserved -> 4341 slots",
+  "strata generate: expert cache 4631 slots, 6.11 GiB of VRAM; policy is",
+  "strata generate: layer split: CUDA1 runs layers 25-47, expert cache 3493 slots (4.77 GiB), 3493 of its 11776 profiled pairs; slot 0 verified",
+  "strata generate: layer split: CUDA0 runs layers 0-24",
+  "strata serve: prompt chunk auto: 6144 tokens",
+  "strata serve: the prompt path borrows 2687 cache slots (3.54 GiB), 2599 (3.54 GiB) on CUDA1",
+  "strata serve: layer split: layers 0-24 (CUDA0), 25-47 (CUDA1), one hand-off per window",
+  "strata serve: 451 MiB of VRAM free with everything loaded",
+  "strata serve: decode expert cache hit rate: 34.1% (42724 hits / 125280 lookups)",
+  "strata serve: decode expert cache hit rate: 42.6% (46243 hits / 108480 lookups)",
+  "strata serve: decode expert cache hit rate: 55.5% (2398 hits / 4320 lookups)",
+  "strata serve: decode expert cache hit rate: 34.1% (42724 hits / 125280 lookups)",
+  "strata serve: decode expert cache hit rate: 42.6% (46243 hits / 108480 lookups)"
+ ],
+ "decode_mean_tps": 25.9,
+ "decode_ms_per_window": 98.52,
+ "decode_mean_hit": 38.35,
+ "prompt_tps": {
+  "15776": 1063.5
+ }
+}
