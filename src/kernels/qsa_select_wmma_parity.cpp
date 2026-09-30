@@ -112,16 +112,21 @@ void free_dev(void* p) {   // hipFree is nodiscard in the compat shim
 }  // namespace
 
 int main(int argc, char** argv) {
-    const int64_t nq0 = argc > 1 ? std::atoll(argv[1]) : 48;
-    const int64_t max_blocks = argc > 2 ? std::atoll(argv[2]) : 620;
+    const bool selftest = argc > 1 && std::string(argv[1]) == "--selftest";
+    const int64_t nq0 = (argc > 1 && !selftest) ? std::atoll(argv[1]) : 48;
+    const int64_t max_blocks = (argc > 2 && !selftest) ? std::atoll(argv[2]) : 620;
     const k::QsaShapes s = k::qsa_real_shapes();
 
-    struct Case { const char* name; int64_t nq; int64_t reach; float scale; int64_t nkv0; };
+    // pattern 0 = shared-direction noise (a spread like a real indexer's); pattern 1 = one-hot and
+    // coordinate-coded rows - every expected dot is then 0 or exactly representable, so a lane-duplication,
+    // transpose or store error cannot hide inside a tolerance (the skill's adversarial fixtures).
+    struct Case { const char* name; int64_t nq; int64_t reach; float scale; int64_t nkv0; int pattern; };
     const Case cases[] = {
-        {"ragged query tiles (nq%4 != 0) + ragged block tiles", nq0, max_blocks - 3, 1.0f, 0},
-        {"whole tiles (nq%4 == 0, reach%16 == 0)", (nq0 / 4) * 4, ((max_blocks - 3) / 16) * 16, 1.0f, 0},
-        {"x8 magnitude headroom (near FP16 overflow)", nq0, max_blocks - 3, 8.0f, 0},
-        {"degenerate step n_kv = 0 on the first query", nq0, max_blocks - 3, 1.0f, 1},
+        {"ragged query tiles (nq%4 != 0) + ragged block tiles", nq0, max_blocks - 3, 1.0f, 0, 0},
+        {"whole tiles (nq%4 == 0, reach%16 == 0)", (nq0 / 4) * 4, ((max_blocks - 3) / 16) * 16, 1.0f, 0, 0},
+        {"x8 magnitude headroom (near FP16 overflow)", nq0, max_blocks - 3, 8.0f, 0, 0},
+        {"degenerate step n_kv = 0 on the first query", nq0, max_blocks - 3, 1.0f, 1, 0},
+        {"one-hot + coordinate-coded rows (lane/store adversarial)", nq0, max_blocks - 3, 1.0f, 0, 1},
     };
 
     for (const Case& cs : cases) {
@@ -138,11 +143,20 @@ int main(int argc, char** argv) {
         for (int64_t b = 0; b < max_blocks; ++b) {
             const float a = nd(rng);
             float* row = &pooled[(size_t) b * 128];
-            for (int d = 0; d < 128; ++d) row[d] = b < reach ? (0.5f * a * dir[d] + nd(rng)) * cs.scale : 1e30f;
+            for (int d = 0; d < 128; ++d) {
+                if (cs.pattern == 1) row[d] = b < reach ? (d == (b % 128) ? 1.0f : 0.0f) : 1e30f;
+                else row[d] = b < reach ? (0.5f * a * dir[d] + nd(rng)) * cs.scale : 1e30f;
+            }
         }
-        for (auto& x : dead) x = nd(rng) * cs.scale;
+        for (int d = 0; d < 128; ++d) dead[d] = cs.pattern == 1 ? (d == 61 ? 1.0f : 0.0f) : nd(rng) * cs.scale;
         for (int64_t i = 0; i < nq; ++i)
-            for (int d = 0; d < 512; ++d) q[(size_t) i * 512 + d] = (0.2f * dir[d % 128] + 0.1f * nd(rng)) * cs.scale;
+            for (int d = 0; d < 512; ++d) {
+                const int h = d / 128, di = d % 128;
+                q[(size_t) i * 512 + d] =
+                    cs.pattern == 1
+                        ? (di == ((i * 4 + h) * 37 % 128) ? 1.0f : (di == ((i * 7 + h) * 53 % 128) ? -0.25f : 0.0f))
+                        : (0.2f * dir[d % 128] + 0.1f * nd(rng)) * cs.scale;
+            }
         // steps: mixed n_bids (neighbours differ), one query at the very first blocks, and optionally a
         // degenerate n_kv = 0 first query
         std::vector<int32_t> steps((size_t) nq * k::kStepCount);
