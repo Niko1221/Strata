@@ -34,7 +34,11 @@ ARGS="--serve --pack packs/iq3_xxs
  --ple-gguf models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 2048
  --spec 4 --spec-min-p 0.5 --mtp mtp/rt --max-context 131072 --kv int8
- --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0"
+ --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0 --kv-delta 0"
+# --kv-delta 0, and it is load-bearing: this oracle corrupts a v3 SNAPSHOT ($STORE/kv-1-1.bin) and hooks a v3
+# TRANSFER, and the delta tier has been the DEFAULT cascade since Phase 6 (kv_delta = 1, generate.cpp:298) - with
+# `--kv-nvme` alone no snapshot is ever written, so there would be nothing to corrupt and no promote to refuse.
+# The delta tier's own recoverable class is gated by tools/nvme_delta_p0_test.sh.
 ARGS=$(echo "$ARGS" | tr '\n' ' ')
 rm -rf "$OUT"; mkdir -p "$STORE"
 

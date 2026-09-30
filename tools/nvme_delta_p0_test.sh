@@ -93,7 +93,11 @@ rund() { # $1 name, $2 prompt, [$3] extra engine args, [$4] env assignment - the
   echo "$1: rc=$? tokens=$(grep -c '^T ' "$OUT/$1.out")"
 }
 runv3() { # the same, but the V3 cascade (delta off) - the §5.2 comparison's other half
-  echo "GEN 200 $2" | timeout 900 env ${4-} $E $ARGS --kv-nvme ${KV-$OUT/store} ${3-} > "$OUT/$1.out" 2> "$OUT/$1.err"
+  # --kv-delta 0 is load-bearing, not decoration: the comment has always said "delta off", but since Phase 6 the
+  # delta tier IS the default (kv_delta = 1, generate.cpp:298), so without the flag this run appends delta records
+  # into the "v3" store, $OUT/store-v3/kv-*.bin is empty, and the comparison's other half never exists (the run
+  # then dies on `--nvme-restore ""`: "needs a value", rc=2).
+  echo "GEN 200 $2" | timeout 900 env ${4-} $E $ARGS --kv-nvme ${KV-$OUT/store} --kv-delta 0 ${3-} > "$OUT/$1.out" 2> "$OUT/$1.err"
   echo "$1: rc=$? tokens=$(grep -c '^T ' "$OUT/$1.out")"
 }
 boundary_of() { # $1 = a run's .err with a 'T 0->N' cascade line -> echoes N (the turn boundary's token length)
