@@ -350,6 +350,10 @@ pump may already have read the `start=1` line.  Still owed: the manual both-them
 the tier-off `needle_bench.py` stdout diff (it needs a second run with the tier off; `print_kv()` is behind
 `if (have_kvstore)`, so no line is emitted there, and the 80 host tests never touch a GPU).
 
+Merging this branch into `nvme-kv-cache` and redeploying is `docs/nvme-kv-web-merge-handoff.md` - the branch moved
+while this plan was being executed, and two upstream commits (`6648be7`, `c70c119`) change the numbers and the
+wording recorded above, so read its §3 and §4 before resolving anything.
+
 ## What must not regress
 
 - `DONE`'s field order and `INFO`'s fields (parsed positionally at `server.py:234` and read by the oracles).
