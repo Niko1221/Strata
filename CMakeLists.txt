@@ -408,6 +408,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(sampler_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(sampler_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME sampler_parity COMMAND sampler_parity --selftest)
+  set_tests_properties(sampler_parity PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=0;STRATA_SAMPLER_ONE_BLOCK=0")
+  # the same fixtures on the other two sampled paths: the one-block kernel and the 0.1.20 kernel
+  add_test(NAME sampler_parity_one_block COMMAND sampler_parity --selftest)
+  set_tests_properties(sampler_parity_one_block PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=0;STRATA_SAMPLER_ONE_BLOCK=1")
+  add_test(NAME sampler_parity_old COMMAND sampler_parity --selftest)
+  set_tests_properties(sampler_parity_old PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=1;STRATA_SAMPLER_ONE_BLOCK=0")
 
   add_executable(rope_parity src/kernels/rope_parity.cpp)
   target_include_directories(rope_parity PRIVATE ${_strata_gpu_include_directories})

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -264,13 +265,191 @@ int sampled_cut(const std::vector<float>& l, const std::vector<int>& hist, const
     return cut;
 }
 
+// ---- the kernel's own semantics, for the fixtures ----
+//
+// `sampled_reference` picks the first unpicked logit even when it is -inf or NaN; the kernels never pick either, and
+// a round that finds nothing stores id 0 with a -inf logit (and later rounds treat id 0 as taken, as `sampler_kernel`
+// does).  The mirror below follows the kernels, so rows with -inf, NaN, +inf and more requested than finite logits
+// can be pinned exactly.  On rows without those it is `sampled_reference`.
+struct SelList {
+    std::vector<int> ids;
+    std::vector<float> logit;
+};
+
+// The top_k list of `sampler_kernel` for one row: `window` is the counted history (the row's last penalty_last_n).
+SelList mirror_select(const float* l, int nv, const std::vector<int>& window, const strata::kernels::SamplerParams& p,
+                      int k) {
+    std::vector<float> s((size_t) nv);
+    for (int v = 0; v < nv; ++v) {
+        int c = 0;
+        for (int h : window) c += h == v;
+        float x = l[v];
+        if (c > 0) {
+            if (x <= 0.0f) x *= p.penalty_repeat; else x /= p.penalty_repeat;
+            x -= (float) c * p.penalty_freq + (c > 0 ? 1.0f : 0.0f) * p.penalty_present;
+        }
+        s[(size_t) v] = x;
+    }
+    SelList out;
+    std::vector<char> taken((size_t) nv, 0);
+    for (int i = 0; i < k; ++i) {
+        int best = nv;
+        float bv = -std::numeric_limits<float>::infinity();
+        for (int v = 0; v < nv; ++v)
+            if (!taken[(size_t) v] && s[(size_t) v] > bv) { bv = s[(size_t) v]; best = v; }
+        const int id = best < nv ? best : 0;
+        taken[(size_t) id] = 1;
+        out.ids.push_back(id);
+        out.logit.push_back(bv);
+    }
+    return out;
+}
+
+// The tail of `sampler_kernel` over a list (its first `k` entries): top_p, min_p, temperature, the Philox draw.
+int mirror_pick(const SelList& sel, int k, const strata::kernels::SamplerParams& p, int row) {
+    int n_keep = k;
+    float mx = sel.logit[0];
+    for (int i = 1; i < k; ++i) mx = std::fmax(mx, sel.logit[(size_t) i]);
+    if (p.top_p < 1.0f) {
+        double sum = 0.0;
+        for (int i = 0; i < k; ++i) sum += std::exp((double) sel.logit[(size_t) i] - (double) mx);
+        double cum = 0.0;
+        int cut = k;
+        for (int i = 0; i < k; ++i) {
+            cum += std::exp((double) sel.logit[(size_t) i] - (double) mx) / sum;
+            if (cum >= (double) p.top_p) { cut = i + 1; break; }
+        }
+        if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
+        n_keep = cut;
+    }
+    if (p.min_p > 0.0f) {
+        const float thresh = sel.logit[0] + std::log(p.min_p);
+        for (int i = 0; i < n_keep; ++i)
+            if (sel.logit[(size_t) i] < thresh) { n_keep = i; break; }
+    }
+    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    auto scaled = [&](int i) { return sel.logit[(size_t) i] * inv_t; };
+    float smx = scaled(0);
+    for (int i = 1; i < n_keep; ++i) smx = std::fmax(smx, scaled(i));
+    double sum = 0.0;
+    for (int i = 0; i < n_keep; ++i) sum += std::exp((double) scaled(i) - (double) smx);
+    const float u = host_philox_uniform(p.seed, p.counter + (uint64_t) row);
+    double cum = 0.0;
+    int pick = sel.ids[(size_t) (n_keep > 0 ? n_keep - 1 : 0)];
+    for (int i = 0; i < n_keep; ++i) {
+        cum += std::exp((double) scaled(i) - (double) smx) / sum;
+        if ((double) u < cum) { pick = sel.ids[(size_t) i]; break; }
+    }
+    return pick;
+}
+
+int sampled_k(int top_k, int nv) { return std::min(nv, (top_k > 0 && top_k < 64) ? top_k : 64); }
+
+// Rows uploaded once and sampled under many parameter sets: `sample` returns the picks of one launch on `stream`
+// (nullptr: the legacy stream), -1 prefilled as in `run`.
+struct DeviceRows {
+    float* l = nullptr;
+    int* h = nullptr;
+    int* o = nullptr;
+    int n_tokens = 0, nv = 0, hist_len = 0;
+    DeviceRows(const std::vector<float>& logits, int n_tokens_, const std::vector<int>& hist, int hist_len_)
+        : n_tokens(n_tokens_), nv((int) (logits.size() / (size_t) n_tokens_)), hist_len(hist_len_) {
+        check(cudaMalloc(&l, logits.size() * sizeof(float)), "malloc logits");
+        check(cudaMalloc(&o, (size_t) n_tokens * sizeof(int)), "malloc out");
+        check(cudaMemcpy(l, logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice), "copy");
+        if (hist_len > 0) {
+            check(cudaMalloc(&h, hist.size() * sizeof(int)), "malloc hist");
+            check(cudaMemcpy(h, hist.data(), hist.size() * sizeof(int), cudaMemcpyHostToDevice), "copy hist");
+        }
+    }
+    DeviceRows(const DeviceRows&) = delete;
+    DeviceRows& operator=(const DeviceRows&) = delete;
+    ~DeviceRows() {
+        cudaFree(l);
+        cudaFree(o);
+        if (h) cudaFree(h);
+    }
+    std::vector<int> sample(const strata::kernels::SamplerParams& p, cudaStream_t stream) {
+        check(cudaMemset(o, 0xFF, (size_t) n_tokens * sizeof(int)), "fill out");
+        strata::kernels::sample_tokens(l, n_tokens, nv, h, hist_len, p, o, stream);
+        if (stream != nullptr) check(cudaStreamSynchronize(stream), "stream sync");
+        std::vector<int> got((size_t) n_tokens);
+        check(cudaMemcpy(got.data(), o, got.size() * sizeof(int), cudaMemcpyDeviceToHost), "back");
+        return got;
+    }
+};
+
+// The counted window of row t: the last min(penalty_last_n, hist_len) entries (none without penalties).
+std::vector<int> window_of(const std::vector<int>& hist, int hist_len, int t, int last_n) {
+    if (hist_len <= 0 || last_n <= 0) return {};
+    const int h = std::min(last_n, hist_len);
+    const int* row = hist.data() + (size_t) t * hist_len;
+    return std::vector<int>(row + (hist_len - h), row + hist_len);
+}
+
+// `--bench`: the sampled path alone at the engine's vocabulary, per call, on the path the environment selects.
+void bench_sampled() {
+    const int NV = 248320;
+    cudaStream_t s = nullptr;
+    check(cudaStreamCreate(&s), "stream");
+    std::mt19937 rng(20);
+    std::normal_distribution<float> g(0.0f, 3.0f);
+    for (int T : {1, 4, 8}) {
+        std::vector<float> l((size_t) NV * T);
+        for (auto& v : l) v = g(rng);
+        float* d_l = nullptr;
+        int* d_o = nullptr;
+        check(cudaMalloc(&d_l, l.size() * sizeof(float)), "bench logits");
+        check(cudaMalloc(&d_o, (size_t) T * sizeof(int)), "bench out");
+        check(cudaMemcpy(d_l, l.data(), l.size() * sizeof(float), cudaMemcpyHostToDevice), "bench copy");
+        for (int k : {20, 64}) {
+            strata::kernels::SamplerParams p;
+            p.top_k = k; p.top_p = 0.95f; p.temperature = 0.7f; p.seed = 1;
+            for (int w = 0; w < 3; ++w) strata::kernels::sample_tokens(d_l, T, NV, nullptr, 0, p, d_o, s);
+            check(cudaStreamSynchronize(s), "bench warmup");
+            cudaEvent_t e0, e1;
+            check(cudaEventCreate(&e0), "event");
+            check(cudaEventCreate(&e1), "event");
+            const int iters = 50;
+            check(cudaEventRecord(e0, s), "record");
+            for (int it = 0; it < iters; ++it) {
+                p.counter = (uint64_t) it;
+                strata::kernels::sample_tokens(d_l, T, NV, nullptr, 0, p, d_o, s);
+            }
+            check(cudaEventRecord(e1, s), "record");
+            check(cudaEventSynchronize(e1), "bench sync");
+            float ms = 0.0f;
+            check(cudaEventElapsedTime(&ms, e0, e1), "elapsed");
+            std::printf("  bench: n_vocab %d, rows %d, top_k %2d, top_p 0.95: %8.1f us per call\n", NV, T, k,
+                        1000.0 * (double) ms / iters);
+            cudaEventDestroy(e0);
+            cudaEventDestroy(e1);
+        }
+        cudaFree(d_l);
+        cudaFree(d_o);
+    }
+    cudaStreamDestroy(s);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool selftest = false;
+    bool selftest = false, bench = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: sampler_parity [--selftest]\n"); return 2; }
+        else if (std::string(argv[i]) == "--bench") bench = true;
+        else { std::fprintf(stderr, "usage: sampler_parity [--selftest] [--bench]\n"); return 2; }
+    }
+    {
+        // the sampled path under test; ctest runs this binary once per path
+        auto on = [](const char* n) { const char* e = std::getenv(n); return e && *e && std::strcmp(e, "0") != 0; };
+        std::printf("  sampled path: %s\n", on("STRATA_OLD_SAMPLER")         ? "sampler_kernel (STRATA_OLD_SAMPLER)"
+                                            : on("STRATA_SAMPLER_ONE_BLOCK") ? "one block (STRATA_SAMPLER_ONE_BLOCK)"
+                                                                             : "split top_k (default)");
+    }
+    if (bench) {
+        bench_sampled();
+        return 0;
     }
     int bad = 0;
     const int NV = 512, NT = 4;
@@ -844,6 +1023,258 @@ int main(int argc, char** argv) {
         std::printf("  sampler draw counter segmentation/repeat: %s\n", valid ? "PASS" : "FAIL");
         bad += !valid;
         cudaFree(input); cudaFree(output);
+    }
+
+    // ---- fixture 16: THE WHOLE top_k LIST, POSITION BY POSITION, UNDER TIES.  A pick shows the list
+    // through one draw; this reads the list itself.  Every row holds a +inf logit, so the tail's arithmetic is NaN
+    // (inf - inf), no cut fires and no draw lands: the chain returns its LAST kept entry, sel_ids[k - 1].  Launching
+    // top_k = 1..64 then reads the list one position at a time - its set and its order.  The rows make the order
+    // rest on the tie rule: hundreds of logits share the top finite values, spread over every split block, warp and
+    // lane; -0 and +0 tie; -inf and NaN are mixed in; a row has fewer finite logits than 64 (the sentinel id 0 must
+    // come out); a penalised row lands its penalised tokens exactly on other tokens' values.  Vocabularies: the
+    // engine's 248,320 (a partial last split block), 100,003, 262,144 (the widest split), 262,145 (one more: the
+    // one-block fallback) and 1,000.
+    {
+        const float inf = std::numeric_limits<float>::infinity();
+        const float qnan = std::numeric_limits<float>::quiet_NaN();
+        int wrong = 0, probes = 0, sentinels = 0;
+        for (int nv : {248320, 100003, 262144, 262145, 1000}) {
+            const int T = 4, H = 64;
+            std::mt19937 rng((unsigned) (1600 + nv));
+            std::normal_distribution<float> g(0.0f, 1.0f);
+            std::vector<float> l((size_t) nv * T);
+            for (auto& v : l) v = std::floor(g(rng) * 4.0f) / 4.0f;          // quarter steps: ties everywhere
+            auto spread = [&](int j) { return (int) (((int64_t) j * 7919 + 13) % nv); };
+            // row 0: 20 logits at 6.25 and 300 at 6.0 over the whole row, two +inf
+            float* r0 = l.data();
+            for (int j = 0; j < 320; ++j) r0[spread(j)] = j < 20 ? 6.25f : 6.0f;
+            r0[nv / 2] = inf;
+            r0[nv - 1] = inf;
+            // row 1: nothing above 0, every zero signed by its id's parity (-0 at even ids), one +inf
+            float* r1 = l.data() + (size_t) nv;
+            for (int v = 0; v < nv; ++v) {
+                r1[v] = -std::fabs(r1[v]);
+                if (r1[v] == 0.0f) r1[v] = (v & 1) ? 0.0f : -0.0f;
+            }
+            r1[3] = inf;
+            // row 2: -inf everywhere but ten finite logits (two values), two NaN and a +inf: 11 candidates in all
+            float* r2 = l.data() + (size_t) 2 * nv;
+            for (int v = 0; v < nv; ++v) r2[v] = -inf;
+            for (int j = 0; j < 10; ++j) r2[spread(j + 400)] = j < 5 ? 1.0f : 0.5f;
+            r2[spread(500)] = qnan;
+            r2[spread(501)] = qnan;
+            r2[spread(502)] = inf;
+            // row 3: penalties.  Window ids on block and warp edges, repeats, and ids outside the vocabulary; the
+            // penalised tokens sit at 9.0, which repeat 2 / freq 0.25 / present 0.5 turns into 4.0 - 0.25 x count
+            // (3.75, 3.5, ...), values the quarter-step logits share.
+            float* r3 = l.data() + (size_t) 3 * nv;
+            std::vector<int> hist((size_t) T * H, -1);
+            int* h3 = hist.data() + (size_t) 3 * H;
+            const int edges[] = {0, 1023, 1024, 4095, 4096, 8191, 8192, 12345, nv / 2 + 1, nv - 2};
+            int hn = 0;
+            for (int e : edges)
+                if (e < nv && e != nv / 2) {
+                    h3[hn++] = e;
+                    if (hn % 3 == 0) h3[hn++] = e;                              // counted twice
+                    r3[e] = 9.0f;
+                }
+            h3[hn++] = nv;                                                      // ignored: outside
+            h3[hn++] = nv + 77;
+            h3[hn++] = -5;
+            for (int j = 0; j < 30; ++j) r3[spread(j + 600)] = j < 15 ? 3.75f : 3.5f;
+            r3[nv / 2] = inf;                                                   // not in the window
+
+            strata::kernels::SamplerParams base;
+            base.top_p = 1.0f; base.min_p = 0.0f; base.temperature = 0.8f; base.seed = 16;
+            base.penalty_last_n = H; base.penalty_repeat = 2.0f; base.penalty_freq = 0.25f;
+            base.penalty_present = 0.5f;
+            const int kmax = sampled_k(64, nv);
+            std::vector<SelList> lists;
+            for (int t = 0; t < T; ++t)
+                lists.push_back(mirror_select(l.data() + (size_t) t * nv, nv, window_of(hist, H, t, H), base, kmax));
+            DeviceRows rows(l, T, hist, H);
+            for (int top_k = 0; top_k <= 66; ++top_k) {
+                strata::kernels::SamplerParams p = base;
+                p.top_k = top_k == 65 ? 100 : top_k == 66 ? -3 : top_k;       // 0, 100 and -3 mean 64
+                p.top_p = (top_k & 1) ? 0.5f : 1.0f;                            // both tail branches (NaN: no cut)
+                p.counter = (uint64_t) top_k;
+                const int k = sampled_k(p.top_k, nv);
+                const std::vector<int> got = rows.sample(p, nullptr);
+                for (int t = 0; t < T; ++t) {
+                    const int want = lists[(size_t) t].ids[(size_t) (k - 1)];
+                    sentinels += (t == 2 && k > 11);
+                    ++probes;
+                    if (got[(size_t) t] != want) {
+                        if (wrong < 8)
+                            std::printf("    n_vocab %d row %d top_k %d: position %d want id %d got %d\n", nv, t,
+                                        p.top_k, k - 1, want, got[(size_t) t]);
+                        ++wrong;
+                    }
+                }
+            }
+        }
+        // the fixture must reach the sentinel (row 2 has 11 candidates) or it cannot see the "nothing left" rule
+        std::printf("  %-34s %s (%d of %d positions differ; %d sentinel positions)\n", "top_k list under ties",
+                    wrong || !sentinels ? "*** WRONG ***" : "matches", wrong, probes, sentinels);
+        bad += wrong + (sentinels == 0);
+    }
+
+    // ---- fixture 17: SAMPLED DRAWS UNDER TIES.  The realistic chain - finite logits on half steps,
+    // so dozens of tokens share each value near the top - through every stage: top_k 1 / 20 / 64, top_p 0.9 / 1,
+    // min_p 0 / 0.05, a hot temperature that spreads the draws over the whole list, penalties off and on (half of
+    // each window on the row's head, so they reorder it).  17 rows (the split's scratch is first sized for 16: this
+    // regrows it), on the legacy stream and on a created one.  Observability: some picks must be tokens that tie
+    // with another kept token, or the tie rule would go untested.
+    {
+        const int T = 17, H = 64;
+        cudaStream_t cs = nullptr;
+        check(cudaStreamCreate(&cs), "fixture 17 stream");
+        int wrong = 0, draws = 0, tied = 0;
+        for (int nv : {248320, 512}) {
+            std::mt19937 rng((unsigned) (1700 + nv));
+            std::normal_distribution<float> g(0.0f, 1.5f);
+            std::vector<float> l((size_t) nv * T);
+            for (auto& v : l) v = std::floor(g(rng) * 2.0f) / 2.0f;
+            if (nv == 512)
+                for (auto& v : l) v = std::floor(v / 2.0f);                    // whole steps: a few big tie groups
+            std::vector<int> hist((size_t) T * H);
+            for (int t = 0; t < T; ++t) {
+                const float* row = l.data() + (size_t) t * nv;
+                const float mx = *std::max_element(row, row + nv);
+                std::vector<int> head;
+                for (int v = 0; v < nv; ++v)
+                    if (row[v] >= mx - 1.0f) head.push_back(v);
+                for (int j = 0; j < H; ++j)
+                    hist[(size_t) t * H + j] = (j & 1) ? (int) (rng() % (unsigned) nv)
+                                                       : head[(size_t) (rng() % (unsigned) head.size())];
+            }
+            DeviceRows rows(l, T, hist, H);
+            int config = 0;
+            for (int pen = 0; pen < 2; ++pen) {
+                strata::kernels::SamplerParams base;
+                base.temperature = 2.5f; base.seed = 17;
+                base.penalty_last_n = pen ? H : 0;
+                base.penalty_repeat = 1.25f; base.penalty_freq = 0.25f; base.penalty_present = 0.5f;
+                const int kmax = sampled_k(64, nv);
+                std::vector<SelList> lists;
+                for (int t = 0; t < T; ++t)
+                    lists.push_back(mirror_select(l.data() + (size_t) t * nv, nv, window_of(hist, H, t, base.penalty_last_n),
+                                                  base, kmax));
+                for (int top_k : {1, 20, 64})
+                    for (float top_p : {0.9f, 1.0f})
+                        for (float min_p : {0.0f, 0.05f})
+                            for (cudaStream_t st : {(cudaStream_t) nullptr, cs}) {
+                                strata::kernels::SamplerParams p = base;
+                                p.top_k = top_k; p.top_p = top_p; p.min_p = min_p;
+                                p.counter = (uint64_t) (1000 * ++config);
+                                const int k = sampled_k(top_k, nv);
+                                const std::vector<int> got = rows.sample(p, st);
+                                for (int t = 0; t < T; ++t) {
+                                    const SelList& sl = lists[(size_t) t];
+                                    const int want = mirror_pick(sl, k, p, t);
+                                    ++draws;
+                                    int same = 0;
+                                    for (int i = 0; i < k; ++i) {
+                                        if (sl.ids[(size_t) i] != want) continue;
+                                        for (int j = 0; j < k; ++j) same += sl.logit[(size_t) j] == sl.logit[(size_t) i];
+                                        break;
+                                    }
+                                    tied += same > 1;
+                                    if (got[(size_t) t] != want) {
+                                        if (wrong < 8)
+                                            std::printf("    n_vocab %d row %d top_k %d top_p %.2f min_p %.2f pen %d: "
+                                                        "want %d got %d\n", nv, t, top_k, (double) top_p,
+                                                        (double) min_p, pen, want, got[(size_t) t]);
+                                        ++wrong;
+                                    }
+                                }
+                            }
+            }
+        }
+        cudaStreamDestroy(cs);
+        std::printf("  %-34s %s (%d of %d draws differ; %d picks tie with another kept token)\n",
+                    "sampled draws under ties", wrong || !tied ? "*** WRONG ***" : "matches", wrong, draws, tied);
+        bad += wrong + (tied == 0);
+    }
+
+    // ---- fixture 18: THE DEFAULT PATH'S AUTOMATIC FALLBACKS.  (a) A stream under graph capture
+    // (ThreadLocal mode) gets the one-block kernel, penalty bitmap in dynamic shared memory, inside the graph: the
+    // capture must succeed and the replayed graph (twice) must pick the mirror's tokens; the same stream uncaptured
+    // then takes the split path (its scratch is first allocated after the capture) and picks the same.  (b) More
+    // rows than a split launch takes (64) fall back to one block; exactly 64 stay split.
+    {
+        int wrong = 0, draws = 0;
+        const int H = 64;
+        auto compare = [&](const char* what, const std::vector<int>& got, const std::vector<SelList>& lists, int k,
+                           const strata::kernels::SamplerParams& p) {
+            for (size_t t = 0; t < got.size(); ++t) {
+                const int want = mirror_pick(lists[t], k, p, (int) t);
+                ++draws;
+                if (got[t] != want) {
+                    if (wrong < 8) std::printf("    %s row %zu: want %d got %d\n", what, t, want, got[t]);
+                    ++wrong;
+                }
+            }
+        };
+        auto make = [&](int nv, int T, unsigned seed, std::vector<float>& l, std::vector<int>& hist) {
+            std::mt19937 rng(seed);
+            std::normal_distribution<float> g(0.0f, 1.5f);
+            l.assign((size_t) nv * T, 0.0f);
+            for (auto& v : l) v = std::floor(g(rng) * 2.0f) / 2.0f;
+            hist.assign((size_t) T * H, 0);
+            for (auto& h : hist) h = (int) (rng() % (unsigned) nv);
+        };
+        {
+            const int nv = 248320, T = 3;
+            std::vector<float> l;
+            std::vector<int> hist;
+            make(nv, T, 1800u, l, hist);
+            strata::kernels::SamplerParams p;
+            p.top_k = 20; p.top_p = 0.9f; p.temperature = 2.5f; p.seed = 18; p.counter = 77;
+            p.penalty_last_n = H; p.penalty_repeat = 1.25f; p.penalty_freq = 0.25f; p.penalty_present = 0.5f;
+            const int k = sampled_k(p.top_k, nv);
+            std::vector<SelList> lists;
+            for (int t = 0; t < T; ++t)
+                lists.push_back(mirror_select(l.data() + (size_t) t * nv, nv, window_of(hist, H, t, H), p, k));
+            DeviceRows rows(l, T, hist, H);
+            cudaStream_t cs = nullptr;
+            check(cudaStreamCreate(&cs), "fixture 18 stream");
+            check(cudaMemset(rows.o, 0xFF, (size_t) T * sizeof(int)), "fixture 18 fill");
+            cudaGraph_t graph = nullptr;
+            cudaGraphExec_t exec = nullptr;
+            check(cudaStreamBeginCapture(cs, cudaStreamCaptureModeThreadLocal), "begin capture");
+            strata::kernels::sample_tokens(rows.l, T, nv, rows.h, H, p, rows.o, cs);
+            check(cudaStreamEndCapture(cs, &graph), "end capture");
+            check(cudaGraphInstantiate(&exec, graph, 0), "instantiate");
+            for (int replay = 0; replay < 2; ++replay) {
+                check(cudaMemset(rows.o, 0xFF, (size_t) T * sizeof(int)), "fixture 18 refill");
+                check(cudaGraphLaunch(exec, cs), "graph launch");
+                check(cudaStreamSynchronize(cs), "graph sync");
+                std::vector<int> got((size_t) T);
+                check(cudaMemcpy(got.data(), rows.o, got.size() * sizeof(int), cudaMemcpyDeviceToHost), "back");
+                compare("captured graph", got, lists, k, p);
+            }
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+            compare("same stream, uncaptured", rows.sample(p, cs), lists, k, p);
+            cudaStreamDestroy(cs);
+        }
+        for (int T : {64, 70}) {
+            const int nv = 512;
+            std::vector<float> l;
+            std::vector<int> hist;
+            make(nv, T, 1810u + (unsigned) T, l, hist);
+            strata::kernels::SamplerParams p;
+            p.top_k = 64; p.top_p = 1.0f; p.temperature = 2.5f; p.seed = 18; p.counter = (uint64_t) T;
+            const int k = sampled_k(p.top_k, nv);
+            std::vector<SelList> lists;
+            for (int t = 0; t < T; ++t) lists.push_back(mirror_select(l.data() + (size_t) t * nv, nv, {}, p, k));
+            DeviceRows rows(l, T, hist, 0);
+            compare(T > 64 ? "70 rows (one block)" : "64 rows (split)", rows.sample(p, nullptr), lists, k, p);
+        }
+        std::printf("  %-34s %s (%d of %d draws differ)\n", "fallbacks: graph capture, row cap",
+                    wrong ? "*** WRONG ***" : "matches", wrong, draws);
+        bad += wrong;
     }
 
     std::printf("\nsampler: %d failures\n", bad);
