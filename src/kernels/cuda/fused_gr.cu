@@ -179,18 +179,21 @@ __global__ void __launch_bounds__(THREADS) gr_norm_multi_kernel(GrMulti m) {
     for (int i = t; i < D; i += THREADS) xn[i] *= s_rs[i / N];
 }
 
-#if defined(__HIPCC__)
-constexpr int TILE = 1280;             // eight-token tile fits gfx1100's 64 KiB LDS limit
-#else
-constexpr int TILE = 2560;             // xn floats per token staged at a time: 320 chunks of 8, 10 per lane
-#endif
-constexpr int TQ = TILE / 8 / 32;      // uint4 weight chunks per lane per tile
-
 // Step 2 of `gr_down_kernel` for T tokens.  One warp per row (so each lane accumulates the same chunks in the
-// same order as the single-token kernel); per tile the lane's 10 weight chunks are loaded BEFORE the activation
+// same order as the single-token kernel); per tile the lane's weight chunks are loaded BEFORE the activation
 // tile is staged, so the DRAM and L2 traffic are in flight together.
+//
+// TILEV = xn floats per token staged at a time.  The tile only changes the staging granularity: the lane's chunk
+// order (lane + 32*q within the tile, tiles ascending) is strictly increasing for either value, so the results are
+// bitwise identical to `gr_down_kernel` for both.  2560 stages 320 chunks of 8 per tile (10 per lane); cards whose
+// opt-in below 8 * 2560 * 4 B slices the tokens - sm_75 (64 KiB) carries 6 tokens of it - run TILEV 1280 instead,
+// which fits all eight tokens in one 40 KiB launch and stages 160 chunks of 8 (5 per lane, half the registers held
+// for the weight prefetch); smaller tiles raise how many blocks share an SM (the 41-block grid), e.g. three blocks
+// of four tokens instead of one on sm_75.
+template <int TILEV>
 __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
-    extern __shared__ __align__(16) float tile[];   // [T][TILE]
+    constexpr int TQ = TILEV / 8 / 32;      // uint4 weight chunks per lane per tile
+    extern __shared__ __align__(16) float tile[];   // [T][TILEV]
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int T = m.T;
     const bool inject_block = blockIdx.x == DOWN_BLOCKS;
@@ -201,7 +204,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
     float acc[kFusedGrMaxT];
 #pragma unroll
     for (int k = 0; k < kFusedGrMaxT; ++k) acc[k] = 0.0f;
-    for (int base = 0; base < D; base += TILE) {
+    for (int base = 0; base < D; base += TILEV) {
         uint4 wv[TQ];
         if (active) {
 #pragma unroll
@@ -210,8 +213,8 @@ __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
         __syncthreads();                                   // the previous tile is consumed
         const float4* src4 = reinterpret_cast<const float4*>(m.xn);
         float4* tile4 = reinterpret_cast<float4*>(tile);
-        for (int i = t; i < T * (TILE / 4); i += THREADS) {
-            const int k = i / (TILE / 4), off = i - k * (TILE / 4);
+        for (int i = t; i < T * (TILEV / 4); i += THREADS) {
+            const int k = i / (TILEV / 4), off = i - k * (TILEV / 4);
             tile4[i] = src4[((size_t) k * D + base) / 4 + off];
         }
         __syncthreads();
@@ -221,7 +224,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
             const int j = lane + 32 * q;
 #pragma unroll
             for (int k = 0; k < kFusedGrMaxT; ++k)
-                if (k < T) acc[k] += dot8(wv[q], tile + k * TILE + j * 8);
+                if (k < T) acc[k] += dot8(wv[q], tile + k * TILEV + j * 8);
         }
     }
     if (!active) return;
@@ -325,30 +328,50 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     // the shared-memory opt-in is a per-DEVICE setting: once per device, not once per process (a layer split
     // runs this kernel on two cards)
     static bool attr[64] = {};
-    static int chunk[64] = {};   // Turing port: tokens the down kernel may carry in one launch on this card
+    static int chunk[64] = {};   // tokens the down kernel may carry in one launch on this card
+    static int tile[64] = {};    // the down kernel's TILEV on this card (1280 on sm_75, 2560 elsewhere; see above)
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev >= 0 && dev < 64 && !attr[dev]) {
-        // at most what the card allows (Turing: 64 KB - enough for windows of up to 6 tokens)
         int optin = 0;
         cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-        int want = (int) (kFusedGrMaxT * TILE * sizeof(float));
+        // the down kernel stages n_tok*TILEV floats of dynamic shared memory - 80 KB at the full 8 tokens of the
+        // CUDA tile.  sm_75 gets the smaller tile: all eight tokens fit one 40 KiB launch there (no more slicing),
+        // the TQ-5 prefetch holds half the registers, and the smaller blocks raise how many of the 41-block grid
+        // share an SM.  Cards whose opt-in is still below that (or that report no opt-in at all) slice the tokens;
+        // the down kernel's outputs (lo, inject_out) are strictly per-token, so the chunk boundaries are safe, and
+        // the up kernel below still sees every token of the batch in one launch.
+#if defined(__HIPCC__)
+        const bool small_tile = true;   // all eight tokens fit gfx1100's 64 KiB LDS at this tile
+#else
+        int cc_maj = 0, cc_min = 0;
+        cudaDeviceGetAttribute(&cc_maj, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&cc_min, cudaDevAttrComputeCapabilityMinor, dev);
+        const bool small_tile = cc_maj * 10 + cc_min == 75;
+#endif
+        const int tv = small_tile ? 1280 : 2560;
+        tile[dev] = tv;
+        int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
-        cudaFuncSetAttribute(gr_down_multi_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+        if (small_tile) {
+            cudaFuncSetAttribute(gr_down_multi_kernel<1280>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+        } else {
+            cudaFuncSetAttribute(gr_down_multi_kernel<2560>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+        }
         cudaGetLastError();      // drop any error the attempt left behind
-        // Turing port: the down kernel stages n_tok*TILE floats of dynamic shared memory - 80 KB at the full
-        // 8 tokens.  A card whose opt-in is below that (Turing: 64 KB, so 7+ tokens fail to launch as
-        // "invalid argument") processes the tokens in slices that fit; a card that reports no opt-in gets what
-        // fits the 48 KB default (4 tokens of the CUDA tile; all 8 of HIP's smaller tile).  The down kernel's
-        // outputs (lo, inject_out) are strictly per-token, so the chunk boundaries are safe, and the up kernel
-        // below still sees every token of the batch in one launch.
-        const int capacity = (optin > 0 ? optin : 48 * 1024) / (int) (TILE * sizeof(float));
+        const int capacity = (optin > 0 ? optin : 48 * 1024) / (int) (tv * sizeof(float));
         chunk[dev] = capacity < 1 ? 1 : (capacity > kFusedGrMaxT ? kFusedGrMaxT : capacity);
         attr[dev] = true;
     }
+    const int tv = (dev >= 0 && dev < 64 && tile[dev]) ? tile[dev] : 2560;
     const int chunk_tok = (dev >= 0 && dev < 64 && chunk[dev]) ? chunk[dev] : kFusedGrMaxT;
     if (chunk_tok >= n_tok) {
-        gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) n_tok * TILE * sizeof(float), st>>>(m);
+        const size_t smem = (size_t) n_tok * tv * sizeof(float);
+        if (tv == 1280) {
+            gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
+        } else {
+            gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
+        }
     } else {
         for (int c0 = 0; c0 < n_tok; c0 += chunk_tok) {
             const int ct = n_tok - c0 < chunk_tok ? n_tok - c0 : chunk_tok;
@@ -356,7 +379,12 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             c.xn = xn_scratch + (size_t) c0 * D;
             c.T = ct;
             for (int k = 0; k < ct; ++k) c.a[k] = a[c0 + k];
-            gr_down_multi_kernel<<<DOWN_BLOCKS + 1, THREADS, (size_t) ct * TILE * sizeof(float), st>>>(c);
+            const size_t smem = (size_t) ct * tv * sizeof(float);
+            if (tv == 1280) {
+                gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            } else {
+                gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            }
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
