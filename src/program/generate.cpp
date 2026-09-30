@@ -209,6 +209,21 @@ struct Options {
     /// trace is what the plan's `h = 0.6447` refers to, and compulsory-miss measured 0.4864 because it fills
     /// with whatever the prompt touched FIRST.  Empty means no profile.
     std::string expert_profile;
+    /// **HOLD WHOLE LAYERS OF EXPERTS IN THE SECOND GPU'S VRAM.**  The prompt path reads the expert set end to
+    /// end, and on a machine whose RAM cannot cache it that read is the whole cost of the prompt (measured:
+    /// 27.4 GiB re-read, 214.7 s for a 22,266-token prompt).  A second card's VRAM serves the same bytes to the
+    /// CPU ~19x faster than the engine's file path (0.334 ms vs 6.31 ms per expert, same machine).  `auto`
+    /// takes whole layers, highest routing frequency first, until the card's free VRAM is used up.
+    ///
+    /// **ONLY THE PROMPT PATH READS THE STORE, SO ITS LAYERS STAY IN THE OTHER CARD'S CACHE.**  Decode's
+    /// verify window is <= 6 tokens, below the store's 32-token batch gate, and the single-token path has no
+    /// store support at all - so a decode miss is a CPU expert.  Excluding the store's layers from device 0's
+    /// cache (tried, then reverted) thus sent 22 of 48 layers to the CPU at decode: 42 -> 30 tok/s on Q2_0 and
+    /// 30 -> 15 on the Coder, whose store holds 30 of 48.  Adaptation is still disabled, because it moves
+    /// experts the store already owns.
+    bool vram_experts = false;
+    int64_t vram_experts_layers = 0;   ///< 0 = as many as fit
+    int64_t vram_experts_device = 1;   ///< the card that holds them (0 is the one the engine computes on)
     /// R4.2d: **ON by default**, because the measurement is unambiguous and the alternative is known-broken.
     /// Without it, 17 of 10,562 layers had the hit work done when the pool returned; with it, 9,190.  The
     /// A/B arm is `--no-hit-poke`.
@@ -417,6 +432,18 @@ void usage() {
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
                  "                       ms/token, -2.7 ms/token end to end.\n"
+                 "  --vram-experts       Hold WHOLE LAYERS of experts in a SECOND GPU's VRAM and serve the CPU\n"
+                 "                       from there instead of the file.  Needs --mmap-experts (the resident\n"
+                 "                       arena already holds every expert in RAM and gains nothing).  For a machine\n"
+                 "                       whose RAM cannot cache the expert set, so every prompt re-reads it from\n"
+                 "                       SSD: measured here, a held blob costs 0.334 ms to hand to the host against\n"
+                 "                       6.31 ms through the file path (18.9x).  Layers are chosen by routing\n"
+                 "                       frequency until the card is full.  The store answers the PROMPT path only\n"
+                 "                       (decode's verify window is below the store's 32-token batch gate), so its\n"
+                 "                       layers STAY in the other card's expert cache - excluding them there made\n"
+                 "                       decode fall back to the CPU (42 -> 30 tok/s on Q2_0; 30 -> 15 on the Coder).\n"
+                 "  --vram-expert-layers N    how many whole layers to hold (default: as many as fit).\n"
+                 "  --vram-expert-device D    which card holds them; default 1 (0 is where the engine computes).\n"
                  "  --expert-cache-device1 N  pre-fill N experts on CUDA1 (experimental)\n"
                  "  --expert-cache-device2 N  pre-fill N more experts on CUDA2\n"
                  "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
@@ -1069,6 +1096,9 @@ int main(int argc, char** argv) {
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
+        else if (a == "--vram-experts") o.vram_experts = true;
+        else if (a == "--vram-expert-layers") o.vram_experts_layers = std::atoll(next("--vram-expert-layers"));
+        else if (a == "--vram-expert-device") o.vram_experts_device = std::atoll(next("--vram-expert-device"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = true;
@@ -1866,6 +1896,100 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
+    // ---- THE SECOND GPU'S VRAM AS THE EXPERT STORE (see `ExpertSource::vram_held` for the measurements).
+    //
+    // This runs HERE, after the profile is read, because the layers worth holding are chosen by routing
+    // frequency and that ranking is the profile's content.  Only `FileExpertSource` can be served this way -
+    // the resident arena already holds every expert in RAM and gains nothing from a copy - so the store is
+    // refused rather than silently ignored when it cannot apply.
+    //
+    // **THE LAYERS CHOSEN FOR THE STORE ARE EXCLUDED FROM THE OTHER CARD'S CACHE.**  Without that the two tiers
+    // would fill with the SAME high-frequency experts, the host would still fault the rest, and half of VRAM
+    // would be spent duplicating data.  Excluding them keeps one owner per expert and makes the two tiers add
+    // up.  Adaptation is disabled because it moves experts the store already owns.
+    strata::core::VramExpertStore vram_store;
+    if (o.vram_experts) {
+        if (!o.mmap_experts || src.mapped_base() == nullptr) {
+            std::fprintf(stderr, "strata generate: --vram-experts needs --mmap-experts (the arena already holds "
+                                 "every expert in RAM)\n");
+            return 1;
+        }
+        // A native pack's blob size differs per layer, so the layer's OWN extent sizes the store - using layer
+        // 0's blob for the budget would mis-count what the second card can hold (`blob_bytes(0)` is the hint the
+        // store takes, and it re-reads the per-layer sizes itself).
+        const auto& vlay = strata::kernels::cpu::expert_layout();
+        const int64_t blob_bytes = (int64_t) vlay.blob_bytes(0);
+        const int64_t n_exp = g.n_expert;
+        const auto layer_bytes = [&vlay, n_exp](int64_t l) { return (int64_t) vlay.blob_bytes(l) * n_exp; };
+        std::vector<std::pair<int64_t, int64_t>> by_freq;      // (count, layer)
+        by_freq.reserve((size_t) g.n_layers);
+        std::vector<int64_t> count((size_t) g.n_layers, 0);
+        for (const auto& pr : profile) {
+            if (pr.first >= 0 && pr.first < g.n_layers) count[(size_t) pr.first] += 1;
+        }
+        for (int64_t l = 0; l < g.n_layers; ++l) by_freq.emplace_back(count[(size_t) l], l);
+        std::sort(by_freq.begin(), by_freq.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        int dev = 1, ndev = 0;
+        cudaGetDeviceCount(&ndev);
+        if (ndev < 2) {
+            std::fprintf(stderr, "strata generate: --vram-experts: only %d CUDA device(s); nothing to store on\n", ndev);
+        } else {
+            if (o.vram_experts_device > 0 && o.vram_experts_device < ndev) dev = (int) o.vram_experts_device;
+            int prev = 0;
+            cudaGetDevice(&prev);
+            cudaSetDevice(dev);
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            cudaSetDevice(prev);
+            // Leave the other card's own context and any display use some room; this is a copy store, not a
+            // compute tier, so a small reserve is enough.
+            const uint64_t reserve = 256u << 20;
+            const uint64_t usable = (uint64_t) (free_b > reserve ? free_b - reserve : 0);
+            // Greedy by actual layer size, in routing-frequency order: a native pack's layers differ (1.5-2.3 MB
+            // per expert across the Coder's 48), so dividing the budget by one average would either waste room or
+            // over-commit and fail the allocation.
+            std::vector<int64_t> chosen;
+            uint64_t used = 0;
+            const int64_t cap_layers = o.vram_experts_layers > 0 ? o.vram_experts_layers : g.n_layers;
+            for (int64_t i = 0; i < g.n_layers && (int64_t) chosen.size() < cap_layers; ++i) {
+                const int64_t l = by_freq[(size_t) i].second;
+                const uint64_t b = (uint64_t) layer_bytes(l);
+                if (used + b > usable) break;
+                used += b;
+                chosen.push_back(l);
+            }
+            std::sort(chosen.begin(), chosen.end());
+            if (chosen.empty()) {
+                std::fprintf(stderr,
+                             "strata generate: --vram-experts: no room on device %d (%.2f GiB free, %.2f GiB "
+                             "reserved)\n",
+                             dev, (double) free_b / 1073741824.0, (double) reserve / 1073741824.0);
+            } else {
+                if (!vram_store.open(dev, g.n_layers, g.n_expert, blob_bytes, chosen, src.mapped_base(),
+                                     src.mapped_size(), err, 0)) {
+                    std::fprintf(stderr, "strata generate: --vram-experts: %s\n", err.c_str());
+                } else {
+                    src.set_vram_store(&vram_store);
+                    std::fprintf(stderr,
+                                 "strata generate: vram expert store on device %d: %lld whole layers, %.2f GiB; "
+                                 "served on the prompt path only (decode's verify window is below the store's "
+                                 "batch gate), so these layers STAY in device 0's cache\n",
+                                 dev, (long long) chosen.size(), (double) vram_store.bytes() / 1073741824.0);
+                }
+            }
+        }
+        if (vram_store.valid()) {
+            // Adaptation moves experts between the cache and the file; the store owns whole layers, and swapping
+            // around it would have to know which of the two tiers an expert belongs to.  Off while it is in use.
+            if (o.adapt_every > 0) {
+                std::fprintf(stderr, "strata generate: adaptation disabled while --vram-experts is on\n");
+                o.adapt_every = 0;
+            }
+        }
+    }
+
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
     // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a

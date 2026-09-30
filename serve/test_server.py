@@ -362,6 +362,36 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_layer_split_is_added_only_when_no_mode_is_named(self):
+        """A config that names what the second card is FOR must not also get `--layer-split`.
+
+        `--layer-split` is refused by the engine unless it was started with `--serve` and can put a distinct GPU
+        behind every K, so emitting it beside `--vram-experts` makes the server wait for a READY that never comes.
+        """
+        from serve.server import engine_args
+        plain = engine_args({"args": [], "gpu": [0, 1]})            # several GPUs, no mode named: the split
+        self.assertIn("--layer-split", plain)
+        store = engine_args({"args": ["--vram-experts"], "gpu": [0, 1]})
+        self.assertNotIn("--layer-split", store)                    # the card is a copy store, not a compute stage
+        self.assertIn("--vram-experts", store)
+        named = engine_args({"args": ["--layer-split", "16,32"], "gpu": [0, 1]})
+        self.assertEqual(named.count("--layer-split"), 1)           # never duplicated
+        self.assertIn("16,32", named)
+    def test_layer_split_is_added_only_when_no_mode_is_named(self):
+        """A config that names what the second card is FOR must not also get `--layer-split`.
+
+        `--layer-split` is refused by the engine unless it was started with `--serve` and can put a distinct GPU
+        behind every K, so emitting it beside `--vram-experts` makes the server wait for a READY that never comes.
+        """
+        from serve.server import engine_args
+        plain = engine_args({"args": [], "gpu": [0, 1]})          # several GPUs, no mode named: the split
+        self.assertIn("--layer-split", plain)
+        store = engine_args({"args": ["--vram-experts"], "gpu": [0, 1]})
+        self.assertNotIn("--layer-split", store)                   # the card is a copy store, not a compute stage
+        self.assertIn("--vram-experts", store)
+        named = engine_args({"args": ["--layer-split", "16,32"], "gpu": [0, 1]})
+        self.assertEqual(named.count("--layer-split"), 1)          # never duplicated
+        self.assertIn("16,32", named)
 
 class RecordingPrompt(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):

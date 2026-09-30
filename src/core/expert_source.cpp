@@ -648,6 +648,179 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
     return complement_device_ + (size_t) complement_offsets_[index];
 }
 
+// ================================ A SECOND GPU AS THE EXPERT STORE ================================
+//
+// Read the note on `ExpertSource::vram_held` for why this exists and what it measured.  In short: on a 32 GB
+// machine the page cache cannot hold the 31.64 GiB expert set, so every prompt re-reads it from the SSD, and the
+// second card's VRAM can serve those bytes to the CPU ~19x faster than the engine's fault path can.
+
+VramExpertStore::~VramExpertStore() { close(); }
+
+bool VramExpertStore::open(int device, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
+                           const std::vector<int64_t>& layers, const uint8_t* file, uint64_t file_bytes,
+                           std::string& err, uint64_t reserve_bytes) {
+    close();
+    if (n_layers <= 0 || n_expert <= 0 || blob_bytes <= 0) { err = "vram store: empty geometry"; return false; }
+    if (layers.empty()) { err = "vram store: no layers requested"; return false; }
+    for (int64_t l : layers) {
+        if (l < 0 || l >= n_layers) { err = "vram store: layer out of range"; return false; }
+    }
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || count <= device) {
+        err = "vram store: no second CUDA device (device " + std::to_string(device) + " of " +
+              std::to_string(count) + ")";
+        return false;
+    }
+    const auto& vlay = strata::kernels::cpu::expert_layout();
+    // Each chosen layer's own extent, because an i-quant pack's blob size differs from layer to layer.  The
+    // layout is loaded before any source opens, so it is authoritative; `blob_bytes` is the caller's sizing hint
+    // and is only used when the caller is looking at a canonical (uniform) pack.
+    std::vector<int64_t> per_layer;
+    per_layer.reserve(layers.size());
+    for (int64_t l : layers) per_layer.push_back((int64_t) vlay.blob_bytes(l));
+    uint64_t span = 0;
+    for (int64_t b : per_layer) span += (uint64_t) b * (uint64_t) n_expert;
+    // The file's own extent is the bound: reading a layer the pack does not contain would fault past the end.
+    if (file_bytes < vlay.total || file_bytes < span) {
+        err = "vram store: the pack is shorter than the layers asked for";
+        return false;
+    }
+
+    // Allocating on a device other than the current one would put the bytes on the wrong card, so select it,
+    // allocate, and select the original back.  The rest of the engine keeps using device 0 and never sees this.
+    int prev = 0;
+    if (cudaGetDevice(&prev) != cudaSuccess) { err = "vram store: cudaGetDevice"; return false; }
+    if (cudaSetDevice(device) != cudaSuccess) { err = "vram store: cudaSetDevice"; return false; }
+
+    size_t free_b = 0, total_b = 0;
+    cudaMemGetInfo(&free_b, &total_b);
+    // `reserve_bytes` is a safety margin the caller may add (0 from the driver today): the store is a COPY
+    // tier, so its weights are the whole budget, but a future compute tier on the same card would reserve here.
+    const uint64_t need = span + reserve_bytes;
+    if (free_b > 0 && need > (uint64_t) free_b) {
+        // Report the two numbers rather than letting cudaMalloc fail with nothing to go on.
+        char buf[320];
+        std::snprintf(buf, sizeof buf,
+                      "vram store: %llu B of weights + %llu B reserved = %llu B needed but only "
+                      "%llu B free on device %d (reduce the layer count or the expert cache on the other card)",
+                      (unsigned long long) span, (unsigned long long) reserve_bytes, (unsigned long long) need,
+                      (unsigned long long) free_b, device);
+        err = buf;
+        (void) cudaSetDevice(prev);
+        return false;
+    }
+    uint8_t* base = nullptr;
+    if (cudaMalloc((void**) &base, (size_t) span) != cudaSuccess) {
+        err = "vram store: cudaMalloc failed on the second device";
+        (void) cudaSetDevice(prev);
+        return false;
+    }
+
+    // **THE FILE MAPPING IS THE SOURCE, AND NO BOUNCE BUFFER IS PINNED.**
+    //
+    // The obvious implementation - pin one blob, memcpy into it, copy out - is wrong twice over on the machine
+    // this exists for.  A per-blob bubble would have to be 512 times one blob to cover a layer in one copy, and
+    // pinning 707 MB of HOST memory is precisely the resource this feature is trying to stop spending.  A
+    // one-blob buffer cannot hold a layer.  So the copy is done one blob at a time straight out of the mapping:
+    // no host allocation at all, and `cudaMemcpy` (synchronous) is the correct primitive because the source is
+    // pageable and the copy must be finished before the mapping can be relied on again.
+    bool ok = true;
+    int64_t at = 0;                       // running offset in `base`, since the slots differ in size
+    for (size_t si = 0; si < layers.size(); ++si) {
+        const int64_t l = layers[si];
+        const int64_t bb = per_layer[si];
+        // The source layer's start comes from the layout, NOT `l * per_layer`: a native pack's layers are not
+        // uniform and multiplying would read the wrong byte range for every layer after the first.
+        const uint8_t* layer_src = file + (size_t) vlay.layer_offset(l);
+        uint8_t* layer_dst = base + (size_t) at;
+        for (int64_t e = 0; e < n_expert; ++e) {
+            if (cudaMemcpy(layer_dst + (size_t) e * (size_t) bb,
+                           layer_src + (size_t) e * (size_t) bb,
+                           (size_t) bb, cudaMemcpyHostToDevice) != cudaSuccess) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) break;
+        at += bb * n_expert;
+    }
+    if (ok && cudaDeviceSynchronize() != cudaSuccess) ok = false;
+    (void) cudaSetDevice(prev);
+    if (!ok) {
+        cudaFree(base);
+        err = "vram store: uploading the layers failed";
+        return false;
+    }
+
+    device_ = device;
+    base_ = base;
+    scratch_reserve_ = reserve_bytes;
+    n_expert_ = n_expert;
+    blob_ = 0;
+    for (int64_t b : per_layer) if (b > blob_) blob_ = b;
+    bytes_ = (int64_t) span;
+    layers_ = layers;
+    slot_off_.assign(layers.size(), 0);
+    slot_blob_ = per_layer;
+    {
+        int64_t s = 0;
+        for (size_t i = 0; i < layers.size(); ++i) {
+            slot_off_[i] = s;
+            s += per_layer[i] * n_expert;
+        }
+    }
+    slot_of_layer_.assign((size_t) n_layers, -1);
+    for (size_t i = 0; i < layers_.size(); ++i) slot_of_layer_[(size_t) layers_[i]] = (int32_t) i;
+    return true;
+}
+
+void VramExpertStore::close() {
+    if (base_ != nullptr) {
+        int prev = 0;
+        if (cudaGetDevice(&prev) == cudaSuccess && cudaSetDevice(device_) == cudaSuccess) {
+            cudaFree(base_);
+            (void) cudaSetDevice(prev);
+        }
+    }
+    base_ = nullptr;
+    bytes_ = 0;
+    scratch_reserve_ = 0;
+    n_expert_ = 0;
+    blob_ = 0;
+    layers_.clear();
+    slot_off_.clear();
+    slot_blob_.clear();
+    slot_of_layer_.clear();
+    device_ = -1;
+}
+
+bool VramExpertStore::held(int64_t layer, int64_t expert) const {
+    if (base_ == nullptr || expert < 0 || expert >= n_expert_) return false;
+    if (layer < 0 || (size_t) layer >= slot_of_layer_.size()) return false;
+    return slot_of_layer_[(size_t) layer] >= 0;
+}
+
+bool VramExpertStore::covers_layer(int64_t layer) const {
+    return layer >= 0 && (size_t) layer < slot_of_layer_.size() && slot_of_layer_[(size_t) layer] >= 0;
+}
+
+bool VramExpertStore::fetch(int64_t layer, int64_t expert, uint8_t* dst) const {
+    if (dst == nullptr || !held(layer, expert)) return false;
+    const int32_t slot = slot_of_layer_[(size_t) layer];
+    // The slot's own blob size and base, not one global pair: a native pack's layers differ.
+    const int64_t bb = slot_blob_.empty() ? blob_ : slot_blob_[(size_t) slot];
+    const int64_t so = slot_off_.empty() ? (int64_t) slot * n_expert_ * blob_ : slot_off_[(size_t) slot];
+    const uint8_t* src = base_ + (size_t) so + (size_t) expert * (size_t) bb;
+    int prev = 0;
+    if (cudaGetDevice(&prev) != cudaSuccess) return false;
+    if (cudaSetDevice(device_) != cudaSuccess) return false;
+    const cudaError_t rc = cudaMemcpy(dst, src, (size_t) bb, cudaMemcpyDeviceToHost);
+    (void) cudaSetDevice(prev);
+    if (rc != cudaSuccess) return false;
+    ++served_;
+    return true;
+}
+
 // ================================ THE ADAPTER ================================
 
 void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,

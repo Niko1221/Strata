@@ -490,9 +490,18 @@ def gpu_list(cfg: dict) -> list[int]:
 
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
-    config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
+    config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32").
+
+    **THE LAYER SPLIT IS NOT ADDED WHEN THE CONFIG ALREADY NAMES A MODE FOR THE SECOND CARD.**  A config that
+    names two GPUs used to always get `--layer-split auto`, which breaks `--vram-experts`: that mode wants the
+    second card's whole VRAM AS A COPY STORE, while the split puts compute layers there and the two compete for
+    the same memory.  The engine itself refuses `--layer-split` unless it was started with `--serve` and can put a
+    distinct GPU behind every K, so the generated line makes the server wait for a READY that never comes.
+
+    Only `--vram-experts` is checked: it is the one arg that changes what the second card is FOR.  A config that
+    wants the split is unchanged - name several GPUs and neither flag, or name `--layer-split` yourself."""
     args = list(cfg["args"])
-    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
+    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args and "--vram-experts" not in args:
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
     return args
 
