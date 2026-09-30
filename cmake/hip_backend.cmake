@@ -9,8 +9,14 @@ endif()
 # the maintainers have not run them (community reports: gfx1102 #192, gfx1200 #176).
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_unvalidated gfx1101 gfx1102 gfx1200)
+# CMake hands HIP a ';' list, but ROCm's own Windows tooling (and a -DCMAKE_HIP_ARCHITECTURES
+# typed by hand) uses spaces, which foreach(IN LISTS) would otherwise treat as one element.
+string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
 set(STRATA_HIP_ARCH_LIST "")
-foreach(_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
+foreach(_arch IN LISTS _strata_hip_norm)
+  if(_arch STREQUAL "")
+    continue()
+  endif()
   string(REGEX REPLACE ":.*$" "" _base "${_arch}")      # gfx1100:xnack- -> gfx1100
   if(_base IN_LIST _strata_hip_validated)
   elseif(_base IN_LIST _strata_hip_unvalidated)
@@ -57,11 +63,21 @@ target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA_HIP_ARCHS=\"${STRATA_HIP_ARCHS}\"")
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
-foreach(_language IN ITEMS CXX HIP)
+# The shim renames the CUDA runtime to HIP. MSVC host compiles take /FI; HIP and
+# other host compilers take -include. The header path uses forward slashes so
+# /FI does not swallow backslashes.
+file(TO_CMAKE_PATH "${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h" _strata_hip_force)
+if(MSVC)
   target_compile_options(strata_hip_runtime INTERFACE
-    "$<$<COMPILE_LANGUAGE:${_language}>:-include>"
-    "$<$<COMPILE_LANGUAGE:${_language}>:${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h>")
-endforeach()
+    "$<$<COMPILE_LANGUAGE:CXX>:/FI${_strata_hip_force}>")
+else()
+  target_compile_options(strata_hip_runtime INTERFACE
+    "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+    "$<$<COMPILE_LANGUAGE:CXX>:${_strata_hip_force}>")
+endif()
+target_compile_options(strata_hip_runtime INTERFACE
+  "$<$<COMPILE_LANGUAGE:HIP>:-include>"
+  "$<$<COMPILE_LANGUAGE:HIP>:${_strata_hip_force}>")
 
 # CMake does not infer HIP from Strata's existing CUDA-shaped .cu suffixes.
 file(GLOB_RECURSE _strata_hip_sources CONFIGURE_DEPENDS

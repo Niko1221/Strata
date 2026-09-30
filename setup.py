@@ -717,10 +717,20 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/"}
 ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
-AMD_ARCHS = ("gfx1100", "gfx1201")
+ROCM_INDEX_WIN = os.environ.get("STRATA_ROCM_INDEX_WIN", "https://nightly.repo.amd.com/rocm/whl-next/")
+AMD_ARCHS = ("gfx1100", "gfx1200", "gfx1201")
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
+             "gfx1200": "AMD Radeon RX 9060 series (gfx1200)",
              "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)"}
-AMD_CARDS = "the RX 7900 XT / XTX (gfx1100) and the RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201)"
+AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), the RX 9060 (gfx1200) and the RX 9070 / 9070 XT / Radeon AI PRO "
+             "R9700 (gfx1201)")
+# Windows display-class device ids. Name matching covers the same cards when the id is new.
+_WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",
+                0x7590: "gfx1200",
+                0x7550: "gfx1201", 0x7551: "gfx1201"}
+_WIN_AMD_NAME = ((re.compile(r"9070|R9700|R9600", re.I), "gfx1201"),
+                 (re.compile(r"9060", re.I), "gfx1200"),
+                 (re.compile(r"7900|W7900|W7800", re.I), "gfx1100"))
 
 
 def rocm_index(arch):
@@ -730,9 +740,11 @@ def rocm_index(arch):
 def amd_gpus():
     """AMD GPUs from the kernel's KFD topology (the amdgpu driver; no ROCm needed), numbered as HIP numbers them:
     the GPU nodes in order, the CPU nodes skipped.  Integrated GPUs are listed too (not supported)."""
+    if WIN:
+        return _amd_gpus_windows()
     base = Path("/sys/class/kfd/kfd/topology/nodes")
     found = []
-    if WIN or not base.is_dir():
+    if not base.is_dir():
         return found
     for node in sorted((p for p in base.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
         try:
@@ -777,16 +789,182 @@ def rocm_version(root):
         return None
 
 
-def rocm_root(arch):
-    """ROCm for compiling and running the HIP engine for `arch`: (root, library folders).  A system ROCm 7 with hipcc
-    and hipBLAS, else AMD's TheRock wheels (ROCM_VERSION, from the card family's index) installed into .venv."""
+def _amd_gpus_windows():
+    import winreg
+    found = []
+    try:
+        reg = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}")
+    except OSError:
+        return found
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(reg, i)
+        except OSError:
+            break
+        i += 1
+        if not sub.isdigit():
+            continue
+        try:
+            key = winreg.OpenKey(reg, sub)
+        except OSError:
+            continue
+
+        def _get(name, key=key):
+            try:
+                return winreg.QueryValueEx(key, name)[0]
+            except OSError:
+                return None
+
+        name = str(_get("DriverDesc") or "")
+        mid = str(_get("MatchingDeviceId") or "")
+        mem = _get("HardwareInformation.qwMemorySize")
+        did = re.search(r"VEN_1002&DEV_([0-9A-Fa-f]{4})", mid)
+        if not did:
+            continue
+        arch = _WIN_AMD_DID.get(int(did.group(1), 16))
+        if arch is None:
+            arch = next((a for rx, a in _WIN_AMD_NAME if rx.search(name)), None)
+        if arch is None:
+            continue
+        vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
+        if name in ("", f"AMD Radeon ({arch})") and arch in AMD_NAMES:
+            name = AMD_NAMES[arch]
+        found.append({"index": len(found), "name": name or AMD_NAMES.get(arch, arch), "vram_gb": vram,
+                      "arch": arch, "driver": "hip", "vendor": "amd"})
+    return found
+
+
+def _rocm_has_hipcc(root: Path) -> bool:
+    return any((root / "bin" / name).exists() for name in ("hipcc", "hipcc.exe", "hipcc.bat"))
+
+
+def _rocm_has_hipblas(root: Path) -> bool:
+    lib = root / "lib"
+    if not lib.is_dir():
+        return False
+    return any(lib.glob(pat) for pat in ("libhipblas.so*", "hipblas.lib", "libhipblas.dll.a"))
+
+
+def _rocm_compiler(root: Path) -> Path | None:
+    for rel in ("llvm/bin/clang++", "llvm/bin/clang++.exe", "lib/llvm/bin/clang++", "lib/llvm/bin/clang++.exe",
+                "lib/llvm/bin/amdclang++.exe", "bin/amdclang++.exe"):
+        p = root / rel
+        if p.exists():
+            return p
+    return None
+
+
+def _rocm_bitcode(root: Path) -> Path | None:
+    for rel in ("lib/llvm/amdgcn/bitcode", "amdgcn/bitcode", "lib/amdgcn/bitcode"):
+        p = root / rel
+        if (p / "oclc_isa_version_1100.bc").exists() or (p / "oclc_isa_version_1201.bc").exists():
+            return p
+    return None
+
+
+def _rocm_usable(root: Path, arch: str) -> bool:
+    bitcode = _rocm_bitcode(root)
+    return bool(root and root.is_dir() and _rocm_has_hipcc(root) and _rocm_has_hipblas(root)
+                and _rocm_compiler(root) and bitcode and (bitcode / f"oclc_isa_version_{arch[3:]}.bc").exists())
+
+
+def _find_rocm_sdk() -> str | None:
+    hit = shutil.which("rocm-sdk")
+    if hit:
+        return hit
+    names = ["rocm-sdk.exe", "rocm-sdk"] if WIN else ["rocm-sdk"]
+    cands = [Path(sys.executable).parent / name for name in names]
+    if WIN:
+        roaming = os.environ.get("APPDATA")
+        if roaming:
+            cands += sorted(Path(roaming).glob("Python/Python*/Scripts/rocm-sdk.exe"))
+    for c in cands:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def _rocm_sdk_root() -> Path | None:
+    sdk = _find_rocm_sdk()
+    if not sdk:
+        return None
+    try:
+        return Path(out([sdk, "path", "--root"]).strip())
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _windows_rocm_candidates() -> list[Path]:
+    """ROCM_PATH wins when it is set. Otherwise the ROCm 10 `rocm-sdk` tree comes before the older HIP SDK."""
+    cands = []
+    if os.environ.get("ROCM_PATH"):
+        cands.append(Path(os.environ["ROCM_PATH"]))
+    sdk = _rocm_sdk_root()
+    if sdk:
+        cands.append(sdk)
+    if os.environ.get("HIP_PATH"):
+        cands.append(Path(os.environ["HIP_PATH"]))
+    program = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "AMD" / "ROCm"
+    if program.is_dir():
+        cands += sorted((p for p in program.iterdir() if p.is_dir()), reverse=True)
+        cands.append(program)
+    return cands
+
+
+def _rocm_lib_dirs(root: Path, prefer: list[Path] | None = None) -> list[str]:
+    dirs = []
+    for rel in ("bin", "lib", "lib/llvm/bin", "llvm/bin"):
+        p = root / rel
+        if p.is_dir():
+            dirs.append(str(p))
+    # The wheels' per-GPU-family library folders come first: one of them holds the hipBLASLt with this
+    # card's kernels, and a family that has none would fail at kernel launch.
+    for d in (prefer or []):
+        if (d / "lib").is_dir() and str(d / "lib") not in dirs:
+            dirs.insert(0, str(d / "lib"))
+    for sp in {Path(p) for p in sys.path if p.endswith("site-packages")}:
+        devel = sp / "_rocm_sdk_devel"
+        for rel in ("bin", "lib"):
+            if (devel / rel).is_dir() and str(devel / rel) not in dirs:
+                dirs.append(str(devel / rel))
+    return list(dict.fromkeys(dirs))
+
+
+def rocm_root(arch: str = "gfx1100"):
+    """ROCm for compiling and running the HIP engine: (root, library folders).
+    Windows prefers an installed ROCm 10 SDK or HIP SDK that has this GPU's bitcode.
+    Linux prefers /opt/rocm (or ROCM_PATH), else TheRock wheels pinned to ROCM_VERSION."""
+    if WIN:
+        for root in _windows_rocm_candidates():
+            if _rocm_usable(root, arch):
+                ok(f"ROCm: {root}")
+                return root, _rocm_lib_dirs(root)
+        stamp = Path(sys.prefix) / ".strata-rocm.json"
+        want = {"index": ROCM_INDEX_WIN, "arch": arch, "version": os.environ.get("STRATA_ROCM_VERSION", "")}
+        if not stamp.exists() or json.loads(stamp.read_text()).get("arch") != arch or \
+                json.loads(stamp.read_text()).get("index") != ROCM_INDEX_WIN:
+            spec = f"rocm[libraries,devel,device-{arch}]"
+            if want["version"]:
+                spec += f"=={want['version']}"
+            say(f"  Installing ROCm for {arch} into .venv (AMD's TheRock wheels) ...")
+            run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--index-url",
+                 ROCM_INDEX_WIN, spec])
+            sdk = Path(sys.executable).parent / "rocm-sdk.exe"
+            if sdk.exists():
+                run([str(sdk), "init"])
+            stamp.write_text(json.dumps(want))
+        root = _rocm_sdk_root()
+        if root is None or not _rocm_usable(root, arch):
+            fail(f"ROCm for {arch} is not usable",
+                 "install the HIP SDK or `pip install rocm[libraries,devel,device-" + arch + "]` "
+                 "from https://nightly.repo.amd.com/rocm/whl-next/ and run this again")
+        ok(f"ROCm: {root}")
+        return root, _rocm_lib_dirs(root)
     sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
-    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
-        ver = rocm_version(sysroot)
-        if ver is None or ver >= ROCM_SYSTEM_MIN:
-            return sysroot, [str(sysroot / "lib")]
-        warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} or "
-             "newer: using AMD's wheels in .venv instead")
+    if _rocm_usable(sysroot, arch) or (_rocm_has_hipcc(sysroot) and _rocm_has_hipblas(sysroot) and arch == "gfx1100"):
+        return sysroot, [str(sysroot / "lib")]
     index = rocm_index(arch)
     stamp = Path(sys.prefix) / ".strata-rocm.json"
     have = json.loads(stamp.read_text()) if stamp.exists() else {}
@@ -799,19 +977,21 @@ def rocm_root(arch):
         stamp.write_text(json.dumps({"version": ROCM_VERSION, "index": index}))
     sdk = Path(sys.executable).parent / "rocm-sdk"
     root = Path(out([str(sdk), "path", "--root"]).strip())
-    if not (root / "llvm" / "bin" / "clang++").exists():
+    if _rocm_compiler(root) is None:
         fail(f"ROCm was installed but its compiler is missing ({root})",
              f"remove {stamp} and run this again; or install ROCm 7 system-wide")
-    # the card family's libraries only (gfx120X-all -> _rocm_sdk_libraries_gfx120X_all): another family's
-    # libhipblaslt.so first on the path would have no kernels for this card
+    # The card family's libraries only (gfx120X-all -> _rocm_sdk_libraries_gfx120X_all): another family's
+    # libhipblaslt first on the path would have no kernels for this card.
     family = "_rocm_sdk_libraries_" + index.rstrip("/").rsplit("/", 1)[-1].replace("-", "_")
-    dirs = [str(root / "lib")]
+    libs = []
     for sp in {Path(p) for p in sys.path if p.endswith("site-packages")}:
-        libs = sorted(sp.glob("_rocm_sdk_libraries_*"))
-        libs = [d for d in libs if d.name.lower() == family.lower()] or libs
-        dirs += [str(d / "lib") for d in libs if (d / "lib").is_dir()]
+        found = sorted(sp.glob("_rocm_sdk_libraries_*"))
+        match = [d for d in found if d.name.lower() == family.lower()]
+        if not match and arch == "gfx1200":
+            match = [d for d in found if "gfx120x" in d.name.lower()]     # gfx1200 rides with gfx120X
+        libs += [d for d in (match or found) if (d / "lib").is_dir()]
     ok(f"ROCm: {root}")
-    return root, list(dict.fromkeys(dirs))
+    return root, _rocm_lib_dirs(root, libs)
 
 
 def hipblaslt_version(lib_dirs):
@@ -853,31 +1033,59 @@ def build_engine_hip(gpu, llama) -> Path:
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text()) if stamp.exists() else {}
     src = source_hash(ENGINE_SOURCES)
-    if meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and             gpu["arch"] in meta.get("archs", []):
+    if meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src \
+            and gpu["arch"] in (meta.get("archs") or []):
         ok("engine already built for this PC")
         return eng
-    if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
+    if WIN:
+        if find_vcvars() is None or not shutil.which("git"):
+            fail("Visual Studio Build Tools (C++), CMake and git are needed to compile the AMD engine",
+                 "install VS 2019 or 2022 Build Tools with the C++ workload, and Git for Windows")
+    elif not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
         fail("a C++ compiler and git are needed to compile the AMD engine",
              "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
     root, dirs = rocm_root(gpu["arch"])
-    libs = [str(Path(d).parent) for d in dirs[1:]]
-    bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
-                   root / "amdgcn" / "bitcode")
+    compiler = _rocm_compiler(root)
+    bitcode = _rocm_bitcode(root)
+    if compiler is None or bitcode is None:
+        fail(f"ROCm at {root} has no HIP compiler or device bitcode for {gpu['arch']}")
+    prefix = [root]
+    for extra in (root / "lib" / "cmake",):
+        if extra.is_dir():
+            prefix.append(extra)
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
                        "HIP_PATH": str(root)})
-    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
-    os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(root / "llvm" / "bin"), os.environ.get("PATH", "")])
+    if not WIN:
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+    os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(compiler.parent), *dirs,
+                                          os.environ.get("PATH", "")])
     say("  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
         if meta.get("backend") == "hip" and (eng / EXE).exists() and gpu["arch"] in meta.get("archs", [])
         else "  Compiling the Strata engine for your AMD GPU (10-20 minutes, once) ...")
-    cmake_build(ROOT, ROOT / "build-hip", "strata",
-                ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
-                 "-DSTRATA_PREFILL_MMQ=ON", f"-DCMAKE_HIP_ARCHITECTURES={gpu['arch']}",
-                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
-                 "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
-                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
-                 f"-DSTRATA_GGML_DIR={llama}"], None, "")
-    shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
+    hip_flags = f"--rocm-path={root.as_posix()} --rocm-device-lib-path={bitcode.as_posix()}"
+    # CMake parses backslashes in these cache values as escapes (\U in \Users).
+    defs = ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
+            "-DSTRATA_PREFILL_MMQ=ON", f"-DCMAKE_HIP_ARCHITECTURES={gpu['arch']}",
+            f"-DCMAKE_HIP_COMPILER={compiler.as_posix()}",
+            f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root.as_posix()}",
+            "-DCMAKE_PREFIX_PATH=" + ";".join(p.as_posix() for p in prefix),
+            f"-DCMAKE_HIP_FLAGS={hip_flags}",
+            f"-DSTRATA_GGML_DIR={Path(llama).as_posix()}"]
+    if WIN:
+        # CMake refuses to mix cl.exe for C/C++ with Clang for HIP. ROCm's clang++
+        # already targets x86_64-pc-windows-msvc, so it compiles the host code too.
+        host_cc = compiler.with_name("clang.exe")
+        defs += [f"-DCMAKE_C_COMPILER={host_cc.as_posix()}", f"-DCMAKE_CXX_COMPILER={compiler.as_posix()}"]
+    cmake_build(ROOT, ROOT / "build-hip", "strata", defs, find_vcvars() if WIN else None,
+                "build-hip.bat" if WIN else "")
+    built = ROOT / "build-hip" / EXE
+    if not built.exists():
+        # Ninja multi-config and some Windows generators put the exe next to a config folder.
+        hits = list((ROOT / "build-hip").rglob(EXE))
+        if not hits:
+            fail("the HIP build finished without producing " + EXE)
+        built = hits[0]
+    shutil.copy2(built, eng / EXE)
     stamp.write_text(json.dumps({"source": "local-hip", "backend": "hip", "version": source_version(),
                                  "archs": [gpu["arch"]], "vision": "none", "lib_dirs": dirs, "src": src}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
@@ -1767,8 +1975,8 @@ def main() -> int:
                          "this mode the experts the GPU does not hold are copied into RAM once when they fit (resident), "
                          "else read through the OS file cache (mmap); resident / mmap force one of the two")
     ap.add_argument("--backend", choices=["cuda", "hip"],
-                    help="cuda = NVIDIA (default), hip = AMD RX 7900 XT/XTX or RX 9070 / AI PRO R9700 on Linux (experimental; chosen by itself "
-                         "when the PC has no NVIDIA card Strata can use)")
+                    help="cuda = NVIDIA (default), hip = AMD RX 7900 / 9060 / 9070 on Linux or Windows "
+                         "(experimental; chosen by itself when the PC has no NVIDIA card Strata can use)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.gpu is not None:                              # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
@@ -1842,7 +2050,7 @@ def main() -> int:
     # ---- 1. the PC
     step(1, "checking your PC")
     found = gpus()
-    amd = [] if WIN else amd_gpus()
+    amd = amd_gpus()
     nv_ok = any(gpu_problem(g) is None for g in found)
     amd_ok = [g for g in amd if amd_problem(g) is None]
     hip = a.backend == "hip" or (a.backend is None and not nv_ok and bool(amd_ok))
@@ -1858,14 +2066,13 @@ def main() -> int:
         if a.check and not hip:
             say("  (the AMD card: ./setup.sh --backend hip)")
     if hip:                                            # AMD (experimental): one card, compiled here
-        if WIN:
-            fail("Strata's AMD backend runs on Linux only", "use an NVIDIA RTX 20 series or newer card on Windows")
-        say("  Your AMD GPUs:" if amd else "  No AMD GPU found (the amdgpu driver's KFD topology is empty).")
+        say("  Your AMD GPUs:" if amd else "  No AMD GPU found.")
         for g in amd:
             say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.0f} GB VRAM - " + (amd_problem(g) or "can be used"))
         usable = [g for g in amd if amd_problem(g) is None]
         if not usable:
-            fail("no AMD GPU Strata can use", f"the AMD backend runs on {AMD_CARDS} on Linux")
+            fail("no AMD GPU Strata can use",
+                 f"the AMD backend runs on {AMD_CARDS}")
         if a.gpus:
             fail("several GPUs sharing one model: NVIDIA only for now", "use one AMD card (--gpu N)")
         if a.gpu is not None:
@@ -1882,7 +2089,7 @@ def main() -> int:
         if not found:
             fail("no NVIDIA GPU found (nvidia-smi did not answer)",
                  "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC"
-                 + ("; an AMD RX 7900 XT/XTX or RX 9070 / AI PRO R9700: --backend hip" if amd else ""))
+                 + (f"; an AMD RX 7900 / 9060 / 9070: --backend hip" if amd else ""))
         if len(found) > 1 or gpu_problem(found[0]) is not None:
             gpu_table(found)
         sel = choose_gpus(a, found)                    # asked when two or more cards can share the model

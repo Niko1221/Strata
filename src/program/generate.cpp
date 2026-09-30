@@ -40,6 +40,7 @@
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
+#include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
@@ -528,18 +529,26 @@ void usage() {
                  "                       does not fit.  Same answers as --mmap-experts for the same placement.\n");
 }
 
-/// All shards of a split GGUF, from shard 1's path ("...-00001-of-00002.gguf"); just the path when it is not split.
+/// All shards of a split GGUF ("...-0000N-of-0000M.gguf"), from whichever shard path was given.
+/// A path that is not a numbered split is returned as itself.
 std::vector<std::string> model_shards(const std::string& first) {
-    const std::string tag = "-00001-of-";
-    const size_t at = first.rfind(tag);
-    if (at == std::string::npos || first.size() < at + tag.size() + 10) return {first};
-    const int total = std::atoi(first.substr(at + tag.size(), 5).c_str());
+    const size_t of = first.rfind("-of-");
+    if (of == std::string::npos || of < 6 || first.size() < of + 4 + 5 + 5) return {first};
+    const size_t num_at = of - 5;
+    if (first[num_at - 1] != '-') return {first};
+    for (size_t i = 0; i < 5; ++i) {
+        const char c = first[num_at + i];
+        const char t = first[of + 4 + i];
+        if (c < '0' || c > '9' || t < '0' || t > '9') return {first};
+    }
+    const int total = std::atoi(first.substr(of + 4, 5).c_str());
+    if (total < 1 || total > 99) return {first};
     std::vector<std::string> out;
-    for (int i = 1; i <= total && i <= 99; ++i) {
+    for (int i = 1; i <= total; ++i) {
         char num[8];
         std::snprintf(num, sizeof num, "%05d", i);
         std::string p = first;
-        p.replace(at + 1, 5, num);
+        p.replace(num_at, 5, num);
         if (std::ifstream(p, std::ios::binary)) out.push_back(p);
     }
     return out.empty() ? std::vector<std::string>{first} : out;
@@ -1829,6 +1838,7 @@ int main(int argc, char** argv) {
     std::vector<float> ple_emb_host((size_t) strata::kernels::NG_N_EMBD);
     float* ple_emb_dev = nullptr;
     float* ple_scratch = nullptr;
+    uint16_t* ple_conv_f16 = nullptr;
     if (!o.ple_gguf.empty()) {
         strata::kernels::PleIoOptions pio;
         pio.mode = o.ple_io == "mmap" || o.ple_io == "ram" ? strata::kernels::PleIo::Mmap : strata::kernels::PleIo::Direct;
@@ -1878,7 +1888,34 @@ int main(int argc, char** argv) {
         ss.ple.w.norm_key = (const float*) wnk->data;
         ss.ple.w.norm_query = (const float*) wnq->data;
         ss.ple.w.norm_conv = (const float*) wnc->data;
-        ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+        // iq_pack keeps a true F32 ple_conv1d (kind 2, 4 bytes per tap). Both conv kernels
+        // read FP16 in ggml order k + 4*c. An F16 or F16-in-F32 pack is already 2 bytes here.
+        if (wc->kind == strata::core::WeightKind::F32) {
+            const uint64_t n = (uint64_t) wc->ne0 * (uint64_t) (wc->ne1 > 0 ? wc->ne1 : 1);
+            if (wc->data == nullptr || n == 0 || wc->bytes != n * sizeof(float)) {
+                std::fprintf(stderr, "strata generate: ple_conv1d is F32 but its span is not %llu floats\n",
+                             (unsigned long long) n);
+                return 1;
+            }
+            std::vector<float> host((size_t) n);
+            std::vector<uint16_t> half((size_t) n);
+            if (cudaMemcpy(host.data(), wc->data, (size_t) wc->bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: ple_conv1d F32 readback failed\n");
+                return 1;
+            }
+            for (uint64_t i = 0; i < n; ++i) half[(size_t) i] = strata::kernels::f16_from_f32(host[(size_t) i]);
+            if (cudaMalloc((void**) &ple_conv_f16, (size_t) n * sizeof(uint16_t)) != cudaSuccess ||
+                cudaMemcpy(ple_conv_f16, half.data(), (size_t) n * sizeof(uint16_t), cudaMemcpyHostToDevice) !=
+                    cudaSuccess) {
+                std::fprintf(stderr, "strata generate: ple_conv1d F16 upload failed\n");
+                return 1;
+            }
+            ss.ple.w.conv1d_f16 = ple_conv_f16;
+            std::fprintf(stderr, "strata generate: ple_conv1d converted F32 to F16 (%llu values)\n",
+                         (unsigned long long) n);
+        } else {
+            ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+        }
         ss.ple.consts = strata::kernels::ple_artifact_consts();
         if (o.ple_delay_us > 0) ple_table.set_injected_delay_us(o.ple_delay_us);
         ss.ple.table = &ple_table;

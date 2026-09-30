@@ -317,14 +317,17 @@ def main() -> int:
                  % (n_expert, offset, src.name))
         for l, gt, dt, off, blob, ts in layout:
             ws = [model.where[t.name] for t in ts]
-            if len({w[3] for w in ws}) != 1:
-                print("layer %d: its gate/up/down tensors are in different shards" % l)
-                fo.close()
-                tmp.unlink()
-                return 1
-            gg, shard = ws[0][0], ws[0][3]
-            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
-            fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
+            names = [w[3].name for w in ws]
+            line = "%d %d %d %d %d %d %d %d" % (
+                l, gt, dt, off, blob, *[w[0].data_start + t.offset for w, t in zip(ws, ts)])
+            if len(set(names)) == 1:
+                if names[0] != src.name:
+                    line += " " + names[0]
+            else:
+                line += " " + " ".join(names)
+            fo.write(line + "\n")
+    # The write is only trusted once it is complete: a torn native_experts.txt from an interrupted
+    # run would otherwise be read back as a finished pack.
     tmp.replace(out / "native_experts.txt")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:
