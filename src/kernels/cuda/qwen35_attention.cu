@@ -81,7 +81,7 @@ __global__ void value_kernel(const float * scores, const uint16_t * cache_v,
     __shared__ float smem_sum;
 
     if (d == 0) {
-        float mx = -CUDART_INF_F;
+        float mx = -INFINITY;
         for (int64_t t = 0; t < n_kv; ++t)
             mx = fmaxf(mx, scores[h * max_context + t]);
         float sum = 0.0f;

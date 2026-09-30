@@ -642,8 +642,11 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
                                   cudaMemcpyDeviceToDevice, I.stream);
                 rms_norm_weighted(I.qcur, L.q_norm, H, D, eps, s);
                 rms_norm_weighted(I.kcur, L.k_norm, HK, D, eps, s);
-                native_rope_apply(I.qcur, I.qcur, H, D, cfg_.n_rot, cfg_.rope_base, I.pos_dev, s);
-                native_rope_apply(I.kcur, I.kcur, HK, D, cfg_.n_rot, cfg_.rope_base, I.pos_dev, s);
+                // The dense path has no CLI rope knobs: the model's freq base is the whole configuration.
+                RopeScaling rs;
+                rs.freq_base = cfg_.rope_base;
+                native_rope_apply(I.qcur, I.qcur, H, D, cfg_.n_rot, rs, I.pos_dev, s);
+                native_rope_apply(I.kcur, I.kcur, HK, D, cfg_.n_rot, rs, I.pos_dev, s);
                 dense_kv_append(L.kc, L.vc, I.kcur, I.vcur, (int) pos_, HK, D, (int) max_context_, s);
                 dense_attn_decode(I.qcur, L.kc, L.vc, I.attn, I.attn_scratch, H, HK, D, (int) pos_ + 1,
                                   (int) max_context_, 1.0f / std::sqrt((float) D), s);
