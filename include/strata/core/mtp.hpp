@@ -55,6 +55,10 @@ public:
     void kv_restore(int64_t upto);
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
+    /// The VRAM `bind` will add, for a head of `n_vocab` rows of `head_row_bytes`: the draft logits and, with a token
+    /// subset (rt/draft_vocab.bin), its rows of the head (53 MiB for 40,525 tokens, 138 for 106,299).  A layer split
+    /// leaves it free on the last card when it sizes that card's expert cache.  Call after `load`.
+    uint64_t bind_bytes(int64_t n_vocab, uint64_t head_row_bytes) const;
 
     /// Prompt cells [cell0, cell0 + n): residual rows `R_rows` (device, hc*n_embd each) and `next_tokens` (host,
     /// the token at position cell+1).  Runs in batches of up to max_t rows.

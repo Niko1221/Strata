@@ -1786,7 +1786,7 @@ int main(int argc, char** argv) {
         // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
         // Unregistered layers remain in the resident arena and use the CPU expert path.
         // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
-        // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail.  Linux pins all
+        // allocation - measured on an RTX 5080 + RTX 3090: cudaMemGetInfo and the next cudaMalloc fail.  Linux pins all
         // of it: capped there, a split's misses past the first 8 GiB of layers lost their PCIe share and its prompts
         // staged most experts through host copies.)
 #ifdef _WIN32
@@ -1841,116 +1841,74 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
-    // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
-    //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
-    //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
+    // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window
+    // (layer_split::Planner, fitted on an RTX 5080 + RTX 3090, bench/results/2026-09-29-layer-split):
+    //   - every layer costs its GPU a time inversely proportional to SMs x clock;
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
     //     in prompts (fitted: the sweep's best K, 26-28, is where one more layer on the faster card stops paying
     //     for the ~0.1% of the mass it pushes out of its cache);
+    //   - every later GPU adds a hand-off per window;
     //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
     //     reserve and, on a later GPU, what it still allocates once the cache is in) is used; the prompt path
     //     borrows the top slots of every cache (layer_split.hpp), so only --no-prefill-borrow reserves its buffers;
-    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
+    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the Coder's sweep: K=24/26/28 predicted
     //     99.53/99.34/99.15%, measured 99.5/99.4/99.0%).
     // Up to 3 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
-    // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher).
+    // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher), STRATA_SPLIT_HANDOFF_MS the hand-off and
+    // STRATA_SPLIT_MASS_EXP the routing curve (a model whose routing is spread wider: lower).
     const int64_t split_pf_mib = o.prefill_chunk > 0 && o.no_prefill_borrow ? 160 + (o.prefill_chunk * 680) / 1024 : 0;
-    // a later GPU, once its cache is in, beyond what CUDA0 also allocates out of its reserve: (the last) the drafter's
-    // head over the vocabulary, 53 MiB with the MTP drafter; its weights are already loaded when this is read.  (It
-    // was 1 GiB: on 2 x 2080 Ti, 1.3 GiB of the second card stayed free for the whole session; at 256 MiB it ended
-    // 310 MiB above the reserve, CUDA0 115.)
-    constexpr int64_t kLaterStageMiB = 128;
-    auto stage_room = [&](int dev, bool later) -> int64_t {
+    // A later GPU, once its cache is in, allocates beyond what CUDA0 also takes out of its reserve: on the last one,
+    // what the drafter's bind adds (its logits and its head's token subset, from the drafter's own files: 53 MiB for
+    // 40,525 tokens, 138 for 106,299), and 64 MiB of slack on each.  The drafter's weights are already loaded when this
+    // is read.
+    const strata::core::WeightRef* wo_split = wt.find("output.weight");
+    const int64_t drafter_bind = multi_gpu && !o.mtp.empty() && wo_split != nullptr
+                                     ? (int64_t) mtp.bind_bytes(wo_split->ne1, last_st->head.row_bytes())
+                                     : 0;
+    auto stage_extra = [&](const GpuStage* st) -> int64_t { return (64ll << 20) + (st == last_st ? drafter_bind : 0); };
+    auto stage_room = [&](int dev, int64_t extra) -> int64_t {
         const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
         if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != cudaSuccess)
             std::fprintf(stderr, "strata generate: layer split: CUDA%d free memory: %s\n", dev < 0 ? 0 : dev,
                          cudaGetErrorString(e));
-        const int64_t reserve = ((int64_t) o.vram_reserve_mib + split_pf_mib + (later ? kLaterStageMiB : 0)) << 20;
+        const int64_t reserve = (((int64_t) o.vram_reserve_mib + split_pf_mib) << 20) + extra;
         return std::max<int64_t>((int64_t) fb - reserve, 0);
     };
     if (multi_gpu && split_auto) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int ns = (int) stages.size() + 1;
-        std::vector<int64_t> cap((size_t) ns), used((size_t) ns);
-        std::vector<double> layer_ms((size_t) ns);
+        std::vector<layer_split::Card> cards((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
             cudaGetLastError();
-            const double speed = std::max(1.0, (double) sms * (double) khz / 1e6);   // SMs x GHz
-            layer_ms[(size_t) i] = 0.33 * (84.0 * 2.617) / speed;
+            cards[(size_t) i] = {stage_room(i == 0 ? -1 : dev, i == 0 ? 0 : stage_extra(stages[(size_t) i - 1].get())),
+                                 layer_split::layer_ms_estimate(sms, khz / 1e6)};
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d %d SMs at %.2f GHz -> %.2f ms per layer, "
-                                 "%.2f GiB for experts\n", dev, sms, khz / 1e6, layer_ms[(size_t) i],
-                         (double) cap[(size_t) i] / 1073741824.0);
+                                 "%.2f GiB for experts\n", dev, sms, khz / 1e6, cards[(size_t) i].layer_ms,
+                         (double) cards[(size_t) i].cap_bytes / 1073741824.0);
         }
-        const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        std::vector<double> mass(profile.size());
-        double total_mass = 0;
-        for (size_t r = 0; r < profile.size(); ++r) total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
-        auto cost = [&](int64_t l) -> int64_t {
-            return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
-        };
-        // the predicted window time (ms) of a placement, and the routed mass its caches hold
-        auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
-            std::fill(used.begin(), used.end(), 0);
-            held_mass = 0;
-            held = 0;
-            std::vector<bool> full((size_t) ns, false);
-            for (size_t r = 0; r < profile.size(); ++r) {
-                const int64_t l = profile[r].first;
-                int st = 0;
-                while (st + 1 < ns && l >= at[(size_t) st]) ++st;
-                if (full[(size_t) st]) continue;
-                if (used[(size_t) st] + cost(l) > cap[(size_t) st]) { full[(size_t) st] = true; continue; }   // as the fill
-                used[(size_t) st] += cost(l);
-                held_mass += mass[r];
-                ++held;
-            }
-            held_mass /= std::max(total_mass, 1e-9);
-            double ms = miss_ms * (1.0 - held_mass);
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1], le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                ms += (double) (le - lb) * layer_ms[(size_t) i];
-            }
-            return ms;
-        };
-        std::vector<int64_t> best, at((size_t) ns - 1);
-        double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0;
-        auto consider = [&]() {
-            double hm = 0;
-            int64_t held = 0;
-            const double ms = predict(at, hm, held);
-            if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
-        };
-        const int64_t L = g.n_layers;
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-        } else {
-            double total = 0;
-            for (const double c : layer_ms) total += 1.0 / c;
-            double acc = 0;
-            for (int i = 0; i + 1 < ns; ++i) {
-                acc += 1.0 / layer_ms[(size_t) i];
-                at[(size_t) i] = std::clamp<int64_t>((int64_t) std::llround(acc / total * (double) L),
-                                                    i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
-            }
-            consider();
-        }
-        split_at = best;
+        auto env_or = [](const char* name, double v) { const char* s = std::getenv(name); return s ? std::atof(s) : v; };
+        layer_split::Costs costs;
+        costs.miss_ms = env_or("STRATA_SPLIT_MISS_MS", costs.miss_ms);
+        // a rough figure: the split's host staging and the next card's commit took ~1.1 ms a window on 2 x 2080 Ti
+        // (gen3 x16); an RTX 5080 + RTX 3090 pair's one-layer third card took 3.1 ms, of which ~0.7 was its layer
+        costs.handoff_ms = env_or("STRATA_SPLIT_HANDOFF_MS", 1.0);
+        costs.mass_exp = env_or("STRATA_SPLIT_MASS_EXP", costs.mass_exp);
+        std::vector<int64_t> slot_bytes((size_t) g.n_layers);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            slot_bytes[(size_t) l] = native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
+        const layer_split::Planner planner(g.n_layers, profile, std::move(slot_bytes), costs);
+        const layer_split::Placement best = planner.best(cards);
+        split_at = best.at;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
         std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
-                     (long long) best_held, profile.size(), 100.0 * best_mass);
+                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best.ms,
+                     (long long) best.held, profile.size(), 100.0 * best.held_mass);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
@@ -2205,7 +2163,7 @@ int main(int argc, char** argv) {
     for (auto& stp : stages) {
         GpuStage& st = *stp;
         const auto& lay = strata::kernels::cpu::expert_layout();
-        const int64_t room = stage_room(st.dev, true);
+        const int64_t room = stage_room(st.dev, stage_extra(&st));
         const strata::core::OnDevice on(st.dev);
         std::vector<int64_t> sized;
         int64_t used = 0;

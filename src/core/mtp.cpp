@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -326,6 +327,14 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         }
     }
     return true;
+}
+
+uint64_t MtpDrafter::bind_bytes(int64_t n_vocab, uint64_t head_row_bytes) const {
+    uint64_t b = head_logits_ ? 0 : (uint64_t) max_t_ * (uint64_t) n_vocab * sizeof(float);
+    std::error_code ec;   // the subset as bind reads it: a whole number of int32 ids
+    const uintmax_t n = std::filesystem::file_size(rt_dir_ + "/draft_vocab.bin", ec);
+    if (dhead_ == nullptr && !ec && n >= 4 && n % 4 == 0) b += (uint64_t) (n / 4) * head_row_bytes + (uint64_t) n;
+    return b;
 }
 
 // The layer for T rows.  full = false stops after the K/V append (the prompt only needs the cache).

@@ -57,13 +57,14 @@ The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
 
-**auto** tries every placement (all of them for two or three cards; proportional to the free VRAM beyond that) and
-keeps the one whose caches would hold the most of the expert profile, hottest pairs weighted most; ties go to the
-placement that leaves the fullest card the most room. The startup log prints the choice:
+**auto** tries every placement (all of them for two or three cards; in proportion to speed beyond that) and keeps the
+one with the shortest predicted decode window: each card's layers at its per-layer time (from SMs x clock), plus the
+routed mass no cache would hold (each card's cache takes its own layers' profiled pairs, hottest first), plus one
+hand-off per later card (`include/strata/program/layer_split.hpp`). The startup log prints the choice:
 
 ```
-strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)
-strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window
+strata generate: layer split auto: K=25 - predicted 39.5 ms per decode window; the caches hold 8089 of 24576 profiled pairs (~96.7% of the routed mass)
+strata serve: layer split: layers 0-24 (CUDA0), 25-47 (CUDA1), one hand-off per window
 ```
 
 ## What each card holds
