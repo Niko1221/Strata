@@ -1250,6 +1250,21 @@ class KvPump(unittest.TestCase):
         self.assertEqual(queued(eng), [])                           # never forwarded as a token line
         self.assertEqual(cache.summary()["promotable"]["entries"], 104)   # a line before any request still lands
 
+    def test_a_startup_line_read_before_the_cache_exists_is_replayed_at_attach(self):
+        """main() attaches the KvCache AFTER the engine is running, so the pump can consume `KV start=1` with no
+        cache to feed - `attach_cache()` must replay what the pump already saw.  Without the replay a tier-on
+        server reports `enabled: true` with every store fact null until some request line happens to arrive;
+        found on a live server, and only there - every test above attaches the cache by hand, BEFORE the line."""
+        eng = scripted_engine([KV_START_LINE])                   # no cache exists yet: the pump reads it alone
+        self.assertIsNone(eng.cache)
+        self.assertEqual(eng.store_kv["entries"], 104)           # it kept what it saw
+        cache = KvCache(["--kv-nvme", "/tmp/unused-store", "--kv-nvme-max", "100"])
+        self.assertIsNone(cache.summary()["promotable"]["entries"])          # the store state is not there yet
+        eng.attach_cache(cache)
+        self.assertEqual(cache.summary()["promotable"]["entries"], 104)      # replayed at attach
+        self.assertEqual(cache.summary()["promotable"]["delta_bytes"], 1181116416)
+        eng.attach_cache(None)                                   # and detaching, or never attaching, is fine
+
     def test_a_request_line_while_in_request_becomes_this_request_s_event(self):
         eng = scripted_engine(["T 11", KV_REQUEST_LINE, "T 12", DONE_LINE], in_request=True)
         self.assertEqual((eng.last_kv["src"], eng.last_kv["resume"]), ("delta", 4107))
