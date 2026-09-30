@@ -1,5 +1,6 @@
 // src/kernels/cpu/q2_avx2.cpp - plan v0.3 P6: the Q2_0 expert rows and the activation quantizer for CPUs
 // without AVX-512 (Intel Core 12th-14th gen and Core Ultra, AMD Zen 2/3).
+// b256 experiment: rows of 1-2 tokens use a two-block 256-bit unpack (bit-exact, faster).
 //
 // Compiled with AVX2 only, so nothing here can fault on those CPUs.  The arithmetic is the AVX-512 kernels':
 // codes 0..3 against the int8 activation per 32-value chunk, times the weight scale and the chunk scale, minus
@@ -61,11 +62,96 @@ inline void row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, flo
     }
 }
 
+
+// Two-block 256-bit unpack ("b256"): lane 0 = block b's 16 code bytes, lane 1 = block b+1's.
+// All shifts/ands are per-128-lane, i.e. numerically the SSE ladder run twice; the per-lane halves are
+// re-homed so both blocks' 32-value vectors keep the original byte order -> same madd lane mapping ->
+// bit-identical accumulation (validated in ML-Experiments/bench5/q2_cpu_bench.cpp).
+inline void unpack64x2(const uint8_t* codes, __m256i& lo0, __m256i& hi0, __m256i& lo1, __m256i& hi1) {
+    const __m256i b = _mm256_set_m128i(_mm_loadu_si128((const __m128i*) (codes + 18)),
+                                       _mm_loadu_si128((const __m128i*) codes));   // blocks are 18 B apart
+    const __m256i m3 = _mm256_set1_epi8(3);
+    const __m256i c0 = _mm256_and_si256(b, m3);
+    const __m256i c1 = _mm256_and_si256(_mm256_srli_epi16(b, 2), m3);
+    const __m256i c2 = _mm256_and_si256(_mm256_srli_epi16(b, 4), m3);
+    const __m256i c3 = _mm256_and_si256(_mm256_srli_epi16(b, 6), m3);
+    const __m256i a0 = _mm256_unpacklo_epi8(c0, c1), a1 = _mm256_unpacklo_epi8(c2, c3);
+    const __m256i b0 = _mm256_unpackhi_epi8(c0, c1), b1 = _mm256_unpackhi_epi8(c2, c3);
+    const __m256i A = _mm256_unpacklo_epi16(a0, a1), Ai = _mm256_unpackhi_epi16(a0, a1);
+    const __m256i B = _mm256_unpacklo_epi16(b0, b1), Bi = _mm256_unpackhi_epi16(b0, b1);
+    lo0 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_castsi256_si128(A)),
+                                  _mm256_extracti128_si256(Ai, 0), 1);
+    hi0 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_castsi256_si128(B)),
+                                  _mm256_extracti128_si256(Bi, 0), 1);
+    lo1 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_extracti128_si256(A, 1)),
+                                  _mm256_extracti128_si256(Ai, 1), 1);
+    hi1 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm256_extracti128_si256(B, 1)),
+                                  _mm256_extracti128_si256(Bi, 1), 1);
+}
+
+// "b256" row dot: two weight blocks per pass (the fp math and summation order are unchanged; NT<=2 only,
+// where the two-block registers fit - at NT>=4 the extra live unpack vectors spill and it goes slower).
+template <int NT>
+inline void row_multi_b256(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
+    __m256 acc[NT];
+    float corr[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = _mm256_setzero_ps(); corr[t] = 0.f; }
+    const __m256i ones = _mm256_set1_epi16(1);
+    int b = 0;
+    for (; b + 2 <= nblocks; b += 2) {
+        const uint8_t* blk = row + (size_t) b * 18;
+        const float d0 = h2f(blk), d1 = h2f(blk + 18);
+        __m256i lo0, hi0, lo1, hi1;
+        unpack64x2(blk + 2, lo0, hi0, lo1, hi1);
+        for (int t = 0; t < NT; ++t) {
+            const int8_t* q = a[t]->q + b * 64;
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d0 * a[t]->scale[2 * b]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         lo0, _mm256_loadu_si256((const __m256i*) q)), ones)), acc[t]);
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d0 * a[t]->scale[2 * b + 1]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         hi0, _mm256_loadu_si256((const __m256i*) (q + 32))), ones)), acc[t]);
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d1 * a[t]->scale[2 * b + 2]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         lo1, _mm256_loadu_si256((const __m256i*) (q + 64))), ones)), acc[t]);
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d1 * a[t]->scale[2 * b + 3]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         hi1, _mm256_loadu_si256((const __m256i*) (q + 96))), ones)), acc[t]);
+            corr[t] += d0 * (a[t]->hx[2 * b] + a[t]->hx[2 * b + 1]);
+            corr[t] += d1 * (a[t]->hx[2 * b + 2] + a[t]->hx[2 * b + 3]);
+        }
+    }
+    for (; b < nblocks; ++b) {
+        const uint8_t* blk = row + (size_t) b * 18;
+        const float d = h2f(blk);
+        __m256i lo, hi;
+        unpack64(blk + 2, lo, hi);
+        for (int t = 0; t < NT; ++t) {
+            const int8_t* q = a[t]->q + b * 64;
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d * a[t]->scale[2 * b]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         lo, _mm256_loadu_si256((const __m256i*) q)), ones)), acc[t]);
+            acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d * a[t]->scale[2 * b + 1]),
+                                     _mm256_cvtepi32_ps(_mm256_madd_epi16(_mm256_maddubs_epi16(
+                                         hi, _mm256_loadu_si256((const __m256i*) (q + 32))), ones)), acc[t]);
+            corr[t] += d * (a[t]->hx[2 * b] + a[t]->hx[2 * b + 1]);
+        }
+    }
+    for (int t = 0; t < NT; ++t) {
+        const __m128 h = _mm_add_ps(_mm256_castps256_ps128(acc[t]), _mm256_extractf128_ps(acc[t], 1));
+        const __m128 s = _mm_add_ps(h, _mm_movehl_ps(h, h));
+        res[t] = _mm_cvtss_f32(_mm_add_ss(s, _mm_movehdup_ps(s))) - corr[t];
+    }
+}
+
 template <int NT>
 void rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0, int r1) {
     float res[NT];
     for (int r = r0; r < r1; ++r) {
-        row_multi<NT>(w + (size_t) r * row_bytes, a, nblocks, res);
+        if (NT <= 2)
+            row_multi_b256<NT>(w + (size_t) r * row_bytes, a, nblocks, res);
+        else
+            row_multi<NT>(w + (size_t) r * row_bytes, a, nblocks, res);
         for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
