@@ -210,6 +210,39 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
     }
 }
 
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
+    : capacity(bytes), bounds_(bounds) {
+    if (bytes == 0 || bounds.size() < 2) return;
+    base = reserve(bytes, backing, note);
+    slice_bytes = 1;   // sliced: one registration per layer
+}
+
+void PinnedArena::register_slices(std::atomic<int>& ready) {
+    const int n = (int) bounds_.size() - 1;
+    int i = 0;
+    for (; base != nullptr && i < n; ++i) {
+        const uint64_t off = bounds_[(size_t) i], len = bounds_[(size_t) i + 1] - off;
+        if (cudaHostRegister((uint8_t*) base + off, (size_t) len, cudaHostRegisterPortable | cudaHostRegisterMapped) !=
+            cudaSuccess) {
+            (void) cudaGetLastError();
+            break;
+        }
+        slice_starts.push_back(off);
+        registered_bytes = off + len;
+        ++registered_slices;
+        ready.store(i + 1, std::memory_order_release);
+    }
+    note = "cudaHostRegister per layer, pipelined with the load: " + std::to_string(registered_slices) + " of " +
+           std::to_string(n) + " slices pinned; " + note;
+    if (i < n && base != nullptr) {   // the rest stays resident through the working-set lock, as in the sliced fallback
+        const strata::platform::LockResult lr =
+            strata::platform::lock_resident((uint8_t*) base + registered_bytes, capacity - registered_bytes);
+        locked_bytes = lr.locked_bytes;
+        note = lr.note + "; " + note;
+    }
+    ready.store(n, std::memory_order_release);
+}
+
 PinnedArena::~PinnedArena() {
     if (base) {
         if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
@@ -327,6 +360,73 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
     st.copy_seconds = (double) copy_ns_sum.load() / 1e9;
     st.layer_checksums = std::move(layer_hash);
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    return st;
+}
+
+LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready) {
+    LoadStats st;
+    st.ok = false;
+#ifdef _WIN32
+    constexpr uint64_t kAlign = 4096;
+    if (((uintptr_t) dst % kAlign) != 0 || chunk == 0 || chunk % kAlign != 0) return st;
+    struct Piece { uint64_t off, n; int layer; };
+    std::vector<Piece> pieces;
+    for (size_t L = 0; L < layer_off.size(); ++L) {
+        if (layer_off[L] % kAlign != 0 || layer_bytes[L] % kAlign != 0) return st;
+        for (uint64_t p = 0; p < layer_bytes[L]; p += chunk)
+            pieces.push_back({layer_off[L] + p, std::min<uint64_t>(chunk, layer_bytes[L] - p), (int) L});
+        st.bytes += layer_bytes[L];
+    }
+    st.layers = layer_off.size();
+    if (threads < 1) threads = 1;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::atomic<size_t> next{0};
+    std::mutex err_mu;
+    std::string err;
+    auto worker = [&]() {
+        HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            std::lock_guard<std::mutex> g(err_mu);
+            err = "cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+            return;
+        }
+        for (;;) {
+            const size_t i = next.fetch_add(1);
+            if (i >= pieces.size()) break;
+            if (ready != nullptr)      // the slice must be registered before its pages are touched
+                while (ready->load(std::memory_order_acquire) <= pieces[i].layer) std::this_thread::yield();
+            OVERLAPPED ov{};
+            ov.Offset = (DWORD) pieces[i].off;
+            ov.OffsetHigh = (DWORD) (pieces[i].off >> 32);
+            DWORD got = 0;
+            if (!ReadFile(h, dst + pieces[i].off, (DWORD) pieces[i].n, &got, &ov) || got != pieces[i].n) {
+                std::lock_guard<std::mutex> g(err_mu);
+                err = "short unbuffered read at offset " + std::to_string(pieces[i].off) + ": got " + std::to_string(got) +
+                      " of " + std::to_string(pieces[i].n) + " B (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+                next = pieces.size();
+                break;
+            }
+        }
+        CloseHandle(h);
+    };
+    std::vector<std::thread> pool;
+    for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+    worker();
+    for (auto& t : pool) t.join();
+    st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    st.read_seconds = st.seconds * threads;
+    if (!err.empty()) {
+        st.error = err;
+        st.seconds = -1.0;
+        return st;
+    }
+    st.ok = true;
+#else
+    (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk;
+#endif
     return st;
 }
 

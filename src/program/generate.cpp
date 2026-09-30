@@ -42,6 +42,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/prefill/gemm.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -1375,13 +1376,53 @@ int main(int argc, char** argv) {
                              "(multi-token for the i-quant gate/up rows)\n",
                      std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
     strata::core::NativeEmbed native_embed;
-    if (native_pack) {
-        if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
-            (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
-            std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
-                                 "and --prefill CHUNK\n", o.pack.c_str());
-            return 2;
+    if (native_pack && (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
+                        (o.prefill_chunk <= 0 && o.tokens.size() > 1))) {
+        std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
+                             "and --prefill CHUNK\n", o.pack.c_str());
+        return 2;
+    }
+    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
+    int64_t K = 10;
+    if (!o.native_preset.empty()) {
+        // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
+        // is the authority on its own MoE shape - everything else in the geometry is unchanged
+        try {
+            strata::GgufFile model_gguf(o.native_preset);
+            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
+            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
+                         o.native_preset.c_str(), e.what());
+            return 1;
         }
+    }
+    // The expert arena (~63 GiB, bound by the SSD: ~5 s) loads on its own thread while this one loads the dense
+    // weights, the PLE table, the MTP and the rest (~2 s); joined below, before anything reads it.
+    strata::core::ArenaExpertSource arena_src;
+    bool arena_ok = true;
+    std::string arena_err;
+    std::thread arena_thread;
+    struct ThreadJoiner {
+        std::thread& t;
+        ~ThreadJoiner() { if (t.joinable()) t.join(); }   // an early return must not leave it running
+    } arena_joiner{arena_thread};
+    if (!o.mmap_experts) {
+        arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
+        // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
+        // Unregistered layers remain in the resident arena and use the CPU expert path.
+        // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
+        // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail)
+        const uint64_t pin_limit = (o.expert_cache_remote[0] > 0 || multi_gpu) ? (8ull << 30) : 0;
+        int arena_dev = 0;
+        cudaGetDevice(&arena_dev);
+        strata::prefill::gemm_prewarm();
+        arena_thread = std::thread([&, pin_limit, arena_dev] {
+            cudaSetDevice(arena_dev);
+            arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, arena_err, pin_limit);
+        });
+    }
+    if (native_pack) {
         const strata::core::ModelGeometry g0;
         if (!native_embed.load(o.native_preset, g0.n_embd, 248320, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -1475,21 +1516,6 @@ int main(int argc, char** argv) {
         strata::kernels::mrope_table_set(d_mrope);
     }
     strata::kernels::ple_set_native_postops(o.native_ple_postops);
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
-    if (!o.native_preset.empty()) {
-        // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-        // is the authority on its own MoE shape - everything else in the geometry is unchanged
-        try {
-            strata::GgufFile model_gguf(o.native_preset);
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-            if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
-                         o.native_preset.c_str(), e.what());
-            return 1;
-        }
-    }
     // before session_init: every graph captured from here on has the vector's kernels where it applies
     std::string cvec_summary = "0";
     if (!o.cvec_files.empty()) {
@@ -1773,6 +1799,24 @@ int main(int argc, char** argv) {
                      remote_dev[r], free_gib);
     }
 
+    // (Loaded here, while the expert arena is still loading on its thread.)
+    // THE HEAD BEFORE THE CACHE.  The expert cache takes what is free minus the reserve, so everything allocated
+    // after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after it and ate most of
+    // the 700 MiB: 128K IQ3_S ended with 30 MiB free, the driver paged, and a request stalled for good at its first
+    // verify window.  Loaded first, the cache is sized around it.
+    const strata::core::WeightRef* wo = wt.find("output.weight");
+    if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
+    const int64_t n_vocab = wo->ne1;
+    strata::core::NativeHead native_head;
+    if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
+        if (!native_head.load(o.native_head_gguf, g.n_embd, n_vocab, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes\n",
+                     (unsigned long long) native_head.weight_bytes());
+    }
+
     // ---- the CPU expert pool
     //
     // R2.1: the experts are loaded into a RESIDENT ARENA by default.  The mmap path is kept behind
@@ -1794,7 +1838,6 @@ int main(int argc, char** argv) {
     // CUDA error left set by the failed `cudaHostRegister` and read later by `gr_read`'s launch check.  See the
     // note in `pinned.cu`.
     strata::core::FileExpertSource src;
-    strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
@@ -1814,14 +1857,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; the A/B arm of R2.1)\n");
         srcp = &src;
     } else {
-        arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
-        // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
-        // Unregistered layers remain in the resident arena and use the CPU expert path.
-        // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
-        // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail)
-        const uint64_t pin_limit = (o.expert_cache_remote[0] > 0 || multi_gpu) ? (8ull << 30) : 0;
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        arena_thread.join();   // started after the native pack checks, above
+        if (!arena_ok) {
+            std::fprintf(stderr, "strata generate: %s\n", arena_err.c_str());
             return 1;
         }
         std::fprintf(stderr, "strata generate: expert arena: %s\n", arena_src.note().c_str());
@@ -1994,22 +2032,6 @@ int main(int argc, char** argv) {
             stages[i]->lb = split_at[i];
             stages[i]->le = i + 1 < stages.size() ? split_at[i + 1] : g.n_layers;
         }
-    }
-    // THE HEAD BEFORE THE CACHE.  The expert cache takes what is free minus the reserve, so everything allocated
-    // after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after it and ate most of
-    // the 700 MiB: 128K IQ3_S ended with 30 MiB free, the driver paged, and a request stalled for good at its first
-    // verify window.  Loaded first, the cache is sized around it.
-    const strata::core::WeightRef* wo = wt.find("output.weight");
-    if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
-    const int64_t n_vocab = wo->ne1;
-    strata::core::NativeHead native_head;
-    if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
-        if (!native_head.load(o.native_head_gguf, g.n_embd, n_vocab, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes\n",
-                     (unsigned long long) native_head.weight_bytes());
     }
     std::vector<float> logits((size_t) n_vocab);
     float* d_logits = nullptr;

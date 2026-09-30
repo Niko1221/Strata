@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <sstream>
 #include <limits>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1103,13 +1104,22 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
 // Plan v0.3 P6: the arena from the model's shard 1.  Each layer's gate, up and down tensors hold the 512 experts
 // one after another; they are read in chunks and each expert's slice lands at its place in the blob
 // [gate rows | up rows | down rows] - the layout tools/iq_pack.py would have written to experts.bin.
+//
+// `unbuffered` (Windows): each chunk's 4 KiB-aligned window is read with FILE_FLAG_NO_BUFFERING into an aligned
+// buffer (#230: MSVC's std::ifstream reads in 4095-byte pieces, 0.02 GiB/s on a normal install).  `ready`: layer L
+// is written only once *ready > L (a PinnedArena registering its slices meanwhile: writing a slice while
+// cudaHostRegister runs on it corrupts it).
 LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads) {
+                            int threads, const std::atomic<int>* ready = nullptr, bool unbuffered = false) {
     LoadStats st;
     st.layers = (uint64_t) lay.n_layers;
     const auto t0 = std::chrono::steady_clock::now();
     std::atomic<int64_t> next{0};
     std::atomic<bool> bad{false};
+    auto wait_ready = [&](int64_t l) {
+        if (ready != nullptr)
+            while (ready->load(std::memory_order_acquire) <= l) std::this_thread::yield();
+    };
     // a layer's experts may sit in another shard of the model (native_experts.txt v3): a name beside `gguf`
     const size_t cut = gguf.find_last_of("/\\");
     const std::string dir = cut == std::string::npos ? std::string() : gguf.substr(0, cut + 1);
@@ -1117,6 +1127,96 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
         if (lay.gguf_file.empty() || lay.gguf_file[(size_t) l].empty()) return gguf;
         return dir + lay.gguf_file[(size_t) l];
     };
+#if defined(_WIN32)
+    uint64_t max_chunk = 0;
+    for (int64_t l = 0; l < lay.n_layers; ++l) {
+        const auto& fm = lay.fmt[(size_t) l];
+        max_chunk = std::max<uint64_t>(max_chunk, std::max<uint64_t>(fm.up_off, lay.bytes[(size_t) l] - fm.down_off) * 16);
+    }
+    std::mutex err_mu;
+    std::string err;
+    auto worker_unbuffered = [&]() {
+        constexpr uint64_t kSector = 4096;
+        const uint64_t cap = (max_chunk + 2 * kSector + kSector - 1) / kSector * kSector;
+        uint8_t* buf = (uint8_t*) VirtualAlloc(nullptr, (size_t) cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        HANDLE h = INVALID_HANDLE_VALUE;
+        std::string open_name;
+        auto fail = [&](const std::string& what) {
+            std::lock_guard<std::mutex> g(err_mu);
+            if (err.empty()) err = what;
+            bad = true;
+        };
+        if (buf == nullptr) fail("cannot allocate a read buffer");
+        for (;;) {
+            const int64_t l = next.fetch_add(1);
+            if (l >= lay.n_layers || bad) break;
+            const std::string name = file_of(l);
+            if (name != open_name) {
+                if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+                // UTF-8 -> UTF-16, as FileExpertSource::open does
+                const int wide = MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, nullptr, 0);
+                std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
+                if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, w.data(), wide);
+                h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+                if (h == INVALID_HANDLE_VALUE) {
+                    fail("cannot open " + name + " (error " + std::to_string((unsigned long long) GetLastError()) + ")");
+                    break;
+                }
+                open_name = name;
+            }
+            wait_ready(l);
+            const auto& fm = lay.fmt[(size_t) l];
+            const uint64_t blob = lay.bytes[(size_t) l];
+            const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
+            const uint64_t at[3] = {0, fm.up_off, fm.down_off};
+            for (int r = 0; r < 3 && !bad; ++r) {
+                const uint64_t src = lay.gguf_off[(size_t) (3 * l + r)];
+                const uint64_t total = per[r] * (uint64_t) lay.n_expert;
+                const uint64_t chunk = per[r] * 16;           // 16 experts per read
+                for (uint64_t done = 0; done < total; done += chunk) {
+                    const uint64_t n = std::min<uint64_t>(chunk, total - done);
+                    const uint64_t a0 = (src + done) / kSector * kSector;
+                    const uint64_t a1 = (src + done + n + kSector - 1) / kSector * kSector;
+                    OVERLAPPED ov{};
+                    ov.Offset = (DWORD) a0;
+                    ov.OffsetHigh = (DWORD) (a0 >> 32);
+                    DWORD got = 0;
+                    // the window may run past the end of the file: only the tensor's own bytes have to arrive
+                    if (!ReadFile(h, buf, (DWORD) (a1 - a0), &got, &ov) || (uint64_t) got < src + done - a0 + n) {
+                        fail("short unbuffered read of layer " + std::to_string(l) + " in " + name + " (error " +
+                             std::to_string((unsigned long long) GetLastError()) + ")");
+                        break;
+                    }
+                    const uint8_t* p = buf + (src + done - a0);
+                    for (uint64_t k = 0; k < n / per[r]; ++k) {
+                        const uint64_t e = done / per[r] + k;
+                        std::memcpy(dst + lay.blob_offset(l, (int64_t) e) + at[r], p + k * per[r], (size_t) per[r]);
+                    }
+                }
+            }
+        }
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        if (buf != nullptr) VirtualFree(buf, 0, MEM_RELEASE);
+    };
+    if (unbuffered) {
+        std::vector<std::thread> pool;
+        for (int i = 1; i < threads; ++i) pool.emplace_back(worker_unbuffered);
+        worker_unbuffered();
+        for (auto& t : pool) t.join();
+        if (bad) {
+            st.seconds = -1.0;
+            st.ok = false;
+            st.error = err.empty() ? "unreadable shard while reading the experts from the GGUF" : err;
+            return st;
+        }
+        st.bytes = lay.total;
+        st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        return st;
+    }
+#else
+    (void) unbuffered;
+#endif
     auto worker = [&]() {
         std::ifstream f;
         std::string open_name;
@@ -1132,6 +1232,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
                 if (!f) { bad = true; return; }
                 open_name = name;
             }
+            wait_ready(l);
             const auto& fm = lay.fmt[(size_t) l];
             const uint64_t blob = lay.bytes[(size_t) l];
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
@@ -1213,14 +1314,50 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         lbytes.push_back(lay.blob_bytes(l) * (uint64_t) n_expert);
     }
     bounds.push_back(want);
-    PinnedArena* a = new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes);
+    // Unbuffered straight into the arena when the pack's ranges are sector-aligned, with the per-layer CUDA
+    // registration running on a thread ahead of the readers (STRATA_BUFFERED_LOAD=1: the buffered reader after
+    // a whole-arena registration, the A/B arm). 16 readers keep a PCIe 5 drive's queue full.
+    // The GGUF branch (a native pack without experts.bin, setup's default) the same way: its chunks' windows read
+    // unbuffered into a buffer and scattered into the blobs (#230), the registration on the thread ahead of them.
+    const bool try_direct = max_pinned_bytes == 0 && std::getenv("STRATA_BUFFERED_LOAD") == nullptr;
+    const auto t_reserve = std::chrono::steady_clock::now();
+    PinnedArena* a = try_direct ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
+                                : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes);
     if (!a->valid()) {
         delete a;
         err = "ArenaExpertSource: the arena could not be reserved (" + std::to_string(want) + " B)";
         return false;
     }
-    const LoadStats st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, threads)
-                                   : load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
+    const double reserve_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_reserve).count();
+    LoadStats st;
+    bool direct = false;
+    if (try_direct) {
+        std::atomic<int> ready{0};
+        std::thread reg([&] { a->register_slices(ready); });
+        // The readers wait for each slice's registration EVEN ON LARGE PAGES: reading while cudaHostRegister runs on
+        // the same slice corrupted the arena (measured 2026-09-30, WDDM, 2 MB pages: STRATA_VERIFY_ARENA gave a
+        // different wrong checksum on every run, 11.8 vs 10.2 GiB/s). The ~0.9 s it would save is not available.
+        st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, /*threads=*/16, &ready, /*unbuffered=*/true)
+                       : load_experts_direct(path, a->data(), loff, lbytes, /*threads=*/16, /*chunk=*/8u << 20, &ready);
+        if (!st.ok) ready.store((int) n_layers);        // a refused read: let the registration thread finish
+        reg.join();
+#if defined(_WIN32)
+        direct = st.ok;
+#else
+        direct = st.ok && !from_gguf;   // off Windows the GGUF branch reads buffered
+#endif
+        if (!st.ok && (from_gguf || !st.error.empty())) {
+            delete a;
+            err = "ArenaExpertSource: the unbuffered load failed: " + st.error;
+            return false;
+        }
+        if (!st.ok) {   // not sector-aligned: registered already, so the buffered reader fills it as before
+            st = load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
+        }
+    }
+    if (!try_direct)
+        st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, threads)
+                       : load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
     if (!st.ok) {
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
@@ -1252,7 +1389,30 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     blobs_ = n_layers * n_expert;
     n_expert_ = n_expert;
     reads_ = 0;
-    note_ = a->note;
+    // STRATA_VERIFY_ARENA=1: a checksum of the loaded arena (per layer, combined), to compare two loaders
+    if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {
+        std::vector<uint64_t> h((size_t) n_layers, 0);
+        std::atomic<int64_t> nl{0};
+        std::vector<std::thread> ths;
+        for (int t = 0; t < 16; ++t)
+            ths.emplace_back([&] {
+                for (int64_t l; (l = nl.fetch_add(1)) < n_layers;) {
+                    const uint64_t* w = (const uint64_t*) (a->data() + loff[(size_t) l]);
+                    uint64_t s = 0;
+                    for (uint64_t i = 0; i < lbytes[(size_t) l] / 8; ++i) s += w[i] * (2 * i + 1);
+                    h[(size_t) l] = s;
+                }
+            });
+        for (auto& t : ths) t.join();
+        uint64_t all = 0;
+        for (int64_t l = 0; l < n_layers; ++l) all = all * 1099511628211ull + h[(size_t) l];
+        std::fprintf(stderr, "strata generate: STRATA_VERIFY_ARENA %016llx (%s load)\n", (unsigned long long) all,
+                     direct ? "unbuffered" : "buffered");
+    }
+    char timing[160];
+    std::snprintf(timing, sizeof timing, "; reserved%s in %.1f s, read %s in %.1f s", try_direct ? "" : "+registered",
+                  reserve_s, direct ? "unbuffered (registration alongside)" : "buffered", st.seconds);
+    note_ = a->note + timing;
     gib_per_s_ = st.gib_per_second();
     load_seconds_ = st.seconds;
     load_read_s_ = st.read_seconds;

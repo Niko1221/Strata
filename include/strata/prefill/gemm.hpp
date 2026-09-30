@@ -12,6 +12,10 @@
 
 namespace strata::prefill {
 
+/// Creates a cuBLAS handle on a thread (the first costs ~0.9 s); the next Gemm::init/init_external takes it.
+/// Call once the device is current, early in the load.
+void gemm_prewarm();
+
 class Gemm {
 public:
     Gemm() = default;

@@ -14,6 +14,7 @@
 //     fallback is the common case and not an error path.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -41,6 +42,14 @@ struct PinnedArena {
     /// followed by the end of the last one.  `slice_starts` holds the registered ones.
     /// `max_pinned_bytes`: optional cap on CUDA registration. 0 preserves the normal unrestricted path.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0);
+    /// Reserve only: the caller registers the slices with register_slices(), e.g. on a thread while it fills
+    /// the ones already registered (registering 63 GiB of 4 KiB pages alone took 6.6 s).
+    struct Deferred {};
+    PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred);
+    /// Register the deferred slices in order, publishing how many are done in `ready` (all of them, registered
+    /// or not, once it returns: a slice CUDA refuses is kept resident by the working-set lock instead).
+    void register_slices(std::atomic<int>& ready);
+    std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
     ~PinnedArena();
     PinnedArena(const PinnedArena&) = delete;
@@ -91,6 +100,15 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
 /// Plan v0.3 P6: the same with one byte range per layer (`layer_off[L]`, `layer_bytes[L]`).
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
+
+/// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer, no file-cache copy, no
+/// checksum - the NVMe's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned;
+/// returns ok = false with an empty `error` when they are not (or off Windows), and the caller falls back to
+/// load_experts_ranges. The buffered loader read a PCIe 5 drive at 3.3 GiB/s wall; the drive gives 13.4.
+/// `ready`: when given, layer L is read only once *ready > L (a PinnedArena registering its slices meanwhile).
+LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready = nullptr);
 
 // FNV-1a 64.  Per layer, so a corrupt or short read names WHICH layer rather than just failing a whole-file
 // comparison - the same reason the Phase 1 tools report the first differing element.

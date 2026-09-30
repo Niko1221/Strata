@@ -31,9 +31,27 @@
 #include <set>
 #include <tuple>
 #endif
+#include <future>
+#include <mutex>
 
 namespace strata::prefill {
 namespace {
+
+// The first cublasCreate costs ~0.9 s (cuBLAS and cuBLASLt initialise); gemm_prewarm pays it on a thread while the
+// model loads, and the first Gemm takes that handle.
+std::mutex g_prewarm_m;
+std::future<cublasHandle_t> g_prewarm;
+
+cublasStatus_t create_handle(cublasHandle_t* h) {
+    {
+        std::lock_guard<std::mutex> lock(g_prewarm_m);
+        if (g_prewarm.valid()) {
+            *h = g_prewarm.get();   // waits if it is still being created
+            if (*h != nullptr) return CUBLAS_STATUS_SUCCESS;
+        }
+    }
+    return cublasCreate(h);
+}
 
 void ck(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) {
@@ -282,10 +300,22 @@ Gemm::~Gemm() {
     }
 }
 
+void gemm_prewarm() {
+    std::lock_guard<std::mutex> lock(g_prewarm_m);
+    if (g_prewarm.valid()) return;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    g_prewarm = std::async(std::launch::async, [dev]() -> cublasHandle_t {
+        cudaSetDevice(dev);
+        cublasHandle_t h = nullptr;
+        return cublasCreate(&h) == CUBLAS_STATUS_SUCCESS ? h : nullptr;
+    });
+}
+
 bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
                          std::string& err) {
     cublasHandle_t h = nullptr;
-    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
+    if (create_handle(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
     handle_ = h;
     stream_ = stream;
     external_ = true;
@@ -317,7 +347,7 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
 
 bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     cublasHandle_t h = nullptr;
-    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
+    if (create_handle(&h) != CUBLAS_STATUS_SUCCESS) { err = "prefill gemm: cublasCreate failed"; return false; }
     handle_ = h;
     stream_ = stream;
     cublasSetStream(h, (cudaStream_t) stream);
