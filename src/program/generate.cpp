@@ -1347,7 +1347,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --kv-nvme needs the KV host copy: --kv-resident %lld\n",
                      (long long) o.kv_resident);
     }
-    }
     strata::core::qsa_set_kv_resident(o.kv_resident);
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
