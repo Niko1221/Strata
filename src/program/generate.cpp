@@ -66,6 +66,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <type_traits>
 #include <chrono>
 #include <algorithm>
 #include <iostream>
@@ -784,7 +785,50 @@ struct CacheSlot {
     std::vector<ConvCheckpoint> checks;
     bool cvec = true;
     int64_t cells = 0;
+    // Shapes stay in memory; all vector payloads are appended after positional KV.
+    struct Shape { size_t ids, imgs, gdn, ple, tails; uint64_t used; };
+    std::vector<Shape> shapes;
+    uint64_t state_bytes = 0;
 };
+
+bool slot_checkpoints(CacheSlot& slot, bool reading) {
+    auto transfer = [&](auto& v, size_t count) {
+        using T = typename std::decay_t<decltype(v)>::value_type;
+        if (reading) v.resize(count);
+        if (!count) return true;
+        return reading ? std::fread(v.data(), sizeof(T), count, slot.file.get()) == count
+                       : std::fwrite(v.data(), sizeof(T), count, slot.file.get()) == count;
+    };
+    if (!reading) {
+        slot.shapes.clear(); slot.state_bytes = 0;
+        auto shape = [&](const ConvCheckpoint& c) {
+            if (!c.stage_parts.empty()) return false; // multi-GPU slots are not supported
+            slot.shapes.push_back({c.ids.size(),c.imgs.size(),c.gdn.size(),c.ple.size(),c.tails.size(),c.used});
+            slot.state_bytes += c.ids.size()*sizeof(int32_t) + c.imgs.size()*sizeof(ImgKey)
+                                + c.gdn.size() + c.ple.size() + c.tails.size();
+            return true;
+        };
+        if (!shape(slot.running)) return false;
+        for (const auto& c : slot.checks) if (!shape(c)) return false;
+    } else {
+        if (slot.shapes.empty()) return false;
+        slot.checks.resize(slot.shapes.size()-1);
+    }
+    for (size_t i=0; i<slot.shapes.size(); ++i) {
+        auto& c = i == 0 ? slot.running : slot.checks[i-1];
+        const auto& s = slot.shapes[i];
+        if (!transfer(c.ids,s.ids) || !transfer(c.imgs,s.imgs) || !transfer(c.gdn,s.gdn)
+            || !transfer(c.ple,s.ple) || !transfer(c.tails,s.tails)) return false;
+        if (reading) c.used = s.used;
+    }
+    if (!reading) {
+        if (std::fflush(slot.file.get()) != 0) return false;
+        // clear() alone retains capacity, defeating the RAM saving.
+        slot.running = ConvCheckpoint{};
+        std::vector<ConvCheckpoint>().swap(slot.checks);
+    }
+    return true;
+}
 
 bool slot_region(FILE* file, void* pointer, uint64_t bytes, bool host, bool reading,
                  std::vector<uint8_t>& buffer) {
@@ -3852,11 +3896,17 @@ int main(int argc, char** argv) {
                         std::printf("ERR saving conversation cache slot failed\n"); return 1;
                     }
                     saved.checks = std::move(checks);
+                    if (!slot_checkpoints(saved,false)) {
+                        std::printf("ERR saving cache checkpoints to disk failed\n"); return 1;
+                    }
+                    std::fprintf(stderr,"strata cache: slot %d offloaded %.1f MiB of checkpoint state\n",
+                        active_slot,saved.state_bytes/(1024.0*1024.0));
                 }
                 live_ok = false; live.clear(); live_imgs.clear(); checks.clear();
                 auto& incoming = slots[req_slot];
                 if (incoming.file) {
-                    if (!slot_positional(incoming,ss,g,mtp,true) || !checkpoint_restore(incoming.running,ss,g)) {
+                    if (!slot_positional(incoming,ss,g,mtp,true) || !slot_checkpoints(incoming,true)
+                        || !checkpoint_restore(incoming.running,ss,g)) {
                         std::printf("ERR loading conversation cache slot failed\n"); return 1;
                     }
                     live = incoming.running.ids; live_imgs = incoming.running.imgs; live_ok = true;
