@@ -25,8 +25,8 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
-    // Ordinary layer-split checkpoints retain each device's running state.
-    // Whole-session parking is currently single-GPU and rejects these parts.
+    // A layer split retains each stage's running state as a part; both the
+    // ordinary checkpoint path and whole-session parking capture them.
     std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {

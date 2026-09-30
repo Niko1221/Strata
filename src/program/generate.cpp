@@ -1269,10 +1269,6 @@ int main(int argc, char** argv) {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
-    if (o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0 && !o.layer_split.empty()) {
-        std::fprintf(stderr, "strata serve: conversation parking does not yet support --layer-split; disable parking with --conversation-cache-mib 0\n");
-        return 2;
-    }
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  Across
     // GPUs, not yet: KV streaming, images, control vectors, the helper caches (--expert-cache-remote), and lending
@@ -4322,6 +4318,12 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots);
+        // Layer split: the later stages' sessions, so whole-session parking can capture each layer's
+        // K/V from its owner. A ref names the stage's device and layer range [lb, le); layers outside
+        // every range stay with the primary session. Empty on a single GPU.
+        std::vector<strata::core::ConversationStageRef> park_stages;
+        for (const auto& st : stages)
+            park_stages.push_back({st->dev, st->lb, st->le, &st->ss});
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current = [&](size_t held) -> bool {
@@ -4329,14 +4331,14 @@ int main(int argc, char** argv) {
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
             auto reuse = conversations.take_reuse();
             size_t estimate = 0;
-            if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err)) {
+            if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err, park_stages)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
                 err.clear(); // A recoverable miss must not poison the batched draft prefill's error channel.
                 return true;
             }
             const size_t fresh_estimate = estimate;
             if (!reuse.kv.empty() && !strata::core::conversation_snapshot_capture_bytes(
-                    reuse, view, ss, g, mtp.kv_state(), estimate, err)) {
+                    reuse, view, ss, g, mtp.kv_state(), estimate, err, park_stages)) {
                 reuse = {};
                 estimate = fresh_estimate;
                 err.clear();
@@ -4370,7 +4372,7 @@ int main(int argc, char** argv) {
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, mtp.kv_state(), err,
-                        std::move(reuse), &reused_bytes)) return false;
+                        std::move(reuse), &reused_bytes, park_stages)) return false;
                 if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after capture, or telemetry unavailable)\n");
                     return true;
@@ -5008,7 +5010,7 @@ int main(int argc, char** argv) {
             if (parked.tokens > resume) incoming.emplace(conversations.take(parked.index));
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
-            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), err)) {
+            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), err, park_stages)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
@@ -5021,7 +5023,7 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
-                if (strata::core::conversation_snapshot_restore(*incoming, ss, g, mtp.kv_state(), err) !=
+                if (strata::core::conversation_snapshot_restore(*incoming, ss, g, mtp.kv_state(), err, park_stages) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
@@ -5029,6 +5031,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 if (std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
+                    const strata::core::OnDevice draft_dev(park_stages.empty() ? -1 : park_stages.back().dev);
                     uint64_t draft_hash = 0;
                     if (!strata::core::conversation_kv_verify(incoming->kv.back(), mtp.kv_state(), g,
                             int64_t(incoming->live.ids.size()), false, draft_hash, err)) {

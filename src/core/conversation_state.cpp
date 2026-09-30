@@ -1,5 +1,6 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
+#include "strata/core/on_device.hpp"
 
 #include <algorithm>
 #include <array>
@@ -70,18 +71,39 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
     return true;
 }
 
+// The stage whose [lb, le) owns QSA layer `qsa_index` (its model layer is i*qsa_interval + interval-1);
+// -1 = the primary session.  Split ranges are contiguous from 0, so any unowned index is the primary's.
+int owner_of(int64_t qsa_index, const ModelGeometry& g, const std::vector<ConversationStageRef>& later) {
+    const int64_t layer = qsa_index * g.qsa_interval + (g.qsa_interval - 1);
+    for (size_t k = 0; k < later.size(); ++k)
+        if (layer >= later[k].lb && layer < later[k].le) return (int) k;
+    return -1;
+}
+const QsaState& owner_state(int64_t qsa_index, const SessionState& ss, const ModelGeometry& g,
+                            const std::vector<ConversationStageRef>& later) {
+    const int o = owner_of(qsa_index, g, later);
+    return o < 0 ? ss.qsa_states[(size_t) qsa_index] : later[(size_t) o].ss->qsa_states[(size_t) qsa_index];
+}
+
 bool view_validate(const ConversationView& view, const SessionState& ss,
-                   const ModelGeometry& g, std::string& error) {
+                   const ModelGeometry& g, std::string& error,
+                   const std::vector<ConversationStageRef>& later = {}) {
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, view.ids.size(), z, error)) return false;
     if (view.ids.empty() || !image_keys(view.images, view.ids.size()) ||
         std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
         return fail(error, "invalid live token/image metadata");
     for (const auto& c : view.checkpoints) {
-        if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
+        // A layer split's checkpoints carry one running-state part per later stage (the ordinary
+        // checkpoint path's own assembly); on a single GPU a part is still meaningless.
+        if (c.stage_parts.size() != later.size() || c.ids.empty() || c.ids.size() > view.ids.size() ||
             !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
             return fail(error, "checkpoint is not a live token prefix");
         if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
+        for (size_t k = 0; k < later.size(); ++k) {
+            const strata::core::OnDevice on(later[k].dev);
+            if (!conversation_checkpoint_validate(c.stage_parts[k], *later[k].ss, g, error)) return false;
+        }
         size_t image = 0;
         for (const auto& key : view.images) {
             if ((uint64_t) key.start >= c.ids.size()) break;
@@ -99,6 +121,9 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
         !product(images, {c.imgs.size(), sizeof(ConversationImageKey)})) return false;
     for (size_t n : {ids, images, c.gdn.size(), c.ple.size(), c.tails.size(), c.dead.size(), c.block_pos.size()})
         if (!add(total, n)) return false;
+    if (!add(total, c.stage_parts.capacity() * sizeof(ConversationCheckpoint))) return false;
+    for (const auto& part : c.stage_parts)
+        if (!metadata_bytes(part, total)) return false;
     return true;
 }
 } // namespace
@@ -193,13 +218,15 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
 }
 
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
-                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error) {
+                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error,
+                                 const std::vector<ConversationStageRef>& later) {
     bytes = 0;
-    if (!view_validate(view, ss, g, error)) return false;
+    if (!view_validate(view, ss, g, error, later)) return false;
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     size_t ids = 0, images = 0, checkpoints = 0, layers = 0, tails = 0, dead = 0, positions = 0;
-    const auto qsa = (uint64_t) owned_qsa(ss);
+    // whole-session image: ALL QSA layers + the draft, whatever session owns each (split parking)
+    const auto qsa = (uint64_t) g.n_qsa_layers();
     if (!product(ids, {view.ids.size(), sizeof(int32_t)}) ||
         !product(images, {view.images.size(), sizeof(ConversationImageKey)}) ||
         !product(checkpoints, {view.checkpoints.size(), sizeof(ConversationCheckpoint)}) ||
@@ -212,7 +239,7 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
         if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
     const int64_t upto = (int64_t) view.ids.size(); // view_validate bounds this by signed max_cells
     for (uint64_t i = 0; i <= qsa; ++i) {
-        const auto& st = i == qsa ? draft : owned(ss, (size_t) i);
+        const auto& st = i == qsa ? draft : owner_state((int64_t) i, ss, g, later);
         const size_t n = conversation_kv_bytes(st, g, upto, i != qsa);
         if (!n || !add(bytes, n)) return fail(error, "invalid or overflowing K/V byte estimate");
     }
@@ -221,16 +248,17 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
 
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& ss, const ModelGeometry& g,
-                                         const QsaState& draft, size_t& bytes, std::string& error) {
-    if (!conversation_snapshot_bytes(view, ss, g, draft, bytes, error)) return false;
+                                         const QsaState& draft, size_t& bytes, std::string& error,
+                                         const std::vector<ConversationStageRef>& later) {
+    if (!conversation_snapshot_bytes(view, ss, g, draft, bytes, error, later)) return false;
     if (reuse.kv.empty()) return true;
-    const size_t layers = owned_qsa(ss) + 1;
+    const size_t layers = size_t(g.n_qsa_layers()) + 1;
     if (reuse.kv.size() != layers || reuse.unchanged_tokens < 0 ||
         reuse.unchanged_tokens > reuse.captured_tokens || reuse.unchanged_tokens > int64_t(view.ids.size()))
         return fail(error, "invalid retained K/V prefix");
     for (size_t i = 0; i < layers; ++i) {
         const bool index = i + 1 != layers;
-        const auto& st = index ? owned(ss, i) : draft;
+        const auto& st = index ? owner_state((int64_t) i, ss, g, later) : draft;
         if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
         const size_t fresh = conversation_kv_bytes(st, g, int64_t(view.ids.size()), index);
         size_t retained = 0;
@@ -247,9 +275,11 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& ss, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
-                                ConversationKvReuse reuse, size_t* reused_bytes) {
+                                ConversationKvReuse reuse, size_t* reused_bytes,
+                                const std::vector<ConversationStageRef>& later) {
     size_t estimate = 0;
-    if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
+    if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error, later) ||
+        !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -258,48 +288,106 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
-    const size_t layers = owned_qsa(ss);
-    captured.kv.resize(layers + 1);
+    // whole-session image: ALL layers + the draft regardless of which session owns them (split
+    // parking) — owned_qsa(ss) here sized the primary's carve only and the global save loop
+    // below wrote past the vector (SIGSEGV in ConversationBuffer::resize, live 2026-10-01)
+    captured.kv.resize(size_t(g.n_qsa_layers()) + 1);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
+    // A layer split's live checkpoint: one running-state part per later stage, each captured on the
+    // owner's device - the same assembly the ordinary split checkpoint path performs.
+    for (size_t k = 0; k < later.size(); ++k) {
+        const OnDevice on(later[k].dev);
+        ConversationCheckpoint part;
+        part.ids = captured.live.ids;
+        part.imgs = captured.live.imgs;
+        if (!sync(error) || !conversation_checkpoint_save(part, *later[k].ss, g, error)) return false;
+        captured.live.stage_parts.push_back(std::move(part));
+    }
     const int64_t upto = (int64_t) view.ids.size();
-    for (size_t j = 0; j < layers; ++j)
-        if (!conversation_kv_save(captured.kv[j], owned(ss, j), g, upto, true, error,
-                                  unchanged, reused_bytes)) return false;
+    // Each QSA layer's K/V is captured from its OWNER's session, on the owner's device: the primary
+    // session's buffers for another stage's layers exist (full-geometry allocation) but are never written.
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+        const int o = owner_of(i, g, later);
+        if (o < 0) {
+            if (!conversation_kv_save(captured.kv[(size_t) i], ss.qsa_states[(size_t) i], g, upto, true, error,
+                                      unchanged, reused_bytes)) return false;
+        } else {
+            const OnDevice on(later[(size_t) o].dev);
+            if (!conversation_kv_save(captured.kv[(size_t) i], later[(size_t) o].ss->qsa_states[(size_t) i], g,
+                                      upto, true, error, unchanged, reused_bytes)) return false;
+        }
+    }
     // The draft's final cell may not have been computed when the output cap was
     // reached. Refresh that page even when the main prefix continued unchanged.
-    if (!conversation_kv_save(captured.kv.back(), draft, g, upto, false, error,
-                              std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
+    // The drafter rides the last stage of a split: capture it on that device.
+    if (later.empty()) {
+        if (!conversation_kv_save(captured.kv.back(), draft, g, upto, false, error,
+                                  std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
+    } else {
+        const OnDevice on(later.back().dev);
+        if (!conversation_kv_save(captured.kv.back(), draft, g, upto, false, error,
+                                  std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
+    }
     image = std::move(captured);
     return true;
 }
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
-                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
-    if (!image.live.stage_parts.empty()) return fail(error, "layer-split parking is not supported");
+                                    const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                    const std::vector<ConversationStageRef>& later) {
+    // A split image carries exactly one running-state part per later stage; a single-GPU image none.
+    if (image.live.stage_parts.size() != later.size()) return fail(error, "layer-split parking state mismatch");
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
     // an image holds exactly one carve's running state and K/V: same layer range or nothing
     if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
         return fail(error, "snapshot from another session layer range");
     const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (image.kv.size() != layers + 1) return fail(error, "invalid K/V layer count");
+    if (!view_validate(view, ss, g, error, later) || !conversation_checkpoint_validate(image.live, ss, g, error))
+        return false;
+    for (size_t k = 0; k < later.size(); ++k) {
+        const OnDevice on(later[k].dev);
+        if (!conversation_checkpoint_validate(image.live.stage_parts[k], *later[k].ss, g, error)) return false;
+    }
+    if (image.kv.size() != (size_t) g.n_qsa_layers() + 1) return fail(error, "invalid K/V layer count");
     const int64_t upto = (int64_t) image.live.ids.size();
-    for (size_t j = 0; j < layers; ++j)
-        if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
+        if (!conversation_kv_validate(image.kv[(size_t) i], owner_state(i, ss, g, later), g, upto, true, error))
+            return false;
     return conversation_kv_validate(image.kv.back(), draft, g, upto, false, error);
 }
 
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
-                                                   const ModelGeometry& g, const QsaState& draft, std::string& error) {
-    if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
+                                                   const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                                   const std::vector<ConversationStageRef>& later) {
+    if (!conversation_snapshot_validate(image, ss, g, draft, error, later)) return ConversationRestore::invalid;
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
-    for (size_t j = 0; j < owned_qsa(ss); ++j)
-        if (!conversation_kv_restore(image.kv[j], owned(ss, j), g, upto, true, error))
+    // Mirror of the capture: each layer's K/V returns to its owner's session, on the owner's device.
+    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+        const int o = owner_of(i, g, later);
+        if (o < 0) {
+            if (!conversation_kv_restore(image.kv[(size_t) i], ss.qsa_states[(size_t) i], g, upto, true, error))
+                return ConversationRestore::transfer_failed;
+        } else {
+            const OnDevice on(later[(size_t) o].dev);
+            if (!conversation_kv_restore(image.kv[(size_t) i], later[(size_t) o].ss->qsa_states[(size_t) i], g,
+                                         upto, true, error))
+                return ConversationRestore::transfer_failed;
+        }
+    }
+    if (!later.empty()) {
+        const OnDevice on(later.back().dev);
+        if (!conversation_kv_restore(image.kv.back(), draft, g, upto, false, error))
             return ConversationRestore::transfer_failed;
-    if (!conversation_kv_restore(image.kv.back(), draft, g, upto, false, error) ||
-        !conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
+    } else if (!conversation_kv_restore(image.kv.back(), draft, g, upto, false, error)) {
+        return ConversationRestore::transfer_failed;
+    }
+    if (!conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
+    for (size_t k = 0; k < later.size(); ++k) {
+        const OnDevice on(later[k].dev);
+        if (!conversation_checkpoint_restore(image.live.stage_parts[k], *later[k].ss, g, error))
+            return ConversationRestore::transfer_failed;
+    }
     return ConversationRestore::restored;
 }
 } // namespace strata::core
