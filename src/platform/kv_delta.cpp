@@ -891,23 +891,19 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     const int64_t mtp_pages = (std::min<int64_t>(T, mtp_state.max_cells) + sh.shapes.page_size - 1) /
                               sh.shapes.page_size;
 
-    // ---- step 5: THE DEVICE SEGMENTS, staged small, in the v3 walk's ORDER and NAMES (R4).  The pooled rows are
-    // the only bytes that cannot land in one copy where they belong: they live on the device and each chunk
-    // holds only its own span of rows, so each layer's rows are staged here - the chunks' rows [0, sealed_rows)
-    // concatenated in chunk order, then the State's tail rows [sealed_rows, rowsT) - and applied as ONE pooled
-    // segment per layer, exactly the shape the v3 walk applies.  gdn/ple/tail/dead/block_pos point straight into
-    // the State record, which is already in host memory.  This staging (~20 MB at 142k tokens) plus the State
-    // record and one payload buffer per worker IS the restore's entire transient allocation.
-    std::vector<uint8_t> pooled_stage((size_t) (n_layers * rowsT * idx4));
+    // ---- step 5: THE DEVICE SEGMENTS the apply pass carries, in the v3 walk's ORDER and NAMES (R4):
+    // gdn/ple/tail/dead/block_pos all point straight into the State record, which is already in host memory.
+    // The pooled rows are NOT here - they are placed in step 7.5, straight from the chunk files to the device,
+    // because one pooled apply per layer cannot be staged without making the whole restore O(conversation) in
+    // the conversation's indexer rows (measured: 209 MiB of rows at 143k tokens, which is what kept the staging
+    // at 356 MB).  Everything the list still carries is byte-for-byte what the v3 walk applies.
     std::vector<NvmeRestoreApply> applies;
-    applies.reserve((size_t) (2 + n_layers * 4));
+    applies.reserve((size_t) (2 + n_layers * 3));
     applies.push_back({ss.gdn_state, state.data(), (size_t) z.gdn, true, "gdn"});
     if (has_ple) applies.push_back({ss.ple_hist, state.data() + z.gdn, (size_t) z.ple, true, "ple"});
     for (int64_t i = 0; i < n_layers; ++i) {
         strata::core::QsaState& st = ss.qsa_states[i];
         const size_t st_base = (size_t) (z.gdn + (has_ple ? (int64_t) z.ple : 0) + i * st_stride);
-        applies.push_back({st.idx_pooled, pooled_stage.data() + (size_t) (i * rowsT * idx4),
-                           (size_t) (rowsT * idx4), true, "pooled"});
         size_t off = st_base + (size_t) st_arrays + (size_t) (st_rows * idx4);
         applies.push_back({st.idx_tail, state.data() + off, (size_t) z.tail, true, "tail"});
         off += (size_t) z.tail;
@@ -916,10 +912,10 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         applies.push_back({st.idx_block_pos, state.data() + off, (size_t) z.block_pos, true, "block_pos"});
     }
 
-    // ---- step 6: the State's own bytes, placed HERE on the caller's thread: the per-layer KV tail pages and the
-    // pooled tail rows, then the drafter's tail pages - the same bytes, at page offset sealed_pages / row offset
-    // sealed_rows, which is where the writer cut them.  `zero` is the refusal path's undo (below): same ranges,
-    // memset, so a refusal leaves the session as it found it.
+    // ---- step 6: the State's own bytes, placed HERE on the caller's thread: the per-layer KV tail pages, then
+    // the drafter's tail pages - the same bytes, at page offset sealed_pages, which is where the writer cut
+    // them.  `zero` is the refusal path's undo (below): same ranges, memset, so a refusal leaves the session as
+    // it found it.
     auto place_state = [&](bool zero) {
         for (int64_t i = 0; i < n_layers; ++i) {
             strata::core::QsaState& st = ss.qsa_states[i];
@@ -934,10 +930,6 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                     std::memcpy(dst, state.data() + st_base + (size_t) st_off, (size_t) bytes);
                 st_off += bytes;
             }
-            uint8_t* rows_dst = pooled_stage.data() + (size_t) ((i * rowsT + sealed_rows) * idx4);
-            if (zero) std::memset(rows_dst, 0, (size_t) (st_rows * idx4));
-            else
-                std::memcpy(rows_dst, state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
         }
         int64_t st_dr = 0;
         for (int k = 0; k < n_arrays; ++k) {
@@ -955,6 +947,20 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         }
     };
     place_state(false);
+    if (delta_timing_on()) {
+        // WHAT THE STATE RECORD IS MADE OF, so the staging above can be read rather than guessed: the gdn and
+        // ple slices have to be host-resident until the apply pass (they ARE its first two applies), while the
+        // KV and drafter tail pages above are host arrays that the reader has already consumed by this point.
+        const int64_t kv_tail = (int64_t) n_layers * st_arrays;
+        const int64_t dr_tail = st_drafter_base + st_arrays - (z.gdn + (has_ple ? (int64_t) z.ple : 0) +
+                                                               n_layers * st_stride);
+        std::fprintf(stderr,
+                     "strata serve: kv-delta restore timing: state %llu bytes = gdn %lld + ple %lld + kv tail "
+                     "pages %lld + drafter tail pages %lld + pooled tail rows %lld + tails/dead/block_pos %lld\n",
+                     (unsigned long long) state.size(), (long long) z.gdn, (long long) (has_ple ? z.ple : 0),
+                     (long long) kv_tail, (long long) dr_tail, (long long) (n_layers * st_rows * idx4),
+                     (long long) (n_layers * (z.tail + z.dead + z.block_pos)));
+    }
 
     // ---- step 7: THE FAN-OUT.  N workers (std::thread + an atomic index, no new dependency) each take the next
     // chunk: open/read, the FNV digest check, the slice-math size check, and the PLACEMENT - host memcpys of the
@@ -977,10 +983,6 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                 else std::memset(dst, 0, bytes);
                 ch_off += (int64_t) bytes;
             }
-            uint8_t* rows_dst = pooled_stage.data() + (size_t) ((i * rowsT + j * rows_per_chunk) * idx4);
-            const size_t rows_bytes = (size_t) (rows_per_chunk * idx4);
-            if (payload) std::memcpy(rows_dst, payload + ch_base + (size_t) ch_off, rows_bytes);
-            else std::memset(rows_dst, 0, rows_bytes);
         }
         const int64_t dr_pages = std::min<int64_t>(pages_per_chunk, mtp_pages - page0);
         if (dr_pages > 0) {
@@ -1047,21 +1049,90 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
             place_state(true);
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
                 if (chunk_errs[(size_t) j].empty()) place_chunk(j, nullptr);
-            for (int64_t i = 0; i < n_layers; ++i)   // the pooled staging the applied chunks filled
-                std::memset(pooled_stage.data() + (size_t) (i * rowsT * idx4), 0,
-                            (size_t) (sealed_rows * idx4));
             err = chunk_errs[(size_t) first_bad];   // the LOWEST failing index - deterministic despite the pool
             return Restore::invalid;
         }
     }
-    // THE RAM this promote staged, for the record (the KV line's staging_bytes).  No assembled image any more:
-    // what the path allocates is the State record it read, the pooled-row staging, and one payload buffer per
-    // worker - the bounded staging the maintainer asked for, reported honestly rather than as a whole snapshot.
+
+    // ---- step 7.5: THE POOLED ROWS, straight from the chunk files to the device, HERE on the caller's thread.
+    // They are the one part of a restore that belongs to neither a host array nor the State record's device
+    // slices: they live on the device, and each chunk holds only its own span of rows.  Staging every layer's
+    // whole row span to apply them in ONE pooled copy per layer made the restore O(conversation) in the
+    // conversation's indexer rows - measured 209 MiB of staging at 143k tokens, which is what held the total at
+    // 356 MB - and no ordering of the applies can avoid it, because the apply pass is a BATCH: every source it
+    // copies from has to be resident in host memory when it starts.  So the rows cross the bus per chunk
+    // instead: a small read of the chunk's pooled slice per layer, one H2D copy straight into idx_pooled at that
+    // chunk's row offset, and the buffer is reused for the next chunk.  The bytes and their destinations are
+    // exactly what the staged shape produced - the only change is WHEN they cross, and the applies list keeps
+    // the v3 walk's order and names for everything it still carries.
+    // The synchronize first is the same proof the frozen pass makes before its first write: the device answers
+    // before a single byte lands.  A failed copy here is `transfer_failed` by the same rule that governs the
+    // apply pass (a transfer that did not happen), and a failed READ of a file validated microseconds earlier is
+    // refused as `invalid` - the caller's clean path (session_zero + a full re-read, which is what an `invalid`
+    // always triggers) rewrites these rows like everything else.
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "kv-delta: device synchronize before the pooled rows";
+        consume_cuda_error();
+        return Restore::transfer_failed;
+    }
+    {
+        const int64_t row_bytes = rows_per_chunk * idx4;
+        std::vector<uint8_t> rows_buf((size_t) (row_bytes > 0 ? row_bytes : 1));
+        for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
+            const std::string path = dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin";
+            std::FILE* f = std::fopen(path.c_str(), "rb");
+            if (!f) {
+                err = "kv-delta: chunk " + path + ": open for the pooled rows: " + std::strerror(errno);
+                return Restore::invalid;
+            }
+            for (int64_t i = 0; i < n_layers; ++i) {
+                // the slice is where the writer put it: this layer's arrays, then its span of rows
+                const long off = (long) (sizeof(DeltaChunkHeader) + (size_t) (i * ch_stride + ch_arrays));
+                if (row_bytes <= 0) continue;
+                if (std::fseek(f, off, SEEK_SET) != 0 ||
+                    std::fread(rows_buf.data(), 1, (size_t) row_bytes, f) != (size_t) row_bytes) {
+                    err = "kv-delta: chunk " + path + ": the pooled rows of layer " + std::to_string(i) +
+                          " are not where this geometry says they are";
+                    std::fclose(f);
+                    return Restore::invalid;
+                }
+                void* dst = ss.qsa_states[i].idx_pooled +
+                            (size_t) (j * rows_per_chunk * g.idx_key_dim);
+                if (cudaMemcpy(dst, rows_buf.data(), (size_t) row_bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+                    err = "kv-delta: host-to-device transfer failed for the pooled rows of chunk " +
+                          std::to_string(j) + ", layer " + std::to_string(i) + " (" + std::to_string(row_bytes) +
+                          " bytes)";
+                    consume_cuda_error();
+                    std::fclose(f);
+                    return Restore::transfer_failed;
+                }
+            }
+            std::fclose(f);
+        }
+        for (int64_t i = 0; i < n_layers; ++i) {   // the State's tail rows follow the chunks' sealed ones
+            if (st_rows <= 0) break;
+            const size_t st_base = (size_t) (z.gdn + (has_ple ? (int64_t) z.ple : 0) + i * st_stride);
+            void* dst = ss.qsa_states[i].idx_pooled + (size_t) (sealed_rows * g.idx_key_dim);
+            if (cudaMemcpy(dst, state.data() + st_base + (size_t) st_arrays, (size_t) (st_rows * idx4),
+                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                err = "kv-delta: host-to-device transfer failed for the pooled rows of the State record, layer " +
+                      std::to_string(i);
+                consume_cuda_error();
+                return Restore::transfer_failed;
+            }
+        }
+    }
+    // THE RAM this promote staged, for the record (the KV line's staging_bytes).  No assembled image and no
+    // pooled-row staging any more: what the path allocates is the State record it read, one payload buffer per
+    // worker, and one pooled-rows buffer - the bounded staging the maintainer asked for, reported honestly
+    // rather than as a whole snapshot.
     if (image_bytes) {
         const int64_t n_workers = std::min<int64_t>(4, (int64_t) refs.size());
         const int64_t chunk_bytes = refs.empty() ? 0
                                                  : delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[0].a);
-        *image_bytes = (uint64_t) (state.size() + pooled_stage.size() + (size_t) (n_workers * chunk_bytes));
+        const int64_t rows_bytes = rows_per_chunk * idx4;
+        *image_bytes = (uint64_t) (state.size() + (size_t) (n_workers * chunk_bytes) +
+                                   (size_t) (rows_bytes > 0 ? rows_bytes : 1));
     }
 
     // ---- step 8: THE APPLY PASS, the v3 choreography, reached through nvme_restore_apply with OUR applies list
@@ -1074,7 +1145,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     v3z.state = z;
     const std::vector<int32_t> ids_apply = ids;
     const std::vector<ConversationImageKey> imgs_apply = imgs;
-    const double t_assemble = delta_ms_since(t_start);
+    const double t_rows = delta_ms_since(t_start);   // the pooled rows are on the device by here
     const strata::core::ConversationRestore rc = nvme_restore_apply(
         applies, ss, mtp_state, g, v3z, ids_apply.data(), T, imgs.empty() ? nullptr : imgs_apply.data(),
         (int64_t) imgs.size(), h.cvec != 0, ids, imgs, cvec, err);
@@ -1086,10 +1157,10 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         delta_rss_mb(hwm_mb, now_mb);
         std::fprintf(stderr,
                      "strata serve: kv-delta restore timing: manifest %.1f ms, read+digest+place %.1f ms, "
-                     "stage %.1f ms, apply %.1f ms, rss peak %llu MB (entry %llu MB), T %lld, %lld chunks, "
+                     "pooled rows %.1f ms, apply %.1f ms, rss peak %llu MB (entry %llu MB), T %lld, %lld chunks, "
                      "%.2f GiB read\n",
-                     t_manifest, t_chunks - t_manifest, t_assemble - t_chunks,
-                     delta_ms_since(t_start) - t_assemble, (unsigned long long) hwm_mb,
+                     t_manifest, t_chunks - t_manifest, t_rows - t_chunks,
+                     delta_ms_since(t_start) - t_rows, (unsigned long long) hwm_mb,
                      (unsigned long long) rss_entry_mb, (long long) h.L, (long long) refs.size(),
                      (double) read_back / (double) (1LL << 30));
     }

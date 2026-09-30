@@ -798,8 +798,10 @@ void fixture_reader(const std::string& root) {
                "and nothing like a second copy of the conversation");
         }
         // R4: the streamed applies are the v3 walk's DEVICE segments in its ORDER and under its NAMES, so the
-        // fault matrix can still count and skip them: gdn, ple, then pooled/tail/dead/block_pos per layer, then
-        // one spare-row re-publish per layer - the same 2 + n_layers * 5 the v3 fixture pins.
+        // fault hook can still count and skip them.  The pooled rows cross the bus BEFORE the apply pass, one
+        // copy per (chunk, layer) plus one for the State's tail rows - that is what keeps the staging bounded
+        // (a single pooled apply per layer would need every layer's whole row span resident in host memory) -
+        // and the apply pass then carries gdn, ple, and tail/dead/block_pos per layer, in the v3 order.
         reset_faults();
         {
             Session R3;
@@ -810,13 +812,15 @@ void fixture_reader(const std::string& root) {
             std::string e3;
             ck(strata::platform::delta_restore(e, R3.ss, R3.draft, R3.g, WFP, ids3, imgs3, cvec3, L3, e3) ==
                    Restore::restored, ("the streamed restore for the apply count: " + e3).c_str());
-            ck_eq(copy_calls, 2 + (int) S.g.n_qsa_layers() * 5,
-                  "the streamed apply pass makes exactly the v3 walk's device copies (2 + n_layers x 5)");
-            ck_eq(sync_calls, 2, "the pre-apply and final syncs, and no more");
+            // 1 chunk at T=300: (1 + 1) pooled copies per layer, then gdn + ple, then 3 applies + the spare
+            // re-publish per layer.
+            ck_eq(copy_calls, 2 + (int) S.g.n_qsa_layers() * 6,
+                  "the streamed restore makes the v3 walk's device copies, pooled rows included");
+            ck_eq(sync_calls, 3, "the pre-rows sync, plus the apply pass's own two");
         }
-        // ... and the fault hook still skips them BY NAME: the Nth copy is the layer's pooled rows, the last is
-        // the spare-row re-publish, and both are `transfer_failed` with the segment named.
-        for (const int64_t nth : {(int64_t) 3, (int64_t) (2 + (int64_t) S.g.n_qsa_layers() * 5)}) {
+        // ... and the fault hook still skips them BY NAME: the first copy is a pooled-row copy, the last is the
+        // spare-row re-publish, and both are `transfer_failed` with the segment named.
+        for (const int64_t nth : {(int64_t) 1, (int64_t) (2 + (int64_t) S.g.n_qsa_layers() * 6)}) {
             reset_faults();
             fail_copy = (int) nth;
             Session R4;
@@ -828,10 +832,8 @@ void fixture_reader(const std::string& root) {
             const Restore r4 =
                 strata::platform::delta_restore(e, R4.ss, R4.draft, R4.g, WFP, ids4, imgs4, cvec4, L4, e4);
             ck(r4 == Restore::transfer_failed, ("the streamed apply fails transfer at copy " + std::to_string(nth)).c_str());
-            ck(e4.find("nvme_restore") != std::string::npos,
-               "and the message is the v3 apply pass's own");
-            ck(e4.find(nth == 3 ? "pooled" : "spare pooled row") != std::string::npos,
-               "naming the segment the fault skipped (pooled rows / the spare-row re-publish)");
+            ck(e4.find(nth == 1 ? "pooled rows" : "spare pooled row") != std::string::npos,
+               "naming the segment the fault skipped (the pooled rows / the spare-row re-publish)");
             ck_no_pending_error("the streamed fault left no CUDA error pending");
         }
         reset_faults();
