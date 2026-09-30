@@ -68,10 +68,28 @@ strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest+place 2637.7
                                                   apply 24.2 ms, rss peak 46597 MB (entry 46257 MB), T 143495, 560 chunks, 2.15 GiB read
 ```
 
-≈ 2.7 s wall ≈ **53k tok/s** (the v3 tier's ~50k is the bar), and the process's own transient peak ≈ 340 MB
-against the assembled path's 4.4 GB.  The apply phase fell from 1,888 ms to 24 ms because the second hash pass
-over the assembled image is gone - the apply is now the memcpy/H2D/syncs and nothing else.  **Bit-exact against
-the v3 tier at this scale**: the v3 cascade's own snapshot of the same boundary (L=143,495), restored by
+≈ 2.7 s wall ≈ **53k tok/s** (the v3 tier's ~50k is the bar) - and the `KV` line itself agrees on device:
+`KV src=delta resume=143495 promote_ms=2668 promote_bytes=2309000692 staging_bytes=356179248`.
+
+**On the RSS target.**  This document's expected end state guessed "~100 MB (the bounded staging)"; what the
+path actually allocates at 143k tokens is **356,179,248 bytes**, and the breakdown is worth recording because
+two thirds of it is not the conversation's KV at all:
+
+| term | bytes | what it is |
+|---|---|---|
+| State record | 120,139,080 (115 MiB) | the tail pages + tail rows + gdn/ple/tails/dead/block_pos, read once |
+| pooled-row staging | 219,547,308 (~209 MiB) | `n_layers × qsa_pooled_rows(T) × idx_key_dim × 4` |
+| 4 worker buffers | 16,492,860 (~16 MiB) | one chunk payload each, reused |
+
+The process's own transient peak was **~340 MB** (VmHWM 46,597 vs 46,257 at entry) - the assembled path cost
+**~4.4 GB**, so this is a 13x reduction and the staging is bounded and flat in the CHUNK COUNT (which is what the
+parallel read bought), but it is NOT yet ~100 MB: the pooled-row staging is O(conversation length) because R4
+requires ONE pooled apply per layer covering all `qsa_pooled_rows(T)` rows, so every layer's whole row span has to
+be resident in host memory at apply time.  Removing THAT would mean per-chunk pooled applies (560 x n_layers
+H2D copies instead of n_layers), which changes the applies list's shape and count and therefore needs the
+owner's decision, not a quiet implementation change - it is the natural next item after this work.
+
+**Bit-exact against the v3 tier at this scale**: the v3 cascade's own snapshot of the same boundary (L=143,495), restored by
 `--nvme-restore`, prints the SAME `STATE_HASH` line as the streamed delta promote - all nine fields, including
 `stale` and the `ple_prev` window (`docs/nvme-kv-cache-design.md` §5.2).
 
