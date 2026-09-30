@@ -21,6 +21,8 @@
 // be checked against llama.cpp; a batched prefill is the next optimisation, not a prerequisite.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/dense_model.hpp"
+#include "strata/artifact/dequant.hpp"
+#include "strata/kernels/dense_kernels.hpp"
 #include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
@@ -31,10 +33,12 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <iostream>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,9 +92,156 @@ void usage() {
                  "  `serve/server.py --engine strata --config <run config>` whose `exe` is this program.\n");
 }
 
+// ---- `strata-dense --selftest`: the new CUDA kernels against a CPU reference, no model needed.
+uint16_t f32_to_f16_bits(float f) {          // round to nearest even; the test inputs stay well inside the range
+    uint32_t x;
+    std::memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t e = (int32_t) ((x >> 23) & 0xff) - 127 + 15;
+    uint32_t m = x & 0x7fffffu;
+    if (e <= 0) return (uint16_t) sign;     // flush subnormals: the test data never reaches them
+    if (e >= 31) return (uint16_t) (sign | 0x7bffu);
+    uint32_t h = sign | ((uint32_t) e << 10) | (m >> 13);
+    const uint32_t rest = m & 0x1fffu;
+    if (rest > 0x1000u || (rest == 0x1000u && (h & 1u))) ++h;
+    return (uint16_t) h;
+}
+
+struct Diff { double abs = 0, rel = 0; };
+Diff compare(const std::vector<float>& a, const std::vector<float>& ref) {
+    Diff d;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double e = std::fabs((double) a[i] - (double) ref[i]);
+        d.abs = std::max(d.abs, e);
+        d.rel = std::max(d.rel, e / (std::fabs((double) ref[i]) + 1e-3));
+    }
+    return d;
+}
+
+template <class T> T* to_dev(const std::vector<T>& h) {
+    T* d = nullptr;
+    cudaMalloc((void**) &d, h.size() * sizeof(T));
+    cudaMemcpy(d, h.data(), h.size() * sizeof(T), cudaMemcpyHostToDevice);
+    return d;
+}
+std::vector<float> from_dev(const float* d, size_t n) {
+    std::vector<float> h(n);
+    cudaMemcpy(h.data(), d, n * 4, cudaMemcpyDeviceToHost);
+    return h;
+}
+
+int selftest() {
+    std::mt19937 rng(7);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    auto rnd = [&](size_t n, float sc = 1.0f) { std::vector<float> v(n); for (auto& x : v) x = nd(rng) * sc; return v; };
+    int bad = 0;
+    auto report = [&](const char* what, const Diff& d, double tol) {
+        const bool ok = d.abs < tol;
+        std::printf("%-34s max abs err %.3g  max rel %.3g  %s\n", what, d.abs, d.rel, ok ? "ok" : "FAIL");
+        if (!ok) ++bad;
+    };
+    try {
+        {   // RMSNorm
+            const int rows = 3, cols = 5120;
+            auto x = rnd((size_t) rows * cols, 3.0f), w = rnd(cols, 1.0f);
+            std::vector<float> ref(x.size());
+            for (int r = 0; r < rows; ++r) {
+                double ss = 0; for (int i = 0; i < cols; ++i) ss += (double) x[(size_t) r * cols + i] * x[(size_t) r * cols + i];
+                const double sc = 1.0 / std::sqrt(ss / cols + 1e-6);
+                for (int i = 0; i < cols; ++i) ref[(size_t) r * cols + i] = (float) (x[(size_t) r * cols + i] * sc * w[i]);
+            }
+            float *dx = to_dev(x), *dw = to_dev(w), *dout = nullptr;
+            cudaMalloc((void**) &dout, x.size() * 4);
+            strata::kernels::dense_rms_norm(dx, dw, dout, rows, cols, 1e-6f, nullptr);
+            report("rms_norm 3 x 5120", compare(from_dev(dout, x.size()), ref), 1e-4);
+        }
+        {   // SwiGLU
+            const int n = 17408;
+            auto g = rnd(n, 2.0f), u = rnd(n, 2.0f);
+            std::vector<float> ref(n);
+            for (int i = 0; i < n; ++i) ref[(size_t) i] = (float) (g[(size_t) i] / (1.0 + std::exp(-(double) g[(size_t) i])) * u[(size_t) i]);
+            float *dg = to_dev(g), *du = to_dev(u), *dout = nullptr;
+            cudaMalloc((void**) &dout, n * 4);
+            strata::kernels::dense_swiglu(dg, du, dout, n, nullptr);
+            report("swiglu 17408", compare(from_dev(dout, n), ref), 1e-4);
+        }
+        {   // F32 GEMV
+            const int n_in = 5120, n_out = 48;
+            auto W = rnd((size_t) n_in * n_out, 0.05f), x = rnd(n_in);
+            std::vector<float> ref(n_out);
+            for (int r = 0; r < n_out; ++r) { double a = 0; for (int i = 0; i < n_in; ++i) a += (double) W[(size_t) r * n_in + i] * x[(size_t) i]; ref[(size_t) r] = (float) a; }
+            float *dW = to_dev(W), *dx = to_dev(x), *dy = nullptr;
+            cudaMalloc((void**) &dy, n_out * 4);
+            strata::kernels::dense_gemv_f32(dW, dx, dy, n_in, n_out, nullptr);
+            report("gemv_f32 5120 -> 48", compare(from_dev(dy, n_out), ref), 1e-3);
+        }
+        for (int n_ctx : {1, 40, 256, 257, 700}) {   // attention, including several splits and a partial last one
+            const int H = 24, HK = 4, D = 256, max_ctx = 1024;
+            auto q = rnd((size_t) H * D), k = rnd((size_t) HK * max_ctx * D), v = rnd((size_t) HK * max_ctx * D);
+            std::vector<uint16_t> kh(k.size()), vh(v.size());
+            std::vector<float> kr(k.size()), vr(v.size());
+            for (size_t i = 0; i < k.size(); ++i) {
+                kh[i] = f32_to_f16_bits(k[i]); vh[i] = f32_to_f16_bits(v[i]);
+                kr[i] = strata::fp16_to_fp32(kh[i]); vr[i] = strata::fp16_to_fp32(vh[i]);
+            }
+            const float scale = 1.0f / std::sqrt((float) D);
+            std::vector<float> ref((size_t) H * D);
+            for (int h = 0; h < H; ++h) {
+                const int kvh = h / (H / HK);
+                std::vector<double> sc((size_t) n_ctx);
+                double mx = -1e300;
+                for (int t = 0; t < n_ctx; ++t) {
+                    double d = 0;
+                    for (int i = 0; i < D; ++i) d += (double) q[(size_t) h * D + i] * kr[((size_t) kvh * max_ctx + t) * D + i];
+                    sc[(size_t) t] = d * scale; mx = std::max(mx, sc[(size_t) t]);
+                }
+                double den = 0; for (auto& x : sc) { x = std::exp(x - mx); den += x; }
+                for (int i = 0; i < D; ++i) {
+                    double a = 0;
+                    for (int t = 0; t < n_ctx; ++t) a += sc[(size_t) t] * vr[((size_t) kvh * max_ctx + t) * D + i];
+                    ref[(size_t) h * D + i] = (float) (a / den);
+                }
+            }
+            float* dq = to_dev(q);
+            uint16_t *dk = to_dev(kh), *dv = to_dev(vh);
+            float *dout = nullptr, *dscr = nullptr;
+            cudaMalloc((void**) &dout, ref.size() * 4);
+            cudaMalloc((void**) &dscr, strata::kernels::dense_attn_scratch_bytes(H, D, max_ctx));
+            strata::kernels::dense_attn_decode(dq, dk, dv, dout, dscr, H, HK, D, n_ctx, max_ctx, scale, nullptr);
+            char name[64];
+            std::snprintf(name, sizeof name, "attention 24/4 x 256, n_ctx %d", n_ctx);
+            report(name, compare(from_dev(dout, ref.size()), ref), 2e-3);
+        }
+        {   // KV append: the cell the attention will read
+            const int HK = 4, D = 256, max_ctx = 64, pos = 9;
+            auto k = rnd((size_t) HK * D), v = rnd((size_t) HK * D);
+            std::vector<uint16_t> zero((size_t) HK * max_ctx * D, 0);
+            uint16_t *dk = to_dev(zero), *dv = to_dev(zero);
+            float *dkc = to_dev(k), *dvc = to_dev(v);
+            strata::kernels::dense_kv_append(dk, dv, dkc, dvc, pos, HK, D, max_ctx, nullptr);
+            std::vector<uint16_t> back(zero.size());
+            cudaMemcpy(back.data(), dk, back.size() * 2, cudaMemcpyDeviceToHost);
+            std::vector<float> got((size_t) HK * D), ref((size_t) HK * D);
+            for (int h = 0; h < HK; ++h) for (int i = 0; i < D; ++i) {
+                got[(size_t) h * D + i] = strata::fp16_to_fp32(back[((size_t) h * max_ctx + pos) * D + i]);
+                ref[(size_t) h * D + i] = strata::fp16_to_fp32(f32_to_f16_bits(k[(size_t) h * D + i]));
+            }
+            report("kv_append (K cell)", compare(got, ref), 1e-6);
+        }
+    } catch (const std::exception& e) {
+        std::printf("selftest: exception: %s\n", e.what());
+        return 1;
+    }
+    if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("selftest: a kernel failed\n"); return 1; }
+    std::printf(bad ? "selftest: %d FAILED\n" : "selftest: all passed\n", bad);
+    return bad ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--selftest") return selftest();
     std::string gguf;
     long long context = 32768;
     bool serve = false;

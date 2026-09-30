@@ -80,6 +80,7 @@ struct DenseModel::Impl {
     uint64_t budget = UINT64_MAX;                   // bytes of weights that may go to VRAM
     uint64_t dev_used = 0, host_bytes = 0;
     int host_tensors = 0;
+    long long dbg_from = -1, dbg_to = -1;           // STRATA_DENSE_DEBUG=A:B traces the steps with A <= position < B
     cudaStream_t stream = nullptr;
     cudaEvent_t embed_done = nullptr;
 
@@ -282,6 +283,41 @@ bool meta_int(const strata::GgufFile& g, const std::string& key, int64_t& out) {
     return true;
 }
 
+// Debug aid (STRATA_DENSE_DEBUG): statistics of a device vector, printed to stderr.
+void trace_vec(const char* what, int64_t pos, int layer, const char* kind, const float* dev, int n, void* stream) {
+    cudaStreamSynchronize((cudaStream_t) stream);
+    std::vector<float> h((size_t) n);
+    if (cudaMemcpy(h.data(), dev, (size_t) n * 4, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        std::fprintf(stderr, "dbg pos=%lld %s: copy failed\n", (long long) pos, what);
+        return;
+    }
+    double mx = 0.0, sum2 = 0.0;
+    int nan = 0, inf = 0;
+    for (float v : h) {
+        if (std::isnan(v)) { ++nan; continue; }
+        if (std::isinf(v)) { ++inf; continue; }
+        mx = std::max(mx, (double) std::fabs(v));
+        sum2 += (double) v * v;
+    }
+    std::fprintf(stderr, "dbg pos=%lld layer=%2d %-4s %-7s max|v|=%-12.5g rms=%-12.5g nan=%d inf=%d\n", (long long) pos, layer,
+                 kind, what, mx, std::sqrt(sum2 / std::max(1, n)), nan, inf);
+}
+
+void trace_logits(int64_t pos, const float* dev, int n, void* stream) {
+    cudaStreamSynchronize((cudaStream_t) stream);
+    std::vector<float> h((size_t) n);
+    if (cudaMemcpy(h.data(), dev, (size_t) n * 4, cudaMemcpyDeviceToHost) != cudaSuccess) return;
+    std::vector<int> idx;
+    int nan = 0;
+    for (int i = 0; i < n; ++i) { if (std::isnan(h[(size_t) i])) ++nan; else idx.push_back(i); }
+    const size_t k = std::min<size_t>(5, idx.size());
+    std::partial_sort(idx.begin(), idx.begin() + (std::ptrdiff_t) k, idx.end(),
+                      [&](int a, int b) { return h[(size_t) a] > h[(size_t) b]; });
+    std::fprintf(stderr, "dbg pos=%lld logits nan=%d top:", (long long) pos, nan);
+    for (size_t i = 0; i < k; ++i) std::fprintf(stderr, " %d(%.3f)", idx[i], h[(size_t) idx[i]]);
+    std::fprintf(stderr, "\n");
+}
+
 }  // namespace
 
 DenseModel::DenseModel() : impl_(new Impl) {}
@@ -368,6 +404,11 @@ bool DenseModel::load(const std::string& path, int64_t max_context, std::string&
         if (cs == cudaSuccess) cs = cudaEventCreateWithFlags(&I.embed_done, cudaEventDisableTiming);
         if (cs == cudaSuccess) cs = cudaHostAlloc((void**) &I.embd_stage, (size_t) cfg_.n_embd * 4, cudaHostAllocDefault);
         if (cs != cudaSuccess) { err = std::string("dense model: CUDA setup: ") + cudaGetErrorString(cs); return false; }
+
+        if (const char* e = std::getenv("STRATA_DENSE_DEBUG")) {
+            long long a0 = 0, b0 = 0;
+            if (std::sscanf(e, "%lld:%lld", &a0, &b0) == 2) { I.dbg_from = a0; I.dbg_to = b0; }
+        }
 
         // ---- 3. the embedding table stays in the (mapped) file; a row is dequantized per token
         I.embd = *tok;
@@ -545,6 +586,7 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
     const int S = cfg_.ssm_state, KH = cfg_.ssm_k_heads, VH = cfg_.ssm_v_heads, E = cfg_.n_embd;
     const int qk = S * KH;
     const float eps = cfg_.rms_eps;
+    const bool dbg = I.dbg_from >= 0 && pos_ >= I.dbg_from && pos_ < I.dbg_to;
     try {
         // ---- the embedding row: dequantized on the host into pinned memory, then one copy
         if (cudaEventSynchronize(I.embed_done) != cudaSuccess) { err = "dense model: embedding event"; return false; }
@@ -553,6 +595,7 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
         cudaMemcpyAsync(I.x, I.embd_stage, (size_t) E * 4, cudaMemcpyHostToDevice, I.stream);
         cudaEventRecord(I.embed_done, I.stream);
         dense_fill_i32(I.pos_dev, std::max(H, HK), (int32_t) pos_, s);
+        if (dbg) trace_vec("embed", pos_, -1, "", I.x, E, s);
 
         for (int l = 0; l < cfg_.n_layer; ++l) {
             Layer& L = I.layers[(size_t) l];
@@ -610,12 +653,14 @@ bool DenseModel::step(int32_t token, bool want_logits, std::string& err) {
             I.quantize(I.ffn_h, cfg_.n_ff, s);
             I.gemv(L.ffn_down, I.mix, s);
             add_inplace(I.x, I.mix, E, s);
+            if (dbg) trace_vec("x", pos_, l, L.attn ? "attn" : "gdn", I.x, E, s);
         }
         ++pos_;
         if (want_logits) {
             dense_rms_norm(I.x, I.output_norm, I.xn, 1, E, eps, s);
             I.quantize(I.xn, E, s);
             I.gemv(I.head, I.logits, s);
+            if (dbg) trace_logits(pos_ - 1, I.logits, cfg_.n_vocab, s);
         }
         return true;
     } catch (const std::exception& e) {
