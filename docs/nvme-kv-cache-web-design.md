@@ -6,7 +6,8 @@ About card, `setup.py`'s cache knob with C11 closed in the tier doc).  The GPU g
 production engine stopped - `nvme_steps123_test.sh`, `nvme_failure_contract_test.sh`, `nvme_p0_test.sh`,
 `nvme_delta_p0_test.sh` ALL PASS, `short_tests.py` ALL PASS, and a live server on this code promoted 1,453 tokens
 from disk and recorded a refusal and a sweep in `/metrics` - the results, and the three bugs that run caught, are
-in `docs/nvme-kv-cache-design.md` §6.  This is the C11 item of
+in `docs/nvme-kv-cache-design.md` §6.  Merging this branch into `nvme-kv-cache` and redeploying is
+`docs/nvme-kv-web-merge-handoff.md`.  This is the C11 item of
 `docs/nvme-kv-cache-design.md` §7 / §9.2 ("Metrics: the three failure classes, promotes, refusals and dump results
 are stderr-only; `serve/telemetry.py` parses nothing NVMe-related") turned into a buildable design, plus the
 web page that consumes it.
@@ -251,7 +252,7 @@ like the Monitor tab and costs no new CSS beyond a few rows.
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │ Store directory  /local/strata/kvstore                                             │
 │ Format version   3 (this build) · 0 files of another version on disk              │
-│ Chunk BLOCK      lcm(page_size, idx_block) = 1,024 tokens                         │
+│ Chunk BLOCK      lcm(page_size, idx_block) = 4 tokens                             │
 │ Sealed CHUNK     64 blocks = 256 tokens (kDeltaBlocksPerChunk; per-manifest       │
 │                  blocks_per_chunk, 0 = the legacy 1-block layout - the store      │
 │                  holds both, nothing converts)                                    │
