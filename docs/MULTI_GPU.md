@@ -71,8 +71,9 @@ strata serve: layer split: layers 0-24 (CUDA0), 25-47 (CUDA1), one hand-off per 
 
 ## What each card holds
 
-- **every card**: a copy of the dense weights (~3.4 GB for the Coder), its own session state (the KV cache of the full
-  context), its verify window and its prompt-path buffers, and an expert cache for its layers filled from the profile;
+- **every card**: a copy of the dense weights (~3.4 GB for the Coder), the session state of its own layers (their KV
+  cache for the full context), its verify window, and an expert cache for its layers filled from the profile. While a
+  prompt is read, the top slots of that cache hold the card's prompt buffers;
 - **the last card**: also the output head and the draft layer (~0.8 GB);
 - **host RAM**: the expert arena once, shared by all cards (the CPU pool computes whatever no card holds).
 
@@ -94,9 +95,9 @@ into the card that owns the layer.
     as it did without a split: its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`), with or without a split; a native (IQ) pack says so at
   start.
-- The prompt path has its own buffers on every card (1.5 GB each at the default 2048-token chunk; `--prefill 1024`
-  halves that) instead of borrowing cache slots as one card does. An explicit `--expert-cache` on the first card is
-  capped to leave room for them.
+- Every card borrows its prompt buffers from its own cache, and all cards read the same chunk: with `--prefill auto`,
+  the largest one every card can lend. Without an expert profile, or with `--no-prefill-borrow`, every card keeps its
+  own buffers for the session instead (2048-token chunks, ~1.5 GB a card).
 - On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
   allocations); the PCIe share covers those layers. Linux pins all of it, as with one card.
 - Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
@@ -117,6 +118,18 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - **Decode is on par with the faster card alone**, and ahead on code. Once both caches hold nearly every routed
   expert, the per-layer GPU time decides.
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
+
+Qwen3.8-Flash-Next IQ2_XS (33 GiB of experts, more than both cards hold together) on 2 x RTX 2080 Ti (11 GB, PCIe
+gen3 x16, Core i7-7700K), Linux, 32K context, `--spec 4` with the MTP drafter:
+
+| | Prompt 1.9K / 8K / 16K / 29K tok/s | Decode tok/s | Decode cache hits |
+|---|---|---|---|
+| one 2080 Ti | 466 / 695 / 840 / 836 | 36.7 | 66% |
+| 2 x 2080 Ti, auto (K=25) | 485-490 / 774-781 / 1,116-1,131 / 1,278-1,302 | 48.4-50.3 | 80-81% |
+| same, arena pinned only to 8 GiB | 442 / 696 / 921 / 999 | 44.7 | - |
+
+- **Decode +32-37%.** On this 4-core CPU, decode waits on the CPU pool; the second cache holds ~3,800 more experts.
+- **Prompts gain with length** (+4-5% at 1.9K, +53-56% at 29K): the more chunks, the more the two cards overlap.
 
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.

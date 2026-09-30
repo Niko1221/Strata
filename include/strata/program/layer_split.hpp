@@ -1,4 +1,4 @@
-// include/strata/program/layer_split.hpp - the layer split's arithmetic (docs/MULTI_GPU.md), apart from the devices
+// include/strata/program/layer_split.hpp - the layer split's arithmetic (docs/MULTI_GPU.md), apart from the devices,
 // so src/program/layer_split_test.cpp can check it.
 #pragma once
 
@@ -48,7 +48,7 @@ struct Placement {
     int64_t held = 0;          ///< the profiled pairs they hold
 };
 
-/// The VRAM a card running layers [lb, le) takes for them beyond its expert cache (the session's carve).
+/// The VRAM a card running layers [lb, le) needs for their session (the carve), which its expert cache cannot use.
 using RangeBytes = std::function<int64_t(int64_t lb, int64_t le)>;
 
 class Planner {

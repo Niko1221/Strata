@@ -102,7 +102,7 @@ int main() {
         // 12 bytes a layer plus its 4 pairs: the faster card fits 6 layers in 100, so K=6, not 7 as without it
         const ls::Planner pc(kL, toy_profile(), ones, costs, [](int64_t lb, int64_t le) { return 12 * (le - lb); });
         const ls::Placement k7 = pc.predict({{100, 0.5}, {100, 1.0}}, {7});
-        check(k7.held == 20 && k7.ms > 15.0, "the carve priced: K=7 leaves the faster card room for 16 of its 28 pairs");
+        check(k7.held == 20 && k7.ms > 15.0, "the carve priced: K=7 holds 20 pairs (16 on the faster card)");
         const ls::Placement b = pc.best({{100, 0.5}, {100, 1.0}});
         check(b.at == std::vector<int64_t>{6} && b.held == kL * kE && near(b.ms, 5.0),
               "the carve priced: the faster card takes the 6 layers it can hold (K=6)");
