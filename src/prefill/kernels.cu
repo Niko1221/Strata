@@ -34,6 +34,9 @@ __device__ __forceinline__ uint16_t bf(float f) {
 }
 __device__ __forceinline__ float sigm(float x) { return 1.0f / (1.0f + __expf(-x)); }
 __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__float2half_rn(f)); }
+// A SwiGLU product for an FP16 GEMM: saturated, so a token with a massive activation cannot turn into inf and then
+// NaN in the down projection (decode's q8_1 has room to ~8e6; FP16 ends at 65504)
+__device__ __forceinline__ uint16_t hf_sat(float f) { return hf(fminf(fmaxf(f, -65504.0f), 65504.0f)); }
 // block-wide sum for blockDim.x <= 1024, result broadcast
 __device__ float block_sum(float v, float* sh) {
     const int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
@@ -486,14 +489,14 @@ __global__ void swiglu_il_kernel(const float* __restrict__ gu, uint16_t* __restr
     if (i >= n * 640) return;
     const int64_t r = i / 640, k = i % 640;
     const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
-    h16[i] = hf(g / (1.0f + __expf(-g)) * u);
+    h16[i] = hf_sat(g / (1.0f + __expf(-g)) * u);
 }
 __global__ void swiglu_pair_kernel(const float* __restrict__ g, const float* __restrict__ u, uint16_t* __restrict__ h16,
                                    int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n * 640) return;
     const float a = g[i];
-    h16[i] = hf(a / (1.0f + __expf(-a)) * u[i]);
+    h16[i] = hf_sat(a / (1.0f + __expf(-a)) * u[i]);
 }
 __global__ void gather_rows16_kernel(const uint16_t* __restrict__ x, const int32_t* __restrict__ src,
                                      uint16_t* __restrict__ dst, int64_t n, int64_t width) {
