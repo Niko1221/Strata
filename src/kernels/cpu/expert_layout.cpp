@@ -94,7 +94,16 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     std::string line;
     // `layer gu_type d_type offset blob_bytes`; older packs' extra columns (shard-1 offsets) are not read
     while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') continue;
+        if (line.empty() || line[0] == '#') {
+            if (!line.empty() && line[0] == '#') {
+                // v3 packs record their expert count in the header; a pruned model (GSQ-RCO Coder) ships
+                // fewer experts than the canonical geometry the caller passes, which is a compile-time
+                // default, so the header wins.
+                const size_t at = line.find("(n_expert ");
+                if (at != std::string::npos) L.n_expert = std::atoll(line.c_str() + at + 10);
+            }
+            continue;
+        }
         std::istringstream ss(line);
         long long l = -1, gt = -1, dt = -1;
         unsigned long long off = 0, blob = 0;
@@ -120,7 +129,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             err = "native_experts.txt: layer " + std::to_string(l) + " is missing or not contiguous";
             return false;
         }
-        at += L.bytes[(size_t) l] * (uint64_t) n_expert;
+        at += L.bytes[(size_t) l] * (uint64_t) L.n_expert;
     }
     L.total = at;
     g_layout = L;

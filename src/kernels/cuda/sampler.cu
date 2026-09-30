@@ -1,18 +1,18 @@
-// src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in the order docs/sampling.md settles.
+// src/kernels/cuda/sampler.cu - P2.S2: the sampler chain, in llama.cpp's order.
 //
-//     penalties  ->  top_k  ->  top_p  ->  temperature  ->  pick
+//     penalties -> top_k -> top_p -> min_p -> temperature -> pick
 //
-// THE ORDER IS THE WHOLE CONTENT OF THIS FILE.  `docs/sampling.md` transcribes it from llama.cpp's own chain
-// (`common/sampling.cpp` L357/360/375/381/399) and the two facts that are easy to get backwards are that
-// TEMPERATURE COMES AFTER THE TRUNCATION FILTERS and PENALTIES COME AFTER TEMPERATURE.  The intuitive order -
-// scale first, then truncate, with penalties as pre-processing - is a different distribution.  Both produce a
-// valid token, so only a comparison at the distribution level can tell them apart; the parity test does that
-// explicitly by running the wrong order and requiring it to differ.
+// THE ORDER IS THE WHOLE CONTENT OF THIS FILE.  llama.cpp builds its chain by walking `params.samplers`, whose
+// default is { PENALTIES, DRY, TOP_N_SIGMA, TOP_K, TYPICAL_P, TOP_P, MIN_P, XTC, TEMPERATURE } (`common/common.h`
+// at 3cf03257) - ONE penalties stage, first, and TEMPERATURE AFTER THE TRUNCATION FILTERS.  (Issue #53: this file
+// used to apply the penalties a second time after the temperature, and min_p before top_p - both taken from the
+// order of the `case` labels in `common/sampling.cpp`, which is not the order the chain runs.)  Every order
+// produces a valid token, so only a comparison at the distribution level can tell them apart; the parity test
+// does that against an independently computed distribution.
 //
-// Everything happens on the logits of ONE token in one thread.  The vocab is 248,320, which is far too large
-// to sort per token on a naive path, so `top_k` uses `k` passes of a maximum scan - 20 x 248,320 = 5.0M
-// comparisons per token.  Phase 3's note ("sort-free sampler: top-k = 20 makes this easy") is the optimisation;
-// this is the correctness version.
+// Both kernels put ONE BLOCK per token over the vocabulary: `sampler_greedy_kernel` is the plain argmax,
+// `sampler_kernel` runs the sampled chain as `top_k` block-argmax rounds followed by the top_p / temperature /
+// draw chain (its header says why the selection must be parallel and why the tie rule keeps the semantics).
 #include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
@@ -102,12 +102,35 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
         hrow += history_len - hlen;          // the window is the TAIL
     }
 
+    // PENALTY MEMBERSHIP AS A BITMAP.  The history touches at most `hlen` tokens of a quarter-million
+    // vocabulary, but the naive `history_count` per candidate per argmax round costs O(k x n_vocab x hlen)
+    // integer compares (~318 M per token at k=20, hlen=64 - measured 45 -> 31 tok/s on a real workload).
+    // A shared bitmap gives an O(1) membership test, and only the (at most hlen) hits pay the count scan;
+    // the counts - and therefore every sampled value - are exactly what the per-candidate scan produced.
+    extern __shared__ unsigned int penal_bits[];
+    const int bits_words = (int) ((n_vocab + 31) / 32);
+    // The gate needs a NON-EMPTY WINDOW (`hlen > 0`): the launch sizes the shared bitmap only when penalties
+    // are on, so a caller handing over a history buffer with `penalty_last_n == 0` must not touch it.
+    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
+    if (use_bits) {
+        for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
+        __syncthreads();
+        for (int i = threadIdx.x; i < hlen; i += blockDim.x)
+            if (hrow[i] >= 0 && hrow[i] < n_vocab)   // an id outside the vocabulary is never a candidate
+                atomicOr(&penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
+        __syncthreads();
+    }
+    auto hit_count = [&](int v) -> int {
+        if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0;
+        return history_count(hrow, hlen, v);
+    };
+
     // `n_vocab` is the "no candidate" index: it loses every comparison to a real one, so a thread with no
     // elements contributes nothing rather than contributing a bogus zero.
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
     for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-        const float s = apply_penalties(l[v], hrow ? history_count(hrow, hlen, v) : 0, p);
+        const float s = apply_penalties(l[v], hit_count(v), p);
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
@@ -134,47 +157,32 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     }
 }
 
+/// **THE SAMPLED PATH, ONE BLOCK PER TOKEN.**  The kernel below replaced a version that ran the whole chain
+/// in ONE THREAD per token (`<<<ceil(T/64), 64>>>`, so a 4-token window fielded four threads): `top_k` alone
+/// was `k` sequential scans of the vocabulary with an inner sweep over the already-taken list - 20 x 248,320
+/// iterations of dependent work on one SM - and a verify window measured **1.6 s in the sampler**, which made
+/// every temperature-bearing request ~30x slower than a greedy one.  The selection is `k` argmax rounds, and
+/// an argmax over the vocabulary parallelises exactly like `sampler_greedy_kernel` (block over the vocab), so
+/// the rounds run back to back inside a block-per-token launch: the per-token cost falls to
+/// `k x n_vocab / 1024` plus `k` block reductions.
+///
+/// THE SEMANTICS ARE THE SERIAL ONES, EXACTLY.  Each round's argmax resolves ties to the LOWEST index (the
+/// serial scan's strict `>` keeps the first maximum it meets), so the kept sequence - both its set and its
+/// order - is unchanged; `top_p`'s cut reads that order in double arithmetic as before; temperature and the
+/// Philox draw apply after the cut.  `sampler_parity` pins all of it against the host reference.
 __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, int n_tokens,
                                const int* __restrict__ history, int history_len, const SamplerParams p,
                                int* __restrict__ out) {
-    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    const int t = blockIdx.x;
     if (t >= n_tokens) return;
-
-    // Work on a private copy: the chain mutates the distribution and the caller's logits are shared with the
-    // next stage.  A 248,320-float allocation per thread is far too much for shared memory, so this uses a
-    // two-pass approach instead - first find the keep set, then normalise over it - and never materialises a
-    // second full-size buffer.
     const float* l = logits + (size_t) t * n_vocab;
 
-    // Temperature is needed by BOTH paths below, so it is computed here; the chain still APPLIES it after
+    // Temperature is needed by BOTH stages below, so it is computed here; the chain still APPLIES it after
     // the truncation filters - the survivors are chosen on the raw logits and only then scaled.
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
 
-    // ---- penalties: NOT IMPLEMENTED, and the ORDER they must take is transcribed here so the next person
-    // does not have to guess it.  `llama_sampler_penalties_apply` (src/llama-sampler.cpp) runs AFTER
-    // temperature in the chain (L381 against L375), and for every token seen in the last `penalty_last_n`:
-    //
-    //     if (logit <= 0) logit *= penalty_repeat;   else logit /= penalty_repeat;
-    //     logit -= float(count) * penalty_freq + float(count > 0) * penalty_present;
-    //
-    // TWO details there are counter-intuitive.  The repeat penalty MULTIPLIES for non-positive logits and
-    // DIVIDES for positive ones - the source notes the paper only ever divided, "but that would cause tokens
-    // with negative logits to become more likely, which is obviously wrong".  And the presence penalty rides
-    // on `float(count > 0)`, a BOOLEAN cast to float, not the count - so it applies once however many times
-    // the token appeared.  Both are the kind of thing a plausible implementation gets wrong while still
-    // producing valid tokens.
-    //
-    // It needs the token history, which is not in this signature, so a caller passing a non-zero
-    // `penalty_last_n` gets a loud failure rather than a silently unpenalised sample.
-    // ---- top_k: k passes of a maximum scan, skipping the already-taken
-    // ---- top_p: cumulative mass over the survivors in descending order
-    // The two are done together in one selection pass so the survivors and their mass are consistent.
-    // GREEDY IS THE GLOBAL ARGMAX, WHATEVER THE FILTERS SAY - so it is computed directly and the filter chain
-    // is skipped entirely.  No filter can remove the maximum: top_k keeps the k largest, top_p keeps a prefix
-    // of the descending order that always contains the largest (min_keep >= 1), and temperature is monotonic so
-    // it cannot reorder anything.  That also makes greedy INDEPENDENT OF THE ORDER, which is why the ordering
-    // test cannot use it - see sampler_parity.cpp.
-    // The penalty window is the last `penalty_last_n` entries of this row's history.
+    // The penalty window is the last `penalty_last_n` entries of this row's history (disabled at this
+    // launch: `sample_tokens` refuses a non-zero `penalty_last_n` without a history buffer).
     const int* hrow = history ? history + (size_t) t * history_len : nullptr;
     int hlen = 0;
     if (hrow) {
@@ -183,109 +191,115 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
         hrow += history_len - hlen;          // the window is the TAIL
     }
 
-    if (p.greedy || p.temperature <= 0.0f) {
-        // Greedy is the global argmax ONLY when no penalty is active: a penalty can lower a token enough to
-        // change the maximum, so the argmax has to be taken over the penalised logits, not the raw ones.
-        //
-        // *** TEMPERATURE MUST NOT BE APPLIED HERE.  THIS WAS A REAL BUG. ***
-        // This branch used to read `apply_penalties(l[v] * inv_t, ...)`.  `inv_t` is 0.0f whenever
-        // temperature <= 0 (see above), so at temperature 0 EVERY logit became 0.0f and the argmax returned
-        // index 0 - the sampler emitted token 0 forever, whatever the model predicted.  OpenAI clients send
-        // `temperature: 0` for greedy decoding, so this was reachable from any ordinary client.
-        // It is also pointless even when inv_t is non-zero: scaling by a positive constant is monotonic and
-        // cannot reorder the argmax, which is exactly what the note above this block already says.
-        int best = 0;
-        float bv = apply_penalties(l[0], hrow ? history_count(hrow, hlen, 0) : 0, p);
-        for (int v = 1; v < n_vocab; ++v) {
-            const float s = apply_penalties(l[v], hrow ? history_count(hrow, hlen, v) : 0, p);
+    // the membership bitmap, as in `sampler_greedy_kernel` - see the cost note there.  The gate needs an
+    // NON-EMPTY WINDOW too: the launch sizes the bitmap only when penalties are on, so a caller that hands over
+    // a stale history buffer with `penalty_last_n == 0` must not touch it.
+    extern __shared__ unsigned int penal_bits[];
+    const int bits_words = (int) ((n_vocab + 31) / 32);
+    const bool use_bits = hrow != nullptr && hlen > 0 && bits_words > 0;
+    if (use_bits) {
+        for (int w = threadIdx.x; w < bits_words; w += blockDim.x) penal_bits[w] = 0u;
+        __syncthreads();
+        for (int i = threadIdx.x; i < hlen; i += blockDim.x)
+            if (hrow[i] >= 0 && hrow[i] < n_vocab)   // an id outside the vocabulary is never a candidate
+                atomicOr(&penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
+        __syncthreads();
+    }
+    auto hit_count = [&](int v) -> int {
+        if (!use_bits || !(penal_bits[v >> 5] & (1u << (v & 31)))) return 0;
+        return history_count(hrow, hlen, v);
+    };
+
+    // top_k in 1..64 is taken as given; 0 ("off") and anything wider mean the widest shortlist the kernel
+    // keeps, 64.  Every row writes out[t]: a verify window reads all of them.
+    const int KMAX = 64;
+    int k = (p.top_k > 0 && p.top_k < KMAX) ? p.top_k : KMAX;
+    if (k > n_vocab) k = n_vocab;
+
+    // ---- top_k: k rounds of a block argmax over the not-yet-taken.  `sel_*` holds the kept ids and their
+    // raw logits in selection order: descending by value, ties to the lower index, which is the order the
+    // top_p cut below is defined over.
+    __shared__ int sel_ids[KMAX];
+    __shared__ float sel_logit[KMAX];
+    __shared__ float sv[32];
+    __shared__ int si[32];
+    for (int i = 0; i < k; ++i) {
+        // `n_vocab` is the "no candidate" index: it loses every comparison to a real one (same convention as
+        // the greedy kernel, whose tie rule this reduction shares).
+        float bv = __int_as_float(0xff800000);   // -inf
+        int best = n_vocab;
+        for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
+            bool taken = false;
+            for (int j = 0; j < i; ++j) if (sel_ids[j] == v) { taken = true; break; }
+            if (taken) continue;
+            const float s = apply_penalties(l[v], hit_count(v), p);
             if (s > bv) { bv = s; best = v; }
         }
-        out[t] = best;
-        return;
+        for (int off = 16; off > 0; off >>= 1) {
+            const float ov = __shfl_down_sync(0xFFFFFFFFu, bv, off);
+            const int oi = __shfl_down_sync(0xFFFFFFFFu, best, off);
+            if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
+        }
+        const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
+        if (lane == 0) { sv[warp] = bv; si[warp] = best; }
+        __syncthreads();
+        if (warp == 0) {
+            const int nw = (int) ((blockDim.x + 31) >> 5);
+            float wv = lane < nw ? sv[lane] : __int_as_float(0xff800000);
+            int wi = lane < nw ? si[lane] : n_vocab;
+            for (int off = 16; off > 0; off >>= 1) {
+                const float ov = __shfl_down_sync(0xFFFFFFFFu, wv, off);
+                const int oi = __shfl_down_sync(0xFFFFFFFFu, wi, off);
+                if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
+            }
+            if (lane == 0) { sel_ids[i] = (wi < n_vocab) ? wi : 0; sel_logit[i] = wv; }
+        }
+        __syncthreads();
     }
 
-    const int KMAX = 64;
-    int keep_ids[KMAX];
-    float keep_logit[KMAX];
-    int k = p.top_k > 0 ? (p.top_k < KMAX ? p.top_k : KMAX) : KMAX;
-    if (p.top_k <= 0) k = 0;                      // 0 means "no top-k filter" -> handled by the mask below
-
-    if (k <= 0) {
-        std::printf("sampler: the sampled path needs top_k in 1..%d (got %d); greedy needs no filters\n", KMAX, p.top_k);
-        return;   // leave out[t] unwritten rather than returning an uninitialised token
-    }
-    int n_keep = 0;
-    {
+    // ---- top_p over the top_k list (penalised logits, descending as the selection produced them), then min_p,
+    // then temperature and one Philox draw - llama.cpp's order (issue #53).  Every thread computes the same chain
+    // redundantly over `sel_*` - the arithmetic is the serial kernel's, instruction for instruction - so they
+    // agree on `pick` and thread 0 writes it.
+    int n_keep = k;
+    float mx = sel_logit[0];
+    for (int i = 1; i < k; ++i) mx = fmaxf(mx, sel_logit[i]);
+    if (p.top_p < 1.0f) {
+        double sum = 0.0;
+        for (int i = 0; i < k; ++i) sum += exp((double) sel_logit[i] - (double) mx);
+        double cum = 0.0;
+        int cut = k;
         for (int i = 0; i < k; ++i) {
-            int best = -1;
-            float bv = 0.0f;
-            for (int v = 0; v < n_vocab; ++v) {
-                bool taken = false;
-                for (int j = 0; j < i; ++j) if (keep_ids[j] == v) { taken = true; break; }
-                if (taken) continue;
-                if (best < 0 || l[v] > bv) { best = v; bv = l[v]; }
-            }
-            keep_ids[i] = best;
-            keep_logit[i] = bv;
+            cum += exp((double) sel_logit[i] - (double) mx) / sum;
+            if (cum >= (double) p.top_p) { cut = i + 1; break; }
         }
-        n_keep = k;
-
-        // ---- top_p over the survivors, in descending order (which the selection above already produced)
-        if (p.top_p < 1.0f) {
-            // softmax over the keep set for the cumulative mass
-            float mx = keep_logit[0];
-            for (int i = 1; i < n_keep; ++i) mx = fmaxf(mx, keep_logit[i]);
-            double sum = 0.0;
-            for (int i = 0; i < n_keep; ++i) sum += exp((double) keep_logit[i] - (double) mx);
-            double cum = 0.0;
-            int cut = n_keep;
-            for (int i = 0; i < n_keep; ++i) {
-                cum += exp((double) keep_logit[i] - (double) mx) / sum;
-                if (cum >= (double) p.top_p) { cut = i + 1; break; }
-            }
-            if (cut < p.min_keep) cut = p.min_keep < n_keep ? p.min_keep : n_keep;
-            n_keep = cut;
-        }
+        if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
+        n_keep = cut;
     }
-
-
-    if (p.greedy || p.temperature <= 0.0f) {
-        // DEAD CODE AS WRITTEN: the identical condition at the top of this function already returned, so this
-        // block cannot be reached.  It is kept and corrected rather than deleted because if that early return
-        // is ever narrowed, this is the path that would run - and it carried the same `* inv_t` bug (every
-        // logit 0.0f at temperature 0, so `best` would always be `keep_ids[0]`).  Temperature is monotonic and
-        // cannot reorder a maximum, so it must not appear here at all.
-        // argmax over the SURVIVORS, ties by smallest id (the same convention as the router and top_k)
-        int best = keep_ids[0];
-        float bv = keep_logit[0];
-        for (int i = 1; i < n_keep; ++i) {
-            const float v = keep_logit[i];
-            if (v > bv) { bv = v; best = keep_ids[i]; }
-        }
-        out[t] = best;
-        return;
+    // ---- min_p on top_p's survivors: the descending prefix whose probability is at least `min_p` of the top
+    // token's.  In logit space the threshold is `sel_logit[0] + logf(min_p)` - equivalent to `p >= min_p * p_max`
+    // without the overflow an exp of raw logits risks.  0 disables, and the head itself always survives
+    // (`expf(0) == 1 >= min_p` for min_p in 0..1), so the count never reaches zero.
+    if (p.min_p > 0.0f) {
+        const float thresh = sel_logit[0] + logf(p.min_p);
+        for (int i = 0; i < n_keep; ++i)
+            if (sel_logit[i] < thresh) { n_keep = i; break; }
     }
-
-    // ---- pick: temperature, then penalties, then softmax over the survivors, then one uniform draw.
-    // The ORDER is the chain's: the survivors were chosen on the RAW logits, temperature scales them, and the
-    // penalty is applied to the scaled value - which is why the `logit <= 0` branch inside the penalty sees a
-    // temperature-scaled logit and not the model's own.
-    for (int i = 0; i < n_keep; ++i) {
-        keep_logit[i] = apply_penalties(keep_logit[i] * inv_t,
-                                        hrow ? history_count(hrow, hlen, keep_ids[i]) : 0, p);
-    }
-    float mx = keep_logit[0];
-    for (int i = 1; i < n_keep; ++i) mx = fmaxf(mx, keep_logit[i]);
+    // temperature only: the penalties were applied once, before the selection (issue #53: they were applied a
+    // second time here, after the temperature scaling - llama.cpp's chain has one penalties stage)
+    auto scaled = [&](int i) { return sel_logit[i] * inv_t; };
+    float smx = scaled(0);
+    for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, scaled(i));
     double sum = 0.0;
-    for (int i = 0; i < n_keep; ++i) sum += exp((double) keep_logit[i] - (double) mx);
+    for (int i = 0; i < n_keep; ++i) sum += exp((double) scaled(i) - (double) smx);
     const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
     double cum = 0.0;
-    int pick = keep_ids[n_keep - 1];
+    int pick = sel_ids[n_keep - 1];
     for (int i = 0; i < n_keep; ++i) {
-        cum += exp((double) keep_logit[i] - (double) mx) / sum;
-        if ((double) u < cum) { pick = keep_ids[i]; break; }
+        cum += exp((double) scaled(i) - (double) smx) / sum;
+        if ((double) u < cum) { pick = sel_ids[i]; break; }
     }
-    out[t] = pick;
+    if (threadIdx.x == 0) out[t] = pick;
 }
 
 }  // namespace
@@ -298,16 +312,19 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                      p.penalty_last_n, (const void*) history, history_len);
         std::exit(1);
     }
-    const int threads = 64;
-    const unsigned grid = (unsigned) ((n_tokens + threads - 1) / threads);
+    const unsigned shmem = (history != nullptr && history_len > 0 && p.penalty_last_n > 0)
+                               ? (unsigned) ((n_vocab + 31) / 32) * sizeof(unsigned)   // the penalty bitmap
+                               : 0;
     if (p.greedy || p.temperature <= 0.0f) {
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, 0, (cudaStream_t) stream>>>(
+        sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
             logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else {
-        sampler_kernel<<<grid, threads, 0, (cudaStream_t) stream>>>(logits, n_vocab, n_tokens, history,
-                                                                   history_len, p, out);
+        // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
+        // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
+        sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
+            logits, n_vocab, n_tokens, history, history_len, p, out);
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {

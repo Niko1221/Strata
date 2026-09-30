@@ -27,6 +27,13 @@ bool native_qsa_indexer_enabled();
 // max_cells is a positive fixed capacity; pos_base+max_cells must fit int32.
 // Out-of-range device positions are ignored defensively, not host-validated.
 // This adapter does not alter score accumulation, top-k, or finite 1e9 tail bias.
+// perf-review C-2: the appends of cells [p0, p0 + n) at once, leaving the buffers exactly as n calls of the
+// single append in order would (the prompt path appends a chunk before any query reads the state). raw [n, 128].
+// Host-side positions (not for a captured graph).
+void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, int32_t pos_base, const float* gamma,
+                                     float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
+                                     float freq_base, void* stream);
+
 void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_device,
                                int32_t pos_base, const float* gamma, float epsilon,
                                const QsaIndexerBuffers& buffers, const QsaShapes& shapes,

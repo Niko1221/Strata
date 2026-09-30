@@ -377,7 +377,7 @@ void usage() {
                  "                       same text (not --serve)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
-                 "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native)\n"
+                 "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native; auto: 16384)\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
                  "  --dump-mixed PATH    write the post-attention residual (n_embd, f32)\n"
@@ -868,7 +868,10 @@ int main(int argc, char** argv) {
             o.expert_cache = (v == "auto") ? -1 : std::atoi(v.c_str());
         }
         else if (a == "--vram-reserve-mib") o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib"));
-        else if (a == "--prefill") o.prefill_chunk = std::atoll(next("--prefill"));
+        else if (a == "--prefill") {   // auto: 16K-token chunks, halved until their buffers fit the lendable slots
+            const std::string v = next("--prefill");
+            o.prefill_chunk = v == "auto" ? 16384 : std::atoll(v.c_str());
+        }
         else if (a == "--no-split-rows") o.no_split_rows = true;
         else if (a == "--no-prefill-borrow") o.no_prefill_borrow = true;
         else if (a == "--no-prompt-offload") o.no_prompt_offload = true;
@@ -2492,7 +2495,21 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
-        prefill.should_stop = [&] { return stop_req.load(); };
+        // PP <done> <total> <ms> <tok/s>: the prompt's progress, one line per chunk (the server's progress and
+        // keep-alives); `pp_at` is where the running segment starts, `pp_total` 0 outside a prompt
+        int64_t pp_from = 0, pp_at = 0, pp_total = 0;
+        Clock::time_point pp_t0 = Clock::now();
+        auto pp_line = [&](int64_t done) {
+            if (pp_total <= 0) return;
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
+            std::printf("PP %lld %lld %.0f %.1f\n", (long long) (done - pp_from), (long long) pp_total, ms,
+                        ms > 0 ? 1000.0 * (double) (done - pp_from) / ms : 0.0);
+            std::fflush(stdout);
+        };
+        prefill.should_stop = [&] {
+            pp_line(pp_at + prefill.processed());
+            return stop_req.load();
+        };
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -2515,6 +2532,27 @@ int main(int argc, char** argv) {
                          o.second_gpu >= 0 ? (", " + std::to_string(free2 >> 20) + " MiB on the second GPU").c_str() : "",
                          free_b < ((size_t) 128 << 20)
                              ? " - LOW: requests may stall; lower --max-context or raise --vram-reserve-mib" : "");
+        }
+        // the penalty-history buffer: one row per window row (`penalty_rows`), allocated once for the widest window
+        constexpr int kPenaltyWindowCap = 4096;
+        constexpr size_t kHistSlots = (size_t) kPenaltyWindowCap * (size_t) strata::kernels::kVerifyMaxT;
+        int32_t* d_hist = nullptr;
+        std::vector<int32_t> hist_stage(kHistSlots, -1);
+        if (cudaMalloc(&d_hist, kHistSlots * sizeof(int32_t)) != cudaSuccess) {
+            std::fprintf(stderr, "strata serve: the penalty-history allocation failed\n");
+            return 1;
+        }
+        {
+            // what the server's Monitor tab shows
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            std::printf("INFO context=%lld kv=%s kv_resident=0 expert_slots=%lld expert_cache_mib=%lld spec=%d "
+                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=0 arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                        "spec_min_p=%.2f second_gpu=%d engine=" STRATA_VERSION " fork=custom\n",
+                        (long long) o.max_context, o.kv.c_str(), (long long) xcache.slots(),
+                        (long long) (xcache.bytes() >> 20), o.spec, o.spec, o.spec_lookup, (long long) (free_b >> 20),
+                        (long long) (strata::kernels::cpu::expert_layout().total >> 20), pool.workers(), o.pcie_frac,
+                        o.spec_min_p, o.second_gpu);
         }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
@@ -2543,6 +2581,39 @@ int main(int argc, char** argv) {
             }
             char* endp = nullptr;
             const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
+            // optional keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F, penalty_last_n=N,
+            // penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N, spec_min_p=F (this request's draft floor);
+            // unknown keys (cvec, pcie_frac) are skipped.  Absent keys: greedy, no penalties.
+            float req_temperature = 0.0f, req_top_p = 1.0f, req_min_p = 0.0f;
+            int req_top_k = 20;   // the sampled path keeps 1..64 candidates
+            unsigned long long req_seed = 0;
+            float req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
+            int req_penalty_last_n = 0;
+            double req_spec_min_p = o.spec_min_p;
+            if (endp != nullptr) {
+                for (;;) {
+                    while (*endp == ' ') ++endp;
+                    const char* start = endp;
+                    while (*endp != '\0' && *endp != ' ') ++endp;
+                    if (endp == start) break;
+                    const std::string kv(start, (size_t) (endp - start));
+                    const size_t eq = kv.find('=');
+                    if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
+                    const std::string key = kv.substr(0, eq);
+                    const char* v = kv.c_str() + eq + 1;
+                    const float fv = std::strtof(v, nullptr);
+                    if (key == "temperature") req_temperature = fv;
+                    else if (key == "top_p") req_top_p = fv;
+                    else if (key == "top_k") req_top_k = std::atoi(v);
+                    else if (key == "min_p") req_min_p = fv;
+                    else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(v);
+                    else if (key == "penalty_repeat") req_penalty_repeat = fv;
+                    else if (key == "penalty_freq") req_penalty_freq = fv;
+                    else if (key == "penalty_present") req_penalty_present = fv;
+                    else if (key == "seed") req_seed = std::strtoull(v, nullptr, 10);
+                    else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                }
+            }
             std::string emb_path;
             if (geni && endp != nullptr) {
                 while (*endp == ' ') ++endp;
@@ -2639,6 +2710,21 @@ int main(int argc, char** argv) {
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
+            strata::kernels::SamplerParams req_sp;
+            req_sp.greedy = req_temperature <= 0.0f;
+            req_sp.temperature = req_temperature;
+            req_sp.top_p = req_top_p;
+            req_sp.top_k = req_top_k;
+            req_sp.seed = req_seed ? req_seed
+                                   : (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count();
+            req_sp.min_p = std::clamp(req_min_p, 0.0f, 1.0f);
+            req_sp.penalty_last_n = std::max(req_penalty_last_n, 0);
+            req_sp.penalty_repeat = req_penalty_repeat;
+            req_sp.penalty_freq = req_penalty_freq;
+            req_sp.penalty_present = req_penalty_present;
+            ver.set_sampling(req_sp);
+            const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
+            ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             const Clock::time_point r0 = Clock::now();
             auto report = [&](const std::string& e) {
                 std::fprintf(stderr, "strata serve: %s\n", e.c_str());
@@ -2675,8 +2761,12 @@ int main(int argc, char** argv) {
                 tier2.apply_pending(true);
                 if (!pbuf.take(std::min(o.prefill_chunk, batched_end - reuse), err)) { report(err); return 1; }
                 tr("prompt start", reuse, batched_end);
+                pp_from = reuse;
+                pp_total = n - 1 - reuse;
+                pp_t0 = r0;
                 for (int64_t a0 = reuse; a0 < batched_end;) {
                     const int64_t b0 = track ? std::min(batched_end, a0 + step) : batched_end;
+                    pp_at = a0;
                     if (!prefill.run(ids.data() + a0, b0 - a0, a0, err)) {
                         if (!stop_req.load()) { report(err); return 1; }
                         // STOP: the session holds the chunks read before it
@@ -2722,12 +2812,25 @@ int main(int argc, char** argv) {
                 return true;
             };
             if (!stop_req.load()) {
+                struct NoHeadSampling {   // every token is committed and the picks are discarded
+                    strata::core::Verifier& v;
+                    explicit NoHeadSampling(strata::core::Verifier& x) : v(x) { v.set_head_sampling(false); }
+                    ~NoHeadSampling() { v.set_head_sampling(true); }
+                } no_head_sampling(ver);
+                if (pp_total == 0) {
+                    pp_from = reuse;
+                    pp_total = n - 1 - reuse;
+                    pp_t0 = r0;
+                }
                 const int64_t split = q > batched_end ? q : batched_end;
                 if (!feed(batched_end, split)) { report(err); return 1; }
+                if (split > batched_end) pp_line(split);
                 if (track && split == q) pcache.checkpoint(q);
                 if (!feed(split, n - 1)) { report(err); return 1; }
+                if (n - 1 > split) pp_line(n - 1);
                 if (track) pcache.checkpoint(n - 1);
             }
+            pp_total = 0;
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
@@ -2736,6 +2839,12 @@ int main(int argc, char** argv) {
             int64_t produced_n = 0;
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
+            int64_t draft_offered = 0, draft_accepted = 0;
+            // the expert-cache hits of the decode: rows either GPU computes from its VRAM cache, of all routed rows
+            const int64_t hits0 = drive.d.cache_hits + drive.d.gpu2_entries, look0 = hits0 + drive.d.cache_refused;
+            std::vector<int32_t> consumed;   // what the state has read, for the penalties
+            if (hist_n > 0)
+                for (int64_t i = 0; i + 1 < n; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             int lk = 0;   // the next window's drafts from the lookup (0: the draft layer's)
             if (o.spec_lookup > 0) {
                 ids32.resize((size_t) n);
@@ -2743,14 +2852,14 @@ int main(int argc, char** argv) {
                 lookup.assign(ids32.data(), ids32.size());
             }
             mtp.on_draft = [&](int j, int32_t tok, float prob) {   // the drafts the next window will verify
-                if (lk == 0 && prob >= (float) o.spec_min_p) ver.ple_ahead(j + 1, tok);
+                if (lk == 0 && prob >= (float) req_spec_min_p) ver.ple_ahead(j + 1, tok);
             };
             while (produced_n < max_new) {
                 if (stop_req.load()) { finish = "cancel"; break; }   // the client went away
                 int T = S;
-                if (o.spec_min_p > 0.0) {
+                if (req_spec_min_p > 0.0) {
                     T = 1;
-                    while (T < S && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
+                    while (T < S && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
                 if (lk > 0) T = 1 + lk;
                 if (first_window) T = 1;
@@ -2768,6 +2877,13 @@ int main(int argc, char** argv) {
                 if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T; ++i) window[(size_t) i] = dr[(size_t) i - 1];
+                if (hist_n > 0) {
+                    // row t counts what plain decode would have: the state's tokens, then window[0..t]
+                    strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(), window.data(), T, hist_n,
+                                                  hist_stage.data());
+                    cudaMemcpy(d_hist, hist_stage.data(), (size_t) T * (size_t) hist_n * sizeof(int32_t),
+                               cudaMemcpyHostToDevice);
+                }
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -2788,6 +2904,9 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 if (track) pcache.set(p, window.data(), a + 1);   // the committed cells p .. p + a
+                if (hist_n > 0) consumed.insert(consumed.end(), window.begin(), window.begin() + a + 1);
+                draft_offered += T - 1;
+                draft_accepted += a;
                 ver.ple_ahead(0, outv[(size_t) a]);
                 first_window = false;
                 bool eos = false;
@@ -2809,7 +2928,7 @@ int main(int argc, char** argv) {
                 }
                 mtp.set_max_drafts(lk > 0 ? 1 : S - 1);
                 const bool drafted = (eos || produced_n >= max_new ||
-                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) &&
+                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p)) &&
                                      ver.wait_commit(err);
                 if (!drive.join_adapt()) {
                     std::printf("ERR an adaptive refill failed\n");
@@ -2825,8 +2944,12 @@ int main(int argc, char** argv) {
             }
             mtp.on_draft = nullptr;
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld\n", (long long) produced_n, (long long) n, prompt_ms, decode_ms,
-                        finish, (long long) reuse);
+            const int64_t hits1 = drive.d.cache_hits + drive.d.gpu2_entries, look1 = hits1 + drive.d.cache_refused;
+            // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused>
+            // <expert-cache hits> <lookups>
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld\n", (long long) produced_n, (long long) n,
+                        prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
+                        (long long) reuse, (long long) (hits1 - hits0), (long long) (look1 - look0));
             std::fflush(stdout);
             const int64_t fresh = n - reuse;
             std::fprintf(stderr, "strata serve: %lld prompt tokens (%lld cached) in %.0f ms (%.1f tok/s), %lld generated "

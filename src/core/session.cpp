@@ -1,5 +1,6 @@
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
+#include "strata/core/progress.hpp"
 
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -88,9 +89,12 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
 
     uint8_t* qp = (uint8_t*) s.qsa_state_arena;
+    // a layer whose pinned RAM could not be had (KV streaming's host copy) is half-built: going on would have the
+    // attention read null host pointers at the first request ("illegal memory access"), so the session fails here
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
-        qsa_state_init(g, max_cells, qp + (i == 0 ? 0 : first + (uint64_t) (i - 1) * rest), s.qsa_states[i],
-                       i == 0 ? nullptr : &s.qsa_states[0]);
+        if (qsa_state_init(g, max_cells, qp + (i == 0 ? 0 : first + (uint64_t) (i - 1) * rest), s.qsa_states[i],
+                           i == 0 ? nullptr : &s.qsa_states[0]) == 0)
+            return 0;
     qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
 
     s.moe_arena = take(moe_buffers_bytes(g, k));
@@ -957,6 +961,7 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
         const auto t0 = Clock::now();
         auto last_flush = t0;
         uint32_t spins = 0;
+        progress_at("token: waiting for the GPU to reach layer", l);
         while (*seq < want) {
             STRATA_SPIN_PAUSE();
             if ((++spins & 1023u) != 0) continue;
@@ -978,6 +983,7 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
             }
         }
         const auto t1 = Clock::now();
+        progress_at("token: the CPU experts of layer", l);
         if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
@@ -986,8 +992,11 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
         tg.ms_wait += std::chrono::duration<double, std::milli>(t1 - t0).count();
         tg.ms_pool += std::chrono::duration<double, std::milli>(t2 - t1).count();
     }
+    progress_at("token: waiting for the GPU to finish the token");
     const cudaError_t se = cudaStreamSynchronize(cs);
     if (se != cudaSuccess) { err = std::string("session_run_token: ") + cudaGetErrorString(se); return false; }
+    progress_at("decode");
+    progress_beat();
     return true;
 }
 

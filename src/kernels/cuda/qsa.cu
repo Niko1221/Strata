@@ -43,6 +43,7 @@
 #include "strata/kernels/qsa.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/rope.hpp"
 #include "strata/kernels/mrope.hpp"
 
@@ -120,16 +121,24 @@ __device__ __forceinline__ float h2f(uint16_t bits) { return f32_from_f16(bits);
 __global__ void kv_append_kernel(uint16_t* __restrict__ k_pool, uint16_t* __restrict__ v_pool,
                                  const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                  const float* __restrict__ kcur, const float* __restrict__ vcur, int kv_heads,
-                                 int head_dim, int page_size) {
+                                 int head_dim, int page_size, KvHostPools host) {
     const long long pos = (long long) __ldg(step + kStepPos);
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= kv_heads * head_dim) return;
     const int h = i / head_dim, d = i - h * head_dim;
-    // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page
+    // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page.
+    // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident.
     const long long page = (long long) table[pos / page_size];
-    const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
-    k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
-    v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
+    if (page >= 0) {
+        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
+        k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
+        v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
+    }
+    if (host.k_pool != nullptr) {
+        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
+        host.k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
+        host.v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
+    }
 }
 
 // ================= 2. indexer_key_append =================
@@ -575,13 +584,14 @@ const int32_t* step_upload_width(int64_t width, const QsaShapes& s) {
 // buffer and forward this token's counts as the capacities.
 
 void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
-                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream) {
+                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream, const KvHostPools* host) {
     validate(s, "kv_append");
     if (step == nullptr) fail("kv_append: step is null");
     // The grid is the head x dim count, which is a CONSTANT - `kv_append` writes one cell.
     const long long n = s.n_head_kv * s.head_dim;
     kv_append_kernel<<<grid_for(n, THREADS), THREADS, 0, (cudaStream_t) stream>>>(
-        k_pool, v_pool, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size);
+        k_pool, v_pool, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
+        host ? *host : KvHostPools{});
     check_launch("kv_append");
     if (stream == nullptr) check_sync("kv_append");
 }
@@ -646,7 +656,11 @@ void qsa_attend_step(const float* q, const uint16_t* k_scratch, const uint16_t* 
     // then index past it at token 500.  The kernel reads the real count from `step`, so a larger allocation is
     // exactly what it wants.  The opt-in therefore happens once, for the capacity.
     const size_t smem = (size_t) (max_ids + 32) * sizeof(float);
-    static size_t s_configured = 0;
+    // per DEVICE: the opt-in is a device setting (a layer split runs this on two cards)
+    static size_t s_configured_dev[64] = {};
+    int cur_dev = 0;
+    cudaGetDevice(&cur_dev);
+    size_t& s_configured = s_configured_dev[(cur_dev >= 0 && cur_dev < 64) ? cur_dev : 0];
     if (smem > s_configured) {
         int dev = 0, max_shared = 0;
         cudaGetDevice(&dev);

@@ -32,6 +32,7 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
+#include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
 
@@ -84,6 +85,18 @@ public:
     /// Starts reading the PLE rows of the next window's token t (0, 1, ... in order, after `commit`): `run` takes
     /// them if its token t, and the ones before it, are these.  For the drafts, while the draft layer runs.
     void ple_ahead(int t, int32_t token);
+
+    /// The sampling the head applies (temperature / top_p / top_k / min_p / seed), per request; greedy by default.
+    /// It runs after the captured graph (a captured sampler would bake its parameters in), so it can change between
+    /// requests freely: row t of a window at pos0 draws Philox(seed, pos0 + t), tied to the position it samples, not
+    /// to how the text was cut into windows.  A rejected row's draw is discarded.
+    void set_sampling(const strata::kernels::SamplerParams& sp) { sampling_ = sp; }
+    /// The penalty histories for `penalty_last_n`: one row per window row, T rows of `history_len` int32 slots
+    /// (`strata::kernels::penalty_rows`), device memory staged before every window; null: no penalties.
+    void set_history(const int32_t* history, int history_len) { hist_d_ = history; hist_len_ = history_len; }
+    /// Off: `run` skips the head sampling and `out` is the greedy pick (windows whose picks are discarded: a prompt
+    /// read through windows commits every token).
+    void set_head_sampling(bool on) { head_sampling_ = on; }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.  With `wait` false
     /// the commit graph is only launched (the MTP draft, on its own stream, reads nothing it writes): `wait_commit`
@@ -157,6 +170,16 @@ private:
     bool capture(int T, std::string& err);
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
+
+    strata::kernels::SamplerParams sampling_ = [] {
+        strata::kernels::SamplerParams s;
+        s.greedy = true;
+        s.temperature = 0.0f;
+        return s;
+    }();
+    const int32_t* hist_d_ = nullptr;
+    int hist_len_ = 0;
+    bool head_sampling_ = true;
 
     const WeightTable* wt_ = nullptr;
     const ModelGeometry* g_ = nullptr;

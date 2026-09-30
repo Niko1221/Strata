@@ -41,7 +41,8 @@ from canonical_xcheck import (MAPPINGS, KV_IQ4NL, open_shard,             # noqa
 
 FORMAT_VERSION = 1
 ALIGN = 64                       # every plane starts on a 64-byte boundary (P1.S7)
-STRATA = pathlib.Path(__file__).resolve().parents[3]   # the development layout; build takes the shard from --gguf
+_HERE = pathlib.Path(__file__).resolve()
+STRATA = _HERE.parents[min(3, len(_HERE.parents) - 1)]   # the development layout; build takes the shard from --gguf
 SHARD2 = STRATA / "Q2_0" / "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf"
 
 EXPERT_RE = ("ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight")
@@ -337,6 +338,15 @@ def verify_experts(gguf: pathlib.Path, out_dir: pathlib.Path, man: dict, every: 
 def verify(gguf: pathlib.Path, out_dir: pathlib.Path, limit: int | None, expert_every: int) -> int:
     """P1.T3 over the pack: decode it from disk and compare with the source, bit for bit."""
     man = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    # A full verify also reads back the source hash build recorded (absent after --skip-hash, which is how setup
+    # builds): a pack compared against a different shard than it was built from is a mismatch, not a decode bug.
+    want = (man.get("source") or {}).get("shard1_sha256")
+    if want and limit is None:
+        got = sha256(gguf)
+        if got != want:
+            print("%s: sha256 %s, but the pack was built from %s" % (gguf.name, got, want))
+            print("tools/strata_pack.py verify FAIL")
+            return 1
     g = G.GGUFFile(gguf)
     head, flen = open_shard(gguf)
     data_off = data_section_offset(g, flen)

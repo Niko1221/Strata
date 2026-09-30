@@ -34,7 +34,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from gguf_reader import GGUFFile  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-STRATA = REPO.parents[1]          # the development layout's default shards (setup.py always passes --gguf)
+STRATA = REPO.parents[min(1, len(REPO.parents) - 1)]   # the dev layout's default shards (setup.py passes --gguf)
 SHARD1 = STRATA / "Q2_0" / "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
 
 H, FF, NE = 2560, 640, 512

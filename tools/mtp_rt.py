@@ -22,7 +22,6 @@ from pathlib import Path
 
 import numpy as np
 
-STRATA = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _paths import add_gguf_py  # noqa: E402
 add_gguf_py()

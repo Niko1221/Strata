@@ -110,7 +110,9 @@ inline QsaShapes qsa_real_shapes() {
     QsaShapes s;
     s.n_head = 24; s.n_head_kv = 2; s.head_dim = 256; s.n_rot = 64;
     s.idx_n_head = 4; s.idx_dim = 128; s.idx_block = 4; s.idx_top_k = 2048;
-    s.page_size = 512;
+    // one page = one indexer block (4 cells): the granule KV streaming keeps resident (kv_stream.hpp). The readers
+    // resolve a row per cell anyway, so the page size costs them nothing (measured: identical output and speed).
+    s.page_size = 4;
     return s;
 }
 
@@ -353,8 +355,12 @@ void qsa_attend_step(const float* q, const uint16_t* k_scratch, const uint16_t* 
                      const int32_t* step, int64_t max_ids, const QsaShapes& s, float* attn, float* weights,
                      void* stream);
 
-/// The cell's position comes from `step`, so this is the form a graph may contain.
+struct KvHostPools;   // kv_stream.hpp
+
+/// The cell's position comes from `step`, so this is the form a graph may contain. With a host copy (KV streaming)
+/// the cell is written there too, and to VRAM only if its block is resident.
 void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
-                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream);
+                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
+                    const KvHostPools* host = nullptr);
 
 }  // namespace strata::kernels
