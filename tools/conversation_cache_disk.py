@@ -124,7 +124,7 @@ def main():
         print(f'Dry run: {a.draft_path} draft KV; six sequential engines; restart, admission, tokenizer identity and corruption.')
         print('No model loaded. --run requires an exclusive GPU/model window.')
         return
-    cfg = json.loads(a.config.read_text())
+    cfg = json.loads(a.config.read_text(encoding='utf-8'))
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     output = a.output.resolve()
     tokenizer = output / 'tokenizer'
@@ -166,7 +166,7 @@ def main():
     def files():
         return sorted((disk / 'strata-conversations-v1').glob('*.snap'))
     def save():
-        (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     for phase in ('baseline', 'producer', 'restart', 'admission', 'foreign', 'corrupt'):
         vocab = tokenizer / 'vocab.json'
         if phase == 'foreign':
@@ -223,7 +223,7 @@ def main():
             engine.proc.wait(timeout=30)  # close() may have killed a slow child; wait before the next model load
             engine.log.close()
             save()
-        text = log.read_text()
+        text = log.read_text(encoding='utf-8')
         hashes = state_hashes(text)
         require(len(hashes) == len(entry['records']), f'{phase}: missing state hashes')
         for record, state in zip(entry['records'], hashes):
