@@ -43,7 +43,7 @@ __global__ void append(const float* __restrict__ raw, const int32_t* __restrict_
                         int pos_base, const float* __restrict__ gamma, float epsilon,
                         float* __restrict__ tail, float* __restrict__ dead,
                         float* __restrict__ pooled, int32_t* __restrict__ block_pos,
-                        int max_cells, float theta_scale, const int32_t* __restrict__ mtab) {
+                        int max_cells, RopeTab rt, const int32_t* __restrict__ mtab) {
     const int pos = *pos_dev, d = threadIdx.x;
     if (pos < 0 || pos >= max_cells) return;
     const int slot = pos % R;
@@ -83,8 +83,8 @@ __global__ void append(const float* __restrict__ raw, const int32_t* __restrict_
     float y = values[d];
     if (d < ROT) {
         const int pair = d % (ROT / 2);
-        const float theta = (pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair)) * powf(theta_scale, float(pair));
-        const float c = cosf(theta), s = sinf(theta);
+        float c, s;
+        rope_cs(rt, pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s);
         const float a = values[pair], z = values[pair + ROT / 2];
         y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
     }
@@ -98,13 +98,13 @@ __global__ void append(const float* __restrict__ raw, const int32_t* __restrict_
 // the RMS norm, gamma, the rotation at pos_base + 4b.  `k(j)` is the key of the block's cell j: a row of this batch
 // (cell >= p0) or the tail the previous batch left (cell < p0).  Only the batch's last completed block writes the
 // spare after it (every earlier one's is overwritten by the next block in order).
-__device__ __forceinline__ float pooled_value(const float* values, int d, int rope_pos, float theta_scale,
+__device__ __forceinline__ float pooled_value(const float* values, int d, int rope_pos, const RopeTab& rt,
                                               const int32_t* mtab, bool zero_pos) {
     float y = values[d];
     if (d < ROT) {
         const int pair = d % (ROT / 2);
-        const float theta = (zero_pos ? 0 : mrope_pos(mtab, rope_pos, pair)) * powf(theta_scale, float(pair));
-        const float c = cosf(theta), s = sinf(theta);
+        float c, s;
+        rope_cs(rt, zero_pos ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s);
         const float a = values[pair], z = values[pair + ROT / 2];
         y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
     }
@@ -122,7 +122,7 @@ __device__ __forceinline__ float norm_scale(float mean, float* partials, int d) 
 }
 // cell 0 of a sequence: the spare (every gather index names cell 0), written to pooled[0] and dead
 __global__ void append_first(const float* __restrict__ raw, const float* __restrict__ gamma, float epsilon,
-                             float* __restrict__ dead, float* __restrict__ pooled, float theta_scale,
+                             float* __restrict__ dead, float* __restrict__ pooled, RopeTab rt,
                              const int32_t* __restrict__ mtab) {
     const int d = threadIdx.x;
     __shared__ float values[D];
@@ -140,14 +140,14 @@ __global__ void append_first(const float* __restrict__ raw, const float* __restr
     if (d < D) values[d] = scale * mean * gamma[d];
     __syncthreads();
     if (d >= D) return;
-    const float y = pooled_value(values, d, 0, theta_scale, mtab, true);
+    const float y = pooled_value(values, d, 0, rt, mtab, true);
     pooled[d] = y;
     dead[d] = y;
 }
 __global__ void append_blocks(const float* __restrict__ raw, int64_t n, int64_t p0, int pos_base,
                               const float* __restrict__ gamma, float epsilon, const float* __restrict__ tail,
                               const float* __restrict__ dead, float* __restrict__ pooled, int32_t* __restrict__ block_pos,
-                              int64_t first_block, int64_t last_block, float theta_scale, const int32_t* __restrict__ mtab) {
+                              int64_t first_block, int64_t last_block, RopeTab rt, const int32_t* __restrict__ mtab) {
     const int64_t b = first_block + blockIdx.x;
     const int d = threadIdx.x;
     __shared__ float values[D];
@@ -169,7 +169,7 @@ __global__ void append_blocks(const float* __restrict__ raw, int64_t n, int64_t 
     __syncthreads();
     if (d >= D) return;
     const int rope_pos = pos_base + R * (int) b;
-    pooled[std::size_t(b) * D + d] = pooled_value(values, d, rope_pos, theta_scale, mtab, false);
+    pooled[std::size_t(b) * D + d] = pooled_value(values, d, rope_pos, rt, mtab, false);
     if (b == last_block) {
         pooled[std::size_t(b + 1) * D + d] = dead[d];
         if (d == 0) *block_pos = rope_pos;
@@ -211,9 +211,8 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
     for (const auto& span : spans) validate(span);
     for (int i = 0; i < 7; ++i) for (int j = i + 1; j < 7; ++j)
         if (overlaps(spans[i], spans[j])) throw std::invalid_argument("native QSA indexer buffers overlap");
-    const float theta_scale = powf(freq_base, -2.0f / ROT);
     append<<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_base,gamma,epsilon,
-        b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,mrope_table());
+        b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),rope_table_for(freq_base),mrope_table());
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
@@ -225,17 +224,17 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
         max_cells > INT32_MAX || pos_base < 0 || pos_base % R || int64_t(pos_base) + max_cells > INT32_MAX ||
         !std::isfinite(epsilon) || epsilon <= 0.0f || !std::isfinite(freq_base) || freq_base <= 1.0f)
         throw std::invalid_argument("native QSA indexer (batch): bad geometry, positions or parameters");
-    const float theta_scale = powf(freq_base, -2.0f / ROT);
+    const RopeTab rt = rope_table_for(freq_base);
     const cudaStream_t st = static_cast<cudaStream_t>(stream);
     const int32_t* mtab = mrope_table();
-    if (p0 == 0) append_first<<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, theta_scale, mtab);
+    if (p0 == 0) append_first<<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, rt, mtab);
     // completed blocks: those whose last cell (4b+3) lies in [p0, p0 + n)
     const int64_t first = p0 <= R - 1 ? 0 : (p0 - (R - 1) + R - 1) / R;       // the smallest b with 4b+3 >= p0
     const int64_t hi = p0 + n - 1 >= R - 1 ? (p0 + n - 1 - (R - 1)) / R : -1;   // the largest b with 4b+3 <= p0+n-1
     if (hi >= first)
         append_blocks<<<(unsigned) (hi - first + 1), THREADS, 0, st>>>(raw, n, p0, pos_base, gamma, epsilon, b.tail,
                                                                        b.dead, b.pooled, b.block_pos, first, hi,
-                                                                       theta_scale, mtab);
+                                                                       rt, mtab);
     append_tail<<<R - 1, D, 0, st>>>(raw, n, p0, b.tail);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));

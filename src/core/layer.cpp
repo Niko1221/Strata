@@ -22,6 +22,7 @@
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/native_flash_attn.hpp"
 #include "strata/kernels/fused_gr.hpp"
@@ -661,6 +662,8 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                                           hc.data(), hs.data());
         cudaMemcpy(st.cos_tab, hc.data(), hc.size() * 4, cudaMemcpyHostToDevice);
         cudaMemcpy(st.sin_tab, hs.data(), hs.size() * 4, cudaMemcpyHostToDevice);
+        if (s.n_rot == 64)   // the native and prompt-path rope kernels read it (mrope.hpp)
+            strata::kernels::rope_table_set(st.cos_tab, st.sin_tab, (int) max_cells, strata::kernels::qsa_freq_base());
     }
     // the page table starts as the IDENTITY, which is the simplest legal mapping and what a caller that does
     // not page at all wants; a streamed state starts with nothing resident, a ring at `block % n_slots`.
