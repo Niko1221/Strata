@@ -302,6 +302,170 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
     if (threadIdx.x == 0) out[t] = pick;
 }
 
+
+// ================================ dual-3090 (session 8): the sampled path over many blocks ======================
+// `sampler_kernel` puts ONE block per token over 248,320 logits and runs k (20) argmax rounds, each a full scan
+// with an inner "already taken?" loop: ~3 ms per verify window on 3 of 82 SMs.  Here the SAME selection in two
+// kernels: (1) the vocabulary in kChunks chunks per token, each chunk's own top-k (k rounds over its ~3,900 values
+// in shared memory, a taken value set to -inf), (2) one block per token merges the chunks' candidates with k more
+// rounds and runs the unchanged top_p / min_p / temperature / draw chain.  The global top-k in (value desc, index
+// asc) order is the union of the chunks' top-k's, so the kept list - set AND order - is the serial one exactly.
+constexpr int kChunks = 64;
+constexpr int kKmax = 64;
+
+__device__ __forceinline__ bool better(float v, int i, float bv, int bi) {
+    return v > bv || (v == bv && i < bi && v != __int_as_float(0xff800000));
+}
+
+__device__ __forceinline__ void block_argmax(float& bv, int& bi, float* sv, int* si) {
+    for (int off = 16; off > 0; off >>= 1) {
+        const float ov = __shfl_down_sync(0xFFFFFFFFu, bv, off);
+        const int oi = __shfl_down_sync(0xFFFFFFFFu, bi, off);
+        if (better(ov, oi, bv, bi)) { bv = ov; bi = oi; }
+    }
+    const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
+    if (lane == 0) { sv[warp] = bv; si[warp] = bi; }
+    __syncthreads();
+    if (warp == 0) {
+        const int nw = (int) ((blockDim.x + 31) >> 5);
+        float wv = lane < nw ? sv[lane] : __int_as_float(0xff800000);
+        int wi = lane < nw ? si[lane] : 0x7fffffff;
+        for (int off = 16; off > 0; off >>= 1) {
+            const float ov = __shfl_down_sync(0xFFFFFFFFu, wv, off);
+            const int oi = __shfl_down_sync(0xFFFFFFFFu, wi, off);
+            if (better(ov, oi, wv, wi)) { wv = ov; wi = oi; }
+        }
+        if (lane == 0) { sv[0] = wv; si[0] = wi; }
+    }
+    __syncthreads();
+    bv = sv[0]; bi = si[0];
+    __syncthreads();
+}
+
+__global__ void sampler_chunk_topk_kernel(const float* __restrict__ logits, int n_vocab, const int* __restrict__ history,
+                                          int history_len, const SamplerParams p, int k, float* __restrict__ cv,
+                                          int* __restrict__ ci) {
+    extern __shared__ float vals[];                  // [chunk] then the chunk's penalty bitmap
+    __shared__ float sv[32];
+    __shared__ int si[32];
+    const int t = blockIdx.y, ch = blockIdx.x;
+    const int chunk = (n_vocab + kChunks - 1) / kChunks;
+    const int c0 = ch * chunk, c1 = min(n_vocab, c0 + chunk), n = max(0, c1 - c0);
+    const float* l = logits + (size_t) t * n_vocab;
+    const int* hrow = history ? history + (size_t) t * history_len : nullptr;
+    int hlen = 0;
+    if (hrow) {
+        hlen = p.penalty_last_n < history_len ? p.penalty_last_n : history_len;
+        if (hlen < 0) hlen = 0;
+        hrow += history_len - hlen;
+    }
+    unsigned int* bits = reinterpret_cast<unsigned int*>(vals + chunk);
+    const int words = (chunk + 31) / 32;
+    const bool use_bits = hrow != nullptr && hlen > 0;
+    if (use_bits) {
+        for (int w = threadIdx.x; w < words; w += blockDim.x) bits[w] = 0u;
+        __syncthreads();
+        for (int i = threadIdx.x; i < hlen; i += blockDim.x) {
+            const int v = hrow[i];
+            if (v >= c0 && v < c1) atomicOr(&bits[(v - c0) >> 5], 1u << ((v - c0) & 31));
+        }
+        __syncthreads();
+    }
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const int v = c0 + i;
+        int cnt = 0;
+        if (use_bits && (bits[i >> 5] & (1u << (i & 31)))) cnt = history_count(hrow, hlen, v);
+        vals[i] = apply_penalties(l[v], cnt, p);
+    }
+    __syncthreads();
+    float* ov = cv + ((size_t) t * kChunks + ch) * kKmax;
+    int* oi = ci + ((size_t) t * kChunks + ch) * kKmax;
+    for (int r = 0; r < k; ++r) {
+        float bv = __int_as_float(0xff800000);
+        int bi = 0x7fffffff;
+        for (int i = threadIdx.x; i < n; i += blockDim.x)
+            if (better(vals[i], c0 + i, bv, bi)) { bv = vals[i]; bi = c0 + i; }
+        block_argmax(bv, bi, sv, si);
+        if (threadIdx.x == 0) {
+            const bool real = bi != 0x7fffffff && bv != __int_as_float(0xff800000);
+            ov[r] = real ? bv : __int_as_float(0xff800000);
+            oi[r] = real ? bi : 0x7fffffff;
+            if (real) vals[bi - c0] = __int_as_float(0xff800000);
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void sampler_merge_kernel(int n_vocab, const SamplerParams p, int k, const float* __restrict__ cv,
+                                     const int* __restrict__ ci, int* __restrict__ out) {
+    __shared__ float v[kChunks * kKmax];
+    __shared__ int id[kChunks * kKmax];
+    __shared__ float sv[32];
+    __shared__ int si[32];
+    __shared__ int sel_ids[kKmax];
+    __shared__ float sel_logit[kKmax];
+    const int t = blockIdx.x;
+    const int m = kChunks * k;
+    for (int i = threadIdx.x; i < m; i += blockDim.x) {
+        const int ch = i / k, r = i - ch * k;
+        v[i] = cv[((size_t) t * kChunks + ch) * kKmax + r];
+        id[i] = ci[((size_t) t * kChunks + ch) * kKmax + r];
+    }
+    __syncthreads();
+    for (int r = 0; r < k; ++r) {
+        float bv = __int_as_float(0xff800000);
+        int bi = 0x7fffffff, bpos = -1;
+        for (int i = threadIdx.x; i < m; i += blockDim.x)
+            if (better(v[i], id[i], bv, bi)) { bv = v[i]; bi = id[i]; bpos = i; }
+        // carry the position through the reduction: reduce (value, index); the index is unique per candidate
+        block_argmax(bv, bi, sv, si);
+        const bool real = bi != 0x7fffffff && bv != __int_as_float(0xff800000);
+        if (threadIdx.x == 0) {
+            sel_ids[r] = real ? bi : 0;
+            sel_logit[r] = real ? bv : __int_as_float(0xff800000);
+        }
+        (void) bpos;
+        for (int i = threadIdx.x; i < m; i += blockDim.x)
+            if (real && id[i] == bi) v[i] = __int_as_float(0xff800000);
+        __syncthreads();
+    }
+    if (threadIdx.x != 0) return;
+    // ---- the chain after the selection: `sampler_kernel`'s, line for line
+    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    int n_keep = k;
+    float mx = sel_logit[0];
+    for (int i = 1; i < k; ++i) mx = fmaxf(mx, sel_logit[i]);
+    if (p.top_p < 1.0f) {
+        double sum = 0.0;
+        for (int i = 0; i < k; ++i) sum += exp((double) sel_logit[i] - (double) mx);
+        double cum = 0.0;
+        int cut = k;
+        for (int i = 0; i < k; ++i) {
+            cum += exp((double) sel_logit[i] - (double) mx) / sum;
+            if (cum >= (double) p.top_p) { cut = i + 1; break; }
+        }
+        if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
+        n_keep = cut;
+    }
+    if (p.min_p > 0.0f) {
+        const float thresh = sel_logit[0] + logf(p.min_p);
+        for (int i = 0; i < n_keep; ++i)
+            if (sel_logit[i] < thresh) { n_keep = i; break; }
+    }
+    auto scaled = [&](int i) { return sel_logit[i] * inv_t; };
+    float smx = scaled(0);
+    for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, scaled(i));
+    double sum = 0.0;
+    for (int i = 0; i < n_keep; ++i) sum += exp((double) scaled(i) - (double) smx);
+    const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
+    double cum = 0.0;
+    int pick = sel_ids[n_keep - 1];
+    for (int i = 0; i < n_keep; ++i) {
+        cum += exp((double) scaled(i) - (double) smx) / sum;
+        if ((double) u < cum) { pick = sel_ids[i]; break; }
+    }
+    out[t] = pick;
+}
 }  // namespace
 
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
@@ -323,8 +487,45 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
     } else {
         // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
         // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
-        sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
-            logits, n_vocab, n_tokens, history, history_len, p, out);
+        static const bool fast = [] { const char* v = std::getenv("STRATA_SAMPLER_FAST"); return v == nullptr || std::atoi(v) != 0; }();
+        static const bool check = std::getenv("STRATA_SAMPLER_CHECK") != nullptr;
+        const int KMAX = 64;
+        int k = (p.top_k > 0 && p.top_k < KMAX) ? p.top_k : KMAX;
+        if (k > n_vocab) k = n_vocab;
+        if (fast && n_tokens <= 16 && n_vocab >= kChunks * k) {
+            static float* cv[64] = {};
+            static int* ci[64] = {};
+            static int* chk[64] = {};
+            int dev = 0;
+            cudaGetDevice(&dev);
+            if (dev >= 0 && dev < 64 && cv[dev] == nullptr) {
+                cudaMalloc((void**) &cv[dev], (size_t) 16 * kChunks * kKmax * sizeof(float));
+                cudaMalloc((void**) &ci[dev], (size_t) 16 * kChunks * kKmax * sizeof(int));
+                cudaMalloc((void**) &chk[dev], 16 * sizeof(int));
+            }
+            const int chunk = (n_vocab + kChunks - 1) / kChunks;
+            const size_t sm1 = (size_t) chunk * sizeof(float) + (size_t) ((chunk + 31) / 32) * sizeof(unsigned);
+            static bool attr[64] = {};
+            if (!attr[dev]) { cudaFuncSetAttribute(sampler_chunk_topk_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 64 * 1024); attr[dev] = true; }
+            sampler_chunk_topk_kernel<<<dim3(kChunks, (unsigned) n_tokens), 256, sm1, (cudaStream_t) stream>>>(
+                logits, n_vocab, history, history_len, p, k, cv[dev], ci[dev]);
+            sampler_merge_kernel<<<(unsigned) n_tokens, 256, 0, (cudaStream_t) stream>>>(n_vocab, p, k, cv[dev], ci[dev], out);
+            if (check) {   // debug: the one-block kernel beside it, every pick compared
+                sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
+                    logits, n_vocab, n_tokens, history, history_len, p, chk[dev]);
+                int a[16], b[16];
+                cudaMemcpyAsync(a, out, (size_t) n_tokens * 4, cudaMemcpyDeviceToHost, (cudaStream_t) stream);
+                cudaMemcpyAsync(b, chk[dev], (size_t) n_tokens * 4, cudaMemcpyDeviceToHost, (cudaStream_t) stream);
+                cudaStreamSynchronize((cudaStream_t) stream);
+                static long long same = 0, diff = 0;
+                for (int i = 0; i < n_tokens; ++i) (a[i] == b[i] ? same : diff)++;
+                if ((same + diff) % 500 < (long long) n_tokens)
+                    std::fprintf(stderr, "sampler check: %lld identical, %lld different picks\n", same, diff);
+            }
+        } else {
+            sampler_kernel<<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
+                logits, n_vocab, n_tokens, history, history_len, p, out);
+        }
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
