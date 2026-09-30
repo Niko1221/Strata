@@ -7,10 +7,14 @@ The configs this fork runs with on a PC with an RTX 3090, an RTX 5070 Ti and 160
 - `ud-q4_k_xl.json`: unsloth's UD-Q4_K_XL (~81 GB of RAM taken).
 
 Their paths are relative to the Strata folder, where the server starts: the engine in `build/`; the model files, the
-packs and the MTP draft layer in setup's data folder, `../Strata-data`.
+packs and the MTP draft layer in setup's data folder, `../Strata-data` (unless setup was given another: `--data-dir`).
+A pack is what `tools/iq_pack.py` makes from a model's GGUF files in seconds (~1.5 GB): the tokenizer with the chat
+template, the model's float tensors in the forms the engine takes, and an index of the rest; the engine reads the
+quantized tensors, the experts and most projections, from the GGUF files at start.
 
-1. Set up IQ3_S once: `START-HERE.bat --setup --model IQ3_S --no-start` downloads the model and prepares its pack and
-   the MTP draft layer.
+1. Set up IQ3_S once: `START-HERE.bat --setup --model IQ3_S --no-start` downloads the model into
+   `../Strata-data/models/IQ3_S`, makes its pack in `../Strata-data/packs/iq3_s`, and makes the MTP draft layer in
+   `../Strata-data/mtp/rt` from the ~5 GB of MTP tensors of Qwen's original checkpoint.
 2. Build the engine from this branch with code for both cards (the ready-made engine setup puts in `engine/` is
    upstream's, without this fork's options), with MSVC, CUDA 13, CMake and Ninja (setup puts the last two in
    `.venv\Scripts`):
@@ -22,7 +26,7 @@ packs and the MTP draft layer in setup's data folder, `../Strata-data`.
    `86;120` is an RTX 30 card and an RTX 50 card. The engine needs the CUDA runtime DLLs (`cudart64_13.dll`,
    `cublas64_13.dll`, `cublasLt64_13.dll`) beside it, on the PATH, or their folder in the config's `lib_dirs`.
 3. For UD-Q4_K_XL, download unsloth's four `Qwen3.8-Flash-Next-UD-Q4_K_XL-0000N-of-00004.gguf` files into
-   `../Strata-data/models/UD-Q4_K_XL` and pack them (seconds):
+   `../Strata-data/models/UD-Q4_K_XL` and make its pack:
 
        .venv\Scripts\python.exe tools\iq_pack.py --out ../Strata-data/packs/ud-q4_k_xl ^
          --gguf ../Strata-data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
@@ -30,7 +34,8 @@ packs and the MTP draft layer in setup's data folder, `../Strata-data`.
 4. Set the GPU numbers, as `nvidia-smi` numbers the cards (here the 5070 Ti is 0 and the 3090 is 1). `--main-gpu`
    runs the model, and nothing else may use that card: a display or another program on it slows generation to a few
    tokens per second. `--second-gpu` holds more experts and may drive the display.
-5. Start a config from the Strata folder:
+5. Start a config with its launcher, `run-iq3_s.bat` (port 8081) or `run-ud-q4_k_xl.bat` (8082), or from the Strata
+   folder:
 
        .venv\Scripts\python.exe serve\server.py --engine strata --config examples\iq3_s.json --port 8081
 
