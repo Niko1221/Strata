@@ -79,6 +79,9 @@ if(STRATA_ENABLE_CUDA)
                       "CUDA 12.8 crashed on long prompts on these cards (issues #220, #224). Use CUDA 13.0 or newer.")
     endif()
   endforeach()
+  # RTX 50's FP4 MMA (the NVFP4 experts' opt-in W4A4 prompt path) exists only in the arch-specific target: 120 -> 120a,
+  # as ggml's own CMake does (its CUDA backend is off here), so "75;86;89;120" builds every card with its full feature set
+  list(TRANSFORM CMAKE_CUDA_ARCHITECTURES REPLACE "^(12[0-9])(-real|-virtual)?$" "\\1a\\2")
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
   set(_strata_gpu_runtime_target CUDA::cudart)
   set(_strata_gpu_blas_target CUDA::cublas)
@@ -665,13 +668,14 @@ if(STRATA_NATIVE_EXPERTS)
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp)
+                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/nvfp4_avx512.cpp)
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
   if(MSVC)
-    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp
+                                PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
   else()
-    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
+    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   endif()
@@ -687,8 +691,9 @@ if(STRATA_NATIVE_EXPERTS)
       set(_strata_gg ${strata_llamacpp_SOURCE_DIR}/ggml)
     endif()
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
-    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
-    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)   # q8_0: the drafter's matrices (E-9)
+    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/mmq_nvfp4_w4a8.cu src/prefill/ggml_cuda_host.cu
+                ${_strata_mmq}/quantize.cu)
+    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0 nvfp4)   # q8_0: the drafter's matrices (E-9)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
     endforeach()
     target_include_directories(strata_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
@@ -700,6 +705,9 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(strata_mmq PUBLIC ggml-base ${_strata_gpu_runtime_target})
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1)
+    # the NVFP4 expert products (w4a8 / w4a4, STRATA_PREFILL_NVFP4) against a double-precision reference
+    add_executable(mmq_nvfp4_parity src/prefill/mmq_nvfp4_parity.cpp)
+    target_link_libraries(mmq_nvfp4_parity PRIVATE strata_mmq ggml-base CUDA::cudart)
   elseif(STRATA_PREFILL_MMQ)
     # Compile only the pinned GGML MMQ and activation-quantizer sources used by prefill. This uses
     # common.cuh's native HIP path without enabling a second GGML HIP backend.
@@ -741,6 +749,13 @@ if(STRATA_NATIVE_EXPERTS)
     # Optional real-model diagnostic: pass the GGUF shard containing the native PLE key.
     add_executable(hip_ple_iq4 tests/hip/ple_iq4.cpp)
     target_link_libraries(hip_ple_iq4 PRIVATE strata_kernels strata_hip_runtime ggml-base)
+  endif()
+  # the NVFP4 AVX-512 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
+  add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
+  target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference
+    add_executable(nvfp4_expert_gpu_parity src/kernels/nvfp4_expert_gpu_parity.cpp)
+    target_link_libraries(nvfp4_expert_gpu_parity PRIVATE strata_kernels ggml-base CUDA::cudart)
   endif()
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)

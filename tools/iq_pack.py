@@ -111,6 +111,7 @@ class Model:
 ROLES = ("gate", "up", "down")
 N_EXPERT = 512
 ALIGN = 64
+NVFP4_TAIL = 16          # {s_gate, s_up, s_down, 0} after an NVFP4 expert blob
 
 
 def read_index(path: pathlib.Path):
@@ -299,6 +300,7 @@ def main() -> int:
         print("the routers disagree on the expert count; a per-layer pruned model cannot be packed")
         return 1
     layout, offset = [], 0
+    nvfp4 = False
     for l in range(n_layers):
         ts = [T["blk.%d.ffn_%s_exps.weight" % (l, r)] for r in ROLES]
         per = [t.expected_bytes() // n_expert for t in ts]
@@ -306,8 +308,24 @@ def main() -> int:
             print("layer %d: gate and up differ in type" % l)
             return 1
         blob = per[0] + per[1] + per[2]
+        if ts[0].type_name == "NVFP4" or ts[2].type_name == "NVFP4":
+            # NVFP4 (ModelOpt) carries one F32 weight_scale_2 per expert and projection, which the block format has
+            # no room for. Each blob gets a 16-byte tail {s_gate, s_up, s_down, 0} so every consumer that already
+            # moves whole blobs (the arena, the device cache, the prefill staging, a second GPU) moves the scales
+            # with the weights; the gate/up kernels read it. See tools/nvfp4_convert.py.
+            if ts[0].type_name != "NVFP4" or ts[2].type_name != "NVFP4":
+                print("layer %d: NVFP4 must cover gate, up and down alike" % l)
+                return 1
+            if any("blk.%d.ffn_%s_exps.scale" % (l, r) not in T for r in ROLES):
+                print("layer %d: NVFP4 experts without their .scale tensors" % l)
+                return 1
+            blob += NVFP4_TAIL
+            nvfp4 = True
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         offset += blob * n_expert
+    if nvfp4:
+        # the GGUF holds the weights without the scale tails, so the engine must not assemble blobs from it
+        a.experts_bin = True
     # written to a temporary name and renamed only when every layer is in: a stop part-way (a layer split across
     # shards, #171) left a partial native_experts.txt that the next setup run took as a finished pack (#172)
     tmp = out / "native_experts.txt.tmp"
@@ -323,6 +341,10 @@ def main() -> int:
                 tmp.unlink()
                 return 1
             gg, shard = ws[0][0], ws[0][3]
+            if nvfp4:
+                # no GGUF offsets: experts.bin is the only source that carries the scale tails
+                fo.write("%d %d %d %d %d\n" % (l, gt, dt, off, blob))
+                continue
             line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
             fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
     tmp.replace(out / "native_experts.txt")
@@ -337,7 +359,16 @@ def main() -> int:
     with open(path, "wb") as fo:
         for l, gt, dt, off, blob, ts in layout:
             parts = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
-            chunk = np.concatenate(parts, axis=1)          # (n_expert, blob): gate | up | down per expert
+            if ts[0].type_name == "NVFP4":
+                s = [np.frombuffer(model.bytes("blk.%d.ffn_%s_exps.scale" % (l, r)).tobytes(), dtype=np.float32)
+                     for r in ROLES]
+                tail = np.zeros((n_expert, NVFP4_TAIL // 4), dtype=np.float32)
+                tail[:, 0], tail[:, 1], tail[:, 2] = s[0], s[1], s[2]
+                if not np.isfinite(tail).all() or (tail[:, :3] <= 0).any():
+                    print("layer %d: a non-finite or non-positive NVFP4 scale" % l)
+                    return 1
+                parts.append(tail.view(np.uint8))
+            chunk = np.concatenate(parts, axis=1)          # (n_expert, blob): gate | up | down [| tail] per expert
             assert chunk.shape == (n_expert, blob)
             fo.write(chunk.tobytes())
             if l % 8 == 0:
