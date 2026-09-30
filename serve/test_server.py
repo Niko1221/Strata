@@ -64,6 +64,23 @@ class MaxTokens(unittest.TestCase):
         u = b.get("usage", {})
         return s, b, u.get("input_tokens"), u.get("output_tokens")
 
+    def test_count_tokens_is_the_prompt_messages_reads(self):
+        # /v1/messages/count_tokens renders and tokenizes the same prompt /v1/messages would read, without running it
+        msgs = [{"role": "user", "content": "how many tokens is this?"}]
+        s, b = self.post("/v1/messages/count_tokens", {"model": "m", "messages": msgs})
+        self.assertEqual(s, 200)
+        s2, _, n_in, _ = self.call("anthropic", "how many tokens is this?", max_tokens=8)
+        self.assertEqual(s2, 200)
+        self.assertEqual(b["input_tokens"], n_in)
+
+    def test_request_line_parses_the_engine_summary(self):
+        line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
+                "300 ms (100.0 tok/s), drafts accepted 20 of 28, 2 checkpoints")
+        from serve.server import ENGINE_REQUEST
+        m = ENGINE_REQUEST.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual((m["prompt"], m["reused"], m["gen"], m["tg"]), ("1200", "1000", "30", "100.0"))
+
     def test_unset_budget_is_the_rest_of_the_context(self):
         cases = {"openai": [{"max_tokens": -1}, {"max_tokens": 0}, {}, {"max_tokens": None},
                             {"max_completion_tokens": -1}, {"max_completion_tokens": None, "max_tokens": None}],
