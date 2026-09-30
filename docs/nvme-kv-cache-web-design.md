@@ -1,8 +1,12 @@
 # NVMe KV cache in the web interface — design
 
-**Status: built.** Plan steps 1-7 are shipped on this branch (engine counters, the `KV` line, `serve/kvcache.py`,
-the server wiring, `/cache` + `/metrics`, the Cache tab, the Monitor column and About card); step 8 — `setup.py`'s
-cache knob and closing C11 in the tier doc — is the last one. This is the C11 item of
+**Status: built, and the gates have been run.** All eight plan steps are shipped on this branch (engine counters,
+the `KV` line, `serve/kvcache.py`, the server wiring, `/cache` + `/metrics`, the Cache tab, the Monitor column and
+About card, `setup.py`'s cache knob with C11 closed in the tier doc).  The GPU gates were then executed with the
+production engine stopped - `nvme_steps123_test.sh`, `nvme_failure_contract_test.sh`, `nvme_p0_test.sh`,
+`nvme_delta_p0_test.sh` ALL PASS, `short_tests.py` ALL PASS, and a live server on this code promoted 1,453 tokens
+from disk and recorded a refusal and a sweep in `/metrics` - the results, and the three bugs that run caught, are
+in `docs/nvme-kv-cache-design.md` §6.  This is the C11 item of
 `docs/nvme-kv-cache-design.md` §7 / §9.2 ("Metrics: the three failure classes, promotes, refusals and dump results
 are stderr-only; `serve/telemetry.py` parses nothing NVMe-related") turned into a buildable design, plus the
 web page that consumes it.

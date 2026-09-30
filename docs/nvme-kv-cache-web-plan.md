@@ -330,7 +330,7 @@ narrow breakpoint (the Monitor's `monitor-row` already collapses; the Cache page
 | claim | oracle | needs a GPU |
 |---|---|---|
 | the stores report eviction/sweep/write counts correctly | `kv_nvme_host_test`, `kv_delta_host_test` | no |
-| the `KV` line appears on every tier-on turn and its `src` agrees with the promote | `tools/short_tests.py` (19/19 with `--kv-delta 1`) | yes |
+| the `KV` line appears on every tier-on turn and its `src` agrees with the promote | `tools/nvme_steps123_test.sh` (engine stdout) + `serve/test_server.py` | yes + no |
 | `transfer=1` arrives before the `ERR` line and the exit | `tools/nvme_failure_contract_test.sh` | yes |
 | the cap turn reports `evict=1` | `tools/nvme_steps123_test.sh` | yes |
 | the line changed no byte and no decision | `tools/nvme_p0_test.sh`, `tools/nvme_delta_p0_test.sh` (state-hash + `cmp` oracles) | yes |
@@ -338,6 +338,17 @@ narrow breakpoint (the Monitor's `monitor-row` already collapses; the Cache page
 | `parse_kv` / the scan / the totals | `serve/test_server.py` (`KvCache` class) | no |
 | `/metrics` and `/cache` payloads, key gating | `serve/test_server.py` (`WebApp` class) | no |
 | the tab exists only when the tier is on | `test_page_and_files` + a manual pass | no |
+
+**Executed 2026-09-30, all eight steps shipped.** The GPU rows above were run with the production engine
+stopped and `NVME_ENGINE` pointed at the tree under test: `nvme_steps123_test.sh`, `nvme_failure_contract_test.sh`,
+`nvme_p0_test.sh`, `nvme_delta_p0_test.sh` ALL PASS, and `short_tests.py` + `needle_bench.py` (3/3 at 32K) were run
+against a live `serve.server` on the worktree code - results in `nvme-kv-cache-design.md` §6.  Three corrections
+the run forced, each recorded there: the plan's row above wrongly named `short_tests.py` as the `KV` gate (it reads
+the engine's log, which carries stderr - the line is on stdout), the three v3 oracles needed `--kv-delta 0` to
+assert the tier they describe, and the page needed `attach_cache()` because `main()` attaches the cache after the
+pump may already have read the `start=1` line.  Still owed: the manual both-themes / narrow-breakpoint pass, and
+the tier-off `needle_bench.py` stdout diff (it needs a second run with the tier off; `print_kv()` is behind
+`if (have_kvstore)`, so no line is emitted there, and the 80 host tests never touch a GPU).
 
 ## What must not regress
 
