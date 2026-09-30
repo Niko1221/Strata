@@ -11,6 +11,9 @@ namespace strata::core {
 // Caller synchronizes the device before saving, and after restoring all layers.
 // include_index is false for the draft layer (its attention has no indexer).
 size_t conversation_kv_bytes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index);
+// A nonzero unchanged_tokens is valid only for storage retained from an image
+// actually restored into this session, bounded by every subsequent rewrite.
+// Equal token IDs alone do not establish that its K/V bytes are unchanged.
 bool conversation_kv_save(ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                           int64_t upto, bool include_index, std::string& error,
                           int64_t unchanged_tokens = 0, size_t* reused_bytes = nullptr);
@@ -49,6 +52,9 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g,
                                          const QsaState& draft, size_t& bytes, std::string& error);
+// The capture estimate includes retained capacity and transient segment directories;
+// only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
+// the uniquely owned reusable buffers, including on failure.
 // Caller admits the estimate before invoking capture. Allocation failures propagate
 // to the RAM policy; the active session is never modified by capture.
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,

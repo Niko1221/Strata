@@ -51,6 +51,7 @@ struct ConversationKv {
 
 struct ConversationKvReuse {
     std::vector<ConversationKv> kv;
+    // Original image extent for validation, and the earliest subsequent rewrite.
     int64_t captured_tokens = 0, unchanged_tokens = 0;
     size_t bytes() const {
         size_t n = kv.capacity() * sizeof(ConversationKv);
