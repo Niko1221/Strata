@@ -21,8 +21,8 @@ What the first run does (each step is skipped when it is already done):
 
 Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
-at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
-8080, --yes (recommended
+at least 1 - an explicit --rope-scale is kept as given even when it does not cover the context, and an explicit
+--rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
@@ -85,7 +85,8 @@ MODELS = {
 # serve the setup resolves the method (yarn, or one question when interactive) and derives the factor
 # from the final context (final / 262144, at least 1) itself (below), keeps an explicit
 # --rope-scaling/--rope-scale, and refuses an explicit --rope-scaling none there - the stock angles past
-# the trained range are out of spec.
+# the trained range are out of spec.  An explicit --rope-scale is kept as given, even when it does not
+# cover the context: the setup validates the numbers, not the model quality past 262144 or the memory fit.
 CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
@@ -1595,8 +1596,9 @@ def write_run_script(model, cfg_path, port):
 def derived_factor(ctx: int, trained: int = 262144) -> float:
     """The automatic extension factor: the FINAL context over the trained one, at least 1.
 
-    Factor 1 removes the automatic expansion - the trained angles stand as they are - but it is not a
-    switch for rope as a whole: an explicitly chosen method's settings keep their defined behavior.
+    Factor 1 removes the automatic expansion - no context expansion through this factor; other RoPE
+    settings still apply - but it is not a switch for rope as a whole: an explicitly chosen method's
+    settings keep their defined behavior.
     """
     return max(1.0, float(ctx) / float(trained))
 
@@ -1605,11 +1607,14 @@ def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
     """The rope config for the context ACTUALLY SERVED: (scaling, scale); scaling None = no scaling flags.
 
     An explicit --rope-scaling/--rope-scale always wins - a user-supplied factor is kept verbatim even
-    when a reduction changed the context.  Past the trained range an omitted method defaults to yarn -
+    when a reduction changed the context, and is never increased or rejected for being too small to cover
+    it: accepting a configuration validates the numbers, not the model quality past the trained range nor
+    the memory fit (those are separate concerns).  Past the trained range an omitted method defaults to yarn -
     llama.cpp's extension method: the trained angles survive on the high-frequency pairs and the
     magnitude correction keeps the attention temperature - and an omitted factor is derived from the
     final context (final / trained, at least 1), as is an explicitly chosen method's missing factor
-    inside the trained range: factor 1, the trained angles, no expansion.  An explicit none is refused
+    inside the trained range: factor 1 - no context expansion through this factor; other RoPE settings
+    still apply.  An explicit none is refused
     past the trained range (the setup will not configure a run it knows is out of spec) rather than
     silently overridden.
     """
@@ -1642,7 +1647,8 @@ def main() -> int:
                          "picks yarn; 'none' is refused for such a context")
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor (default: the final context over the trained 262144, at least 1 - "
-                         "1.5 for 384K, 2 for 512K, 1 inside the trained range)")
+                         "1.5 for 384K, 2 for 512K, 1 inside the trained range).  An explicit factor is kept as "
+                         "given, even when it does not cover the context")
     ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")

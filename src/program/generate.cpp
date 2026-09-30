@@ -378,8 +378,13 @@ void usage() {
                  "                       (position interpolation) or yarn - llama.cpp's types and names.\n"
                  "                       Default: the model file's rope keys, else none. Fixed at startup:\n"
                  "                       K in the cache is post-RoPE, so one run one scaling\n"
-                 "  --rope-scale F       the extension factor for linear/yarn (default: the model file's\n"
-                 "                       factor, else 1 = off)\n"
+                 "  --rope-scale F       the extension factor for linear/yarn.  Default: the model file's\n"
+                 "                       factor, else 1 - no context expansion through this factor; other\n"
+                 "                       RoPE settings still apply.  The engine does not automatically\n"
+                 "                       enable scaling or choose a factor from the requested context\n"
+                 "                       length: it resolves CLI options, GGUF metadata and defaults (the\n"
+                 "                       setup performs the context-based selection).  An explicit F is\n"
+                 "                       kept verbatim, even when it does not cover the served context\n"
                  "  --rope-freq-base N   the raw ggml knobs: the frequency base (0 = the model's 1e7) and\n"
                  "  --rope-freq-scale F  the angle shrink (0 = 1/--rope-scale)\n"
                  "  --yarn-orig-ctx N    the trained context the correction targets (0 = 262144)\n"
@@ -1532,7 +1537,9 @@ int main(int argc, char** argv) {
         // zero); a model-file value applies only where the CLI did not speak, and then it must itself be
         // usable - a supplied-but-invalid model-file value that would remain effective is an error naming
         // the key and the override, never a silent fall-back to the defaults.
-        if (o.rope_scale > 0) rope_cfg.factor = o.rope_scale;            // an explicit factor, 1 included
+        // an explicit factor is kept verbatim - 1 included - even when it does not cover the served
+        // context: accepting it validates the numbers, not the model quality or the memory fit
+        if (o.rope_scale > 0) rope_cfg.factor = o.rope_scale;
         else if (gguf_rope_factor != 0) {
             if (!std::isfinite(gguf_rope_factor) || gguf_rope_factor < 1.0) {
                 std::fprintf(stderr, "strata generate: the model file's rope.scaling.factor (%g) must be a finite "
