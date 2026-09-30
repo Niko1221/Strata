@@ -122,10 +122,18 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             L.gguf_off[(size_t) (3 * l)] = go;
             L.gguf_off[(size_t) (3 * l + 1)] = uo;
             L.gguf_off[(size_t) (3 * l + 2)] = dox;
-            std::string file;             // v3: the shard that holds this layer (a file name beside --native)
-            if (ss >> file) {
-                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) n_layers, std::string());
-                L.gguf_file[(size_t) l] = file;
+            // v3: one shard name for the whole layer. v4: three names, gate then up then down,
+            // when a quant splits one layer across shards.
+            std::string f0, f1, f2;
+            if (ss >> f0) {
+                if (!(ss >> f1 >> f2)) {
+                    f1 = f0;
+                    f2 = f0;
+                }
+                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) (3 * n_layers), std::string());
+                L.gguf_file[(size_t) (3 * l)] = f0;
+                L.gguf_file[(size_t) (3 * l + 1)] = f1;
+                L.gguf_file[(size_t) (3 * l + 2)] = f2;
             }
         }
         L.fmt[(size_t) l] = f;

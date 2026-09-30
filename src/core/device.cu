@@ -31,7 +31,7 @@ DeviceInfo device_info(int ordinal) {
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
 #if defined(STRATA_USE_HIP)
-        throw CudaError("no HIP device is present; this backend targets gfx1100 wave32", -1);
+        throw CudaError("no HIP device is present; this backend targets gfx1100, gfx1200 or gfx1201 (wave32)", -1);
 #else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
@@ -64,10 +64,22 @@ DeviceInfo device_info(int ordinal) {
     // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  Compiling for a
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
-    // backend is validated on gfx1100 (wave32) only.
+    // backend accepts wave32 gfx1100 (RDNA3) and gfx1200/gfx1201 (RDNA4). gcnArchName may carry a
+    // ":sramecc-:xnack-" suffix.
 #if defined(STRATA_USE_HIP)
-    if (std::strncmp(p.gcnArchName, "gfx1100", 7) != 0 || p.warpSize != 32) {
-        throw CudaError("HIP backend requires validated gfx1100 wave32 hardware", -1);
+    auto hip_arch_ok = [](const char* name) {
+        if (name == nullptr) return false;
+        static const char* ok[] = {"gfx1100", "gfx1200", "gfx1201"};
+        for (const char* arch : ok) {
+            const std::size_t n = std::strlen(arch);
+            if (std::strncmp(name, arch, n) == 0 && (name[n] == '\0' || name[n] == ':')) return true;
+        }
+        return false;
+    };
+    if (!hip_arch_ok(p.gcnArchName) || p.warpSize != 32) {
+        throw CudaError(std::string("HIP backend requires wave32 gfx1100, gfx1200 or gfx1201; this device is ") +
+                            p.gcnArchName,
+                        -1);
     }
 #else
     if (d.cc_major * 10 + d.cc_minor < 75) {

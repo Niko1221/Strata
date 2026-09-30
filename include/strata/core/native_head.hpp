@@ -53,6 +53,7 @@ public:
 
 private:
     void* host_ = nullptr;
+    void* dev_owned_ = nullptr;
     const void* dev_ = nullptr;
     uint64_t bytes_ = 0;
     size_t row_ = 0;

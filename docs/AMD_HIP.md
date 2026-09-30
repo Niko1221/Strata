@@ -1,8 +1,9 @@
-# Experimental AMD HIP backend (gfx1100)
+# Experimental AMD HIP backend (gfx1100, gfx1200, gfx1201)
 
-This is a manual Linux source build for the RX 7900 XTX. It is opt-in; the
-NVIDIA installer and CUDA build remain the default. Other AMD architectures,
-wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
+This is an opt-in source build. The NVIDIA installer and CUDA build remain the
+default. Wave32 targets are the RX 7900 XT/XTX (`gfx1100`), the RX 9060
+(`gfx1200`) and the RX 9070 (`gfx1201`). Wave64 and mixed AMD/NVIDIA execution
+are outside this contribution.
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
 RDNA3's signed integer dot instruction for quantized kernels, and supplies
@@ -14,19 +15,25 @@ This does not claim bit-identical model answers across backends. See
 
 ## Install with setup (recommended)
 
-On Linux with an RX 7900 XT / XTX and the kernel's amdgpu driver (no ROCm install needed):
+On Linux, or on Windows with the HIP SDK or the ROCm 10 Python SDK already installed:
 
 ```sh
-./setup.sh --backend hip
+./setup.sh --backend hip          # Linux
+START-HERE.bat --backend hip      # Windows
 ```
 
-- **Detection:** setup finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not
-  supported. On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
-- **ROCm:** installed into `.venv` from AMD's TheRock wheels (~10 GB, no sudo), pinned to the version this backend was
-  tested with (`STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX` override it). A system ROCm in `/opt/rocm` (or
-  `$ROCM_PATH`) with hipcc and hipBLAS is used instead when present.
-- **Engine:** compiled on your PC (10-20 minutes, once; again after a `git pull` that changes it). This needs a C++
-  compiler and git (`sudo apt install build-essential git`).
+Windows finds the GPU from the display driver and compiles with the ROCm that
+has this card's bitcode. An installed `rocm-sdk` (ROCm 10, `rocm[libraries,devel,device-gfx1201]`)
+is used before the HIP SDK under `C:\Program Files\AMD\ROCm`. Linux still
+detects the card through the kernel's KFD topology.
+
+- **Detection:** Linux uses the kernel's KFD topology. Windows uses the display driver. Integrated Radeon GPUs are
+  listed as not supported. On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
+- **ROCm:** an installed SDK that contains this GPU's bitcode is used (`rocm-sdk`, `ROCM_PATH`, `HIP_PATH`, or
+  `C:\Program Files\AMD\ROCm` on Windows; `/opt/rocm` on Linux). Otherwise setup installs TheRock wheels into `.venv`.
+  On Linux the pin is `STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX`. On Windows the index is `STRATA_ROCM_INDEX_WIN`.
+- **Engine:** compiled on your PC (10-20 minutes, once; again after a `git pull` that changes it). Linux needs a C++
+  compiler and git. Windows needs Visual Studio Build Tools (C++) and git.
 - **Limits for now:** one GPU, no images, no calibration. The Monitor shows no GPU statistics.
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
@@ -42,7 +49,7 @@ table. VRAM occupancy alone is not a throughput measurement.
 cmake -S . -B build-hip \
   -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1100
+  -DCMAKE_HIP_ARCHITECTURES=gfx1201
 cmake --build build-hip --target strata -j2
 ```
 
