@@ -42,15 +42,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// The byte counts the envelope is laid out with.  The running-state ones come from the SHARED CORE
-/// (`strata::core::conversation_state_sizes`) - this file no longer carries a second copy of those formulas
-/// (docs/nvme-kv-cache-design.md step 2).  `shapes` carries the granules the segment walk needs
-/// (`page_size` / `idx_block`), read from the same `qsa_real_shapes()` the shared core reads.
-struct Sizes {
-    strata::kernels::QsaShapes shapes;            // page_size / idx_block: the segment walk's granules
-    strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
-};
-
 /// THE POOLED-ROW COUNT the envelope writes (collision C4).  The FORMULA is not here: it is
 /// `strata::kernels::qsa_pooled_rows`, the one the shared core's snapshot sizing and the STRATA_STATE_HASH
 /// fingerprint also use, so the file's pooled segment and the fingerprint's pooled span cannot drift apart
@@ -460,7 +451,8 @@ strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t
     const void* imgp = h.n_imgs ? take((size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey)) : nullptr;
 
     // ---- walk the rest, recording the applies; nothing is written until the walk succeeds ----
-    struct Apply { void* dst; const void* src; size_t bytes; bool device; const char* what; };
+    using Apply = NvmeRestoreApply;   // the type lives in the header: the delta tier's streaming path (B2) builds
+                                      // its own list of these and hands it to nvme_restore_apply
     std::vector<Apply> applies;
     auto seg = [&](void* dst, size_t bytes, bool device, const char* what) {
         const uint8_t* p = take(bytes);
@@ -526,6 +518,26 @@ strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t
     const uint64_t expect = fnv1a_up(1469598103934665603ull, data + sizeof(NvmeHeader), at - sizeof(NvmeHeader));
     if (digest != expect) { err = "nvme_restore: integrity check failed (corrupt snapshot)"; return Restore::invalid; }
 
+    // everything validated: the apply pass is `nvme_restore_apply` below - extracted line-for-line from what
+    // used to be this function's tail (the restore-perf handoff's B1), and called with the walk's own applies.
+    // Nothing of the choreography moved: it reads the same bytes and makes the same decisions in the same order.
+    return nvme_restore_apply(applies, ss, mtp_state, g, z, idp, L, imgp, h.n_imgs, h.cvec != 0, ids, imgs, cvec,
+                              err);
+}
+
+// The apply pass itself, on an ALREADY-VALIDATED applies list (R1: the v3 restore path's bytes and decisions
+// are frozen - this is the same code, reached through one more function boundary; the delta tier's streaming
+// restore (B2) reaches the same code with its own list).
+strata::core::ConversationRestore nvme_restore_apply(const std::vector<NvmeRestoreApply>& applies,
+                                                     strata::core::SessionState& ss,
+                                                     strata::core::QsaState& mtp_state,
+                                                     const strata::core::ModelGeometry& g, const Sizes& z,
+                                                     const int32_t* idp, int64_t L, const void* imgp,
+                                                     int64_t n_imgs, bool cvec_flag, std::vector<int32_t>& ids,
+                                                     std::vector<strata::core::ConversationImageKey>& imgs,
+                                                     bool& cvec, std::string& err) {
+    using Restore = strata::core::ConversationRestore;
+    using Apply = NvmeRestoreApply;   // the name the moved body was written with
     // ---- everything validated: apply.  THE APPLY PASS BEGINS WITH A SYNC, exactly as their
     // `conversation_snapshot_restore` does (`conversation_state.cpp:258`, and their fixture asserts a failure here
     // mutates nothing: `conversation_validation_test.cpp:158-161`).  It proves the device answers BEFORE a single
@@ -549,10 +561,10 @@ strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t
 
     ids.assign(idp, idp + L);
     if (imgp) {
-        imgs.resize((size_t) h.n_imgs);
-        std::memcpy(imgs.data(), imgp, (size_t) h.n_imgs * sizeof(strata::core::ConversationImageKey));
+        imgs.resize((size_t) n_imgs);
+        std::memcpy(imgs.data(), imgp, (size_t) n_imgs * sizeof(strata::core::ConversationImageKey));
     }
-    cvec = h.cvec != 0;
+    cvec = cvec_flag;
     for (const Apply& a : applies) {
         if (a.device) {
             if (fail_seg == a.what) {   // test-only: skip the named transfer, take its failure branch

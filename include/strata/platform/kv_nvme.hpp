@@ -23,6 +23,7 @@
 #include "strata/core/layer.hpp"   // QsaState
 #include "strata/core/session.hpp" // SessionState
 #include "strata/core/weights.hpp" // ModelGeometry
+#include "strata/kernels/qsa.hpp"  // QsaShapes: the segment walk's granules (below)
 
 namespace strata::platform {
 
@@ -181,6 +182,45 @@ strata::core::ConversationRestore nvme_restore_image(const uint8_t* data, size_t
                                                      const strata::core::ModelGeometry& g, std::vector<int32_t>& ids,
                                                      std::vector<strata::core::ConversationImageKey>& imgs, bool& cvec,
                                                      int64_t& L, std::string& err);
+
+/// The byte counts the envelope is laid out with.  The running-state ones come from the SHARED CORE
+/// (`strata::core::conversation_state_sizes`); `shapes` carries the granules the segment walk needs
+/// (`page_size` / `idx_block`), read from the same `qsa_real_shapes()` the shared core reads.  Declared here
+/// because the apply pass below takes it as a parameter - the delta tier's streaming restore builds its own
+/// applies list and runs the SAME choreography (`docs/nvme-delta-restore-handoff.md` §3, B1's one extraction).
+struct Sizes {
+    strata::kernels::QsaShapes shapes;            // page_size / idx_block: the segment walk's granules
+    strata::core::ConversationStateSizes state;   // gdn / ple / tail / dead / block_pos bytes
+};
+
+/// ONE SEGMENT of an apply pass: a device-side H2D copy or a host-side memcpy, carrying the segment's NAME -
+/// `what` is the fault hook's selector (STRATA_TEST_FAIL_CUDA names a segment by it) and what the host fixture
+/// counts.  The v3 walk builds these from the image; the delta tier's streaming path builds its own from the
+/// chunk payloads and hands them to `nvme_restore_apply` in the SAME order and with the SAME names, which is
+/// what keeps the fault matrix meaningful across both restore paths.
+struct NvmeRestoreApply {
+    void* dst;
+    const void* src;
+    size_t bytes;
+    bool device;      ///< an H2D copy when true, a host-side memcpy when false
+    const char* what; ///< "gdn", "ple", "pooled", "tail", "dead", "block_pos", "kv", "drafter kv"
+};
+
+/// THE APPLY PASS, extracted line-for-line from `nvme_restore_image`'s tail (docs/nvme-delta-restore-handoff.md
+/// §3, B1 / R1): pre-apply synchronize, the applies loop, the per-layer spare-row re-publish, the drafter ring
+/// refill, the PLE token window, the final synchronize.  `nvme_restore_image` calls it with the applies its own
+/// walk recorded; the delta tier's streaming restore (B2) calls it with ITS applies list, having placed each
+/// chunk's bytes straight into the destination arrays instead of assembling a v3 image first.  The layout facts
+/// (`z`) and the prefix facts (`idp`, `imgp`, `L`, `n_imgs`, `cvec`) are parameters; the choreography - and the
+/// failure contract with it - is the code below, unchanged.
+strata::core::ConversationRestore nvme_restore_apply(const std::vector<NvmeRestoreApply>& applies,
+                                                     strata::core::SessionState& ss,
+                                                     strata::core::QsaState& mtp_state,
+                                                     const strata::core::ModelGeometry& g, const Sizes& z,
+                                                     const int32_t* idp, int64_t L, const void* imgp,
+                                                     int64_t n_imgs, bool cvec_flag, std::vector<int32_t>& ids,
+                                                     std::vector<strata::core::ConversationImageKey>& imgs,
+                                                     bool& cvec, std::string& err);
 
 /// One stored session: its snapshot file and the token prefix AND pictures it was keyed by (both read at scan
 /// time, so the resume match never trusts a filename - and never compares a request's pictures against an entry
