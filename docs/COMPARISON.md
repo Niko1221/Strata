@@ -31,10 +31,10 @@ The llama.cpp and upstream columns were measured once (2026-09-30). This fork's 
   KV kept in RAM past 32K cells, the expert cache sized by the free VRAM. On the 3090, and on both GPUs as its setup
   recommends here (a layer split with the newer 5070 Ti first: layers 0-25 there, 26-47 on the 3090). It cannot run
   UD-Q4_K_XL: it has no K-quant expert kernels.
-- **This fork** with its configs: the 3090 runs the model and the 5070 Ti is a second expert tier (12.2-12.4 GiB of
-  experts; its share of each layer's experts, the next layer's likely experts copied ahead, the prompt path's experts
-  the 3090 lacks, and with IQ3_S part of the output head). MTP drafts and prompt lookup, 8-bit KV in VRAM, 16K-token
-  prompt chunks. And on the 3090 alone.
+- **This fork** with its configs ([examples](../examples/README.md)): the 3090 runs the model and the 5070 Ti is a
+  second expert tier (12.2-12.4 GiB of experts; its share of each layer's experts, the next layer's likely experts
+  copied ahead, the prompt path's experts the 3090 lacks, and with IQ3_S part of the output head). MTP drafts and
+  prompt lookup, 8-bit KV in VRAM, 16K-token prompt chunks. And on the 3090 alone.
 
 ## Speed through the API
 

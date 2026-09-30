@@ -34,6 +34,8 @@ td.log
 /run-*.sh
 /strata-*.json
 /strata-*.log
+# the web app's settings shared with other apps, written next to the config the server runs (examples/)
+*.shared-settings.json
 /build-strata.bat
 
 # image encoder (setup.py --vision): build output and the generated build script

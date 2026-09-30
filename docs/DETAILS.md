@@ -181,7 +181,8 @@ Pack a model once (seconds: the tokenizer and the float tensors; the experts are
     python tools/iq_pack.py --gguf <dir>/<model>-00001-of-0000N.gguf --out packs/<name>
 
 and start it with `--pack packs/<name> --native <dir>/<model>-00001-of-0000N.gguf` plus the usual flags (`--spec`,
-`--mtp`, `--prefill`, ...). The other shards, and the one holding the n-gram table, are found by name.
+`--mtp`, `--prefill`, ...; this fork's config: [examples/ud-q4_k_xl.json](../examples/ud-q4_k_xl.json)). The
+other shards, and the one holding the n-gram table, are found by name.
 UD-Q4_K_XL's speeds on an RTX 3090 with 160 GB of RAM, with and without a second GPU: [COMPARISON.md](COMPARISON.md).
 
 ### A second GPU
