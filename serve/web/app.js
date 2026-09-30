@@ -133,7 +133,7 @@ const metricCard = (m) => `
       ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
         <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
-  </div></div>;
+  </div></div>`;
 $("metrics").innerHTML = METRICS.map(metricCard).join("");
 
 // The Cache tab's five cards (design §5).  The two byte quantities are named apart on purpose (design §6):
