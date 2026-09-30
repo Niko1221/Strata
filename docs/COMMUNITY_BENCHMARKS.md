@@ -10,6 +10,12 @@ includes hardware, settings, and per-run JSON. The
 [technical details](DETAILS.md#speed-measured) explain the published measurements
 and their limits. Report what you actually measured and label estimates separately.
 
+## Community reports
+
+- [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
+  Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
+  each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
