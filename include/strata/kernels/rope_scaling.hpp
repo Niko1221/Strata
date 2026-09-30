@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <string>
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
@@ -143,10 +144,13 @@ STRATA_ROPE_SCALING_HD inline void rope_scaled_angle(float theta_extrap, float f
 /// wrappers re-check their own arguments defensively.  corr_dims needs no check of its own: with
 /// orig_ctx >= 1, betas > 0 and a finite base above 1 its logarithm's argument is positive and finite,
 /// the struct clamps the pair into [0, n_rot-1] (exact in float), and the ramp's own 0.001f floor
-/// covers a degenerate denominator.  attn_factor is consumed by the kernels as (float)attn_factor;
-/// mscale >= attn_factor (the log multiplier is at least 1) and rounds the same way, so the mscale
-/// float check above covers its conversion too.
+/// covers a degenerate denominator - but a beta small enough to overflow the logarithm's argument is
+/// rejected explicitly below.  attn_factor is INDEPENDENTLY consumed as (float)attn_factor by the
+/// native, prefill and indexer rotation sites, so it carries its own float check: mscale >=
+/// attn_factor does not imply the same rounding near the subnormal boundary, and --use_fast_math
+/// (ftz) flushes subnormal results to zero, which would silently zero a rotation.
 inline std::string rope_scaling_validate(const RopeScaling& sc) {
+    constexpr float FLT_MIN_NORMAL = std::numeric_limits<float>::min();   // subnormals flush to zero (ftz)
     if (!std::isfinite(sc.freq_base) || sc.freq_base <= 1.0)
         return "rope.freq_base must be a finite number above 1";
     if (!std::isfinite(sc.factor) || sc.factor < 1.0)
@@ -158,14 +162,22 @@ inline std::string rope_scaling_validate(const RopeScaling& sc) {
                "number of at least 1";
     if (!std::isfinite(sc.ext_factor) || sc.ext_factor < 0.0)
         return "--yarn-ext-factor must be a finite number of at least 0 (0 = off, -1 = auto)";
-    if (const float ef = (float) sc.ext_factor; !std::isfinite(ef))
-        return "--yarn-ext-factor must stay a finite number in the float precision the kernels use";
+    if (const float ef = (float) sc.ext_factor; !std::isfinite(ef) || (sc.ext_factor != 0.0 && ef < FLT_MIN_NORMAL))
+        return "--yarn-ext-factor must stay a finite number in the float precision the kernels use "
+               "(a subnormal value flushes to zero under --use_fast_math, silently turning the correction off)";
     if (!std::isfinite(sc.attn_factor) || sc.attn_factor <= 0.0)
         return "--yarn-attn-factor must be a finite number above 0";
     if (!std::isfinite(sc.beta_fast) || sc.beta_fast <= 0.0)
         return "--yarn-beta-fast must be a finite number above 0";
     if (!std::isfinite(sc.beta_slow) || sc.beta_slow <= 0.0)
         return "--yarn-beta-slow must be a finite number above 0";
+    // the correction-dimension logarithm overflows when a beta is so small that orig/(beta*2pi) leaves the
+    // double range: corr_dim becomes inf, the start-side clamp only handles negatives, and an inf corr_low
+    // makes the ramp a NaN.  Extreme LARGE betas only push the dimensions negative, which the clamp handles.
+    for (const double beta : {sc.beta_fast, sc.beta_slow})
+        if (!std::isfinite(sc.orig_ctx / (beta * 2.0 * 3.14159265358979323846)))
+            return "a yarn beta is too small for the trained context: the correction-dimension logarithm would "
+                   "overflow (raise the beta or lower the context)";
     const double fs = sc.freq_scale();
     if (!std::isfinite(fs) || fs <= 0.0)
         return "the resolved freq_scale must be a finite number above 0";
@@ -174,10 +186,16 @@ inline std::string rope_scaling_validate(const RopeScaling& sc) {
         return "the resolved mscale must be a finite number above 0";
     if (const float fb = (float) sc.freq_base; !std::isfinite(fb) || fb <= 1.0f)
         return "rope.freq_base must stay a finite number above 1 in the float precision the kernels use";
-    if (const float fsf = (float) fs; !std::isfinite(fsf) || fsf <= 0.0f)
-        return "the resolved freq_scale must stay a finite number above 0 in the float precision the kernels use";
-    if (const float msf = (float) ms; !std::isfinite(msf) || msf <= 0.0f)
-        return "the resolved mscale must stay a finite number above 0 in the float precision the kernels use";
+    if (const float fsf = (float) fs; !std::isfinite(fsf) || fsf < FLT_MIN_NORMAL)
+        return "the resolved freq_scale must stay a normal (non-subnormal) finite number above 0 in the float "
+               "precision the kernels use - subnormals flush to zero under --use_fast_math";
+    if (const float msf = (float) ms; !std::isfinite(msf) || msf < FLT_MIN_NORMAL)
+        return "the resolved mscale must stay a normal (non-subnormal) finite number above 0 in the float "
+               "precision the kernels use - subnormals flush to zero under --use_fast_math";
+    if (const float af = (float) sc.attn_factor; !std::isfinite(af) || af < FLT_MIN_NORMAL)
+        return "--yarn-attn-factor must stay a normal (non-subnormal) finite number above 0 in the float "
+               "precision the kernels use - the native, prefill and indexer rotation sites consume it "
+               "directly, and subnormals flush to zero under --use_fast_math";
     return "";
 }
 

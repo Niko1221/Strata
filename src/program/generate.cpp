@@ -1507,14 +1507,6 @@ int main(int argc, char** argv) {
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
-                if (!std::isfinite(gguf_rope_base) || !std::isfinite(gguf_rope_factor) ||
-                    !std::isfinite(gguf_rope_orig_ctx)) {
-                    std::fprintf(stderr, "strata generate: %s carries a non-finite rope key (rope.freq_base %g, "
-                                         "rope.scaling.factor %g, rope.scaling.original_context_length %g) - the "
-                                         "model file's rope metadata must be finite\n",
-                                 o.native_preset.c_str(), gguf_rope_base, gguf_rope_factor, gguf_rope_orig_ctx);
-                    return 2;
-                }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
                              o.native_preset.c_str(), e.what());
@@ -1536,12 +1528,39 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
+        // PRECEDENCE AND VALIDITY: an explicit CLI value wins outright (it was range-checked at second
+        // zero); a model-file value applies only where the CLI did not speak, and then it must itself be
+        // usable - a supplied-but-invalid model-file value that would remain effective is an error naming
+        // the key and the override, never a silent fall-back to the defaults.
         if (o.rope_scale > 0) rope_cfg.factor = o.rope_scale;            // an explicit factor, 1 included
-        else if (gguf_rope_factor > 1.0) rope_cfg.factor = gguf_rope_factor;
+        else if (gguf_rope_factor != 0) {
+            if (!std::isfinite(gguf_rope_factor) || gguf_rope_factor < 1.0) {
+                std::fprintf(stderr, "strata generate: the model file's rope.scaling.factor (%g) must be a finite "
+                                     "number of at least 1 to be effective; override it with --rope-scale\n",
+                             gguf_rope_factor);
+                return 2;
+            }
+            rope_cfg.factor = gguf_rope_factor;
+        }
         if (o.rope_freq_base > 0) rope_cfg.freq_base = o.rope_freq_base;
-        else if (gguf_rope_base > 1.0) rope_cfg.freq_base = gguf_rope_base;
+        else if (gguf_rope_base != 0) {
+            if (!std::isfinite(gguf_rope_base) || gguf_rope_base <= 1.0) {
+                std::fprintf(stderr, "strata generate: the model file's rope.freq_base (%g) must be a finite base "
+                                     "above 1 to be effective; override it with --rope-freq-base\n", gguf_rope_base);
+                return 2;
+            }
+            rope_cfg.freq_base = gguf_rope_base;
+        }
         if (o.yarn_orig_ctx > 0) rope_cfg.orig_ctx = o.yarn_orig_ctx;
-        else if (gguf_rope_orig_ctx >= 1) rope_cfg.orig_ctx = gguf_rope_orig_ctx;
+        else if (gguf_rope_orig_ctx != 0) {
+            if (!std::isfinite(gguf_rope_orig_ctx) || gguf_rope_orig_ctx < 1.0) {
+                std::fprintf(stderr, "strata generate: the model file's rope.scaling.original_context_length (%g) "
+                                     "must be a finite number of at least 1 to be effective; override it with "
+                                     "--yarn-orig-ctx\n", gguf_rope_orig_ctx);
+                return 2;
+            }
+            rope_cfg.orig_ctx = gguf_rope_orig_ctx;
+        }
         rope_cfg.freq_scale_in = o.rope_freq_scale;
         rope_cfg.ext_factor = o.yarn_ext_factor >= 0 ? o.yarn_ext_factor
                                                      : (rope_cfg.type == RST::YaRN ? 1.0 : 0.0);
