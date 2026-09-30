@@ -3,6 +3,7 @@
 #include "strata/core/progress.hpp"
 
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/kv_q8.hpp"   // STRATA_PREFILL_MAIN: session_copy_layers (KV_Q8_GROUP)
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -141,6 +142,123 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
     for (int64_t l = 0; l < layer; ++l) if (!is_qsa_layer(g, l)) ++gdn_index;
     s.gdn.state = s.gdn_state + (size_t) gdn_index * gdn_state_floats(g);
     s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+}
+
+bool session_copy_layers(SessionState& dst, const SessionState& src, const ModelGeometry& g,
+                         int64_t layer_begin, int64_t layer_end, int src_dev, int dst_dev,
+                         std::string& err) {
+    if (layer_begin >= layer_end) return true;
+    int prev_dev = 0;
+    if (cudaGetDevice(&prev_dev) != cudaSuccess) {
+        err = "session_copy_layers: cudaGetDevice failed";
+        return false;
+    }
+    cudaSetDevice(src_dev);
+    cudaDeviceSynchronize();   // the prefill's streams must be done writing the state being handed off
+    cudaGetLastError();        // clear any STALE error from earlier in the request: this engine runs with the
+                               // VRAM packed to zero, and a sticky OOM from somewhere else would make the first
+                               // copy below look failed no matter what it returned (see pinned.cu's note)
+    // STRATA_PREFILL_MAIN: the hops go through the driver-owned peer path (cudaMemcpyPeer).  The naive
+    // two-step D2H->pinned->H2D silently landed nothing on WDDM across the TB5 link (the dst read back as
+    // zeros after a "successful" copy), so a staging buffer is not used at all.
+    // STRATA_COPY_VERIFY=1: read both sides back after every hop and compare (debug).
+    static const bool verify = [] {
+        const char* v = std::getenv("STRATA_COPY_VERIFY");
+        return v != nullptr && *v == '1';
+    }();
+    auto hop = [&](const void* srcp, void* dstp, uint64_t bytes, const char* what) -> bool {
+        const uint8_t* s = (const uint8_t*) srcp;
+        uint8_t* d = (uint8_t*) dstp;
+        while (bytes > 0) {
+            const size_t n = bytes < (64ull << 20) ? (size_t) bytes : (size_t) (64ull << 20);
+            // the RETURN VALUES, not cudaGetLastError: a sticky error from an earlier failed allocation
+            // elsewhere must not condemn this copy (the pinned.cu stale-error trap, again)
+            if (cudaError_t e = cudaMemcpyPeer(d, dst_dev, s, src_dev, n); e != cudaSuccess) {
+                err = std::string("session_copy_layers: peer ") + what + ": " + cudaGetErrorString(e);
+                return false;
+            }
+            s += n;
+            d += n;
+            bytes -= n;
+        }
+        return true;
+    };
+    std::vector<uint8_t> va, vb;
+    auto verify_hop = [&](const void* srcp, void* dstp, uint64_t bytes, const char* what) {
+        if (!verify) return true;
+        va.resize((size_t) bytes); vb.resize((size_t) bytes);
+        cudaSetDevice(src_dev);
+        if (cudaMemcpy(va.data(), srcp, (size_t) bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        cudaSetDevice(dst_dev);
+        if (cudaMemcpy(vb.data(), dstp, (size_t) bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+        const bool same = memcmp(va.data(), vb.data(), (size_t) bytes) == 0;
+        if (same) {
+            std::fprintf(stderr, "strata copy verify: %s (%llu B): OK\n", what, (unsigned long long) bytes);
+        } else {
+            uint64_t off = 0;
+            while (off + 4 <= bytes && memcmp(va.data() + off, vb.data() + off, 4) == 0) off += 4;
+            std::fprintf(stderr, "strata copy verify: %s (%llu B): MISMATCH at %llu\n", what,
+                         (unsigned long long) bytes, (unsigned long long) off);
+        }
+        return same;
+    };
+    bool ok = true;
+    int64_t gdn_index = 0, qsa_index = 0;
+    const uint64_t first = qsa_state_bytes(g, src.max_cells, true), rest = qsa_state_bytes(g, src.max_cells, false);
+    const uint64_t gdn_row = gdn_state_floats(g) * 4;
+    for (int64_t l = 0; l < layer_end && ok; ++l) {
+        const bool mine = l >= layer_begin;
+        if (is_qsa_layer(g, l)) {
+            if (mine) {
+                // the whole QSA state block: KV pools, page table, residency map, indexer, step counts.
+                // Raw data only - each session's QsaState structs already point into their own carve, and
+                // block 0's RoPE table (layer 3, never in this range) is identical in every session.
+                const uint64_t off = qsa_index == 0 ? 0 : first + (uint64_t) (qsa_index - 1) * rest;
+                const uint64_t bytes = qsa_index == 0 ? first : rest;
+                ok = hop((const uint8_t*) src.qsa_state_arena + off,
+                         (uint8_t*) dst.qsa_state_arena + off, bytes, "qsa state");
+                if (ok) ok = verify_hop((const uint8_t*) src.qsa_state_arena + off,
+                                        (uint8_t*) dst.qsa_state_arena + off, bytes, "qsa state");
+                // kv_mode 1: the authoritative K/V lives in the layer's device-mapped pinned host pools;
+                // both sessions allocated the same size, so a plain host-to-host copy matches layouts.
+                const QsaState& sq = src.qsa_states[(size_t) qsa_index];
+                QsaState& dq = dst.qsa_states[(size_t) qsa_index];
+                const uint64_t dim = (uint64_t) g.n_head_kv * g.head_dim;
+                if (ok && sq.kv_mode == 1 && sq.host.present()) {
+                    if (sq.kv_q4) {
+                        std::memcpy(dq.host.k_q4, sq.host.k_q4, (size_t) src.max_cells * g.n_head_kv * 144);
+                        std::memcpy(dq.host.v_q4, sq.host.v_q4, (size_t) src.max_cells * g.n_head_kv * 144);
+                    } else if (sq.kv_hybrid) {   // K in INT8 + V in rotated Q4_0 (kv_q4.hpp)
+                        std::memcpy(dq.host.k_q, sq.host.k_q, (size_t) src.max_cells * dim);
+                        std::memcpy(dq.host.k_scale, sq.host.k_scale,
+                                    (size_t) src.max_cells * (dim / strata::kernels::KV_Q8_GROUP) * 2);
+                        std::memcpy(dq.host.v_q4, sq.host.v_q4, (size_t) src.max_cells * g.n_head_kv * 144);
+                    } else if (sq.kv_int8) {
+                        std::memcpy(dq.host.k_q, sq.host.k_q, (size_t) src.max_cells * dim);
+                        std::memcpy(dq.host.v_q, sq.host.v_q, (size_t) src.max_cells * dim);
+                        std::memcpy(dq.host.k_scale, sq.host.k_scale, (size_t) src.max_cells * (dim / strata::kernels::KV_Q8_GROUP) * 2);
+                        std::memcpy(dq.host.v_scale, sq.host.v_scale, (size_t) src.max_cells * (dim / strata::kernels::KV_Q8_GROUP) * 2);
+                    } else {
+                        std::memcpy(dq.host.k_pool, sq.host.k_pool, (size_t) src.max_cells * dim * 2);
+                        std::memcpy(dq.host.v_pool, sq.host.v_pool, (size_t) src.max_cells * dim * 2);
+                    }
+                }
+            }
+            ++qsa_index;
+        } else {
+            if (mine) {
+                ok = hop(src.gdn_state + (size_t) gdn_index * gdn_state_floats(g),
+                         dst.gdn_state + (size_t) gdn_index * gdn_state_floats(g),
+                         gdn_row, "gdn state");
+                if (ok) ok = verify_hop(src.gdn_state + (size_t) gdn_index * gdn_state_floats(g),
+                                        dst.gdn_state + (size_t) gdn_index * gdn_state_floats(g),
+                                        gdn_row, "gdn state");
+            }
+            ++gdn_index;
+        }
+    }
+    cudaSetDevice(prev_dev);
+    return ok;
 }
 
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs

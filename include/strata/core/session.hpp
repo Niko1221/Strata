@@ -83,6 +83,13 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);
 
+/// STRATA_PREFILL_MAIN (local patch): copies the layer states [layer_begin, layer_end) of one session to
+/// another that lives on a different device (the batched prompt path ran them on the main GPU).  GDN rows,
+/// whole QSA carve blocks and the streamed KV host pools hop through cudaMemcpyPeer; `err` gets the first
+/// failed hop.
+bool session_copy_layers(SessionState& dst, const SessionState& src, const ModelGeometry& g,
+                         int64_t layer_begin, int64_t layer_end, int src_dev, int dst_dev, std::string& err);
+
 /// One token: layers 0..47 in order, each a `block_layer`, and the residual is updated in place.
 ///
 /// `parts` is (k, n_embd) DEVICE memory, filled by the caller - by the CPU expert pool and the VRAM-resident

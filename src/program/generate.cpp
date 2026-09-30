@@ -237,6 +237,9 @@ struct Options {
     /// Plan v0.3 P5: the prompt path borrows the top expert-cache slots for its buffers and refills them after
     /// the prompt (default); `--no-prefill-borrow` reserves the buffers' VRAM for the whole session instead.
     bool no_prefill_borrow = false;
+    /// In a layer split, the WHOLE batched prompt runs on the main device (all layers); the later stages get
+    /// their layers' state afterwards and keep their VRAM for their expert caches.  Decode stays split.
+    bool prefill_main = false;
     /// Plan v0.3 P5 validation: batch only positions [0, P) and run the rest of the prompt through the token path
     /// (teacher-forced), so the logits of positions >= P - which depend on the batched state - can be scored
     /// against the oracle at many positions.  0 = the whole prompt but the last position.
@@ -420,6 +423,14 @@ void usage() {
                  "  --expert-cache-device1 N  pre-fill N experts on CUDA1 (experimental)\n"
                  "  --expert-cache-device2 N  pre-fill N more experts on CUDA2\n"
                  "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
+                 "  --prefill-main         in a layer split, run the WHOLE batched prompt on the main GPU and\n"
+                 "                       hand the stages their state afterwards (they keep their VRAM for\n"
+                 "                       their expert caches).  Decode stays split.  Measured on 2x RTX 5090\n"
+                 "                       Laptop (PCIe 5.0 x8 + TB5): the split's prefill 990 -> 1520 tok/s.\n"
+                 "  --pin-limit-gib N      the multi-GPU cap on registered pinned host memory, GiB (default 8;\n"
+                 "                       0 = uncapped as in single-GPU mode).  A registration past the WDDM\n"
+                 "                       budget is refused and poisons the contexts; setup's --calibrate\n"
+                 "                       probes the ceiling and writes the safe value.\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
@@ -1002,6 +1013,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--no-split-rows") o.no_split_rows = true;
         else if (a == "--no-prefill-borrow") o.no_prefill_borrow = true;
+        else if (a == "--prefill-main") o.prefill_main = true;
         else if (a == "--prefill-until") o.prefill_until = std::atoll(next("--prefill-until"));
         else if (a == "--dump-final-r") o.dump_final_r = next("--dump-final-r");
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
@@ -1150,6 +1162,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support layer splits or remote expert caches\n");
         return 2;
     }
+    // STRATA_PREFILL_MAIN: in a layer split, the whole batched prompt runs on the MAIN device (CUDA0) for all
+    // layers, and the later stage's session receives its layers' state through session_copy_layers after
+    // each batched prompt segment.  The later stage keeps its VRAM for its expert cache instead of the
+    // prompt-path buffers it no longer needs; decode stays split across the cards.
+    const bool prefill_main = multi_gpu && o.prefill_main;
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
@@ -1158,7 +1175,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
             return 2;
         }
-        o.no_prefill_borrow = true;   // each stage's prompt path has its own buffers
+        if (!prefill_main) o.no_prefill_borrow = true;   // each stage's prompt path has its own buffers
         int n_vis = 1;
         if (cudaGetDeviceCount(&n_vis) != cudaSuccess || n_vis < 1) n_vis = 1;
         cudaGetLastError();
@@ -1886,7 +1903,9 @@ int main(int argc, char** argv) {
         if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != cudaSuccess)
             std::fprintf(stderr, "strata generate: layer split: CUDA%d free memory: %s\n", dev < 0 ? 0 : dev,
                          cudaGetErrorString(e));
-        const int64_t reserve = ((int64_t) o.vram_reserve_mib + split_pf_mib + (later ? 1024 : 0)) << 20;
+        const int64_t reserve = ((int64_t) o.vram_reserve_mib +
+                                 (later && !prefill_main ? split_pf_mib : 0) +
+                                 (later ? 1024 : 0)) << 20;
         return std::max<int64_t>((int64_t) fb - reserve, 0);
     };
     if (multi_gpu && split_auto) {
@@ -1987,7 +2006,11 @@ int main(int argc, char** argv) {
         std::vector<std::pair<int32_t, int32_t>> mine;
         for (const auto& pr : profile) {
             const int st = stage_of(pr.first);
-            (st == 0 ? mine : stages[(size_t) st - 1]->profile).push_back(pr);
+            // STRATA_PREFILL_MAIN: the main device's prompt path covers ALL layers, so its cache
+            // keeps the ranked pairs of every layer (shallow, by rank); the stages keep their own
+            // lists for their decode caches.
+            if (st == 0 || prefill_main == 0) mine.push_back(pr);
+            if (st > 0) stages[(size_t) st - 1]->profile.push_back(pr);
         }
         profile.swap(mine);
         for (size_t i = 0; i < stages.size(); ++i) {
@@ -2930,6 +2953,11 @@ int main(int argc, char** argv) {
     // Plan v0.3 P4: with a PROFILE-filled cache the residency is static, so the hit decision moves onto the
     // device and the token graph keeps it.  (A cache filled on demand still needs the per-layer host path.)
     std::vector<int32_t> host_res;
+    // STRATA_PREFILL_MAIN: the batched prompt path sees the later stages' residency masked out in place in
+    // host_res (their slot ids mean their own device's arena); the true table is restored before the windows.
+    // The prefill reads the LIVE host_res (lent slots stream during a prompt, refills land in it) - a stale
+    // copy once read lent workspace bytes as expert weights.
+    std::vector<int32_t> host_res_true;
     int32_t* d_res = nullptr;
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
@@ -3125,8 +3153,11 @@ int main(int argc, char** argv) {
         else
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
         // layer split across GPUs: a prompt path per stage, each handing its chunk's rows to the next
+        // (STRATA_PREFILL_MAIN: none - the main device's prefill covers all layers; the stage keeps its
+        // VRAM for its expert cache instead of prompt-path buffers it would never use)
         for (size_t i = 0; i < stages.size(); ++i) {
             GpuStage& st = *stages[i];
+            if (prefill_main) continue;
             st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
             const strata::core::OnDevice on(st.dev);
             if (!st.sp.init(st.wt, g, st.ss, srcp, &st.cache, host_res.data(), o.prefill_chunk, (void*) st.stream, err)) {
@@ -3134,7 +3165,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
+        if (multi_gpu) {
+            if (prefill_main) sp.set_stage(0, -1, nullptr);   // all layers on the main device
+            else sp.set_stage(0, split_at[0], &stages[0]->sp);
+        }
         if (!sp.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             if (err.find("fit") != std::string::npos)   // #85: say what frees VRAM
@@ -3316,8 +3350,9 @@ int main(int argc, char** argv) {
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
             for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
-            // E-9: batched through the prompt path when it can (one GPU: a layer split's drafter is on the last stage)
-            const bool batched = !multi_gpu && sp.draft_kv(mtp, R_rows, nxt.data(), T, p0, e);
+            // E-9: batched through the prompt path when it can (one GPU: a layer split's drafter is on the last
+            // stage; STRATA_PREFILL_MAIN: the main device's rows cover all layers, so it qualifies too)
+            const bool batched = (!multi_gpu || prefill_main) && sp.draft_kv(mtp, R_rows, nxt.data(), T, p0, e);
             if (!e.empty() || (!batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e))) return false;
             // progress for the server window: PP <position reached> <prompt tokens> <ms> <fresh tokens/s>
             const int64_t done = p0 + T;
@@ -3348,7 +3383,7 @@ int main(int argc, char** argv) {
             }
             return true;
         };
-        if (multi_gpu) {   // the batched prompt is reported by its last stage (the drafter's rows are there)
+        if (multi_gpu && !prefill_main) {   // STRATA_PREFILL_MAIN: on_chunk stays on the main sp (its rows are the last stage's)
             stages.back()->sp.on_chunk = std::move(sp.on_chunk);
             sp.on_chunk = nullptr;
             for (size_t i = 0; i <= stages.size(); ++i) {
@@ -4019,6 +4054,20 @@ int main(int argc, char** argv) {
                         if (i >= o.prompt_cache_root) root_at = i;
                         break;
                     }
+            // STRATA_PREFILL_MAIN: while the batched path computes the later stages' layers here, the
+            // residency must not name THEIR slots - those ids mean the STAGE's arena, and the shared
+            // pool reads this very array.  Name the MAIN cache's own slots for those layers instead
+            // (this prompt path reads them there); what the main cache does not hold streams, as in
+            // single-GPU mode.  The windows below see the true table again.
+            if (prefill_main && !host_res.empty()) {
+                host_res_true = host_res;   // fresh every request: adapt may have swapped experts since the last one
+                for (int64_t l = split_at[0]; l < g.n_layers; ++l) {
+                    int32_t* row = host_res.data() + (size_t) (l * g.n_expert);
+                    for (int64_t e = 0; e < g.n_expert; ++e) row[e] = xcache.slot_of(l, e);
+                }
+                if (d_res != nullptr)
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+            }
             int64_t at = read_from;
             for (const int64_t to : {reread_to, root_at, turn_at, n - 1}) {
                 if (to <= at) continue;
@@ -4056,11 +4105,33 @@ int main(int argc, char** argv) {
                     cancelled = true;   // stopped while reading the prompt: refill the lent slots below, then DONE cancel
                     break;
                 }
+                if (prefill_main && !win) {
+                    // STRATA_PREFILL_MAIN: the batched prefill ran ALL layers on the main device - hand the
+                    // later stage's layers their state (KV/GDN/indexer) before anything reads or saves it.
+                    // (A windows-read segment already ran the stages themselves and needs no hand-off.)
+                    // the stage's own prompt path (which zeroes/initializes its session) never runs here:
+                    // zero the whole stage session first, then overwrite layers [K, 48) with the real state.
+                    {
+                        const strata::core::OnDevice on_z(stages[0]->dev);
+                        strata::core::session_zero(stages[0]->ss, g, nullptr, nullptr);
+                    }
+                    if (!strata::core::session_copy_layers(stages[0]->ss, ss, g, split_at[0], g.n_layers,
+                                                           0, stages[0]->dev, err)) {
+                        std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
+                }
                 at = to;
                 if ((to == turn_at || to == root_at) && !checkpoint_at(to)) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
+            }
+            if (prefill_main && !host_res_true.empty()) {   // the windows see the true residency again
+                std::copy(host_res_true.begin(), host_res_true.end(), host_res.begin());
+                if (d_res != nullptr)
+                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
