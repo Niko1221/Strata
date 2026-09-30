@@ -49,6 +49,7 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VISION_START = "<|vision_start|>"
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 # The live tok/s is a rate over a window, not a mean since the first token: a mean reads ~1/elapsed at the first
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
@@ -490,9 +491,13 @@ def child_env(cfg: dict) -> dict:
     measured engine knobs (e.g. STRATA_HIPBLASLT_TUNING) survive a restart instead of living in one unit's
     command line."""
     env = dict(os.environ)
-    if gpu_list(cfg):                                # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
+    if gpu_list(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (setup's KFD order)
+        env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+    elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+    for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
+        env[str(k)] = str(v)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -720,17 +725,24 @@ class Service:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+            start = self.tok.encode(VISION_START, parse_special=True)[0]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
             with self.fifo:
                 encoded = [self.vision.encode(src) for src in images]
+            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
             out, k = [], 0
-            for t in ids:                               # one <|image_pad|> per image -> one per image token
-                if t == pad and k < len(encoded):
+            for j, t in enumerate(ids):
+                if t == pad and j > 0 and ids[j - 1] == start and k < len(encoded):
                     out += [pad] * encoded[k][1]
                     k += 1
+                elif t == pad:
+                    out += literal
                 else:
                     out.append(t)
             if k != len(encoded):

@@ -1,4 +1,4 @@
-# Strata Engine - top-level build (P1.S1).
+﻿# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.24 LANGUAGES CXX)
+project(strata VERSION 0.1.27 LANGUAGES CXX)
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
@@ -62,14 +62,15 @@ if(STRATA_ENABLE_CUDA)
   endif()
   foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
     string(REGEX REPLACE "-.*$" "" _base "${_a}")     # 120-real / 120-virtual are still 120
-    # Plan v0.3 P6: developed and measured on sm_120 (RTX 50); the kernels need sm_80 or newer (tf32 mma in
-    # the attention scorer, bf16 math), so RTX 30 (86) and RTX 40 (89) build too.  Older cards are refused.
+    # Turing port: developed and measured on sm_120 (RTX 50); the tf32 mma in the QSA scorer has a
+    # portable fp32-FMA fallback, so RTX 20 (75), 30 (86), RTX 40 (89) and RTX 50 (120) build too.
+    # Pre-sm_75 is refused.
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    if(_base LESS 80 AND NOT STRATA_EXPERIMENTAL_SM75)   # the A/B of a Turing card as a layer-split stage
+    if(_base LESS 75)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 8.0 or newer (RTX 30 / 40 / 50 series), but "
+        "Strata needs an NVIDIA GPU of compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series), but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.")
     endif()
   endforeach()
@@ -227,9 +228,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON
-  # Declared HIP exclusion: this target links CUDA::cudart and exercises the tensor-core
-  # path that is compiled out under __HIP__; with STRATA_ENABLE_HIP it is not built.
-  if(STRATA_ENABLE_CUDA AND (STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN))
+  if(STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN)
     add_executable(qsa_prompt_attn_parity src/kernels/qsa_prompt_attn_parity.cpp)
     target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
@@ -480,6 +479,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(kv_stream_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_stream_parity COMMAND kv_stream_parity)
 
+  # PR #120: the hybrid K8V4 KV (INT8 K + rotated Q4_0 V) vs host references (GPU, synthetic, no model).
+  add_executable(kv_hybrid_parity src/kernels/kv_hybrid_parity.cpp)
+  target_include_directories(kv_hybrid_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(kv_hybrid_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME kv_hybrid_parity COMMAND kv_hybrid_parity)
   # PR #21: Q4_0 KV with Walsh-Hadamard rotation vs a host reference (GPU, synthetic, no model).
   add_executable(kv_q4_parity src/kernels/kv_q4_parity.cpp)
   target_include_directories(kv_q4_parity PRIVATE ${_strata_gpu_include_directories})
@@ -491,10 +495,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME cvec_parity COMMAND cvec_parity)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
-  # Declared exclusion: bench/micro/native_mmvq_multi.cpp is not present in this repository's
-  # history (nor upstream); the target is guarded so STRATA_BUILD_TESTS=ON configures cleanly.
-  # When the source is added, the guard drops away and the test registers as before.
-  if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp")
+  if(STRATA_BUILD_TESTS)
   add_executable(native_mmvq_multi bench/micro/native_mmvq_multi.cpp)
   target_include_directories(native_mmvq_multi PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_mmvq_multi PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -664,7 +665,7 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
-    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs)
+    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)   # q8_0: the drafter's matrices (E-9)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
     endforeach()
     target_include_directories(strata_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
@@ -692,7 +693,7 @@ if(STRATA_NATIVE_EXPERTS)
       src/prefill/moe_mmq.cu
       src/prefill/ggml_cuda_host.cu
       "${_strata_mmq}/quantize.cu")
-    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs)
+    foreach(_t q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
       list(APPEND _strata_mmq_sources "${_strata_mmq}/template-instances/mmq-instance-${_t}.cu")
     endforeach()
     set_source_files_properties(${_strata_mmq_sources} PROPERTIES LANGUAGE HIP)
@@ -734,7 +735,7 @@ if(STRATA_BUILD_TESTS)
   # Plan v0.3 P6: one expert applied to several tokens, bitwise vs the single-token kernel (synthetic, CPU only).
   # plan v0.3 P5: the device dequantizers vs the artifact's CPU dequantizers on the real shards (not a ctest: needs
   # the 38 GB model; run it by hand or from tools/gpu_session.py)
-  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)   # #93: it needs the device dequantizers and the GPU runtime (a CPU-only configure has neither)
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)   # #93: it needs the device dequantizers and a GPU runtime
     add_executable(dequant_bf16_test src/kernels/dequant_bf16_test.cpp)
     target_link_libraries(dequant_bf16_test PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
   endif()

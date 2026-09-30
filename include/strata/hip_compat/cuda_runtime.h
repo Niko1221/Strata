@@ -8,6 +8,7 @@
 #define cudaDevAttrMaxSharedMemoryPerBlockOptin hipDeviceAttributeMaxSharedMemoryPerBlock
 #define cudaDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
 #define cudaDevAttrClockRate hipDeviceAttributeClockRate
+#define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
 #define cudaDeviceGetAttribute hipDeviceGetAttribute
 #define cudaDeviceProp hipDeviceProp_t
 #define cudaDeviceSynchronize hipDeviceSynchronize
@@ -34,17 +35,6 @@
 #define cudaGetLastError hipGetLastError
 #define cudaGraphDestroy hipGraphDestroy
 #define cudaGraphExecDestroy hipGraphExecDestroy
-#define cudaGraphGetNodes hipGraphGetNodes
-#define cudaGraphNode_t hipGraphNode_t
-#define cudaGraphNodeType hipGraphNodeType
-#define cudaGraphNodeTypeKernel hipGraphNodeTypeKernel
-#define cudaGraphNodeTypeMemcpy hipGraphNodeTypeMemcpy
-#define cudaGraphNodeTypeMemset hipGraphNodeTypeMemset
-#define cudaGraphNodeGetType hipGraphNodeGetType
-#define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
-#define cudaKernelNodeParams hipKernelNodeParams
-#define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
-#define cudaDevAttrComputeCapabilityMinor hipDeviceAttributeComputeCapabilityMinor
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphGetNodes hipGraphGetNodes
 #define cudaGraphLaunch hipGraphLaunch
@@ -106,6 +96,7 @@ inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph,
                                      hipGraphNode_t* error, char* log, size_t size) {
     return hipGraphInstantiate(exec, graph, error, log, size);
 }
+#define __trap() __builtin_trap()   // the compiled-out sm_80 paths (never selected on AMD)
 #define cudaMemcpyToSymbol(symbol, ...) hipMemcpyToSymbol(HIP_SYMBOL(symbol), __VA_ARGS__)
 
 #include "intrinsics.hpp"

@@ -12,6 +12,25 @@ An optional, calibrated hipBLASLt path accelerates dense projections on gfx1100.
 This does not claim bit-identical model answers across backends. See
 [performance settings and evidence](AMD_HIP_PERFORMANCE.md).
 
+## Install with setup (recommended)
+
+On Linux with an RX 7900 XT / XTX and the kernel's amdgpu driver (no ROCm install needed):
+
+```sh
+./setup.sh --backend hip
+```
+
+- **Detection:** setup finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not
+  supported. On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
+- **ROCm:** installed into `.venv` from AMD's TheRock wheels (~10 GB, no sudo), pinned to the version this backend was
+  tested with (`STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX` override it). A system ROCm in `/opt/rocm` (or
+  `$ROCM_PATH`) with hipcc and hipBLAS is used instead when present.
+- **Engine:** compiled on your PC (10-20 minutes, once; again after a `git pull` that changes it). This needs a C++
+  compiler and git (`sudo apt install build-essential git`).
+- **Limits for now:** one GPU, no images, no calibration. The Monitor shows no GPU statistics.
+
+The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
+
 ## Build
 
 Requirements: a working ROCm driver/runtime, HIP development headers and
@@ -79,9 +98,8 @@ The worker count above was used on a 16-core CPU; measure it for your CPU.
 The 4K context is a smoke-test starting point, not a model limit. The expert cache
 sizes itself automatically and leaves 1 GiB of VRAM headroom.
 
-The automatic installer,
-vision helper, local gateway integrations, and multi-GPU experiments are not
-included in this backend patch.
+The installer supports this backend (see "Install with setup" above). The vision helper and multi-GPU layer
+splits are NVIDIA-only for now.
 
 ## Original backend validation (PR #94)
 

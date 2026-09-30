@@ -17,17 +17,14 @@ llama.cpp dependency; do not silently substitute another revision. Build with
 ```sh
 export STRATA_PREFILL_MMQ=1
 export STRATA_HIPBLASLT_TUNING="$PWD/tools/hip/gfx1100-hipblaslt-100100.txt"
-export STRATA_PF_IDX_BATCH=1
-export STRATA_PF_EMBED_BATCH=1
 export STRATA_PREFILL_RING=96
-export STRATA_PLE_IO_THREADS=32
+export STRATA_IO_THREADS=32
 ```
 
 The supplied table is calibrated for gfx1100 and hipBLASLt version 100100.
 It is not a universal ROCm tuning table. The runtime guards architecture,
 library version and actual shape/stride/workspace requirements, falling back
-when a table entry is unavailable or incompatible. Batched embedding/indexer
-paths and HIP MMQ are opt-in at runtime. Default CUDA selection is preserved.
+when a table entry is unavailable or incompatible. HIP MMQ is opt-in at runtime. Default CUDA selection is preserved.
 
 Measured engine configuration: Orca Flash Next IQ3_XXS, native pack plus matching
 GGUF/tokenizer/template, `--mmap-experts --resident-cpu-experts`, fixed ranked
@@ -132,10 +129,11 @@ validation of HIP multi-GPU support.
 
 ## Attribution and rejected experiments
 
-Native embedding gather and QSA batching are selectively adapted from
+The measurements above were taken before this backend was rebased onto engine 0.1.24. The PR's own batched
+embedding gather and QSA indexer append (adapted from
 [PR #108](https://github.com/Niko1221/Strata/pull/108), commit
-`acd487233c0bbe2217a6881c5bb43f8a283b0de5`. Its optional GDN parallel/split path is
-not included. Existing upstream MMQ orchestration is retained and enabled for
+`acd487233c0bbe2217a6881c5bb43f8a283b0de5`) were dropped in the rebase: 0.1.24 already does both on every
+backend, bit-exact (C-2, C-4). #108's optional GDN parallel/split path is not included. Existing upstream MMQ orchestration is retained and enabled for
 HIP with AMD architecture identification and the correct backend compilation.
 
 Static 16K chunks, expanded FP16 expert tuning, and a 192-slot ring did not offer

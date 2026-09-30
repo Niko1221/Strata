@@ -547,6 +547,9 @@ namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
     const unsigned long long t = clock64();   // gfx clocks, not wall ns: compare relative spans only
 #else
     unsigned long long t;
+#if defined(__HIPCC__)
+    t = wall_clock64() * 10ull;   // gfx11: a constant 100 MHz counter, in ns
+#else
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
 #endif
     buf[i] = t;
