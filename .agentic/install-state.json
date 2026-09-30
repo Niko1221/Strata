@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "owned": {
+    ".agentic/workflow.md": "e190419087457f8a08525729e1736023162d62f32bbca96d5fd4f36331ed1518",
+    ".agentic/verify.py": "11767bc7d0c34c627bb460dc1d9b1d05ed0b0dd60e1e8e84cbd9cf7cbf6ac75a",
+    "AGENTS.md": "56fcb52f69af1680c39e1a5ecd8f04f5162b2f8387249a3d34fb88a24e2ebdf9",
+    "CLAUDE.md": "56fcb52f69af1680c39e1a5ecd8f04f5162b2f8387249a3d34fb88a24e2ebdf9"
+  }
+}

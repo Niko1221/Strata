@@ -82,6 +82,22 @@ elseif(STRATA_ENABLE_HIP)
   set(_strata_gpu_runtime_target strata_hip_runtime)
   set(_strata_gpu_blas_target roc::hipblas)
   set(_strata_gpu_include_directories ${STRATA_HIP_COMPAT_INCLUDE_DIR})
+  # AMD tensor cores (ROCWMMA 16x16x16 FP16) for the optional QSA WMMA scorer arm.  An installed rocWMMA is
+  # found by its package; a vendored copy is named directly.  Without either the arm compiles out and
+  # qsa_block_scores_wmma refuses at runtime - the warp kernel stays the fallback, nothing else changes.
+  set(STRATA_ROCWMMA_INCLUDE_DIR "" CACHE PATH "rocWMMA include directory (the one holding rocwmma/rocwmma.hpp)")
+  if(NOT STRATA_ROCWMMA_INCLUDE_DIR)
+    find_package(rocWMMA CONFIG QUIET)
+    if(rocWMMA_FOUND)
+      set(STRATA_ROCWMMA_INCLUDE_DIR ${rocWMMA_INCLUDE_DIR})
+    endif()
+  endif()
+  if(STRATA_ROCWMMA_INCLUDE_DIR)
+    list(APPEND _strata_gpu_include_directories ${STRATA_ROCWMMA_INCLUDE_DIR})
+    message(STATUS "Strata: ROCWMMA includes at ${STRATA_ROCWMMA_INCLUDE_DIR} (the QSA WMMA arm compiles in)")
+  else()
+    message(STATUS "Strata: no ROCWMMA includes - the QSA WMMA arm compiles out (the warp kernel is the fallback)")
+  endif()
 endif()
 
 # Warnings live on an INTERFACE target the project's own code links, NOT in add_compile_options: applied
@@ -235,6 +251,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/ggml)
   target_include_directories(strata_kernels PRIVATE third_party/ggml)
+  if(STRATA_ROCWMMA_INCLUDE_DIR)
+    target_include_directories(strata_kernels PRIVATE ${STRATA_ROCWMMA_INCLUDE_DIR})
+  endif()
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
   if(STRATA_ENABLE_CUDA)
     set_source_files_properties(src/kernels/cuda/native_mmvq.cu src/kernels/cuda/native_bf16.cu
