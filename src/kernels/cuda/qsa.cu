@@ -185,9 +185,19 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
         }
         const double inv = __ddiv_rn(1.0, __dsqrt_rn(ss / (double) idx_dim + (double) eps));
         dead[d] = (float) (p * inv * (double) w_k_norm[d]);
-        // rope at position 0 is the identity here (cos = 1, sin = 0 exactly), so no rotation is applied and
-        // the parity test asserts the value is bit-exact - which is what makes skipping it legitimate.
-        pooled[d] = dead[d];
+        // Position 0 is NOT an identity rotation by default: row 0 of the CONFIGURED table is
+        // cos = mscale, sin = 0 (cos(0) times the magnitude multiplier), so applying it here scales the
+        // spare by mscale exactly once - the multiplier is already inside the table and the kernel adds
+        // nothing on top.  An unscaled table has cos = 1, sin = 0, which keeps today's bit-exact spare.
+        // The barrier first: the pairing below reads the partner element another thread has just written,
+        // and every thread of the block is inside this branch (pos is uniform), so the sync is uniform too.
+        __syncthreads();
+        const int half = n_rot / 2;
+        if (d < half) {
+            const size_t toff = (size_t) mrope_pos(mtab, 0, d) * half;   // position 0's table row
+            rope_neox_pair(dead[d], dead[half + d], cos_tab[toff + d], sin_tab[toff + d], dead[d], dead[half + d]);
+        }
+        pooled[d] = dead[d];     // own element: no partner read after the barrier above
     }
 
     if (slot != r - 1) return;
