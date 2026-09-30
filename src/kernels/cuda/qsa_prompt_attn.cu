@@ -1,4 +1,7 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
+#include "strata/core/emulate.hpp"
+#include <cstdlib>
+#include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -687,7 +690,9 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                 cudaGetLastError();
                 return false;
             }
-            cc_major[dev] = major;
+            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("STRATA_QSA_WARP");
+            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 7 : strata::cc_major_of(major);
         }
         if (cc_major[dev] < 8) return false;
     }

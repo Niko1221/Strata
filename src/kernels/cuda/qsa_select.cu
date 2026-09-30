@@ -1,4 +1,7 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
+#include "strata/core/emulate.hpp"
+#include <cstdlib>
+#include <cstring>
 #include "strata/kernels/qsa_select.hpp"
 
 #include <cuda_runtime.h>
@@ -517,7 +520,9 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
                 cudaGetLastError();
                 return false;
             }
-            cc_major[dev] = major;
+            // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("STRATA_QSA_WARP");
+            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
         }
         if (cc_major[dev] < 8) return false;
     }

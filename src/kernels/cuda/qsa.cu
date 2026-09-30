@@ -40,6 +40,7 @@
 //    Every comparison still passed at any sane tolerance, the spare key landing 0.4 f32 ulp away; only a
 //    BIT-EXACT assertion plus a full-precision probe of the intermediate found it.  That is the strongest
 //    argument in this file for keeping both.
+#include "strata/core/emulate.hpp"
 #include "strata/kernels/qsa.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
@@ -665,6 +666,7 @@ void qsa_attend_step(const float* q, const uint16_t* k_scratch, const uint16_t* 
         int dev = 0, max_shared = 0;
         cudaGetDevice(&dev);
         cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+        max_shared = strata::smem_optin_of(max_shared);
         if ((int) smem > max_shared) {
             std::fprintf(stderr, "qsa: qsa_attend: max_ids %lld needs %zu B of shared, over the %d B limit\n",
                          (long long) max_ids, smem, max_shared);
