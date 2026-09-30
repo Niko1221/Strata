@@ -6,6 +6,7 @@
 // rounded to BF16, which is also what llama.cpp's batched CUDA path does.  Tensor-core GEMM through cuBLAS.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -52,6 +53,7 @@ private:
     bool external_ = false;
     bool native_bf16_ = true;
     float* fp32_ = nullptr;
+    void* hipblaslt_state_ = nullptr;
 };
 
 

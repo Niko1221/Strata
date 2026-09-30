@@ -26,12 +26,49 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <cstdint>
+#include <cstddef>
+#include <utility>
 #include <string>
 #include <vector>
 
 namespace strata::core {
 
 class RemoteExperts;
+
+namespace detail {
+
+/// Sentinel used by the pure complement planner for a blob that remains in the mmap fallback.
+inline constexpr uint64_t kNoCacheComplement = ~uint64_t{0};
+
+/// Required cgroup-v2 usage counters for the conservative cache-reclaim allowance.
+struct CgroupMemoryStat {
+    uint64_t current = 0;
+    uint64_t inactive_file = 0;
+    uint64_t file_dirty = 0;
+    uint64_t file_writeback = 0;
+    bool valid = false;
+};
+
+/// Calculate additional bytes under a finite cgroup limit after reclaiming only clean inactive file cache.
+/// Returns false when the required memory.stat counters were unavailable.
+bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes);
+
+/// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
+/// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
+bool make_cache_complement_plan(
+    int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
+    const std::vector<std::pair<int32_t, int32_t>>& primary_gpu_pairs,
+    const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs,
+    std::vector<uint64_t>& offsets, uint64_t& bytes, std::string& err);
+
+/// Resolve one blob through the compact copy when present, otherwise preserve its exact mapped-file fallback.
+const uint8_t* cache_complement_blob_or_fallback(
+    size_t index, const std::vector<uint64_t>& offsets, const uint8_t* complement_host,
+    const uint8_t* mapped_fallback);
+
+}  // namespace detail
+
+
 
 /// Where one routed expert's bytes come from.
 ///
@@ -42,7 +79,7 @@ class ExpertSource {
 public:
     virtual ~ExpertSource() = default;
 
-    /// The 1,382,400-byte blob for `(layer, expert)`, or nullptr if it cannot be produced.
+    /// The expert-layout blob for `(layer, expert)`, or nullptr if it cannot be produced.
     ///
     /// The pointer only has to stay valid until the next `blob()` call: with `h = 0` every expert is computed
     /// immediately and nothing is retained.  A CACHING source must return pointers into the cache, not into a
@@ -270,26 +307,49 @@ public:
     FileExpertSource(const FileExpertSource&) = delete;
     FileExpertSource& operator=(const FileExpertSource&) = delete;
 
-    /// Maps `<pack_dir>/experts.bin` and checks its size against `n_layers * n_expert * BLOB`.
+    /// Maps `<pack_dir>/experts.bin` and checks its size against the loaded expert layout.  Canonical packs use
+    /// `n_layers * n_expert * BLOB`; native packs use their variable per-layer blob sizes and offsets.
     ///
     /// The size check is not a formality: a short file would fault at the END of a long sequence, and an
     /// over-long one means the pack is not the one the geometry came from.  Refuses with the two numbers.
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+    /// Pin a compact host mirror of experts absent from a fully filled static GPU cache. The mmap remains open
+    /// as a fallback for later cache reloads. This is opt-in because the complement may still be a large allocation.
+    bool pin_cache_complement(
+        const ExpertCache& cache, std::string& err, bool pin = true,
+        const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {});
     void close();
 
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
+    uint64_t pinned_bytes() const { return complement_pinned_ ? complement_bytes_ : 0; }
+    uint64_t resident_bytes() const { return complement_bytes_; }
+    bool complement_pinned() const { return complement_pinned_; }
 
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    bool pinned(int64_t layer, int64_t expert) const override;
+    const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
     int64_t reads() const override { return reads_; }
 
 private:
+    const uint8_t* mapped_blob(int64_t layer, int64_t expert) const;
+    static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
+    int64_t n_layers_ = 0;
     int64_t n_expert_ = 0;
+    uint64_t mapped_bytes_ = 0;
+    std::vector<uint64_t> layer_offsets_, layer_blob_bytes_;
+    void* complement_arena_ = nullptr;
+    const uint8_t* complement_host_ = nullptr;
+    const uint8_t* complement_device_ = nullptr;
+    uint64_t complement_bytes_ = 0;
+    std::vector<uint64_t> complement_offsets_;
+    bool complement_pinned_ = false;
+    bool complement_ready_ = false;
     int64_t reads_ = 0;
 #if defined(_WIN32)
     void* file_ = nullptr;

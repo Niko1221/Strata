@@ -53,6 +53,9 @@ public:
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
     /// `upto` (a conversation-cache resume). No-op unless the drafter's K/V is a ring.
     void kv_restore(int64_t upto);
+    /// The VRAM bind() will allocate for a native head of `head_row_bytes` per vocabulary row: the draft logits and
+    /// the draft head over rt/draft_vocab.bin's subset.  The expert cache is sized before bind(), so it reserves this.
+    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const;
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
 
@@ -72,6 +75,19 @@ public:
 
     double ms_draft = 0, ms_prefill = 0;
     int64_t rounds = 0;
+
+    /// E-9: the prompt path computes this layer's prompt K/V in batches (Prefill::draft_kv): its tensors, its K/V
+    /// state, the first cell a round can still read, its device, and a wait for its own stream.
+    const float* tensor_f32(const char* name) const { return f32(name); }
+    const uint16_t* tensor_bf16(const char* name) const { return bf16(name); }
+    const void* tensor_q8(const char* name) const { return q8(name); }
+    QsaState& kv_state_rw() { return st_; }
+    int64_t first_needed() const { return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0; }
+    int device() const { return device_; }
+    bool idle(std::string& err) {
+        if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "mtp: its stream failed"; return false; }
+        return true;
+    }
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);

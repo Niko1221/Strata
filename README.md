@@ -25,15 +25,15 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 
 | Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
 | --- | ---: | ---: | ---: |
-| **Q2_0** | 90 tokens/s | 67 tokens/s | 1,840 tokens/s |
-| **IQ2_XS** | 74 tokens/s | 60 tokens/s | 1,800 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 46 tokens/s | 1,550 tokens/s |
-| **IQ3_S** | 52 tokens/s | 41 tokens/s | 1,500 tokens/s |
-| **Coder** (IQ1_M) | 51 tokens/s | 44 tokens/s | 1,870 tokens/s |
+| **Q2_0** | 93 tokens/s | 74 tokens/s | 2,170 tokens/s |
+| **IQ2_XS** | 79 tokens/s | 63 tokens/s | 2,090 tokens/s |
+| **IQ3_XXS** | 62 tokens/s | 49 tokens/s | 1,750 tokens/s |
+| **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |
+| **Coder** (IQ1_M) | 55 tokens/s | 43 tokens/s | 2,180 tokens/s |
 
 - **Writes answers** = how fast the reply appears (tokens per second).
 - **Reads your prompt** = how fast it takes in what you send (long documents, code, chat history), measured on a
-  32K-token prompt; a 4K prompt reads at 890-1,520 tokens/s. A 32K prompt takes about 17 seconds with Q2_0.
+  32K-token prompt; a 4K prompt reads at 910-1,580 tokens/s. A 32K prompt takes about 15 seconds with Q2_0.
 
 A card with more VRAM is faster, because more of the model fits on the GPU: an RTX 3090 (24 GB) should do roughly
 100-140 tokens per second. All measurements, long-context numbers and estimates for other cards are in the
@@ -47,7 +47,7 @@ asks whether to share the model across them (recommended when two can). An insta
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
 card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
 pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 30 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
 
 ## Which model should I pick?
 
@@ -84,9 +84,14 @@ one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./se
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
 It needs an explicit packing conversion and is not an installer menu option.
 
+An **AMD Radeon RX 7900 XT / XTX on Linux** works too (experimental): `./setup.sh --backend hip`, chosen by itself on
+a PC with no NVIDIA card Strata can use. It installs ROCm without sudo and compiles the engine (one GPU, no images
+yet). Details: [AMD HIP](docs/AMD_HIP.md).
+
 ## Install
 
-**You need:** an NVIDIA RTX 30, 40 or 50 card with 12 GB of VRAM or more, enough RAM for the size you pick (above),
+**You need:** an NVIDIA RTX 20, 30, 40 or 50 card with 12 GB of VRAM or more (RTX 20 since 0.1.27), enough RAM for the size you pick (above;
+a big GPU makes up for less RAM - the [low-RAM mode](docs/DETAILS.md)),
 ~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux. The only thing you
 install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
 App). Everything else - Python, the engine, the model - is set up for you.

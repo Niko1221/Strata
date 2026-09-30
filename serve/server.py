@@ -24,6 +24,7 @@ import argparse
 import collections
 import base64
 import hashlib
+import hmac
 import codecs
 import json
 import os
@@ -49,6 +50,7 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VISION_START = "<|vision_start|>"
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 # The live tok/s is a rate over a window, not a mean since the first token: a mean reads ~1/elapsed at the first
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
@@ -215,6 +217,11 @@ class StrataEngine:
             if "issue #29" in line:
                 return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
                         "line: " + line.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
+        rc = self.proc.poll()
+        last = next((x.strip() for x in reversed(tail.splitlines()) if x.strip().startswith(("strata", "ERR"))), "")
+        if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
+            return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
+                    "report it at github.com/Niko1221/Strata/issues with the log.")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -488,9 +495,13 @@ def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
-    if gpu_list(cfg):                                # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
+    if gpu_list(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (setup's KFD order)
+        env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+    elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+    for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
+        env[str(k)] = str(v)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -716,17 +727,24 @@ class Service:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+            start = self.tok.encode(VISION_START, parse_special=True)[0]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
             with self.fifo:
                 encoded = [self.vision.encode(src) for src in images]
+            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
             out, k = [], 0
-            for t in ids:                               # one <|image_pad|> per image -> one per image token
-                if t == pad and k < len(encoded):
+            for j, t in enumerate(ids):
+                if t == pad and j > 0 and ids[j - 1] == start and k < len(encoded):
                     out += [pad] * encoded[k][1]
                     k += 1
+                elif t == pad:
+                    out += literal
                 else:
                     out.append(t)
             if k != len(encoded):
@@ -902,6 +920,8 @@ class Service:
                     if os.environ.get("STRATA_DEBUG") and raw_ids:
                         print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                 self.status["busy"] = False
+                self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
+                self.status.pop("tool", None)
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
@@ -1233,7 +1253,7 @@ def make_handler(svc: Service):
                 return True
             auth = self.headers.get("Authorization", "")
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
-            if given == svc.api_key:
+            if hmac.compare_digest(given.encode(), svc.api_key.encode()):   # #213: constant-time
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -1298,6 +1318,8 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key)})
             elif path == "/status":
+                if not self._authorized():                  # #212: it shows the end of the last answer
+                    return
                 with svc.status_lock:
                     s = dict(svc.status)
                 now = time.time()
@@ -1488,6 +1510,10 @@ class Server(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets a second server bind a port that is already serving, and requests then land on
     # either one (a forgotten second start of run-<model>.bat).  Without it the second start fails loudly instead.
     allow_reuse_address = os.name != "nt"
+
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
+            super().handle_error(request, client_address)
 
 
 def warn_tight_ram(arena_mib) -> None:
@@ -1712,6 +1738,12 @@ def main() -> int:
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+    if ("STRATA_API_KEY" in os.environ and not os.environ["STRATA_API_KEY"].strip()) or             any(x == "--api-key" and i + 1 < len(sys.argv) and not sys.argv[i + 1].strip() or x.strip() == "--api-key="
+                for i, x in enumerate(sys.argv)):
+        # #213: an empty key would switch authentication off without a word
+        print("[strata] an API key was given but it is empty: set a key, or leave --api-key / STRATA_API_KEY out",
+              file=sys.stderr)
+        return 2
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
@@ -1756,15 +1788,19 @@ def main() -> int:
         import webbrowser
         webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
     try:
-        threading.Event().wait()
+        while True:
+            time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
-        httpd.shutdown()
-        if hasattr(engine, "close"):
-            engine.close()
-        if vision:
-            vision.close()
-        if hub is not None:
-            hub.close()
+        print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
+        closers = [httpd.shutdown, getattr(engine, "close", None), vision.close if vision else None,
+                   hub.close if hub is not None else None]
+        for close in filter(None, closers):
+            try:
+                close()
+            except KeyboardInterrupt:                   # a second Ctrl+C: don't wait for the engine to free its memory
+                if getattr(engine, "proc", None):
+                    engine.proc.kill()
+        print("[strata] stopped", flush=True)
     return 0
 
 

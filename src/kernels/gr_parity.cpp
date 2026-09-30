@@ -20,6 +20,7 @@
 //   6. `gr_write`'s `2*sigmoid`, which centres the gate on 1 so a ZERO injection is a plain residual add.
 //      Asserted as a property, not as a value, because that is what the source comment claims.
 #include "strata/kernels/gr.hpp"
+#include "strata/kernels/fused_gr.hpp"
 
 #include <cuda_runtime.h>
 
@@ -265,6 +266,143 @@ int scalar_activation_contract() {
     check(cudaStreamDestroy(stream), "scalar stream destroy");
     cudaFree(d_R); cudaFree(d_norm); cudaFree(d_mixed); cudaFree(d_inject);
     cudaFree(d_weights); cudaFree(d_scratch);
+    return bad;
+}
+
+int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const uint16_t* d_up,
+                           const uint16_t* d_inject, float eps) {
+    using namespace strata::kernels;
+    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, T = kFusedGrMaxT;
+    std::mt19937 rng(0x6f8a);
+    std::normal_distribution<float> normal(0.0f, 0.3f);
+    std::vector<float> r((size_t) T * D), bo((size_t) T * N), inj((size_t) T * HC);
+    for (auto& x : r) x = normal(rng);
+    for (auto& x : bo) x = normal(rng);
+    for (auto& x : inj) x = normal(rng);
+
+    float *d_r = nullptr, *d_r_out = nullptr, *d_bo = nullptr, *d_inj = nullptr;
+    float *d_lo = nullptr, *d_rs = nullptr, *d_inj_out = nullptr, *d_mixed = nullptr, *d_xn = nullptr;
+    check(cudaMalloc(&d_r, r.size() * sizeof(float)), "multi R");
+    check(cudaMalloc(&d_r_out, r.size() * sizeof(float)), "multi R_out");
+    check(cudaMalloc(&d_bo, bo.size() * sizeof(float)), "multi bo");
+    check(cudaMalloc(&d_inj, inj.size() * sizeof(float)), "multi inj");
+    check(cudaMalloc(&d_lo, (size_t) T * LR * sizeof(float)), "multi lo");
+    check(cudaMalloc(&d_rs, (size_t) T * HC * sizeof(float)), "multi rs");
+    check(cudaMalloc(&d_inj_out, (size_t) T * HC * sizeof(float)), "multi injection");
+    check(cudaMalloc(&d_mixed, (size_t) T * N * sizeof(float)), "multi mixed");
+    check(cudaMalloc(&d_xn, (size_t) T * D * sizeof(float)), "multi xn");
+    check(cudaMemcpy(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice), "multi copy R");
+    check(cudaMemcpy(d_bo, bo.data(), bo.size() * sizeof(float), cudaMemcpyHostToDevice), "multi copy bo");
+    check(cudaMemcpy(d_inj, inj.data(), inj.size() * sizeof(float), cudaMemcpyHostToDevice), "multi copy inj");
+
+    std::vector<FusedGrArgs> args(T);
+    for (int t = 0; t < T; ++t) {
+        auto& a = args[t];
+        a.R = d_r + (size_t) t * D;
+        a.R_out = d_r_out + (size_t) t * D;
+        a.apply = true;
+        a.bo_prev = d_bo + (size_t) t * N;
+        a.inj_prev = d_inj + (size_t) t * HC;
+        a.w_norm = d_norm;
+        a.w_down = d_down;
+        a.w_up = d_up;
+        a.w_inject = d_inject;
+        a.eps = eps;
+        a.lo = d_lo + (size_t) t * LR;
+        a.rs = d_rs + (size_t) t * HC;
+        a.inject_out = d_inj_out + (size_t) t * HC;
+        a.mixed = d_mixed + (size_t) t * N;
+    }
+
+    struct Snapshot {
+        std::vector<float> r_out, lo, rs, inject, mixed;
+    };
+    auto snapshot = [&]() {
+        Snapshot s;
+        s.r_out.resize((size_t) T * D);
+        s.lo.resize((size_t) T * LR);
+        s.rs.resize((size_t) T * HC);
+        s.inject.resize((size_t) T * HC);
+        s.mixed.resize((size_t) T * N);
+        check(cudaMemcpy(s.r_out.data(), d_r_out, s.r_out.size() * sizeof(float), cudaMemcpyDeviceToHost), "multi read R_out");
+        check(cudaMemcpy(s.lo.data(), d_lo, s.lo.size() * sizeof(float), cudaMemcpyDeviceToHost), "multi read lo");
+        check(cudaMemcpy(s.rs.data(), d_rs, s.rs.size() * sizeof(float), cudaMemcpyDeviceToHost), "multi read rs");
+        check(cudaMemcpy(s.inject.data(), d_inj_out, s.inject.size() * sizeof(float), cudaMemcpyDeviceToHost), "multi read inject");
+        check(cudaMemcpy(s.mixed.data(), d_mixed, s.mixed.size() * sizeof(float), cudaMemcpyDeviceToHost), "multi read mixed");
+        return s;
+    };
+    auto same = [](const Snapshot& a, const Snapshot& b) {
+        return std::memcmp(a.r_out.data(), b.r_out.data(), a.r_out.size() * sizeof(float)) == 0 &&
+               std::memcmp(a.lo.data(), b.lo.data(), a.lo.size() * sizeof(float)) == 0 &&
+               std::memcmp(a.rs.data(), b.rs.data(), a.rs.size() * sizeof(float)) == 0 &&
+               std::memcmp(a.inject.data(), b.inject.data(), a.inject.size() * sizeof(float)) == 0 &&
+               std::memcmp(a.mixed.data(), b.mixed.data(), a.mixed.size() * sizeof(float)) == 0;
+    };
+
+    cudaStream_t stream = nullptr;
+    check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "multi stream");
+    // Max T forces the HIP kernel's full dynamic-LDS request: 8 * 1280 * sizeof(float) = 40 KiB.
+    fused_gr_read_multi(args.data(), T, d_xn, stream);
+    check(cudaStreamSynchronize(stream), "multi max-T sync");
+    const Snapshot multi = snapshot();
+    for (int t = 0; t < T; ++t) fused_gr_read(args[t], stream);
+    check(cudaStreamSynchronize(stream), "single reference sync");
+    const Snapshot single = snapshot();
+    int bad = 0;
+    if (!same(multi, single)) {
+        std::printf("  fused GR multi max-T differs from single-token calls\n");
+        ++bad;
+    }
+
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t graph_exec = nullptr;
+    check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "multi graph begin");
+    fused_gr_read_multi(args.data(), T, d_xn, stream);
+    check(cudaStreamEndCapture(stream, &graph), "multi graph end");
+    check(cudaGraphInstantiate(&graph_exec, graph, nullptr, nullptr, 0), "multi graph instantiate");
+    check(cudaGraphLaunch(graph_exec, stream), "multi graph initial replay");
+    check(cudaStreamSynchronize(stream), "multi graph initial sync");
+    const Snapshot captured = snapshot();
+    if (!same(multi, captured)) {
+        std::printf("  fused GR multi captured graph differs from direct max-T call\n");
+        ++bad;
+    }
+
+    // Reuse the same captured pointers with new payloads; then independently run the single-token path again.
+    for (size_t i = 0; i < r.size(); ++i) r[i] = -0.7f * r[i] + 0.001f * (float) (i % 17);
+    for (size_t i = 0; i < bo.size(); ++i) bo[i] = -0.4f * bo[i] + 0.02f;
+    for (size_t i = 0; i < inj.size(); ++i) inj[i] += 0.3f;
+    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "multi replay R");
+    check(cudaMemcpyAsync(d_bo, bo.data(), bo.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "multi replay bo");
+    check(cudaMemcpyAsync(d_inj, inj.data(), inj.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "multi replay inj");
+    check(cudaGraphLaunch(graph_exec, stream), "multi graph changed replay");
+    check(cudaStreamSynchronize(stream), "multi graph changed sync");
+    const Snapshot replay = snapshot();
+    if (std::memcmp(multi.mixed.data(), replay.mixed.data(), multi.mixed.size() * sizeof(float)) == 0) {
+        std::printf("  fused GR graph replay ignored changed inputs\n");
+        ++bad;
+    }
+    for (int t = 0; t < T; ++t) fused_gr_read(args[t], stream);
+    check(cudaStreamSynchronize(stream), "changed single reference sync");
+    if (!same(replay, snapshot())) {
+        std::printf("  fused GR changed graph replay differs from single-token calls\n");
+        ++bad;
+    }
+
+    std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
+                bad == 0 ? "pass" : "FAIL");
+    check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");
+    check(cudaGraphDestroy(graph), "multi graph destroy");
+    check(cudaStreamDestroy(stream), "multi stream destroy");
+    check(cudaFree(d_xn), "free multi xn");
+    check(cudaFree(d_mixed), "free multi mixed");
+    check(cudaFree(d_inj_out), "free multi injection");
+    check(cudaFree(d_rs), "free multi rs");
+    check(cudaFree(d_lo), "free multi lo");
+    check(cudaFree(d_inj), "free multi inj");
+    check(cudaFree(d_bo), "free multi bo");
+    check(cudaFree(d_r_out), "free multi R_out");
+    check(cudaFree(d_r), "free multi R");
     return bad;
 }
 
@@ -602,6 +740,7 @@ int main(int argc, char** argv) {
                         activation_mode_name(mode), ok ? "pass" : "*** FAIL ***", rm, ri);
             if (!ok) ++bad;
         }
+        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps);
         select_activation_mode(0);
         cudaFree(rws_raw);
         cudaFree(dR); cudaFree(dN); cudaFree(dD); cudaFree(dU); cudaFree(dJ); cudaFree(dM); cudaFree(dI);

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Strata for Linux: the first run installs everything and starts the model; later runs just start it.
-# Needs only an NVIDIA driver. Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
+# Needs only an NVIDIA driver (or, experimental: an AMD RX 7900 XT/XTX with the amdgpu driver, see docs/AMD_HIP.md).
+# Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 cd "$(dirname "$0")" || exit 1
 # Python 3.10+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
 # python3-venv package), and a venv made without it has no pip
