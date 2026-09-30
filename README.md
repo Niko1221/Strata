@@ -42,6 +42,9 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
 (about 5-10 minutes; on the PC above it made the Coder 7% faster).
 
+Measured Strata on your own PC? See [Community benchmark results](docs/COMMUNITY_BENCHMARKS.md)
+for a report template and how to share your results in a pull request.
+
 **Two or three NVIDIA cards?** Just run `START-HERE.bat`: it lists your cards, says which ones Strata can use, and
 asks whether to share the model across them (recommended when two can). An install made on one card asks once at
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
