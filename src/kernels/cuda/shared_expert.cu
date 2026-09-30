@@ -21,7 +21,6 @@
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_gemv_q8.hpp"
 #include "strata/kernels/s_gemv.hpp"
@@ -66,11 +65,6 @@ __global__ void native_swiglu_kernel(const float* gate, const float* up, float* 
     // Explicit intrinsics reproduce its --use_fast_math operations without
     // changing compilation of the default legacy arithmetic in this file.
     out[i] = __fdividef(gate[i], 1.0f + __expf(-gate[i])) * up[i];
-}
-
-__global__ void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = f16_from_f32(in[i]);
 }
 
 // The per-token scalar gate: sigmoid(dot(x, w)) with w = `ffn_gate_inp_shexp` (n_embd,).

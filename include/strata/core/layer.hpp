@@ -464,6 +464,7 @@ void layer_set_fast_attn(bool enabled);
 void layer_set_publish_kernel(bool enabled);
 /// Plan v0.3 P3: GDN step + output norm as one coalesced kernel under the native contract (default ON).
 void layer_set_fused_gdn(bool enabled);
+void layer_set_qwen35_gdn(bool enabled);
 /// Plan v0.3 P7: QSA block scores in FP32 and a radix top-k over blocks (default ON; `false` = the FP64 row scores
 /// and the bit-serial cell top-k).  Set before capture.
 void layer_set_fast_select(bool enabled);

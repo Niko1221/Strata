@@ -66,11 +66,6 @@ __device__ __forceinline__ void store_activation(uint16_t* dst, int i, float x) 
 __device__ __forceinline__ float silu_f(float x) { return x / (1.0f + expf(-x)); }
 __device__ __forceinline__ float sigmoid_f(float x) { return 1.0f / (1.0f + expf(-x)); }
 
-__device__ __forceinline__ double warp_sum(double v) {
-    for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xFFFFFFFFu, v, off);
-    return __shfl_sync(0xFFFFFFFFu, v, 0);
-}
-
 __device__ __forceinline__ float warp_sumf(float v) {
     for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xFFFFFFFFu, v, off);
     return __shfl_sync(0xFFFFFFFFu, v, 0);
@@ -84,9 +79,9 @@ __device__ __forceinline__ float warp_sumf(float v) {
 /// the cast cannot overrun, and it keeps the change to one function instead of one per caller.
 __device__ float block_sumf(float v, double* scratch_raw) {
     float* scratch = (float*) scratch_raw;
-    // The leading barrier is not decoration - see the note on `block_sum` above: the result is read straight out
-    // of `scratch[0]` by every thread and a later call reuses the array, so without it a fast thread can
-    // overwrite `scratch[0]` before a slow one has read the previous result.
+    // The leading barrier is not decoration: the result is read straight out of `scratch[0]` by every thread
+    // and a later call reuses the array, so without it a fast thread can overwrite `scratch[0]` before a slow
+    // one has read the previous result - a race that is invisible in most runs.
     __syncthreads();
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     v = warp_sumf(v);
@@ -95,29 +90,6 @@ __device__ float block_sumf(float v, double* scratch_raw) {
     const int nw = ((int) blockDim.x + 31) >> 5;
     v = (threadIdx.x < nw) ? scratch[threadIdx.x] : 0.0f;
     if (warp == 0) v = warp_sumf(v);
-    if (threadIdx.x == 0) scratch[0] = v;
-    __syncthreads();
-    return scratch[0];
-}
-
-/// Block-wide sum in DOUBLE, broadcast to every thread.
-///
-/// Double because `ref/gr.py` reduces in float64 for the norm and the bottleneck, and because a block-wide
-/// f32 sum of 2560 squares is a different number from the reference's; the shuffle tree here also reorders
-/// the additions, so the only defence is enough precision that the order stops mattering.
-///
-/// The leading `__syncthreads()` is not decoration: the result is read straight out of `scratch[0]` by every
-/// thread, and a later call reuses the same array.  Without a barrier on entry a fast thread can overwrite
-/// `scratch[0]` before a slow one has read the previous result - a race that is invisible in most runs.
-__device__ double block_sum(double v, double* scratch) {
-    __syncthreads();
-    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-    v = warp_sum(v);
-    if (lane == 0) scratch[warp] = v;
-    __syncthreads();
-    const int nw = ((int) blockDim.x + 31) >> 5;
-    v = (threadIdx.x < nw) ? scratch[threadIdx.x] : 0.0;
-    if (warp == 0) v = warp_sum(v);
     if (threadIdx.x == 0) scratch[0] = v;
     __syncthreads();
     return scratch[0];

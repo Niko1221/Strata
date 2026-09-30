@@ -165,10 +165,6 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(d_pos, &p7, sizeof(int), cudaMemcpyHostToDevice), "copy p7");
         strata::kernels::rope_neox_apply(d_x, d_out, 1, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
         check(cudaMemcpy(o.data(), d_out, o.size() * sizeof(float), cudaMemcpyDeviceToHost), "back e");
-        int moved[4] = {0, 0, 0, 0};       // dims 0, 1, half, half+1
-        const float* chk[4] = {&e[0], &e[1], &e[half], &e[half + 1]};
-        (void) chk;
-        moved[0] = (o[0] != 0.0f || o[half] != 0.0f) ? 1 : 0;
         const bool adjacent_moved = (o[1] != 0.0f);
         const bool neox_moved = (o[half] != 0.0f);
         std::printf("  pairing: dim 0 set -> NEOX moves dim %d (o[half]=%.6f), adjacent would move dim 1 "

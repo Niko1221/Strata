@@ -28,7 +28,6 @@ namespace {
 // QK = 64 elements per group; a quad of 4 elements is 1/16 of a group, so
 //     group = (quad * 4) >> 6 = quad >> 4
 constexpr int QK_S2 = 64;
-constexpr int CODES_PER_BYTE_S2 = 4;
 
 __global__ void s2_gemv_quads_kernel(const uint16_t* __restrict__ x, const uint8_t* __restrict__ codes,
                                      const float* __restrict__ scales, float* __restrict__ y, long long n_in,

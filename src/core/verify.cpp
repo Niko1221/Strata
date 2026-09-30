@@ -1135,8 +1135,8 @@ void Verifier::set_plan_slot(int grp) {
 
 // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
 void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
-    volatile long* f = (volatile long*) flag;
 #if defined(_WIN32)
+    volatile long* f = (volatile long*) flag;
     long cur = *f;
     while ((uint32_t) cur < value) {
         const long prev = _InterlockedCompareExchange(f, (long) value, cur);

@@ -1,6 +1,7 @@
 
 // src/core/layer.cpp - the GDN layer, composed.  See the header for the operation order and its traps.
 #include "strata/core/layer.hpp"
+#include "strata/kernels/qwen35_attention.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -38,7 +39,7 @@
 #include <cstring>
 #include <vector>
 namespace strata::core {
-namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; }
+namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; bool g_qwen35_gdn = false; }
 namespace {constexpr int Q8K_BYTES_PER_BLOCK = 292;
 constexpr int Q8K_ELEMS_PER_BLOCK = 256;
 constexpr float RMS_EPS = 1e-6f;
@@ -320,6 +321,7 @@ try {
     if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.z, ssm_norm, RMS_EPS, b.y,
                                        (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream);
     else if (native_gdn_enabled()) native_gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
+    else if (g_qwen35_gdn) qwen35_gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
     else gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
 } catch (const std::exception& error) { err = v.name("gdn_out_norm") + ": " + error.what(); return false; }
 st_end(layer, 14, stream);
@@ -456,6 +458,7 @@ bool layer_verify_compatible(std::string& why) {
 }
 void layer_set_publish_kernel(bool enabled) { g_publish_kernel = enabled; }
 void layer_set_fused_gdn(bool enabled) { g_fused_gdn = enabled; }
+void layer_set_qwen35_gdn(bool enabled) { g_qwen35_gdn = enabled; }
 void layer_set_fast_select(bool enabled) { g_fast_select = enabled; }
 void layer_set_fast_attn(bool enabled) { g_fast_attn = enabled; }
 void layer_set_fused_gr(bool enabled) { g_fused_gr = enabled; }
@@ -839,7 +842,7 @@ void stage_timing_report(int64_t n_layers) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1158,7 +1161,6 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
             gr_write(bb.R, bb.block_out, bb.inject2, gs0, bb.R, stream);
             pending_ffn = false;
         }
-        const int64_t hcd = strata::kernels::NG_HC_DIM;
         strata::kernels::PleOut po;
         // Exports must not alias the block's internal workspace. The previous diagnostic views used a
         // different layout inside that workspace: exporting gated values overwrote normalized values
