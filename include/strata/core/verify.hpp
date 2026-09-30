@@ -109,6 +109,11 @@ public:
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
+    /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
+    /// the same stream and the drafter reads nothing it writes, so it overlaps the draft. Whoever reads or writes
+    /// the session from another stream or the host afterwards (a new request, a checkpoint) synchronizes the device
+    /// first.  STRATA_COMMIT_SYNC=1 keeps the wait.
+    static void set_commit_async(bool on);
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
