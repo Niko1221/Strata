@@ -430,9 +430,11 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
 }
 
 
-// dual-3090 (session 8): the decode window's scores - every key block read ONCE for all the window's queries (the
-// grid above is (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer, each key re-read per query).  A fixed
+// Block scores with every key block read ONCE for all of a call's queries (block_scores_kernel's grid is
+// (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer at a decode window, each key re-read per query).  A fixed
 // grid strides over the blocks; per (block, query) the same arithmetic in the same order as block_scores_kernel.
+// qsa_block_scores takes it for every call without an active-block count and at most MQ queries: the captured decode
+// window, the uncaptured decode, and prefill's pooled16 call.
 constexpr int MQ = 8;
 __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(const float* __restrict__ pooled,
                                                                               const float* __restrict__ dead,
@@ -486,7 +488,7 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     }
     // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
     static const bool multi = [] { const char* v = std::getenv("STRATA_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
-    if (multi && nq <= MQ && active_blocks <= 0) {   // the decode window (a captured graph: no active count)
+    if (multi && nq <= MQ && active_blocks <= 0) {   // no active count: decode (captured or not) and prefill's pooled16
         block_scores_multi_kernel<<<256, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
                                                                                      max_blocks, scores);
         const cudaError_t e = cudaGetLastError();
