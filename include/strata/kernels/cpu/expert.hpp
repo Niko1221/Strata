@@ -174,6 +174,13 @@ void q2_0_gguf_rows_multi_avx2(const uint8_t* w, size_t row_bytes, int nblocks, 
                                float* const* out, int r0, int r1);
 void act_quant_q8_1_avx2(const float* x, int n, ActQ& a);
 
+/// LOCAL PORT (Z620): the same two for CPUs with AVX but no AVX2 (Sandy Bridge / Ivy Bridge, Xeon E5-2600
+/// v1/v2).  See src/kernels/cpu/q2_avx1.cpp for what this costs - roughly half the AVX2 kernel's
+/// throughput, since it unpacks and dots 16 int8 per instruction instead of 32, and nothing in accuracy.
+void q2_0_gguf_rows_multi_avx1(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                               float* const* out, int r0, int r1);
+void act_quant_q8_1_avx1(const float* x, int n, ActQ& a);
+
 void s2_expert_scalar(const uint8_t* blob, const float* x, float* out, bool quant_acts);
 
 }  // namespace strata::kernels::cpu
