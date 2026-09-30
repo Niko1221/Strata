@@ -1,115 +1,49 @@
 # Conversation cache validation
 
-The core review branch is based on upstream 0.1.27 (`a790805`). Recorded model
-results below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
-not the new base. The Windows admission test is @midhatn's `32cf918`, retained as
-`b319d43`. Historical records and the general Pi benchmark remain on local branch
-`feat/conversation-cache-upstream` at `cb8d90c`; they are outside the core patch.
+The focused core branch includes upstream 0.1.27 (`a790805`). Final Linux checks
+ran on 2026-09-30 after the user's Pi benchmark completed. This record describes
+the review binaries, not the original server restored after the test window.
+Windows admission coverage retains @midhatn's original authorship in `b319d43`.
 
-## Current offline checks
+## Hardware and artifacts
 
-After separating the general benchmark tooling and merging 0.1.27, all 47 tool
-tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
-rejection now clears its diagnostic error before the new batched draft-prefill
-path runs. The core-only and NVMe-enabled engines build on the new base. The
-core passes five host CTests with GPU visibility disabled (policy, admission,
-checkpoint retention, validation and injected transfers). Final model validation
-remains outstanding, and Python passes do not establish it. No benchmark server or GPU
-was used for these checks.
+EPYC 7532, RTX 4090, GCC 15.2, CUDA 13.4, SM89, portable AVX2, IQ3_S.
+All model engines used `numactl --interleave=all --physcpubind=0-31` and matched
+expert residency (7,846 slots, PCIe share 0.55). INT8 streamed/ring tests used
+131,072 context and 32,768 main resident cells; batched INT8/K8V4 tests used
+16,384 context with full device KV. These are correctness gates, not a Pi speed
+comparison or measurements at the production server's 262,144 context limit.
 
-On the dependent NVMe branch, five CPU-only CTest targets pass: RAM policy,
-memory admission, file codec, disk store and checkpoint retention. The codec also passes 6,727 checks under
-ASan/UBSan, compiled with `-Wall -Wextra -Werror`. Coverage includes every
-single-byte mutation and truncation of a fixture, foreign identities, missing
-assets, middle-of-file asset changes, staging/floor rejection, all encoded KV
-formats and checkpoint buffers, and metadata-only matching against the RAM
-policy. Codec format coverage does not establish model compatibility or disk
-restart/promotion correctness. No GPU or benchmark endpoint was used.
-
-The store tests cover reopening, foreign identities, corruption, LRU/byte/entry
-retention, no I/O when disabled, eviction-only callbacks, failed spills and protected
-promotion candidates under tight RAM/disk budgets. Linux syscall wrappers inject
-write, file-sync, rename and directory-sync failures and observe quota usage during
-writes. Child processes exit during writing and immediately after rename to verify
-lock release, temporary-file cleanup and complete-file discovery after restart.
-These are host lifecycle tests, not power-loss simulation or full-model restoration.
-The latest ASan/UBSan results are 141 store, 47 RAM-policy and 23 admission checks.
-Progress-callback tests cover large reads/writes, unchanged encoded bytes,
-forwarding through the store, and no heartbeat for disabled or initially rejected
-operations. Local commands and logs are in `logs/nvme-host-20260929/` on the NVMe worktree.
-
-The serve-loop integration passes GCC C++20 syntax checking against CUDA 13.4
-headers with disk support both enabled and disabled, including the shared geometry
-key export. The linked NVMe-enabled engine and snapshot/host test binaries also
-build with GCC 15.2, CUDA 13.4, SM89 and portable AVX2. Linked host validation and
-injected-transfer CTests pass with GPU visibility disabled; 26 CLI rejection cases
-pass without creating a cache directory. Build/CLI logs are in
-`logs/review-0.1.27/`. The disk-disabled variant also builds, has no OpenSSL
-runtime dependency, and rejects disk-cache requests before model loading. The
-final enabled engine SHA-256 is
-`0b75cce86436e63cd1ba50c89565c3ddd0564fb724ae0135c50dc3ef94df3ce9`;
-the core engine is
+Core executable SHA-256:
 `f3eda68ad0dce9a1604345743ba5432ed73f2efeaf6b4f84f435317d7f2ba9ff`.
-These binaries include the final draft-residency diagnostic. The dependent frontend suite passes 68 tests
-(three skipped), including tokenizer/template forwarding from the actual frontend
-paths. Full-model NVMe promotion, restart, output parity and state hashes are still
-unverified; no running benchmark server or GPU was used for these checks.
+Local commands, configs, raw logs and result JSON are under
+`logs/review-0.1.27/`; full-model artifacts are in its `model-window/` directory.
+Documentation-only commits after this build do not change the tested code.
 
-The draft read-back diagnostic passes 1,188 host transfer checks under ASan/UBSan,
-including injected corruption and failed copies. The host backend wraps CUDA
-copies/synchronization; unused ring/stream GPU functions abort if reached. The
-real GPU fixture now checks the ring produced by restore directly, without an
-extra refill that could mask a bug; that updated GPU fixture has not run yet.
-State fingerprint reads now use fixed-size chunks and reject transfer failures.
+## Passed gates
 
-`tools/conversation_cache_disk.py` prepares six sequential private engines for
-baseline, eviction, restart, admission denial, changed tokenizer identity and
-corrupted files. It requires known answers, token/main-state parity, matching
-draft read-back fingerprints across restart, and the requested draft-prefill
-path. Its seven offline verifier tests pass, including 28 lifecycle evidence
-mutations, six insufficient-ring cases, missing residency logs and optimized Python. This establishes the verifier's checks, not
-full-model success. All model executions remain pending the exclusive test window.
-
-```sh
-cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
-cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test conv_cache_test -j 1
-ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_store_test|conversation_cache_test|conversation_memory_test|conv_cache_test)$' --output-on-failure
-```
-
-## Recorded Linux evidence (2026-09-29)
-
-EPYC 7532, RTX 4090, GCC 15.2, CUDA 13.4, SM89, portable AVX2, IQ3_S. Paired
-engines used 131,072 context, INT8 KV, 32,768 resident cells, 7,846 expert slots,
-and PCIe share 0.55. Evidence remains in that worktree's `logs/upstream-20260929/`.
-
-| Gate | Result and scope |
+| Gate | Evidence |
 | --- | --- |
-| Components | Seven CTest targets passed: cache policy, admission, GPU round trips, host validation, injected transfers, checkpoint retention, sampler parity |
-| Python | 65 server tests (three skipped), 47 tool tests, 22 harness tests under `-O` |
-| ASan/UBSan | 35 policy, 23 admission, 1,116 host validation/transfer checks passed |
-| CLI | Ten malformed/range/layer-split checks passed |
-| Full model | Nine paired gates: reuse/checkpoints, long speculation, pressure, oversize, exchange, admission denial, synthetic image/grid and add/project steering isolation |
-| Soak | 30 known-answer returns at 2,026 / 39,985 / 119,987 tokens; exact outputs/main-state fingerprints and stable retained payload |
-| HTTP | Twelve requests passed reuse, eviction, disconnect and recovery without an engine restart |
+| Components | Policy, admission, checkpoint retention, validation, injected transfers and sampler parity CTests |
+| GPU snapshot fixture | 1,298 checks; FP16/INT8/Q4/K8V4 supported layouts, partial pages, indexer spare keys, early checkpoints, zero-QSA, 256/512-expert metadata and draft ring read-back |
+| Python | 66 frontend tests (three skipped), 47 tool tests, 22 cache-harness tests under Python `-O` |
+| Transfer diagnostics | 1,188 ASan/UBSan host checks, including corrupted bytes and failed copies |
+| RAM model reuse | Streamed INT8; batched INT8 and K8V4; known answers, exact output tokens and main-state parity |
+| Long speculation | Speculation width four beyond resident KV, with output/state parity |
+| Capacity/fallback | 400 MiB pressure and exchange, 1 MiB oversized entry, impossible RAM-floor rejection in ring and batched paths |
+| Isolation | Synthetic image/grid identity and add/project steering isolation |
+| Soak | 30 returns at 2,026 / 39,985 / 119,987 tokens; exact output/state parity and bounded retention |
+| HTTP | Twelve requests passed reuse, slot eviction, disconnect and recovery on a private endpoint |
 
-The nine INT8 gates and soak used executable SHA-256
-`0d8cbca38ce27153cea516cf6454df4653196ae875e0224fd3dd3c51e1d27ea0`.
-K8V4 then exposed incorrect hybrid-format flags. After correction, executable
-`4e174e8a4b602f1f8efe846cf19570478fcc7d2b50f3c48373c799d39b3610c7`
-passed K8V4/INT8 model parity, the three affected CTest targets, the 1,116 sanitizer
-checks, and HTTP recovery. The full nine-gate suite was not repeated on that fix.
-An initial unequal-expert-residency comparison was rejected, not counted as a pass.
-
-Four bounded Pi coding runs passed ten independent checks each. Return prompt
-processing took 4.33–5.78 s with parking off and 1.50–1.52 s with it on, with
-similar but unequal prompts. Whole-task timing favored opposite modes in the two
-pairs, so there is no demonstrated overall speedup/regression. The benchmark
-harness, detailed results and failed preliminary tool-budget trial are separate
-from the core patch. These are not version-to-version or Windows measurements.
+The opt-in `STRATA_SNAPSHOT_VERIFY=1` diagnostic records the actual draft-prefill
+path and verifies restored authoritative bytes and resident ring pages before
+emitting a fingerprint. Main-model state hashes alone do not cover draft state.
+The GPU fixture checks the ring produced by restore without refilling it first.
+Host fault injection does not simulate recovery of a broken CUDA context.
 
 ## Reproduction
 
-Configure the engine normally with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`, then:
+Configure the normal engine with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`, then:
 
 ```sh
 cmake --build build --target conversation_cache_test conversation_memory_test conversation_snapshot_test conversation_validation_test conv_cache_test sampler_parity
@@ -117,68 +51,97 @@ ctest --test-dir build -R '^(conversation_.*|conv_cache_test|sampler_parity)$' -
 python -m unittest tools.test_conversation_cache_parity tools.test_conversation_cache_isolation tools.test_conversation_cache_soak tools.test_conversation_cache_http_smoke
 ```
 
-On GNU/Clang ELF CUDA builds also build `conversation_transfer_test`; it wraps
-copies and synchronization for host fault injection. It does not simulate recovery
-of a broken CUDA context. GPU fixtures cover partial pages, distinct indexer spare
-keys, early checkpoints, zero-QSA and 256/512-expert metadata.
+On GNU/Clang ELF CUDA builds also build `conversation_transfer_test` for wrapped
+copy/synchronization fault injection. Focused targets were used; this record does
+not claim the full optional upstream test configuration passes.
 
-Model tools default to a dry run. With `--config CONFIG --engine ENGINE --output
-NEW_DIRECTORY --run`, run parity at `--spec 1` and `--spec 4`, then scenarios
-`pressure`, `oversized`, `exchange` and `admission`. Select byte budgets that
-actually force the named condition; use a RAM floor above available memory for
-denial. Isolation scenarios are `image`, `add`, and `project`. The soak requires
-at least 30 cycles and three lengths crossing resident KV and approaching the
-configured context limit. HTTP smoke requires an exclusive idle test endpoint.
-Run model/GPU gates only in an exclusive test window.
+Model tools default to dry runs. Supply `--config CONFIG --engine ENGINE --output
+NEW_DIRECTORY --run` to parity at `--spec 1` and `--spec 4`, then scenarios
+`pressure`, `oversized`, `exchange` and `admission`. Budgets must force the named
+condition. Isolation scenarios are `image`, `add` and `project`. The soak requires
+at least 30 cycles and three lengths crossing residency and approaching context.
+Use `STRATA_SNAPSHOT_VERIFY=1` and verify actual batched-prefill evidence when
+claiming that path. HTTP smoke needs an exclusive idle test endpoint. Run model
+and GPU checks only in an exclusive test window.
 
-The disk gate is dry-run by default. Run it separately for batched draft prefill
-and the draft ring; each run owns a new output directory and modifies only its
-copied tokenizer and generated cache files:
+## Limits and separate work
+
+- Windows implementation reviewed, not locally executed. Contributor reports
+  concern separate Windows work and do not validate this branch.
+- HIP execution, real vision encoding and the full Coder model are untested.
+  Synthetic image inputs test cache identity, not the vision encoder.
+- Whole-conversation multi-GPU parking and hybrid K8V4 streaming/rings are
+  unsupported; ordinary upstream stage checkpoints remain available.
+- Optional disk persistence is a dependent change; its acceptance is recorded below.
+
+Historical 0.1.25 evidence remains on local `feat/conversation-cache-upstream`
+at `cb8d90c`. General Pi tooling is isolated on
+`tools/conversation-cache-benchmark`. Four historical bounded Pi trials passed
+correctness, but overall timing favored opposite modes in the two pairs; no
+whole-task speedup or version-to-version performance claim follows from them.
+
+## Dependent disk tier
+
+The NVMe branch uses the same 0.1.27 core and restore path. Enabled executable
+SHA-256: `0b75cce86436e63cd1ba50c89565c3ddd0564fb724ae0135c50dc3ef94df3ce9`.
+Disk-disabled executable SHA-256:
+`fdc303e2c408dde52a9f864a3265bef0cc86a2be88b89ccb901a421df5f03a75`.
+Both CUDA builds pass; only the enabled build links OpenSSL Crypto. The disabled
+build rejects disk flags before model loading. NVMe build/host/CLI logs are under
+its `logs/review-0.1.27/` and `logs/nvme-host-20260929/`. Model lifecycle artifacts
+are in the core worktree's `logs/review-0.1.27/model-window/disk-*/` directories.
+
+| Gate | Evidence |
+| --- | --- |
+| Host components | Five CPU CTests: codec, store, RAM policy, admission, checkpoint retention; linked validation/transfer tests also pass |
+| ASan/UBSan | 6,727 codec, 141 store, 47 policy and 23 admission checks; checkpoint ages include extreme/tied stamps and subsequent use without wrap |
+| Build/CLI | Disk on/off builds, 26 invalid/range/prerequisite/layer-split cases without creating a cache directory |
+| Python | 68 frontend tests (three skipped); shared tool coverage plus seven disk-verifier tests, including evidence mutations and optimized Python |
+| GPU | 1,298 snapshot checks in the dependent build |
+| INT8 batched disk lifecycle | Six phases passed in 747.9 s |
+| K8V4 batched disk lifecycle | Six phases passed in 741.6 s |
+| INT8 wrapped-ring disk lifecycle | Six phases passed in 1,016.3 s; 68,571-token prefix restored across restart, exceeding 32,840 draft resident cells |
+
+Each lifecycle runs baseline, RAM eviction/spill, restart/promotion, RAM-floor
+denial, changed-tokenizer identity and corrupted-file fallback in separate private
+engines. It requires known answers, exact output tokens and main-state parity,
+matching restored draft fingerprints, actual requested prefill paths and bounded
+staging. Corrupt or foreign images are refused before GPU application; fallback
+matches the cold baseline. INT8 and K8V4 were tested separately, not by exchanging
+files between quantizations. Full-model changed-weight exchange was not run.
+Host fixtures cover changed asset contents/settings and foreign same-prefix images.
+
+Codec tests mutate every byte and truncate each position of a fixture. Store
+fixtures cover quotas during writes, protected promotion, eviction-only callbacks,
+disabled no-I/O behavior, write/sync/rename/directory-sync failures and process exit
+around publication. These do not simulate power loss. Disk checkpoint stamps are
+rebased before promotion; only relative recency, not an old process clock, survives.
+
+Full asset hashing adds cold-start I/O; native GGUF assets alone total about
+78 GiB here. Lifecycle durations include six model starts and diagnostic overhead,
+so they are not cache latency benchmarks. Whole-image eviction writes, strict
+path-sensitive identity and the absence of per-field mismatch diagnostics remain
+explicit tradeoffs. Page-addressed storage/deduplication is outside this change.
+The adapter follows Marmaduke Woodman's (@maedoc) streaming-envelope contribution;
+his original `6648be7` branch history remains preserved. Windows filesystem/locking
+code is reviewed but untested, as are HIP execution and real power-loss recovery.
+
+For CPU-only disk tests:
+
+```sh
+cmake -S . -B build-conversation-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_ENABLE_CONVERSATION_DISK=ON
+cmake --build build-conversation-host --target conversation_file_test conversation_store_test conversation_cache_test conversation_memory_test conv_cache_test -j 1
+ctest --test-dir build-conversation-host -R '^(conversation_file_test|conversation_store_test|conversation_cache_test|conversation_memory_test|conv_cache_test)$' --output-on-failure
+```
+
+The model disk tool defaults to a dry run; add `--run` during an exclusive window:
 
 ```sh
 python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output NEW_DIRECTORY --draft-path batched
 python tools/conversation_cache_disk.py --config CONFIG --engine ENGINE --output ANOTHER_NEW_DIRECTORY --draft-path ring --paragraphs 4096
 ```
 
-Add `--run` in the exclusive window. Run INT8 and K8V4 configurations where
-supported. The gate records actual paths/modes and refuses to count an absent
-batched pass or ring restore as coverage. Ring runs must exceed both main
-residency and the draft window; short prompts are refused before model loading.
-Verification requires the restored prefix to exceed the actual draft residency
-reported by the engine, so an unwrapped ring cannot pass.
-
-## Outstanding evidence
-
-- Repeat affected build/model gates on 0.1.27, including batched draft prompt KV
-  and its fingerprint. Previous main-model hashes excluded draft scratch/state.
-- NVMe restart, corruption, foreign identity, eviction/promotion and explicit
-  staging bounds; no disk acceptance is claimed yet.
-- Windows runtime: only contributor-reported 25 MSVC admission checks, not locally
-  reproduced. HIP execution, multi-GPU parking, real vision encoder and full
-  Coder-model runs are untested; synthetic fixtures do not substitute for them.
-- Full optional upstream test configuration was blocked on 0.1.25 by missing
-  `native_mmvq_multi.cpp` and `hit_cpu_order_parity.cu`; focused tests were used.
-
-## Review updates (2026-09-29)
-
-[QilinWan's identity review](https://github.com/Niko1221/Strata/issues/57#issuecomment-5898749306)
-is mapped to named inputs and coordinate meanings in the design document. The
-current digest refuses foreign identities but cannot identify the first differing
-field in a log. Page-store deduplication suggested on #52 remains a follow-up.
-
-[midhatn reports a 0.1.27 Windows test](https://github.com/Niko1221/Strata/issues/57#issuecomment-5900605241)
-of a separate auxiliary snapshot patch: 3,216 reused tokens out of a 3,223-token
-lookup, correct answers and shorter return latency. This is contributor evidence,
-not validation of this branch; K8V4, HIP and batched draft prefill remain untested
-there. No local Windows claim is made.
-
-Upstream 0.1.27 (`a790805`) was inspected after the maintainer requested 0.1.26.
-It adds HIP-only compilation fixes, Turing support, frontend image-marker fixes
-and a changed draft vocabulary. Both review branches now include 0.1.27. The core frontend suite passes 66 tests
-(three skipped), its 47 tool tests and 22 optimized harness tests pass, and the
-dependent branch passes 52 tool tests. Five host CTests pass after the merge.
-These checks do not establish model correctness with the changed draft vocabulary.
-
-Persisted checkpoint ages are rebased before promotion. Retention tests cover
-extreme stamps, tied ages, unchanged prefix order and pinned-root eviction, and
-subsequent uses advancing without wrap. These pass under ASan/UBSan.
+Use supported INT8 and K8V4 configs separately. Ring runs must exceed main
+residency and the draft window; the verifier checks the engine's actual restored
+resident-cell count. Each run owns a new directory and changes only copied
+identity assets and generated cache files.
