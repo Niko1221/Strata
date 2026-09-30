@@ -15,7 +15,7 @@ __device__ __forceinline__ int signed_byte(uint32_t word, int lane) {
 
 // CUDA's signed __dp4a: four signed byte products accumulated modulo 2^32.
 __device__ __forceinline__ int dp4a(int a, int b, int c) {
-#if defined(__gfx1100__) && __has_builtin(__builtin_amdgcn_sudot4)
+#if (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__)) && __has_builtin(__builtin_amdgcn_sudot4)
     // RDNA3 exposes the signed/unsigned dot4 form. Mark both packed operands
     // signed to preserve CUDA __dp4a semantics; keep the portable path for
     // other HIP compilers/targets.

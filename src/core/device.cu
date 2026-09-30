@@ -64,10 +64,11 @@ DeviceInfo device_info(int ordinal) {
     // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  Compiling for a
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
-    // backend is validated on gfx1100 (wave32) only.
+    // backend is validated on gfx1100 and gfx1102 (RDNA3 wave32).
 #if defined(STRATA_USE_HIP)
-    if (std::strncmp(p.gcnArchName, "gfx1100", 7) != 0 || p.warpSize != 32) {
-        throw CudaError("HIP backend requires validated gfx1100 wave32 hardware", -1);
+    if (std::strncmp(p.gcnArchName, "gfx110", 6) != 0 || p.gcnArchName[6] < '0' || p.gcnArchName[6] > '2' ||
+        p.warpSize != 32) {
+        throw CudaError("HIP backend requires RDNA3 gfx1100/gfx1101/gfx1102 wave32 hardware", -1);
     }
 #else
     if (d.cc_major * 10 + d.cc_minor < 75) {
