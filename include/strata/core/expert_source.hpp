@@ -186,6 +186,33 @@ struct ExpertDispatch {
     /// implementations linked in `bench/micro/act_quant_parity.cu`.  That disagreement is why turning the
     /// cache on changed the generated tokens.  Required whenever the hit path runs.
     float* x_q8_0_hit_scale = nullptr;
+
+    // ================================ R4.2i: **A NATIVE PACK'S SLOTS DO NOT HOLD S2 BLOBS** ================================
+    //
+    // **EVERYTHING ABOVE THIS LINE IS THE CANONICAL PACK'S CONTRACT, AND IT WAS APPLIED TO EVERY PACK.**  The
+    // two kernels above - `moe_hit_grouped_s2` and its `_cpu_order` twin - take the blob's geometry from
+    // literals in `s2_expert_grouped.cu:30-43` (H=2560, FF=640, QK=64, ROW_GU=640, ROW_D=160), because that is
+    // what a **canonical Q2_0** blob is.  `expert_cache::fill_slot` does not repack: it copies the pack's blob
+    // byte for byte.  A native pack's blob is the raw GGUF slices - 5,222,400 B of Q8_0 for
+    // `Qwen3.8-Flash-Next-Q8_0`, IQ3_XXS/IQ4_NL for the IQ3_S file - so the kernel decoded codes and scales at
+    // the wrong offsets and produced a finite, plausible, wrong expert, which `add_inplace` then summed into
+    // `parts`.  Layer 0's block was wrong, so every routing decision from layer 1 on was wrong too.
+    //
+    // The CPU pool and the remote tiers never had this bug: both branch on the layer's format
+    // (`expert_source.cpp:903`, `remote_experts.cpp:306`).  Only this path did not, because `hit_fn` is set on
+    // `--expert-cache` alone (`generate.cpp:2550`) with no `layout.native` in front of it.
+    //
+    // So a native pack's hits go to `native_expert_grouped`, the type-generic kernel the remote tiers already
+    // use and that `native_expert_parity` checks against ggml-cpu's own `vec_dot` (Q8_0: rel 3.16e-05).  It
+    // takes the blob's **address** per group rather than a slot index, so the slot addresses are staged here.
+    bool native_hits = false;              ///< the pack's blobs are native (IQ/Q8_0) slices, not canonical S2
+    unsigned long long* d_hit_ptr = nullptr;  ///< device, K: each hit's slot blob address
+    int32_t* d_hit_start = nullptr;        ///< device, K+1: group g owns entry g, so [0, 1, ..., K]
+    int32_t* d_hit_tok = nullptr;          ///< device, K: all zero - a hit is always the current token
+    int32_t* d_hit_count = nullptr;        ///< device, 1: this layer's hit count, read by the kernels
+    uint8_t* x_q8_1_hit = nullptr;         ///< `(n_embd/32) * 36` bytes: the native kernels' Q8_1 activation
+    std::vector<unsigned long long> h_hit_ptr;  ///< host staging, sized at session setup
+
     int32_t* d_slot = nullptr;             ///< device, K entries
     int32_t* d_dst = nullptr;              ///< device, K entries
     std::vector<int32_t> h_slot, h_dst;    ///< host staging, sized at session setup
@@ -228,9 +255,15 @@ struct ExpertDispatch {
     /// Whether the hit path is wired up.  All of it or none of it: a half-configured hit path would compute
     /// some experts twice and others not at all, which is a wrong token rather than an error.
     bool hits_ready() const {
-        return cache != nullptr && cache_base != nullptr && parts_out != nullptr && hit_out != nullptr &&
+        const bool s2 = cache != nullptr && cache_base != nullptr && parts_out != nullptr && hit_out != nullptr &&
                mixed != nullptr &&
                hit_scratch != nullptr && x_q8_0_hit != nullptr && x_q8_0_hit_scale != nullptr && d_slot != nullptr && d_dst != nullptr;
+        if (!s2) return false;
+        // R4.2i: a native pack needs its own set as well, and `native_hits` is set beside the allocation, so a
+        // pack that asks for the native route without the buffers is refused rather than decoded as S2.
+        if (!native_hits) return true;
+        return d_hit_ptr != nullptr && d_hit_start != nullptr && d_hit_tok != nullptr && d_hit_count != nullptr &&
+               x_q8_1_hit != nullptr;
     }
 
     std::vector<strata::kernels::cpu::ExpertJob> jobs;

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import collections
+import glob
+import re
 import base64
 import hashlib
 import hmac
@@ -102,7 +104,29 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
     gb = 0.0
     if "--native" in args:                              # about the size of the experts it will read
         try:
-            gb = os.path.getsize(args[args.index("--native") + 1]) / 1e9
+            # exact when the pack says it: native_experts.txt's header ends "(n_expert 512, total N; ...)"
+            # where N is the arena it will read into RAM.  Falls back to the split's whole shard family -
+            # a split keeps its experts across every shard, not just the one named on the command line
+            # (Q8_0: the named shard holds 49 GB, the arena reads 128 GB from three shards).
+            total = None
+            if "--pack" in args:
+                with open(os.path.join(args[args.index("--pack") + 1], "native_experts.txt"),
+                          encoding="utf-8", errors="replace") as nf:
+                    m = re.search(r"total (\d+)", nf.readline())
+                    if m:
+                        total = int(m.group(1))
+            if total is not None:
+                gb = total / 1e9
+            else:
+                native = args[args.index("--native") + 1]
+                shards = [native]
+                m = re.search(r"-\d{5}-of-\d{5}\.gguf$", native)
+                if m:
+                    family = glob.glob(re.sub(r"-\d{5}-of-\d{5}\.gguf$",
+                                              "-*-of-%s.gguf" % m.group(0)[-10:-5], native))
+                    if family:
+                        shards = family
+                gb = sum(os.path.getsize(s) for s in shards) / 1e9
         except (OSError, IndexError):
             pass
     size = f"about {gb:.0f} GB" if gb >= 1 else "tens of GB"

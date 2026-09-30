@@ -120,7 +120,7 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>>& ranked,
                          const ExpertCache& primary, ExpertSource& source,
-                         std::vector<uint8_t>& claimed, std::string& err) {
+                         std::vector<uint8_t>& claimed, std::string& err, const char* flag) {
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
@@ -159,7 +159,17 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         needed += lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
     if (needed + (512ull << 20) > free_bytes) {
-        err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
+        // How many slots fit is a property of the QUANTIZATION, not of the card: a Q8_0 expert blob is
+        // 5,222,400 B against IQ3_S's ~2.0 MB, so the 3670 that suits an IQ3_S file overflows an 8 GB card
+        // by more than twice.  Report the number that fits - the caller has to choose one - and name the
+        // option that chose this count rather than the CUDA index, which a layer split renumbers.
+        const uint64_t per_slot = selected.empty() ? 0 : needed / selected.size();
+        const uint64_t room = free_bytes > (512ull << 20) ? free_bytes - (512ull << 20) : 0;
+        err = "CUDA" + std::to_string(device) + " experts: " + std::to_string(selected.size()) + " slots need " +
+              std::to_string(needed >> 20) + " MiB, but only " + std::to_string(free_bytes >> 20) +
+              " MiB is free (512 MiB is kept back), so at most " +
+              (per_slot ? std::to_string(room / per_slot) : std::string("0")) + " fit; lower " +
+              (flag ? flag : "this cache's slot count");
         close(); return false;
     }
     const bool cache_ok = lay.native ? cache_.open_sized(sizes, layers, experts, err)

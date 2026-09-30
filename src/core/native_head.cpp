@@ -24,8 +24,23 @@ bool NativeHead::load(const std::string& path, int64_t n_in, int64_t n_out, std:
     }
     try {
         strata::GgufFile gguf(path);
-        err = strata::check_architecture(gguf);
-        if (!err.empty()) return false;
+        // A split GGUF carries the model's KV block in its FIRST shard only; the rest hold just the split
+        // triple.  Q8_0 here is the extreme case: shard 1 has all 67 keys and zero tensors, and shard 2 owns
+        // output.weight - so the shard this head must read is one that has no architecture to check.  Validate
+        // it when it declares one, and otherwise require it to identify itself as a later split shard, which
+        // is the same evidence NativeDense::load accepts (src/core/native_dense.cpp:77).
+        if (gguf.get("general.architecture")) {
+            err = strata::check_architecture(gguf);
+            if (!err.empty()) return false;
+        } else {
+            const auto* count = gguf.get("split.count");
+            const auto* number = gguf.get("split.no");
+            const auto* tensors = gguf.get("split.tensors.count");
+            if (!count || !number || !tensors || count->u < 2 || number->u == 0 || number->u >= count->u) {
+                err = "native head: no general.architecture, and the file does not declare itself a later split shard";
+                return false;
+            }
+        }
         const strata::TensorInfo* tensor = nullptr;
         for (const auto& candidate : gguf.tensors()) {
             if (candidate.name != "output.weight") continue;

@@ -57,6 +57,17 @@ BF16_PROJECTIONS = (
 )
 BF16_OUTPUT = {"output_hc_down.weight", "output_hc_up.weight"}
 
+# The PLE conv1d is read as F16 by the engine (`kernels/ple.hpp`: `const uint16_t* conv1d_f16`, consumed
+# straight by `conv_kernel` in `kernels/cuda/ple.cu`), while its siblings `ple_norm_*` are F32. GSQ-RCO files
+# store it F16. A plain Q8_0 checkpoint keeps it F32 -- the quantizer leaves this tensor unquantized -- and
+# reading those F32 bytes as F16 hands the kernel the LOW halves of the f32 words. That is not garbage but
+# plausible-looking garbage: layer 1's routing flips and the reply is a different token, with no error
+# anywhere. Index kind 3 ("an f16 value promoted to f32") makes the LOADER narrow it, round-to-nearest-even,
+# so the arena holds the F16 the kernel reads. The Q8_0 width here is BF16 widened to f32; rounding it back
+# to f16 reproduces the IQ3_S pack's tensor bit for bit, so this is a conversion the engine can verify, not
+# a guess.
+F16_PROJECTIONS = ("ple_conv1d.weight",)
+
 
 def needs_bf16(name: str, type_name: str) -> bool:
     if name in BF16_OUTPUT:
@@ -145,6 +156,7 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
     rows, at = [], 0
     served = 0
     converted = []
+    narrowed = []       # F32 in the checkpoint, F16 in the arena - the loader converts these on the way in
     with open(out / "dense.bin", "wb") as fo:
         for name, (g, t, mm, _) in model.where.items():
             if is_expert(t.name) or t.name in NOT_IN_PACK:
@@ -170,7 +182,20 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
                         return 1
                     raw = (u >> 16).astype(np.uint16).tobytes()     # the exact BF16 values
                     kind = "4"
-                rows.append([t.name, "0", kind, str(at), str(len(raw)), "0", str(len(raw)), str(ne0), str(ne1),
+                src_n, dst_n = len(raw), len(raw)
+                if not convert and t.type_name == "F32" and t.name.endswith(F16_PROJECTIONS):
+                    v = np.frombuffer(raw, dtype=np.float32)
+                    if not np.isfinite(v).all() or not np.isfinite(v.astype(np.float16)).all():
+                        print("tensor %s is F32 and does not survive the F16 the engine reads it as" % t.name)
+                        return 1
+                    # Keep the f32 bytes in dense.bin (src_bytes) and let the loader write F16 (dst_bytes):
+                    # 4 B/elem in, 2 B/elem out is the exact pair `weights.cpp` demands of a kind-3 row, and
+                    # it re-derives neither the conversion nor the element count.
+                    dst_n = v.size * 2
+                    kind = "3"
+                    narrowed.append({"name": t.name, "source_type": t.type_name,
+                                     "src_bytes": src_n, "dst_bytes": dst_n})
+                rows.append([t.name, "0", kind, str(at), str(src_n), "0", str(dst_n), str(ne0), str(ne1),
                              "0", "0", "1"] + ["0"] * 7)
                 fo.write(raw)
                 pad = (-len(raw)) % ALIGN
@@ -180,6 +205,11 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
                 served += 1
                 rows.append([t.name, "0", "0", "0", "0", "0", "0", str(ne0), str(ne1), "8", "0", "32"] + ["0"] * 7)
     write_index(out, rows, src, served, 0)
+    # Reported whether or not --compat-bf16 is on: the engine's F16 contract does not depend on that flag,
+    # and a silent conversion is the one thing this tensor must never be.
+    for t in narrowed:
+        print("narrowed to F16 for the engine: %s (%d -> %d bytes, index kind 3)"
+              % (t["name"], t["src_bytes"], t["dst_bytes"]))
     if compat_bf16:
         (out / "compat-bf16.json").write_text(json.dumps({
             "source": str(src), "rounding": "nearest-even", "tensors": converted,
@@ -315,16 +345,29 @@ def main() -> int:
         fo.write("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
                  "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
                  % (n_expert, offset, src.name))
+        n_split = 0
         for l, gt, dt, off, blob, ts in layout:
             ws = [model.where[t.name] for t in ts]
-            if len({w[3] for w in ws}) != 1:
-                print("layer %d: its gate/up/down tensors are in different shards" % l)
-                fo.close()
-                tmp.unlink()
-                return 1
-            gg, shard = ws[0][0], ws[0][3]
-            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob, *[gg.data_start + t.offset for t in ts])
-            fo.write(line + ("" if shard == src else " " + shard.name) + "\n")
+            # A shard boundary can fall INSIDE a layer: in the Q8_0 file layer 17's gate and down are the last
+            # tensors of shard 4 and its up is the first of shard 5.  The offsets stay absolute and per-role, so
+            # only the file name needs to become per-role: an empty field means "the --native shard", and the
+            # three names are comma-separated.  A single name (the common case) keeps the v3 meaning for all
+            # three roles, so every pack written before this is still read exactly as it was.
+            names = [("" if w[3] == src else w[3].name) for w in ws]
+            if len(set(names)) != 1:
+                n_split += 1
+            # Each role's offset is absolute IN ITS OWN SHARD, so it must be added to THAT shard's data_start:
+            # two shards of one file do not start their data section at the same byte (their tensor directories
+            # differ in length).  Using the first role's shard for all three wrote layer 17's up at shard 4's
+            # data_start and layer 35's at shard 5's, and the engine then read 1.7 MB of a neighbouring tensor
+            # as that expert's up projection.
+            line = "%d %d %d %d %d %d %d %d" % (l, gt, dt, off, blob,
+                                                *[w[0].data_start + w[1].offset for w in ws])
+            shard = names[0] if len(set(names)) == 1 else ",".join(names)
+            fo.write(line + ("" if not shard else " " + shard) + "\n")
+        if n_split:
+            print("%d layer(s) have their gate/up/down in different shards; their shard column is per-role "
+                  "(gate,up,down)" % n_split)
     tmp.replace(out / "native_experts.txt")
     if a.skip_experts or not a.experts_bin:
         if (out / "experts.bin").exists() and not a.experts_bin:

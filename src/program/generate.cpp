@@ -26,6 +26,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -141,7 +142,7 @@ struct Options {
     std::string native_preset;
     /// Plan v0.3 P2: how the n-gram table is read. Direct (default) = unbuffered SSD reads, table never in RAM.
     std::string ple_io = "direct";
-    int64_t ple_row_cache = 1 << 20;   ///< bounded row cache (rows of 90 B); 0 disables
+    int64_t ple_row_cache = 1 << 20;   ///< bounded row cache (rows: 90 B IQ4_NL / 170 B Q8_0); 0 disables
     int ple_inflight = 64;
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
@@ -322,7 +323,8 @@ void usage() {
                  "  --ple-io direct|mmap|ram  n-gram table reads (plan v0.3 P2). direct (default): unbuffered SSD\n"
                  "                       reads, the table never enters RAM or the file cache; mmap: A/B arm;\n"
                  "                       ram: mmap with the whole table locked in RAM at start (Linux/macOS)\n"
-                 "  --ple-row-cache N    bounded cache of fetched rows, 90 B each (default 1048576; 0 = off)\n"
+                 "  --ple-row-cache N    bounded cache of fetched rows, one table row each: 90 B for the IQ4_NL\n"
+                 "                       table, 170 B for Q8_0 (default 1048576; 0 = off)\n"
                  "  --ple-inflight N     outstanding SSD reads (default 64)\n"
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
@@ -441,20 +443,43 @@ void usage() {
 }
 
 /// All shards of a split GGUF, from shard 1's path ("...-00001-of-00002.gguf"); just the path when it is not split.
+/// Every shard of the model whose name is `<stem>-000NN-of-000MM.gguf`, given ANY one of them.
+///
+/// The `-00001-` in the tag used to be required, which quietly made this a one-shard list whenever the caller
+/// pointed at a shard other than the first - and a checkpoint is free to put `token_embd.weight` in a middle
+/// shard (the Q8_0 file has it in shard 4, with an empty shard 1).  The number is now read from the name and
+/// only the digit positions are rewritten, so the answer does not depend on which shard was named.
 std::vector<std::string> model_shards(const std::string& first) {
-    const std::string tag = "-00001-of-";
+    const std::string tag = "-of-";
     const size_t at = first.rfind(tag);
-    if (at == std::string::npos || first.size() < at + tag.size() + 10) return {first};
+    // "…-000NN-of-000MM.gguf": five digits before the tag, five after it.
+    if (at == std::string::npos || at < 5 || first.size() < at + tag.size() + 5) return {first};
     const int total = std::atoi(first.substr(at + tag.size(), 5).c_str());
+    if (total < 1) return {first};
     std::vector<std::string> out;
     for (int i = 1; i <= total && i <= 99; ++i) {
         char num[8];
         std::snprintf(num, sizeof num, "%05d", i);
         std::string p = first;
-        p.replace(at + 1, 5, num);
+        p.replace(at - 5, 5, num);
         if (std::ifstream(p, std::ios::binary)) out.push_back(p);
     }
     return out.empty() ? std::vector<std::string>{first} : out;
+}
+
+/// The model shard that actually holds `tensor`, or `first` when none does (so the caller's own missing-tensor
+/// error is the one the user sees, rather than a silent substitution).
+std::string shard_with(const std::string& first, const char* tensor) {
+    for (const std::string& path : model_shards(first)) {
+        try {
+            strata::GgufFile gguf(path);
+            for (const auto& t : gguf.tensors())
+                if (t.name == tensor) return path;
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+    return first;
 }
 
 bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) {
@@ -1251,7 +1276,10 @@ int main(int argc, char** argv) {
         o.native_bf16 = o.native_bf16_extra = true;
         o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
         o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
-        if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
+        // The head is whatever shard holds `output.weight`, which is not necessarily `--native`: the Q8_0
+        // checkpoint has the embedding in shard 4 and the head in shard 2, and shard 1 is EMPTY.  Searching
+        // keeps `--native-head-gguf` an override rather than a requirement.
+        if (o.native_head_gguf.empty()) o.native_head_gguf = shard_with(o.native_preset, "output.weight");
         if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
@@ -1628,6 +1656,19 @@ int main(int argc, char** argv) {
         ss.ple.w.norm_key = (const float*) wnk->data;
         ss.ple.w.norm_query = (const float*) wnq->data;
         ss.ple.w.norm_conv = (const float*) wnc->data;
+        // R4.2j: the conv1d kernel reads F16, so this cast is a claim about the PACK's storage, not a
+        // conversion.  A checkpoint that keeps the tensor F32 (Q8_0 does - it leaves this one unquantized)
+        // would otherwise hand the kernel the LOW halves of the f32 words: not garbage, but plausible-looking
+        // garbage, which flips layer 1's routing and returns a different token with no error anywhere.
+        // `iq_pack.py` narrows it at pack time; this refuses the pack that did not.
+        if (wc->kind != strata::core::WeightKind::F16InF32) {
+            std::fprintf(stderr,
+                         "strata generate: blk.1.ple_conv1d.weight is not stored as F16 (pack index kind %d, "
+                         "expected 5 or 3); the PLE conv1d kernel reads F16 and would decode these bytes as "
+                         "the low half of a wider type\n",
+                         (int) wc->kind);
+            return 1;
+        }
         ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
         ss.ple.consts = strata::kernels::ple_artifact_consts();
         if (o.ple_delay_us > 0) ple_table.set_injected_delay_us(o.ple_delay_us);
@@ -2429,8 +2470,10 @@ int main(int argc, char** argv) {
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     claimed[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
         for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+            // `remote_dev[r]` is NOT r + 1 under a layer split, so pass the option's own name for errors.
+            const std::string flag = "--expert-cache-device" + std::to_string(r + 1);
             if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
-                     g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err)) {
+                     g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err, flag.c_str())) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
@@ -2458,8 +2501,19 @@ int main(int argc, char** argv) {
     uint8_t* d_hit_q8 = nullptr;
     float* d_hit_q8_scale = nullptr;   ///< R4.2h: the fp32 activation scales the CPU path also uses
     float* d_hit_out = nullptr;
+    unsigned long long* d_hit_ptr = nullptr;
+    int32_t* d_hit_start = nullptr;
+    int32_t* d_hit_tok = nullptr;
+    int32_t* d_hit_ngroups = nullptr;
+    uint8_t* d_hit_q8_1 = nullptr;
     if (o.expert_cache > 0 && !o.no_pool) {
-        const uint64_t sb = strata::kernels::moe_hit_grouped_scratch_bytes(K, g.n_embd, strata::kernels::cpu::FF);
+        // R4.2i: a native pack's slots hold raw GGUF slices (IQ2_XS / IQ3_XXS / Q8_0), not the canonical Q2_0
+        // "Strata blob" the `moe_hit_grouped_s2` kernels decode, so its hits go to the type-generic
+        // `native_expert_grouped` and need its own staging.  See `ExpertDispatch::native_hits`.
+        const bool native_hits = strata::kernels::cpu::expert_layout().native;
+        size_t sb = strata::kernels::moe_hit_grouped_scratch_bytes(K, g.n_embd, strata::kernels::cpu::FF);
+        if (native_hits)
+            sb = std::max(sb, strata::kernels::native_expert_scratch_bytes(K, strata::kernels::cpu::FF));
         if (cudaMalloc(&hit_scratch, (size_t) sb) != cudaSuccess ||
             cudaMalloc((void**) &d_hit_slot, (size_t) K * sizeof(int32_t)) != cudaSuccess ||
             cudaMalloc((void**) &d_hit_dst, (size_t) K * sizeof(int32_t)) != cudaSuccess ||
@@ -2471,6 +2525,30 @@ int main(int argc, char** argv) {
             cudaMalloc((void**) &d_hit_out, (size_t) K * g.n_embd * 4) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the R4 hit path could not allocate its device buffers\n");
             return 1;
+        }
+        if (native_hits) {
+            // One group per hit, so group g owns exactly entry g: `start` is [0, 1, ..., K] and every hit reads
+            // the current token.  Both are constant, so they are uploaded once here rather than per layer.
+            std::vector<int32_t> h_start((size_t) K + 1);
+            for (int i = 0; i <= K; ++i) h_start[(size_t) i] = i;
+            if (cudaMalloc((void**) &d_hit_ptr, (size_t) K * sizeof(unsigned long long)) != cudaSuccess ||
+                cudaMalloc((void**) &d_hit_start, ((size_t) K + 1) * sizeof(int32_t)) != cudaSuccess ||
+                cudaMalloc((void**) &d_hit_tok, (size_t) K * sizeof(int32_t)) != cudaSuccess ||
+                cudaMalloc((void**) &d_hit_ngroups, sizeof(int32_t)) != cudaSuccess ||
+                cudaMalloc((void**) &d_hit_q8_1, (size_t) (g.n_embd / 32) * 36) != cudaSuccess ||
+                cudaMemcpy(d_hit_start, h_start.data(), ((size_t) K + 1) * sizeof(int32_t),
+                           cudaMemcpyHostToDevice) != cudaSuccess ||
+                cudaMemset(d_hit_tok, 0, (size_t) K * sizeof(int32_t)) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: the R4 hit path could not allocate its native buffers\n");
+                return 1;
+            }
+            drive.d.native_hits = true;
+            drive.d.d_hit_ptr = d_hit_ptr;
+            drive.d.d_hit_start = d_hit_start;
+            drive.d.d_hit_tok = d_hit_tok;
+            drive.d.d_hit_count = d_hit_ngroups;
+            drive.d.x_q8_1_hit = d_hit_q8_1;
+            drive.d.h_hit_ptr.resize((size_t) K);
         }
         drive.d.cache = &xcache;
         drive.d.cache_stream = main_cs;
@@ -2496,7 +2574,9 @@ int main(int argc, char** argv) {
         drive.d.hit_poke = !o.no_hit_poke;
         drive.d.h_dst.resize((size_t) K);
         mem_mark("the R4 hit path");
-        std::fprintf(stderr, "strata generate: R4 hit path ON - resident experts are computed on the GPU\n");
+        std::fprintf(stderr, "strata generate: R4 hit path ON - resident experts are computed on the GPU (%s)\n",
+                     drive.d.native_hits ? "native_expert_grouped, the pack's own formats"
+                                         : "moe_hit_grouped_s2, the canonical Q2_0 blob");
     }
     // ---- P0.S8: the routing trace.  Only meaningful with the pool running, because the ids arrive through
     // the doorbell that the pool consumes - so `--no-pool` is refused rather than silently producing an empty

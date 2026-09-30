@@ -124,8 +124,25 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             L.gguf_off[(size_t) (3 * l + 2)] = dox;
             std::string file;             // v3: the shard that holds this layer (a file name beside --native)
             if (ss >> file) {
-                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) n_layers, std::string());
-                L.gguf_file[(size_t) l] = file;
+                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) (3 * n_layers), std::string());
+                // One name covers all three roles.  When a shard boundary falls inside a layer the packer
+                // writes "gate,up,down" instead, and an empty field means the --native shard.  A GGUF file
+                // name cannot contain a comma, so the split is unambiguous.
+                std::vector<std::string> parts;
+                size_t from = 0;
+                for (;;) {
+                    const size_t at = file.find(',', from);
+                    parts.push_back(file.substr(from, at == std::string::npos ? at : at - from));
+                    if (at == std::string::npos) break;
+                    from = at + 1;
+                }
+                if (parts.size() == 1) parts.assign(3, parts[0]);
+                else if (parts.size() != 3) {
+                    err = "native_experts.txt: layer " + std::to_string(l) + " has " + std::to_string(parts.size()) +
+                          " shard names; the shard column is one name, or gate,up,down";
+                    return false;
+                }
+                for (size_t r = 0; r < 3; ++r) L.gguf_file[(size_t) (3 * l) + r] = parts[r];
             }
         }
         L.fmt[(size_t) l] = f;

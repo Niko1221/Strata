@@ -24,10 +24,14 @@ public:
     /// Initialise the device before the host expert arena registers
     /// tens of GiB of portable mapped memory with CUDA.
     static bool preflight(int device, double& free_gib, std::string& err);
+    /// `flag` is the command-line option that chose this cache's slot count (`--expert-cache-device1` and
+    /// friends), used only to make a sizing error name the knob the user actually set.  It is NOT derivable
+    /// from `device`: under a layer split `remote_dev` skips the GPUs that run stages, so the option's ordinal
+    /// and the CUDA index diverge (generate.cpp:1207).
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err);
+              std::vector<uint8_t>& claimed, std::string& err, const char* flag = nullptr);
     void close();
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),

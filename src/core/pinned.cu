@@ -28,6 +28,9 @@
 #ifndef MAP_HUGE_2MB
 #define MAP_HUGE_2MB (21 << 26)
 #endif
+#ifndef MADV_HUGEPAGE
+#define MADV_HUGEPAGE 14
+#endif
 #endif
 
 namespace strata::core {
@@ -94,7 +97,17 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note) {
     note = "MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages";
     p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     got = PageBacking::NormalPages;
-    return p == MAP_FAILED ? nullptr : p;
+    if (p == MAP_FAILED) return nullptr;
+    // Transparent huge pages are a second chance at the 2 MB pages above: a hugetlb pool needs root to
+    // reserve, but THP in `madvise` mode hands them out for exactly this VMA at fault time, no pool and no
+    // privilege.  The flag must be set before the first page is touched (the faults come with the expert
+    // load), and an unaligned mapping still gets huge pages for every aligned 2 MB interior chunk - the
+    // ragged edges cost at most 4 MB of a 119.5 GiB arena.  A no-op under THP=never; a refused huge fault
+    // falls back to small pages inside the kernel, so there is nothing to check.  A/B switch, like the
+    // Windows STRATA_NO_LARGEPAGES above: STRATA_NO_THP=1 skips it, same run, same boot.
+    if (std::getenv("STRATA_NO_THP") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0)
+        note = "MADV_HUGEPAGE: transparent 2 MB pages where THP allows, 4 KB where it does not";
+    return p;
 #endif
 }
 

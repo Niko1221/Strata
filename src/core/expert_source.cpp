@@ -6,6 +6,7 @@
 #include "strata/core/pinned.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 
 #include <cuda_runtime.h>
@@ -1038,6 +1039,14 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
             d.is_hit[(size_t) i] = 1;
             d.h_slot[(size_t) d.n_hits] = slot;
             d.h_dst[(size_t) d.n_hits] = (int32_t) i;
+            // R4.2i: the native kernel takes the blob's ADDRESS, not the S2 path's slot index.  The slots can
+            // differ in size per layer (`cache_slot_off`), so the offset comes from the cache rather than from
+            // `slot * cache_blob`.
+            if (d.native_hits) {
+                const uint64_t off = d.cache_slot_off != nullptr ? d.cache_slot_off[(size_t) slot]
+                                                                 : (uint64_t) slot * (uint64_t) d.cache_blob;
+                d.h_hit_ptr[(size_t) d.n_hits] = (unsigned long long) (d.cache_base + off);
+            }
             ++d.n_hits;
         }
         d.decided = true;
@@ -1055,28 +1064,54 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
             d.fail = d.hit_fail;
             return;
         }
-        // The activation is quantized HERE rather than reused from `s.moe.x_q8_0`, which `post[l-1]` wrote from
-        // the PREVIOUS layer's `mixed`.  `pre[l]` has since overwritten `mixed`, so that buffer is a layer stale
-        // - and a stale activation produces a perfectly finite expert for the wrong input.
-        // **R4.2h: THE SCALED QUANTIZER, SO A HIT REPRODUCES A MISS.**  The CPU pool quantizes this same
-        // activation with `act_quant_q8_1` and multiplies by the fp32 `ActQ::scale`; `quantize_q8_0` writes
-        // an fp16 `d` instead, and `bench/micro/act_quant_parity.cu` measured **80 of 80 chunks differing by
-        // up to 4.761e-04 relative**.  `quantize_q8_0_scaled` adopts the CPU's rule and scale, and the kernel
-        // takes the fp32 array.  Falling back to the old path would silently reintroduce the divergence, so
-        // the scales are required here rather than optional.
-        if (d.x_q8_0_hit_scale == nullptr) {
-            d.failed = true;
-            d.fail = "the hit path has no fp32 activation scales (R4.2h)";
-            return;
+        if (d.native_hits) {
+            // ---- R4.2i: A NATIVE PACK'S HITS.  The slot holds a raw GGUF slice, so the S2 kernels below
+            // would read the wrong offsets.  `native_expert_grouped` is the type-generic kernel the remote
+            // tiers use and `native_expert_parity` checks against ggml-cpu's `vec_dot`; it wants one group per
+            // hit (a group shares a blob) with the blob's ADDRESS, and a Q8_1 activation per token, not the
+            // Q8_0 the S2 path takes.  The grid is sized from the actual hit count so `cap_entries` matches the
+            // entries the swiglu/quantize passes cover - they have no device-count guard of their own.
+            strata::kernels::quantize_q8_1_rows(d.mixed, 1, strata::kernels::cpu::H, d.x_q8_1_hit, cs);
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            const auto& fm = lay.fmt[(size_t) d.layers];
+            const auto L = strata::kernels::native_expert_layout(fm.gu_type, fm.d_type, fm.n_embd, fm.n_ff);
+            const int32_t nh = (int32_t) d.n_hits;
+            if (cudaMemcpyAsync(d.d_hit_ptr, d.h_hit_ptr.data(), (size_t) d.n_hits * sizeof(d.h_hit_ptr[0]),
+                                cudaMemcpyHostToDevice, cs) != cudaSuccess ||
+                cudaMemcpyAsync(d.d_hit_count, &nh, sizeof(nh), cudaMemcpyHostToDevice, cs) != cudaSuccess) {
+                d.hit_fail = "the native hit list could not be staged";
+                d.failed = true;
+                d.fail = d.hit_fail;
+                return;
+            }
+            strata::kernels::native_expert_grouped(L, d.d_hit_ptr, d.d_hit_start, d.d_hit_count, d.d_dst,
+                                                   d.d_hit_tok, d.n_hits, d.n_hits, d.x_q8_1_hit, d.hit_scratch,
+                                                   d.hit_out, cs);
+        } else {
+            // The CANONICAL pack: the blob really is S2, and `cache_blob`/the slot offsets describe it.
+            // The activation is quantized HERE rather than reused from `s.moe.x_q8_0`, which `post[l-1]` wrote from
+            // the PREVIOUS layer's `mixed`.  `pre[l]` has since overwritten `mixed`, so that buffer is a layer stale
+            // - and a stale activation produces a perfectly finite expert for the wrong input.
+            // **R4.2h: THE SCALED QUANTIZER, SO A HIT REPRODUCES A MISS.**  The CPU pool quantizes this same
+            // activation with `act_quant_q8_1` and multiplies by the fp32 `ActQ::scale`; `quantize_q8_0` writes
+            // an fp16 `d` instead, and `bench/micro/act_quant_parity.cu` measured **80 of 80 chunks differing by
+            // up to 4.761e-04 relative**.  `quantize_q8_0_scaled` adopts the CPU's rule and scale, and the kernel
+            // takes the fp32 array.  Falling back to the old path would silently reintroduce the divergence, so
+            // the scales are required here rather than optional.
+            if (d.x_q8_0_hit_scale == nullptr) {
+                d.failed = true;
+                d.fail = "the hit path has no fp32 activation scales (R4.2h)";
+                return;
+            }
+            strata::kernels::quantize_q8_0_scaled(d.mixed, d.x_q8_0_hit, d.x_q8_0_hit_scale, strata::kernels::cpu::H,
+                                                  cs);
+            if (d.hit_cpu_order)
+                strata::kernels::moe_hit_grouped_s2_cpu_order(d.cache_base, d.d_slot, d.d_dst, d.n_hits,
+                    d.cache_blob, d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
+            else
+                strata::kernels::moe_hit_grouped_s2(d.cache_base, d.d_slot, d.d_dst, d.n_hits, d.cache_blob,
+                    d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
         }
-        strata::kernels::quantize_q8_0_scaled(d.mixed, d.x_q8_0_hit, d.x_q8_0_hit_scale, strata::kernels::cpu::H,
-                                              cs);
-        if (d.hit_cpu_order)
-            strata::kernels::moe_hit_grouped_s2_cpu_order(d.cache_base, d.d_slot, d.d_dst, d.n_hits,
-                d.cache_blob, d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
-        else
-            strata::kernels::moe_hit_grouped_s2(d.cache_base, d.d_slot, d.d_dst, d.n_hits, d.cache_blob,
-                d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
         d.hit_pending = true;
         if (d.hit_done != nullptr) cudaEventRecord((cudaEvent_t) d.hit_done, cs);
         // The A/B arm: ONE driver entry here, and nothing else changes.  If the work was waiting for the host
@@ -1113,9 +1148,12 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     // a layer's experts may sit in another shard of the model (native_experts.txt v3): a name beside `gguf`
     const size_t cut = gguf.find_last_of("/\\");
     const std::string dir = cut == std::string::npos ? std::string() : gguf.substr(0, cut + 1);
-    auto file_of = [&](int64_t l) -> std::string {
-        if (lay.gguf_file.empty() || lay.gguf_file[(size_t) l].empty()) return gguf;
-        return dir + lay.gguf_file[(size_t) l];
+    // Per ROLE, not per layer: a shard boundary can fall inside a layer (the Q8_0 file's layer 17 has its gate
+    // and down at the end of shard 4 and its up at the start of shard 5), so the three slices of one blob can
+    // come from three different files.
+    auto file_of = [&](int64_t l, int r) -> std::string {
+        if (lay.gguf_file.empty() || lay.gguf_file[(size_t) (3 * l + r)].empty()) return gguf;
+        return dir + lay.gguf_file[(size_t) (3 * l + r)];
     };
     auto worker = [&]() {
         std::ifstream f;
@@ -1124,19 +1162,21 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
         for (;;) {
             const int64_t l = next.fetch_add(1);
             if (l >= lay.n_layers || bad) break;
-            const std::string name = file_of(l);
-            if (name != open_name) {
-                f.close();
-                f.clear();
-                f.open(name, std::ios::binary);
-                if (!f) { bad = true; return; }
-                open_name = name;
-            }
             const auto& fm = lay.fmt[(size_t) l];
             const uint64_t blob = lay.bytes[(size_t) l];
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
             const uint64_t at[3] = {0, fm.up_off, fm.down_off};
             for (int r = 0; r < 3; ++r) {
+                // The file is re-checked per role: two roles of one layer are usually in the same shard and the
+                // handle is kept, but at a boundary the role's file changes mid-layer.
+                const std::string name = file_of(l, r);
+                if (name != open_name) {
+                    f.close();
+                    f.clear();
+                    f.open(name, std::ios::binary);
+                    if (!f) { bad = true; return; }
+                    open_name = name;
+                }
                 const uint64_t src = lay.gguf_off[(size_t) (3 * l + r)];
                 const uint64_t total = per[r] * (uint64_t) lay.n_expert;
                 const uint64_t chunk = per[r] * 16;           // 16 experts per read
