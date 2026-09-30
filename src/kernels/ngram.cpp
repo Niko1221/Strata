@@ -123,6 +123,7 @@ struct PleTable::Impl {
     strata::ngram::PleReader reader;
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
+    bool locked = false;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES] = {};
 };
@@ -205,8 +206,11 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
         const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
         madvise((void*) a0, a1 - a0, MADV_WILLNEED);
-        if (mlock((const void*) a0, a1 - a0) != 0) {
-            std::fprintf(stderr, "strata: PLE table mlock failed (%s): touching its pages instead\n", std::strerror(errno));
+        if (mlock((const void*) a0, a1 - a0) == 0) {
+            impl_->locked = true;
+        } else {
+            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): touching its pages instead\n",
+                         std::strerror(errno));
             volatile uint8_t sink = 0;
             for (uintptr_t p = a0; p < a1; p += page) sink = sink + *(const volatile uint8_t*) p;
             (void) sink;
@@ -220,6 +224,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 void PleTable::close() {
     impl_->reader.close();
     impl_->pending = false;
+    impl_->locked = false;   // the unmap below releases the lock
     impl_->mode = PleIo::Mmap;
     delete impl_->file;
     impl_->file = nullptr;
@@ -228,6 +233,7 @@ void PleTable::close() {
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
+bool PleTable::locked() const { return impl_->locked; }
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
