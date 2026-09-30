@@ -508,7 +508,7 @@ function renderCache(c) {
     ["RAM tier", rt.checkpoints == null ? null : `${fmt(rt.checkpoints)} checkpoints, ${fmt(rt.live_tokens)} tokens live - resumable without touching disk`],
     ["Not cached", "layer-split sessions are not cached; a boundary past the drafter ring falls back to a v3 snapshot"],
     ["Promote cost", c.mode === "delta"
-      ? "the delta tier reads each chunk straight into the arrays it belongs in (no assembled image): a 142k-token promote staged 356 MB and took ~2.7 s (~54k tok/s), against ~4.4 GB and ~7.4 s before"
+      ? "the delta tier reads each chunk straight into the arrays it belongs in (no assembled image): a 142k-token promote took 2.6 s (~55k tok/s) with a ~130 MB process peak, against 7.4 s and ~4.4 GB before"
       : "the v3 tier stages the whole snapshot in RAM at once (measured: ~2 GiB for a 964 MiB snapshot)"],
   ]);
   const warns = (c.warnings || []).filter((x) => x !== c.inert_reason).map((x) => `<div class="cache-warn">${esc(x)}</div>`);
