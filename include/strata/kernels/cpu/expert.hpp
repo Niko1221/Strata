@@ -152,6 +152,21 @@ struct ExpertScratchMulti {
 void s2_expert_vnni_multi(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
                           ExpertScratchMulti& ws);
 
+/// LOCAL PORT (Z620): the AVX1 rung of the canonical path.  See src/kernels/cpu/s2_expert_avx1.cpp - the
+/// pool (pool.cpp) is the main expert compute path and every function it calls lives in an /arch:AVX512
+/// translation unit, so without these a canonical Q2_0 pack cannot run on a pre-AVX-512 CPU at all.  Same
+/// function-for-function contract as the AVX-512 originals above, on the same CANONICAL layout (codes and
+/// scales in separate arrays, 16 and 2 bytes per 64-weight block).
+void s2_expert_vnni_q_avx1(const uint8_t* blob, const ActQ& a1, float* out, ExpertScratch& ws);
+void s2_expert_gu_rows_avx1(const uint8_t* blob, const ActQ& a1, float* ff, int r0, int r1);
+void s2_expert_down_rows_avx1(const uint8_t* blob, const ActQ& a2, float* out, int r0, int r1);
+void s2_expert_gu_rows_multi_avx1(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* ff,
+                                  int r0, int r1);
+void s2_expert_down_rows_multi_avx1(const uint8_t* blob, const ActQ* const* a2, int n_tokens, float* const* out,
+                                    int r0, int r1);
+void s2_expert_vnni_multi_avx1(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
+                               ExpertScratchMulti& ws);
+
 /// The scalar transcription of ggml's formula - NOT a second opinion, but the ORACLE the VNNI path is checked
 /// against, and the only path available on a CPU without AVX-512.
 ///

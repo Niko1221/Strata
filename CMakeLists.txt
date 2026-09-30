@@ -583,8 +583,10 @@ endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp
-            # LOCAL PORT (Z620): the AVX+FMA3+F16C rung, for Sandy Bridge / Ivy Bridge (Xeon E5-2600).
-            src/kernels/cpu/q2_avx1.cpp)
+            # LOCAL PORT (Z620): the AVX rung for Sandy Bridge / Westmere-era Xeons (Xeon E5-2600 v1).
+            # q2_avx1.cpp is the NATIVE pack layout; s2_expert_avx1.cpp is the CANONICAL one, which is
+            # what pool.cpp (the expert worker loop, i.e. the main CPU compute path) actually runs.
+            src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/s2_expert_avx1.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
@@ -597,6 +599,7 @@ if(MSVC)
   # q2_avx1.cpp does a software fp16 decode and a mul+add instead.  The per-file flag is also what keeps
   # AVX2 out of this TU, so a wrong cpu_avx2_ok() answer costs speed instead of a trap.
   set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
+  set_source_files_properties(src/kernels/cpu/s2_expert_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
 else()
   # GCC/Clang spell it differently, and `-mavx512vnni` alone is not enough: VBMI is a separate feature bit.
   set_source_files_properties(src/kernels/cpu/expert.cpp
@@ -605,6 +608,7 @@ else()
   # LOCAL PORT (Z620): AVX only, and deliberately WITHOUT -mfma / -mf16c - see the MSVC branch above.
   # -mavx implies the SSE4.1/SSSE3 the int8 dot and the code unpack need.
   set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+  set_source_files_properties(src/kernels/cpu/s2_expert_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
@@ -757,6 +761,24 @@ if(STRATA_BUILD_TESTS)
 
   add_executable(expert_parity src/kernels/cpu/expert_parity.cpp)
   target_link_libraries(expert_parity PRIVATE strata_kernels_cpu)
+
+  # LOCAL PORT (Z620): the two AVX1 parity tests.  Both are SELF-CONTAINED - they synthesise their own
+  # expert blobs and check against an independent longhand scalar reference, so unlike `expert_parity`
+  # they need neither the 38 GB pack nor an AVX-512 CPU, which is the point: upstream's own test skips
+  # itself on exactly the hardware this port targets.  Each is built with NO per-file ISA flag, because a
+  # test that inherited /arch:AVX2 or /arch:AVX512 could not prove the kernel runs without them.
+  #
+  # s2_avx512_stub.cpp supplies the AVX-512 symbols that expert_layout.cpp's dispatchers reference, since
+  # expert.cpp itself cannot be compiled without AVX-512.  Every stub aborts, so a dispatch that wrongly
+  # took the AVX-512 branch fails loudly instead of comparing a real result against a fake one.  It is
+  # deliberately NOT part of strata_kernels_cpu - there, expert.cpp supplies the real definitions.
+  add_executable(q2_avx1_parity src/kernels/cpu/q2_avx1_parity.cpp src/kernels/cpu/s2_avx512_stub.cpp)
+  target_link_libraries(q2_avx1_parity PRIVATE strata_kernels_cpu)
+  add_test(NAME q2_avx1_parity COMMAND q2_avx1_parity)
+
+  add_executable(s2_avx1_parity src/kernels/cpu/s2_avx1_parity.cpp src/kernels/cpu/s2_avx512_stub.cpp)
+  target_link_libraries(s2_avx1_parity PRIVATE strata_kernels_cpu)
+  add_test(NAME s2_avx1_parity COMMAND s2_avx1_parity)
   # The pack is a REQUIRED input, not an optional one: this test compares against a real expert blob, and a
   # missing file would otherwise be reported as a pass by a test that skipped everything.
   add_test(NAME expert_parity COMMAND expert_parity --selftest

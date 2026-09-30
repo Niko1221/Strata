@@ -52,6 +52,26 @@ bool cpu_avx1_ok();
 /// `expert_layout.cpp` rather than calling `cpu_require_expert_support()` because that one is defined in a
 /// `/arch:AVX512` translation unit, where the compiler may emit AVX-512 into the error path itself.
 void cpu_require_expert_support_any();
+
+// ---- LOCAL PORT (Z620): the canonical expert path, dispatched on what the CPU has.
+//
+// `pool.cpp` is the CPU expert worker loop.  Every entry point it uses is defined in `expert.cpp`, an
+// `/arch:AVX512` translation unit, so calling those on a pre-AVX-512 CPU traps rather than merely running
+// slowly.  These wrappers pick the AVX-512 original or the AVX1 port (src/kernels/cpu/s2_expert_avx1.cpp).
+// They live in `expert_layout.cpp` because that TU carries no ISA flag, so the feature test is safe to
+// evaluate here, and the AVX-512 original is only ever called once the test has returned true.
+//
+// Each has the same contract as the `s2_expert_*` function it wraps; s2_avx1_parity.cpp checks that
+// against an independent reference rather than assuming it.
+void s2_expert_vnni_q_any(const uint8_t* blob, const ActQ& a1, float* out, ExpertScratch& ws);
+void s2_expert_gu_rows_any(const uint8_t* blob, const ActQ& a1, float* ff, int r0, int r1);
+void s2_expert_down_rows_any(const uint8_t* blob, const ActQ& a2, float* out, int r0, int r1);
+void s2_expert_gu_rows_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* ff, int r0,
+                                 int r1);
+void s2_expert_down_rows_multi_any(const uint8_t* blob, const ActQ* const* a2, int n_tokens, float* const* out,
+                                   int r0, int r1);
+void s2_expert_vnni_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
+                              ExpertScratchMulti& ws);
 /// Q2_0 GGUF rows / activation quantizer on the kernels this CPU has.
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1);
