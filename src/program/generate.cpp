@@ -4895,6 +4895,16 @@ int main(int argc, char** argv) {
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
+                // Diagnostics: the first window runs the prompt's last token over the state the prompt path left
+                // (keys, values, recurrent state), so its logits carry whatever that path did. A native pack never
+                // runs the per-token loop --dump-logits reads; this is where prompt paths can be compared by output.
+                if (const char* fl = std::getenv("STRATA_DUMP_FIRST_LOGITS")) {
+                    std::vector<float> row((size_t) ver.vocab());
+                    std::FILE* f = ver.copy_logits(0, row.data()) ? std::fopen(fl, "wb") : nullptr;
+                    if (f == nullptr || std::fwrite(row.data(), sizeof(float), row.size(), f) != row.size())
+                        std::fprintf(stderr, "strata generate: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", fl);
+                    if (f) std::fclose(f);
+                }
             }
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
