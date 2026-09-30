@@ -122,6 +122,10 @@ public:
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
     size_t retained_bytes() const { return reuse_.bytes(); }
+    bool can_fit(size_t incoming, size_t held = 0) const {
+        return enabled() && held <= budget_ && incoming <= budget_ - held &&
+               entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+    }
 
     template<class Token>
     static Match match_image(const SavedConversation& image, const std::vector<Token>& prompt,

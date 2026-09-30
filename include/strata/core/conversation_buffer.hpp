@@ -47,21 +47,36 @@ public:
     size_t allocation_peak(size_t n) const {
         size_t total = bytes();
         if (n <= size_) return total;
-        const size_t extra = n - size_;
-        if (!add(total, extra)) return SIZE_MAX;
+        const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
+        const size_t extra = n - size_ - std::min(n - size_, spare);
+        const size_t full = extra / segment_bytes, tail = extra % segment_bytes;
+        if (!add(total, full * segment_bytes)) return SIZE_MAX;
+        if (tail && !add(total, segment_capacity(tail, full ? segment_bytes :
+                segments_.empty() ? 0 : segments_.back().capacity(), size_ != 0))) return SIZE_MAX;
         size_t count = segments_.size();
-        if (!add(count, extra / segment_bytes + (extra % segment_bytes != 0))) return SIZE_MAX;
+        if (!add(count, full + (tail != 0))) return SIZE_MAX;
         if (count > segments_.capacity() &&
             (count > SIZE_MAX / sizeof(Segment) || !add(total, count * sizeof(Segment)))) return SIZE_MAX;
         return total;
     }
     void resize(size_t n, uint8_t value = 0) {
         if (n > size_) {
-            const size_t extra = n - size_;
+            const bool growing = size_ != 0;
+            const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
+            const size_t extend = std::min(n - size_, spare);
+            const size_t extra = n - size_ - extend;
             segments_.reserve(segments_.size() + extra / segment_bytes + (extra % segment_bytes != 0));
+            if (extend) {
+                segments_.back().resize(segments_.back().size() + extend, value);
+                size_ += extend;
+            }
             while (size_ < n) {
                 const size_t count = std::min(segment_bytes, n - size_);
-                segments_.emplace_back(count, value);
+                const size_t previous = segments_.empty() ? 0 : segments_.back().capacity();
+                Segment segment;
+                segment.reserve(segment_capacity(count, previous, growing));
+                segment.resize(count, value);
+                segments_.push_back(std::move(segment));
                 size_ += count;
             }
         } else {
@@ -105,6 +120,13 @@ public:
 
 private:
     using Segment = std::vector<uint8_t>;
+    // A fresh capture allocates exactly its payload. Later appends reserve
+    // geometrically growing segments, bounded by 16 MiB. Small chat turns then
+    // extend the final allocation instead of adding one transfer per turn.
+    static size_t segment_capacity(size_t count, size_t previous, bool growing) {
+        if (!growing) return count;
+        return std::max(count, std::min(segment_bytes, std::max<size_t>(65536, std::min(previous, segment_bytes/2)*2)));
+    }
     static bool add(size_t& n, size_t extra) {
         if (extra > SIZE_MAX - n) return false;
         n += extra;

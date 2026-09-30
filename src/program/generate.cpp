@@ -3387,8 +3387,9 @@ int main(int argc, char** argv) {
                 estimate = fresh_estimate;
                 err.clear();
             }
-            if (!conversations.make_room(estimate, held) && !reuse.kv.empty()) {
-                reuse = {}; // Optional retained storage must not prevent a full capture.
+            if (!reuse.kv.empty() && !conversations.can_fit(estimate, held)) {
+                // Optional growth capacity must not evict useful conversations.
+                reuse = {};
                 estimate = fresh_estimate;
             }
             if (!conversations.make_room(estimate, held)) {
@@ -3399,10 +3400,11 @@ int main(int argc, char** argv) {
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                const size_t additional = estimate - reuse.bytes();
                 if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(),
-                        estimate - reuse.bytes(), floor)) {
+                        additional, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, or telemetry unavailable)\n",
-                                 estimate >> 20, (long long) o.conversation_cache_min_free_mib);
+                                 additional >> 20, (long long) o.conversation_cache_min_free_mib);
                     return true;
                 }
                 strata::core::SavedConversation image;
