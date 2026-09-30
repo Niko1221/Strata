@@ -141,7 +141,11 @@ STRATA_ROPE_SCALING_HD inline void rope_scaled_angle(float theta_extrap, float f
 /// when the config is usable, else "<parameter>: <reason>".  Runs once after the CLI, the model file and
 /// the defaults have met and before any table is built or rotation kernel launched; the per-kernel
 /// wrappers re-check their own arguments defensively.  corr_dims needs no check of its own: with
-/// orig_ctx >= 1, betas > 0 and a finite base above 1 its logarithm's argument is positive and finite.
+/// orig_ctx >= 1, betas > 0 and a finite base above 1 its logarithm's argument is positive and finite,
+/// the struct clamps the pair into [0, n_rot-1] (exact in float), and the ramp's own 0.001f floor
+/// covers a degenerate denominator.  attn_factor is consumed by the kernels as (float)attn_factor;
+/// mscale >= attn_factor (the log multiplier is at least 1) and rounds the same way, so the mscale
+/// float check above covers its conversion too.
 inline std::string rope_scaling_validate(const RopeScaling& sc) {
     if (!std::isfinite(sc.freq_base) || sc.freq_base <= 1.0)
         return "rope.freq_base must be a finite number above 1";
@@ -154,6 +158,8 @@ inline std::string rope_scaling_validate(const RopeScaling& sc) {
                "number of at least 1";
     if (!std::isfinite(sc.ext_factor) || sc.ext_factor < 0.0)
         return "--yarn-ext-factor must be a finite number of at least 0 (0 = off, -1 = auto)";
+    if (const float ef = (float) sc.ext_factor; !std::isfinite(ef))
+        return "--yarn-ext-factor must stay a finite number in the float precision the kernels use";
     if (!std::isfinite(sc.attn_factor) || sc.attn_factor <= 0.0)
         return "--yarn-attn-factor must be a finite number above 0";
     if (!std::isfinite(sc.beta_fast) || sc.beta_fast <= 0.0)
