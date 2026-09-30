@@ -3,7 +3,8 @@
 //     python tools/iq_fixture.py --out logs/iq_fixture && build/iq_parity logs/iq_fixture
 //
 // Dequant must match gguf-py's values to fp32 rounding; the MMVQ dot (q8_1 activations) must match the float
-// matrix-vector product within the activation rounding (a few 1e-3 relative).
+// matrix-vector product within the activation rounding (a few 1e-3 relative), for 1 to 8 columns, every column of a
+// multi-column call bitwise equal to a one-column call on it.
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 
@@ -11,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -48,27 +50,42 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < ref.size(); ++i) { num += std::fabs(got[i] - ref[i]); den += std::fabs(ref[i]); }
             dq_err = num / (den + 1e-30);
         }
-        // the dot, two columns
+        // the dot, ncols 1..8: each column of an ncols call bitwise equal to a one-column call on it (the
+        // exact multi-column layout, the default), all of them within the activation rounding of the float product
+        const int MC = 8;
         std::mt19937 rng(7);
         std::normal_distribution<float> nd(0.f, 1.f);
-        std::vector<float> x((size_t) 2 * cols);
+        std::vector<float> x((size_t) MC * cols);
         for (auto& v : x) v = nd(rng);
         float* dx = nullptr;
         void* xq = nullptr;
         float* dy = nullptr;
         cudaMalloc(&dx, x.size() * 4);
-        cudaMalloc(&xq, (size_t) 2 * cols / 32 * 36);
-        cudaMalloc(&dy, (size_t) 2 * rows * 4);
+        cudaMalloc(&xq, (size_t) MC * cols / 32 * 36);
+        cudaMalloc(&dy, (size_t) MC * rows * 4);
         cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
-        strata::kernels::quantize_q8_1_rows(dx, 2, cols, xq, s);
+        strata::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
+        std::vector<float> y((size_t) MC * rows), yn(y.size());
+        int multi_bad = 0;
         try {
-            strata::kernels::native_mmvq(type, dw, xq, dy, cols, rows, 2, s);
+            for (int c = 0; c < MC; ++c)
+                strata::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
+                                             dy + (size_t) c * rows, cols, rows, 1, s);
+            cudaStreamSynchronize(s);
+            cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost);
+            for (int nc = 2; nc <= MC; ++nc) {
+                strata::kernels::native_mmvq(type, dw, xq, dy, cols, rows, nc, s);
+                cudaStreamSynchronize(s);
+                cudaMemcpy(yn.data(), dy, yn.size() * 4, cudaMemcpyDeviceToHost);
+                if (strata::kernels::native_mmvq_multi_exact() &&
+                    std::memcmp(yn.data(), y.data(), (size_t) nc * rows * 4) != 0) {
+                    std::printf("%-8s mmvq ncols %d: not bitwise equal to the one-column calls\n", nm, nc);
+                    ++multi_bad;
+                }
+            }
         } catch (const std::exception& e) { std::printf("%-8s mmvq: %s\n", nm, e.what()); ++failures; continue; }
-        std::vector<float> y((size_t) 2 * rows);
-        cudaStreamSynchronize(s);
-        cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost);
         double num = 0, den = 0;
-        for (int c = 0; c < 2; ++c)
+        for (int c = 0; c < MC; ++c)
             for (int r = 0; r < rows; ++r) {
                 double acc = 0;
                 for (int k = 0; k < cols; ++k) acc += (double) ref[(size_t) r * cols + k] * x[(size_t) c * cols + k];
@@ -76,9 +93,9 @@ int main(int argc, char** argv) {
                 den += std::fabs(acc);
             }
         const double mm_err = num / (den + 1e-30);
-        const bool ok = dq_err < 1e-6 && mm_err < 2e-2;
-        std::printf("%-8s type %2d %4d x %5d  dequant rel %.2e  mmvq rel %.2e  %s\n", nm, type, rows, cols, dq_err, mm_err,
-                    ok ? "ok" : "FAIL");
+        const bool ok = dq_err < 1e-6 && mm_err < 2e-2 && multi_bad == 0;
+        std::printf("%-8s type %2d %4d x %5d  dequant rel %.2e  mmvq rel %.2e (ncols 1..%d)  %s\n", nm, type, rows, cols,
+                    dq_err, mm_err, MC, ok ? "ok" : "FAIL");
         if (!ok) ++failures;
         cudaFree(dw); cudaFree(dq); cudaFree(dx); cudaFree(xq); cudaFree(dy);
     }

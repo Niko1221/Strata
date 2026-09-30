@@ -54,4 +54,10 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream);
 
+/// `iq_mmvq` and `native_expert_grouped` decode each weight part once and apply it to every column / entry;
+/// true selects the older kernels that decode it again per column (STRATA_OLD_IQ_MMVQ=1 at startup).  Both give
+/// bitwise the same results.  Set before graph capture; captured graphs keep the kernels they captured.
+void iq_set_old_kernels(bool old);
+bool iq_old_kernels();
+
 }  // namespace strata::kernels

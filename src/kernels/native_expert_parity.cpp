@@ -4,7 +4,8 @@
 //
 // (a) float reference: ggml's own dequantizer (`to_float`) and a float SwiGLU expert, (b) the CPU path
 // (ggml-cpu vec_dot with its quantized activations), (c) the GPU path (`native_expert_grouped`, q8_1
-// activations).  (b) and (c) each differ from (a) by their activation rounding only (a few 1e-3 relative).
+// activations).  (b) and (c) each differ from (a) by their activation rounding only (a few 1e-3 relative).  (c) runs
+// twice, with the kernels that decode a weight part once for all entries and with the per-entry ones: bitwise equal.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -246,6 +248,18 @@ int main(int argc, char** argv) {
             strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
             cudaStreamSynchronize(s);
             cudaMemcpy(got_g.data(), dout, got_g.size() * 4, cudaMemcpyDeviceToHost);
+            {   // the kernels that decode a weight part once for the NT entries, bitwise vs the per-entry ones
+                std::vector<float> old_g(got_g.size());
+                const bool was = strata::kernels::iq_old_kernels();
+                strata::kernels::iq_set_old_kernels(!was);
+                strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
+                strata::kernels::iq_set_old_kernels(was);
+                cudaStreamSynchronize(s);
+                cudaMemcpy(old_g.data(), dout, old_g.size() * 4, cudaMemcpyDeviceToHost);
+                const bool same = std::memcmp(old_g.data(), got_g.data(), got_g.size() * 4) == 0;
+                std::printf("          gpu decode-once vs per-entry kernels: %s\n", same ? "bitwise equal" : "MISMATCH");
+                if (!same) ++failures;
+            }
             cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
             cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
         }
