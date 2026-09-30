@@ -3516,7 +3516,9 @@ def main() -> int:
     if budget is not None and not q4_split:   # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N
         args += ["--resident-budget-gib", f"{budget:g}"]   # GiB kept in RAM (#498: a layer split has no budget)
     if vision != "none":
-        args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
+        # Windows: at least the engine's own default (1500): with less, the desktop's VRAM use stalls the GPU
+        reserve = max(VISION[vision]["reserve_mib"], 1500) if WIN else VISION[vision]["reserve_mib"]
+        args += ["--vision", "--vram-reserve-mib", str(reserve)]
     if a.vram_reserve_mib is not None:                 # #493: VRAM left free for other programs (only when given)
         if "--vram-reserve-mib" in args:
             i = args.index("--vram-reserve-mib") + 1

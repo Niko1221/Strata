@@ -326,7 +326,14 @@ struct Options {
     bool no_fast_select = false;       ///< plan v0.3 P7 A/B: FP64 row scores + bit-serial cell top-k
     /// Plan v0.3 P4: `--expert-cache auto` sizes the VRAM tier from what is free after the weights, the session
     /// and the KV state, minus this reserve for the graphs, the hit scratch and the head.
+#if defined(_WIN32)
+    /// Windows: 1500. With 700 an RTX 5090 that also drives the desktop kept ~470-570 MiB free, and in most runs
+    /// WDDM stalled the GPU whenever the desktop took more (IQ2_XS: verify window 22 vs 10.5 ms a round, decode
+    /// 77-112 vs 132-139 tok/s); with 1500 no run stalled, for ~3% fewer expert slots.
+    int vram_reserve_mib = 1500;
+#else
     int vram_reserve_mib = 700;
+#endif
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  Every expert a chunk
