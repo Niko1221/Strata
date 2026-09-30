@@ -58,7 +58,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 28)                # v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 29)                # v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
@@ -1853,9 +1853,14 @@ def main() -> int:
         for i, c in enumerate(CONTEXTS, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended for your GPU)" if c == rec_ctx else ""))
         ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, 6)], str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
-    if model in ("IQ3_XXS", "IQ3_S") and ram < 90 and ctx > 131072:
-        warn(f"{model} with a 262K context needs more than 64 GB of RAM ({MODELS[model]['arena_gb']:.0f} GB of experts "
-             "+ the context): using 128K")
+    # The experts' arena plus the context's KV (in RAM from 64K up: ~13.7 KB/token at 8 bits) must fit, with room
+    # for everything else. Counted, not a fixed 90 GB: 24 GB of room keeps the rule for 64 GB PCs as it was (128K
+    # for both 3-bit models), while a box with ~84 GB keeps the 262K it asked for (measured: a Colab A100-40G runs
+    # IQ3_S at 262K with images in 56 of its 83.5 GiB).
+    need_gb = MODELS[model].get("arena_gb", 0) + ctx * 13 * 1056 / 1e9 + 24
+    if model in ("IQ3_XXS", "IQ3_S") and ram < need_gb and ctx > 131072:
+        warn(f"{model} with a {ctx // 1024}K context needs about {need_gb:.0f} GB of RAM "
+             f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest): using 128K")
         ctx = 131072
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
