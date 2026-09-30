@@ -33,7 +33,7 @@ int main() {
         env("STRATA_HIP_STAGE_BATCH", requested_batch);
         Stager stage;
         if (!stage.init(bytes, 3)) return 1;
-        for (int count : {1, 15, 16, 17, 31, 32, 33, 65}) {
+        for (int count : {0, 1, 15, 16, 17, 31, 32, 33, 65, 0, 17}) {
             for (int stop : {-1, 0, 1, 3, 15, 17, 31, 64}) {
                 if (stop >= count) continue;
                 // Reuse the same stager across generations, including after abort.
@@ -46,6 +46,9 @@ int main() {
                     for (int j = 0; j < count; ++j)
                         jobs.push_back({source.data() + (size_t) j * bytes, bytes});
                     stage.start(std::move(jobs), true);
+                    if (stage.jobs.size() != (size_t) count || stage.fence_records ||
+                        stage.fence_waits.load() || stage.fence_errors.load() ||
+                        stage.last_submitted != -1 || stage.fence_stream || stage.issued.load()) return 1;
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
                     if (stage.fence_batch != requested_batch) return 1;
 #else

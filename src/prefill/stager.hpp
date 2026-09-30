@@ -110,7 +110,6 @@ struct Stager {
     }
     /// A layer's jobs; the previous layer's are finished (finish()).
     void start(std::vector<Job>&& js, bool long_pipeline = false) {
-        if (js.empty()) return;
         std::lock_guard<std::mutex> lk(mu);
         jobs = std::move(js);
         fence_batch = 1;
