@@ -26,6 +26,7 @@ import base64
 import hashlib
 import hmac
 import codecs
+import ctypes
 import json
 import os
 import queue
@@ -93,6 +94,11 @@ class MockEngine:
 
 class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
+
+
+class GpuBusy(RuntimeError):
+    """The model is unloaded and the GPU has less free VRAM than min_free_vram_mib: something else (a game, another
+    model server) is using it, so the engine is not started into the little that is left."""
 
 
 def narrate_start(log_path: str, offset: int, args: list, done: threading.Event, heartbeat=20.0) -> None:
@@ -170,6 +176,7 @@ class StrataEngine:
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         contain(self.proc)                               # ends with the server, however it ends (Windows)
         self.max_context = 0
+        self.unloaded = False            # stopped on purpose (idle unload, POST /unload), not crashed
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
@@ -237,6 +244,20 @@ class StrataEngine:
             return self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             return None
+
+    def unload(self):
+        """Stop the engine process so its VRAM and RAM go back to the system (idle unload, POST /unload); the next
+        request starts it again with restart().  Only between requests: the caller holds the service's fifo."""
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=20)
+        except OSError:
+            pass
+        self.ended = True
+        self.unloaded = True
 
     def restart(self):
         """Start the engine again (the same command) after it died; the new process has its own line queue."""
@@ -585,8 +606,101 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
+        # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
+        # server's model); the next request after an unload starts the engine again
+        self.idle_unload_s = 0
+        self.min_free_vram_mib = 0
+        self.before_load = None
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
+
+    def loaded(self) -> bool:
+        return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def free_vram_mib(self) -> int | None:
+        """Free VRAM on the engine's (first) GPU, from NVML; None when it can't be read (then nothing is refused)."""
+        try:
+            from serve.telemetry import _Nvml
+            nv = _Nvml(int(getattr(self, "gpu_index", 0) or 0))
+            if not nv.ok():
+                return None
+            m = nv.Mem()
+            if nv.lib.nvmlDeviceGetMemoryInfo(nv.dev, ctypes.byref(m)) != 0:
+                return None
+            return int(m.free >> 20)
+        except Exception:
+            return None
+
+    def ensure_loaded(self):
+        """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
+        the free-VRAM check.  The caller holds self.fifo."""
+        if self.loaded():
+            return
+        if self.before_load:
+            cmd = self.before_load
+            print(f"[strata] before loading: {cmd if isinstance(cmd, str) else ' '.join(map(str, cmd))}", flush=True)
+            try:
+                subprocess.run(cmd, shell=isinstance(cmd, str), timeout=120, stdin=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError) as e:
+                print(f"[strata] the before_load command failed ({e}); loading anyway", flush=True)
+        if self.min_free_vram_mib:
+            free = self.free_vram_mib()
+            deadline = time.time() + 15                 # memory another process just gave back can take a moment
+            while free is not None and free < self.min_free_vram_mib and time.time() < deadline:
+                time.sleep(0.5)
+                free = self.free_vram_mib()
+            if free is not None and free < self.min_free_vram_mib:
+                raise GpuBusy(f"the GPU is in use by another program: {free} MiB of VRAM free, the model needs "
+                              f"{self.min_free_vram_mib} (min_free_vram_mib) - it stays unloaded until that is free")
+        if getattr(self.engine, "unloaded", False):
+            print("[strata] loading the model again (it was unloaded) ...", flush=True)
+        else:
+            code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
+            print(f"[strata] the engine had stopped (exit code {code}); starting it again "
+                  "(a minute or two) ...", flush=True)
+        self.engine.restart()
+        print("[strata] the engine is running again", flush=True)
+
+    def load(self):
+        """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
+        if self.loaded():
+            return
+        with self.fifo:
+            self.ensure_loaded()
+
+    def unload(self, idle_for: float | None = None) -> str:
+        """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
+        with idle_for: one ran more recently than that) or "unsupported"."""
+        if not hasattr(self.engine, "unload"):
+            return "unsupported"
+        if not self.fifo.acquire(blocking=False):
+            return "busy"
+        try:
+            if not self.engine.alive():
+                return "not loaded"
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued"):
+                    return "busy"
+            if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
+                return "busy"
+            self.engine.unload()
+            print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
+                  "the next request loads it again", flush=True)
+            return "unloaded"
+        finally:
+            self.fifo.release()
+
+    def start_idle_unload(self):
+        if not self.idle_unload_s or not hasattr(self.engine, "unload"):
+            return
+        print(f"[strata] the model unloads after {self.idle_unload_s} s without requests", flush=True)
+
+        def loop():
+            while True:
+                time.sleep(max(1.0, min(30.0, self.idle_unload_s / 4)))
+                self.unload(idle_for=self.idle_unload_s)
+        threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
         """The Chat settings every client gets for what it leaves out; {} / None = clients use their own again."""
@@ -673,6 +787,8 @@ class Service:
             state = "reading"
         elif s.get("busy"):
             state = "generating"
+        elif not self.loaded():
+            state = "unloaded"
         else:
             state = "idle"
         live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
@@ -838,13 +954,8 @@ class Service:
             with self.fifo:
                 with self.status_lock:
                     self.status["queued"] -= 1
-                if hasattr(self.engine, "alive") and not self.engine.alive():
-                    # issue #27: it died in an earlier request - start it again instead of failing every request
-                    code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
-                    print(f"[strata] the engine had stopped (exit code {code}); starting it again "
-                          "(a minute or two) ...", flush=True)
-                    self.engine.restart()
-                    print("[strata] the engine is running again", flush=True)
+                # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
+                self.ensure_loaded()
                 with self.status_lock:
                     self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids), generated=0,
                                        started=time.time(), first_token=None, tool=None, tail="", max_tokens=max_new)
@@ -1330,7 +1441,8 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path == "/health":
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key)})
+                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "loaded": svc.loaded()})
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
@@ -1347,11 +1459,14 @@ def make_handler(svc: Service):
                 self._json(200, s)
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
-                    loaded = not hasattr(svc.engine, "alive") or svc.engine.alive()
+                    loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.engine.max_context},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
+                    if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
+                        model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
+                        loaded = True
                     self._json(200, {"object": "list", "data": [model] if loaded else []})
             elif path == "/props":
                 if self._authorized():
@@ -1376,8 +1491,21 @@ def make_handler(svc: Service):
             if path == "/settings":
                 self._settings()
                 return
+            if path == "/unload":                            # give the GPU back now (between requests)
+                r = svc.unload()
+                self._json(409 if r == "busy" else 200, {"status": r})
+                return
+            if path == "/load":                              # load now, e.g. ahead of a request
+                try:
+                    svc.load()
+                    self._json(200, {"status": "loaded"})
+                except GpuBusy as e:
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if path in ("/v1/chat/completions", "/v1/messages"):
+                    svc.load()                               # unloaded: load first (or 503 while the GPU is busy)
                 if path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
@@ -1386,6 +1514,8 @@ def make_handler(svc: Service):
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except GpuBusy as e:
+                self._json(503, {"error": {"type": "server_error", "message": str(e)}})
             except EngineDied as e:                          # before the answer started (not streamed)
                 self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
 
@@ -1394,7 +1524,7 @@ def make_handler(svc: Service):
             if model != svc.model:
                 self._json(404, {"error": {"message": "model not found"}})
                 return
-            if hasattr(svc.engine, "alive") and not svc.engine.alive():
+            if not svc.loaded() and not getattr(svc.engine, "unloaded", False):
                 self._json(503, {"error": {"message": "the engine is not running"}})
                 return
             defaults = {**svc.sampling_defaults, **svc.shared}
@@ -1406,7 +1536,7 @@ def make_handler(svc: Service):
             props = {"default_generation_settings": {"n_ctx": svc.engine.max_context, "params": params},
                      "total_slots": 1, "model_alias": svc.model, "chat_template": svc.template.source,
                      "modalities": {"vision": svc.vision is not None}, "models_autoload": False,
-                     "is_sleeping": False}
+                     "is_sleeping": not svc.loaded()}
             if getattr(svc.engine, "model_path", None):
                 props["model_path"] = svc.engine.model_path
             version = getattr(svc.engine, "info", {}).get("version")
@@ -1699,6 +1829,15 @@ def main() -> int:
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
+    ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
+                    help="unload the model after this many seconds without requests, so other programs (games, other "
+                         "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
+                         "in the config; default: never)")
+    ap.add_argument("--min-free-vram-mib", type=int, default=None,
+                    help="load an unloaded model only when this much VRAM is free, else answer 503 (also "
+                         "\"min_free_vram_mib\" in the config; default: always load)")
+    ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
+                                          "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
@@ -1759,6 +1898,10 @@ def main() -> int:
               file=sys.stderr)
         return 2
     svc.api_key = a.api_key or cfg.get("api_key", "")
+    svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
+    svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
+        int(cfg.get("min_free_vram_mib") or 0)
+    svc.before_load = a.before_load or cfg.get("before_load") or None
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     if a.config:                                        # the Chat settings shared with other apps, from last time
@@ -1778,6 +1921,7 @@ def main() -> int:
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
+    svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"

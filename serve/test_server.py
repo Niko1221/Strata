@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -16,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import CTX_SLACK, ByteTokenizer, EngineDied, MockEngine, Service, StrataEngine, request_timings, serve  # noqa: E402
+from serve.server import CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine, request_timings, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
@@ -931,6 +932,118 @@ class TimingsDrafts(unittest.TestCase):
         self.assertEqual((t["prompt_n"], t["cache_n"]), (20, 4))
         self.assertNotIn("draft_n", request_timings(24, 20, base))
         self.assertIsNone(request_timings(24, 20, {}))
+
+
+class UnloadableEngine(MockEngine):
+    """A mock engine that can be stopped and started again like StrataEngine (alive / unload / restart)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.running, self.unloaded, self.starts = True, False, 0
+
+    def alive(self):
+        return self.running
+
+    def unload(self):
+        self.running, self.unloaded = False, True
+
+    def restart(self):
+        self.running, self.unloaded = True, False
+        self.starts += 1
+
+
+class SharingTheGpu(unittest.TestCase):
+    """Idle unload, POST /unload and /load, the free-VRAM guard and the before_load hook (all off by default)."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.engine = UnloadableEngine(tok, "</think>\n\nok", max_context=CTX)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def req(self, path, body=None):
+        r = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(),
+                                   headers={"Content-Type": "application/json"}, method="GET" if body is None else "POST")
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def chat(self):
+        return self.req("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+
+    def test_unload_then_the_next_request_loads(self):
+        self.assertEqual(self.req("/unload", {}), (200, {"status": "unloaded"}))
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.req("/health")[1]["loaded"], False)
+        self.assertEqual(self.req("/v1/models")[1]["data"][0]["status"]["value"], "unloaded")
+        self.assertEqual(self.req("/unload", {}), (200, {"status": "not loaded"}))
+        s, b = self.chat()
+        self.assertEqual(s, 200)
+        self.assertEqual(b["choices"][0]["message"]["content"], "ok")
+        self.assertEqual(self.engine.starts, 1)
+        self.assertEqual(self.req("/health")[1]["loaded"], True)
+
+    def test_load_endpoint(self):
+        self.svc.unload()
+        self.assertEqual(self.req("/load", {}), (200, {"status": "loaded"}))
+        self.assertTrue(self.engine.alive())
+        self.assertEqual(self.req("/load", {}), (200, {"status": "loaded"}))
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_unload_refused_while_a_request_runs(self):
+        with self.svc.fifo:
+            self.assertEqual(self.svc.unload(), "busy")
+        self.assertTrue(self.engine.alive())
+
+    def test_idle_unload(self):
+        self.svc.idle_unload_s = 1
+        self.svc.last_request_at = time.time()
+        self.assertEqual(self.svc.unload(idle_for=1), "busy")       # a request just now: not idle yet
+        self.svc.start_idle_unload()
+        deadline = time.time() + 10
+        while self.engine.alive() and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.chat()[0], 200)
+
+    def test_min_free_vram_refuses_to_load(self):
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000
+        self.svc.unload()
+        t0 = time.time()
+        s, b = self.chat()
+        self.assertEqual(s, 503)
+        self.assertIn("in use by another program", b["error"]["message"])
+        self.assertFalse(self.engine.alive())
+        self.assertGreater(time.time() - t0, 10)                    # waited for memory being given back first
+        self.svc.free_vram_mib = lambda: 9000
+        self.assertEqual(self.chat()[0], 200)
+
+    def test_min_free_vram_unreadable_loads(self):
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: None                       # no NVML: never refuse
+        self.svc.unload()
+        self.assertEqual(self.chat()[0], 200)
+
+    def test_before_load_runs_first(self):
+        mark = Path(tempfile.mkdtemp()) / "ran"
+        self.svc.before_load = [sys.executable, "-c", f"open({str(mark)!r}, 'w').close()"]
+        self.svc.unload()
+        self.assertFalse(mark.exists())
+        self.assertEqual(self.chat()[0], 200)
+        self.assertTrue(mark.exists())
+
+    def test_off_by_default(self):
+        self.assertEqual((self.svc.idle_unload_s, self.svc.min_free_vram_mib, self.svc.before_load), (0, 0, None))
+        self.assertEqual(self.req("/health")[1]["loaded"], True)
 
 if __name__ == "__main__":
     unittest.main()
