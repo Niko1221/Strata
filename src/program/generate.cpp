@@ -3237,6 +3237,39 @@ int main(int argc, char** argv) {
             for (const ImgKey& k : all) if (k.start < L) v.push_back(k);
             return v;
         };
+        // A checkpoint taken in the middle of a prompt (every --prompt-cache-every tokens) is copied out
+        // asynchronously: the running state goes to a pinned staging buffer on the prompt stream (stream-ordered:
+        // it runs after the chunk that produced the state, before the next chunk changes it, ~10 ms of copy
+        // engine), and a thread moves it into the checkpoint's own vectors while the next chunk runs.  The
+        // synchronous path (a device sync + pageable copies into fresh vectors) held the GPU idle ~370 ms per
+        // checkpoint on a 2x3090 box.  The checkpoint's bytes are unchanged, only copied later.  The pending
+        // checkpoint joins `checks` at ck_join: inside every checkpoint_at and once the prompt is read.  A layer
+        // split keeps the synchronous path (its checkpoints are assembled from the stages' own parts).
+        // STRATA_CK_SYNC=1: the old synchronous way.
+        const bool ck_async = std::getenv("STRATA_CK_SYNC") == nullptr;
+        uint8_t* ck_stage = nullptr;
+        cudaEvent_t ck_ev = nullptr;
+        std::thread ck_thr;
+        ConvCheckpoint ck_pending;
+        bool ck_live = false, ck_ok = true;
+        struct CkThreadGuard { std::thread& t; ~CkThreadGuard() { if (t.joinable()) t.join(); } } ck_guard{ck_thr};
+        auto ck_join = [&]() -> bool {
+            if (ck_thr.joinable()) ck_thr.join();
+            if (!ck_live) return true;
+            ck_live = false;
+            if (!ck_ok) { ck_ok = true; return false; }
+            ck_pending.used = ++check_clock;
+            checks.push_back(std::move(ck_pending));
+            while ((int) checks.size() > o.prompt_cache) {
+                std::vector<uint64_t> stamps;
+                stamps.reserve(checks.size());
+                for (const ConvCheckpoint& k : checks) stamps.push_back(k.used);
+                const size_t victim = strata::program::conv_cache::eviction_victim(stamps.data(), stamps.size(),
+                                                                                   o.prompt_cache);
+                checks.erase(checks.begin() + (std::ptrdiff_t) victim);
+            }
+            return true;
+        };
         // a checkpoint of the state after `cur[0, L)`; false only when the copy itself failed
         // A layer split's mid-prompt checkpoints: when the last stage reports a chunk, the earlier ones already read
         // the next, so each stage saves its own part when IT reaches a checkpoint position (the same rule as below:
@@ -3248,6 +3281,7 @@ int main(int argc, char** argv) {
         // states saved at L (a split's mid-prompt checkpoint); without, they are read now (everything is at L)
         auto checkpoint_at = [&](int64_t L, std::vector<ConvCheckpoint>* parts = nullptr) -> bool {
             if (o.prompt_cache <= 0 || L < 1) return true;
+            if (!ck_join()) return false;
             for (ConvCheckpoint& c : checks)
                 if ((int64_t) c.ids.size() == L) { c.used = ++check_clock; return true; }
             ConvCheckpoint c;
@@ -3280,6 +3314,50 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // the asynchronous form, for a mid-prompt checkpoint on one GPU (see ck_async)
+        auto checkpoint_at_async = [&](int64_t L) -> bool {
+            if (!ck_async || o.prompt_cache <= 0 || L < 1) return checkpoint_at(L);
+            static const bool ck_trace = std::getenv("STRATA_PREFILL_TIMING") != nullptr;
+            const auto ck_t0 = Clock::now();
+            auto ck_ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - ck_t0).count(); };
+            if (!ck_join()) return false;
+            for (ConvCheckpoint& c : checks)
+                if ((int64_t) c.ids.size() == L) { c.used = ++check_clock; return true; }
+            const ConvStateSizes z = conv_state_sizes(g);
+            const size_t zp = ss.ple_hist != nullptr ? z.ple : 0, zt = z.tail * (size_t) g.n_qsa_layers();
+            if (ck_stage == nullptr) {
+                if (cudaHostAlloc((void**) &ck_stage, z.gdn + z.ple + zt, cudaHostAllocDefault) != cudaSuccess ||
+                    cudaEventCreateWithFlags(&ck_ev, cudaEventDisableTiming) != cudaSuccess) {
+                    cudaGetLastError();
+                    ck_stage = nullptr;
+                    if (ck_trace) std::fprintf(stderr, "strata checkpoint: no pinned staging - synchronous\n");
+                    return checkpoint_at(L);
+                }
+                if (ck_trace) std::fprintf(stderr, "strata checkpoint: pinned staging allocated in %.1f ms\n", ck_ms());
+            }
+            const cudaStream_t cs0 = (cudaStream_t) main_cs;
+            bool ok = cudaMemcpyAsync(ck_stage, ss.gdn_state, z.gdn, cudaMemcpyDeviceToHost, cs0) == cudaSuccess;
+            if (ok && zp) ok = cudaMemcpyAsync(ck_stage + z.gdn, ss.ple_hist, zp, cudaMemcpyDeviceToHost, cs0) == cudaSuccess;
+            for (int64_t i = 0; ok && i < g.n_qsa_layers(); ++i)
+                ok = cudaMemcpyAsync(ck_stage + z.gdn + z.ple + (size_t) i * z.tail, ss.qsa_states[i].idx_tail, z.tail,
+                                     cudaMemcpyDeviceToHost, cs0) == cudaSuccess;
+            if (!ok || cudaEventRecord(ck_ev, cs0) != cudaSuccess) return false;
+            ck_pending = ConvCheckpoint{};
+            ck_pending.ids.assign(cur.begin(), cur.begin() + L);
+            ck_pending.imgs = imgs_below(req_imgs, L);
+            ck_live = true;
+            if (ck_trace) std::fprintf(stderr, "strata checkpoint at %lld: async, enqueued in %.1f ms\n", (long long) L, ck_ms());
+            int dev = 0;
+            cudaGetDevice(&dev);
+            ck_thr = std::thread([&, z, zp, zt, dev] {
+                cudaSetDevice(dev);
+                if (cudaEventSynchronize(ck_ev) != cudaSuccess) { ck_ok = false; return; }
+                ck_pending.gdn.assign(ck_stage, ck_stage + z.gdn);
+                ck_pending.ple.assign(ck_stage + z.gdn, ck_stage + z.gdn + zp);
+                ck_pending.tails.assign(ck_stage + z.gdn + z.ple, ck_stage + z.gdn + z.ple + zt);
+            });
+            return true;
+        };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
             for (int64_t t = 0; t < T; ++t) nxt[(size_t) t] = (int32_t) cur[(size_t) (p0 + t + 1)];
@@ -3308,7 +3386,7 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& k : parts) complete = complete && !k.gdn.empty();
                     saved = !complete || checkpoint_at(done, &parts);   // an incomplete set: no checkpoint here
                 } else {
-                    saved = checkpoint_at(done);
+                    saved = checkpoint_at_async(done);
                 }
                 if (!saved) { e = "saving a conversation checkpoint failed"; return false; }
                 pp_next_check = done + o.prompt_cache_every;
@@ -4021,6 +4099,12 @@ int main(int argc, char** argv) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
+            }
+            // the prompt is read: its last mid-prompt checkpoint (if one is still pending) joins before the
+            // request ends, so the next request's resume search sees it
+            if (!ck_join() && !cancelled) {
+                std::printf("ERR saving a conversation checkpoint failed\n");
+                return 1;
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
