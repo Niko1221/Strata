@@ -61,6 +61,7 @@
 #include <cstring>
 #include <functional>
 #include <random>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -365,6 +366,30 @@ const uint32_t kOracle[] = {
 constexpr int kOracleN = (int) (sizeof(kOracle) / sizeof(kOracle[0])) / 2;
 
 }  // namespace
+
+// TODO 7: the comparison accumulator refuses to let a NaN pass silently - std::max(worst, NaN) keeps
+// `worst`, so every actual value, expected value and calculated error is checked for finiteness BEFORE
+// the maximum is updated, and the first offending coordinate is reported.
+struct RelScan { double worst = 0.0; bool nonfinite = false; int64_t at = -1; };
+static RelScan scan_rel(const float* got, const double* exp, int64_t n) {
+    RelScan s;
+    for (int64_t d = 0; d < n; ++d) {
+        const double g = got[d], e = exp[d];
+        if (!std::isfinite(g) || !std::isfinite(e)) {
+            s.nonfinite = true;
+            if (s.at < 0) s.at = d;
+            continue;
+        }
+        const double err = std::fabs(g - e) / (std::fabs(e) + 1e-30);
+        if (!std::isfinite(err)) {
+            s.nonfinite = true;
+            if (s.at < 0) s.at = d;
+            continue;
+        }
+        s.worst = std::max(s.worst, err);
+    }
+    return s;
+}
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not swallow what was printed already
@@ -1545,28 +1570,29 @@ int main(int argc, char** argv) {
             }
             check(cudaStreamSynchronize(cs7), "sync0");
             const std::vector<float> dh = deadT.get((size_t) IDXD), p0 = pooledT.get((size_t) IDXD);
-            double worst_s = 0.0, worst_p = 0.0;
-            for (int64_t d = 0; d < IDXD; ++d) {
-                const double den = std::fabs(expS[(size_t) d]) + 1e-30;
-                worst_s = std::max(worst_s, std::fabs((double) dh[(size_t) d] - expS[(size_t) d]) / den);
-                worst_p = std::max(worst_p, std::fabs((double) p0[(size_t) d] - expS[(size_t) d]) / den);
+            const RelScan sd = scan_rel(dh.data(), expS.data(), IDXD);
+            const RelScan sp = scan_rel(p0.data(), expS.data(), IDXD);
+            std::printf("  %-40s dead rel %.2e, pooled[0] rel %.2e\n", v.name, sd.worst, sp.worst);
+            if (sd.nonfinite || sp.nonfinite) {
+                std::printf("    *** NON-FINITE value in the %s variant: %s%s%s at d=%lld ***\n", v.name,
+                            sd.nonfinite ? "dead" : "", sd.nonfinite && sp.nonfinite ? " and " : "",
+                            sp.nonfinite ? "pooled[0]" : "", (long long) (sd.nonfinite ? sd.at : sp.at));
+                ++g_bad;
             }
-            std::printf("  %-40s dead rel %.2e, pooled[0] rel %.2e\n", v.name, worst_s, worst_p);
-            if (!(worst_s <= 1e-5) || !(worst_p <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
+            if (!(sd.worst <= 1e-5) || !(sp.worst <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
             int join_bad = 0;   // the two buffers must hold the SAME spare key, word for word
             for (int64_t d = 0; d < IDXD; ++d) join_bad += std::memcmp(&p0[(size_t) d], &dh[(size_t) d], 4) != 0;
             if (join_bad) { std::printf("    *** pooled[0] != dead (%d words) ***\n", join_bad); ++g_bad; }
             if (v.type == strata::kernels::RopeScalingType::YaRN && v.factor != 1.0) {
                 // the magnitude multiplier against the yarn formula computed HERE, not read from the table
                 const double ms_ind = 1.0 * (1.0 + 0.1 * std::log(v.factor));
-                double worst_ms = 0.0;
-                for (int64_t d = 0; d < NR7; ++d) {    // the rotated region only; the tail is unscaled by design
-                    worst_ms = std::max(worst_ms, std::fabs((double) dh[(size_t) d] - spare_un[(size_t) d] * ms_ind) /
-                                                     (std::fabs(spare_un[(size_t) d] * ms_ind) + 1e-30));
-                }
+                if (!std::isfinite(ms_ind)) { std::printf("    *** the independent mscale is not finite ***\n"); ++g_bad; }
+                std::vector<double> exp_ms((size_t) NR7);
+                for (int64_t d = 0; d < NR7; ++d) exp_ms[(size_t) d] = spare_un[(size_t) d] * ms_ind;
+                const RelScan sm = scan_rel(dh.data(), exp_ms.data(), NR7);   // the rotated region only; the tail is unscaled by design
                 std::printf("  %-40s independent mscale %.6f, dead rel %.2e\n", "magnitude vs the yarn formula",
-                            ms_ind, worst_ms);
-                if (!(worst_ms <= 1e-5)) { std::printf("    *** the multiplier is wrong ***\n"); ++g_bad; }
+                            ms_ind, sm.worst);
+                if (sm.nonfinite || !(sm.worst <= 1e-5)) { std::printf("    *** the multiplier is wrong ***\n"); ++g_bad; }
             }
             int ident_bad = 0;   // identity cases (none, yarn with a unit multiplier): exact to the cast
             if (v.type == strata::kernels::RopeScalingType::None ||
@@ -1590,13 +1616,22 @@ int main(int argc, char** argv) {
             }
             check(cudaStreamSynchronize(cs7), "sync");
             const std::vector<float> ph = pooledT.get(prows7);
-            double worst_b = 0.0;
+            const RelScan sb = scan_rel(ph.data(), expB.data(), IDXD);
+            std::printf("  %-40s completed block rel %.2e\n", v.name, sb.worst);
+            if (sb.nonfinite || !(sb.worst <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
+            // ---- the RELOCATED spare: pooled row 1 must hold the same key as dead, bitwise, in all
+            // four variants (cells 1..3 never touch dead, so the pos-0 value survives the relocation)
+            int reloc_bad = 0, reloc_nonfinite = 0;
             for (int64_t d = 0; d < IDXD; ++d) {
-                const double den_b = std::fabs(expB[(size_t) d]) + 1e-30;
-                worst_b = std::max(worst_b, std::fabs((double) ph[(size_t) d] - expB[(size_t) d]) / den_b);
+                if (!std::isfinite(ph[(size_t) IDXD + d]) || !std::isfinite(dh[(size_t) d])) {
+                    if (!reloc_nonfinite) std::printf("    non-finite value in the relocated spare at d=%lld\n", d);
+                    reloc_nonfinite = 1;
+                }
+                reloc_bad += std::memcmp(&ph[(size_t) IDXD + d], &dh[(size_t) d], 4) != 0;
             }
-            std::printf("  %-40s completed block rel %.2e\n", v.name, worst_b);
-            if (!(worst_b <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
+            std::printf("  %-40s relocated spare vs dead: %d of %zu words differ%s\n", v.name, reloc_bad,
+                        (size_t) IDXD, reloc_nonfinite ? " (+ non-finite values)" : "");
+            if (reloc_bad || reloc_nonfinite) { std::printf("    *** the relocated spare is wrong ***\n"); ++g_bad; }
             if (v.type == strata::kernels::RopeScalingType::None) none_row0 = ph;
             else if (v.factor != 1.0) {   // observability: a scaled row must differ from the none row.
                                           // yarn 1 is exempt: fs = 1 makes its angles and mscale exactly
@@ -1612,6 +1647,19 @@ int main(int argc, char** argv) {
             }
         }
         check(cudaStreamDestroy(cs7), "csd");
+    }
+
+    // the non-finite DETECTOR itself, verified with a controlled NaN injection into a test-side copy
+    // (a plain float array - no kernel, no fixture: this checks the check, not the production code)
+    {
+        std::vector<float> got((size_t) IDXD, 1.0f);
+        std::vector<double> exp((size_t) IDXD, 1.0);
+        got[17] = std::numeric_limits<float>::quiet_NaN();
+        const RelScan inj = scan_rel(got.data(), exp.data(), IDXD);
+        std::printf("\n  %-40s nonfinite=%d at d=%lld %s\n", "non-finite detector self-check",
+                    (int) inj.nonfinite, (long long) inj.at,
+                    (inj.nonfinite && inj.at == 17) ? "detected" : "*** MISSED ***");
+        if (!inj.nonfinite || inj.at != 17) ++g_bad;
     }
 
     std::printf("\nqsa: %d failures\n", g_bad);

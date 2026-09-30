@@ -188,18 +188,15 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
         // Position 0 is NOT an identity rotation by default: row 0 of the CONFIGURED table is
         // cos = mscale, sin = 0 (cos(0) times the magnitude multiplier), so applying it here scales the
         // spare by mscale exactly once - the multiplier is already inside the table and the kernel adds
-        // nothing on top.  An unscaled table has cos = 1, sin = 0, and the parity test confirms the
-        // spare bitwise for its fixture (a*1 - b*0 is exact for finite values; the claim is the tested
-        // fixture, not a proof over every input).
+        // nothing on top.  An unscaled table has cos = 1, sin = 0, and the parity test confirms bitwise
+        // identity for its tested unscaled fixture.
         // The barrier first: the pairing below reads the partner element another thread has just written,
         // and every thread of the block is inside this branch (pos is uniform), so the sync is uniform too.
         // OWNERSHIP of the ROTATION: thread d (< half) is the single owner of pair {d, d+half} - it reads
         // BOTH original values (rope_neox_pair takes them by value, so both are in registers before either
-        // output lands) and writes both outputs to BOTH buffers.  No cross-thread copy follows: a
-        // __syncthreads before the copy was tried first and was empirically insufficient - the compiled
-        // kernel placed the copy's load of dead[d] BEFORE the barrier (legal for the d < half threads,
-        // racy for d >= half, deterministically reproducing the unscaled second half).  Writing each
-        // element's owner directly to both buffers removes the hazard by construction.
+        // output lands) and writes both outputs to BOTH buffers.  Each pair owner writes both rotated
+        // values directly to both buffers; this avoids a cross-thread read of the rotated output and
+        // requires no additional barrier for copying.
         __syncthreads();       // the pairing reads the partner element written by another thread above
         const int half = n_rot / 2;
         if (d < half) {
