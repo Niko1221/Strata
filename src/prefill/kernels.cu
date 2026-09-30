@@ -340,18 +340,17 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_kernel(float* __restrict
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
-// dual-3090: gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while
-// this token computes (software pipelining).  The same arithmetic in the same order: the same bits.  CBT = columns
-// per block (32: upstream's split; 16: twice the blocks, STRATA_GDN_CB=16).  STRATA_GDN_PIPELINE=0: upstream's kernel.
-template <int CBT>
-__global__ void __launch_bounds__(CBT * RG) gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h,
+// gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while this token
+// computes (software pipelining).  The same arithmetic in the same order: the same bits, and the same CB-column split.
+// STRATA_GDN_PIPELINE=0: gdn_rec_cols_kernel.
+__global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                       const float* __restrict__ gate,
                                                                       const float* __restrict__ beta,
                                                                       float* __restrict__ oc_out, int64_t T) {
-    constexpr int NT = CBT * RG, LPT = S / NT, NCBT = S / CBT;   // threads, q/k rows loaded per thread
-    __shared__ float sk[S], sq[S], red[RG][CBT];
-    const int head = blockIdx.x / NCBT, cb = blockIdx.x % NCBT;
-    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CBT + c, col = cb * CBT + c;
+    constexpr int NT = CB * RG, LPT = S / NT;   // threads, q/k rows loaded per thread
+    __shared__ float sk[S], sq[S], red[RG][CB];
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
     const int qh = head % HK;
     float s[RPG];
     float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
@@ -697,11 +696,8 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
-        static const int cbt = [] { const char* v = std::getenv("STRATA_GDN_CB"); return v != nullptr && std::atoi(v) == 16 ? 16 : 32; }();
-        if (pipe && cbt == 16)   // dual-3090: the software-pipelined loads, 16 columns per block
-            gdn_rec_cols_pipe_kernel<16><<<HV * (S / 16), dim3(16, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
-        else if (pipe)
-            gdn_rec_cols_pipe_kernel<32><<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        if (pipe)   // the software-pipelined loads (same bits)
+            gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
             gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16);
