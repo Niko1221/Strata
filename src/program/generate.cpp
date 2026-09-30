@@ -3252,7 +3252,19 @@ int main(int argc, char** argv) {
         std::thread ck_thr;
         ConvCheckpoint ck_pending;
         bool ck_live = false, ck_ok = true;
-        struct CkThreadGuard { std::thread& t; ~CkThreadGuard() { if (t.joinable()) t.join(); } } ck_guard{ck_thr};
+        // teardown (every exit from the serve scope): join a pending copy-out, then free the staging and its event
+        struct CkGuard {
+            std::thread& t;
+            uint8_t*& stage;
+            cudaEvent_t& ev;
+            ~CkGuard() {
+                if (t.joinable()) t.join();
+                if (stage != nullptr) cudaFreeHost(stage);
+                if (ev != nullptr) cudaEventDestroy(ev);
+                stage = nullptr;
+                ev = nullptr;
+            }
+        } ck_guard{ck_thr, ck_stage, ck_ev};
         auto ck_join = [&]() -> bool {
             if (ck_thr.joinable()) ck_thr.join();
             if (!ck_live) return true;
@@ -3329,7 +3341,10 @@ int main(int argc, char** argv) {
                 if (cudaHostAlloc((void**) &ck_stage, z.gdn + z.ple + zt, cudaHostAllocDefault) != cudaSuccess ||
                     cudaEventCreateWithFlags(&ck_ev, cudaEventDisableTiming) != cudaSuccess) {
                     cudaGetLastError();
+                    if (ck_stage != nullptr) cudaFreeHost(ck_stage);
+                    if (ck_ev != nullptr) cudaEventDestroy(ck_ev);
                     ck_stage = nullptr;
+                    ck_ev = nullptr;
                     if (ck_trace) std::fprintf(stderr, "strata checkpoint: no pinned staging - synchronous\n");
                     return checkpoint_at(L);
                 }
