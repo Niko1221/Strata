@@ -1,58 +1,49 @@
 # Conversation cache validation
 
-The core review branch is based on upstream 0.1.27 (`a790805`). Recorded model
-results below belong to the earlier 0.1.25 implementation (`cabd50c` through `1d9e4e7`),
-not the new base. The Windows admission test is @midhatn's `32cf918`, retained as
-`b319d43`. Historical records and the general Pi benchmark remain on local branch
-`feat/conversation-cache-upstream` at `cb8d90c`; they are outside the core patch.
+The focused core branch includes upstream 0.1.27 (`a790805`). Final Linux checks
+ran on 2026-09-30 after the user's Pi benchmark completed. This record describes
+the review binaries, not the original server restored after the test window.
+Windows admission coverage retains @midhatn's original authorship in `b319d43`.
 
-## Current offline checks
+## Hardware and artifacts
 
-After separating the general benchmark tooling and merging 0.1.27, all 47 tool
-tests and the 22 cache-harness tests under Python `-O` pass. Recoverable snapshot
-rejection now clears its diagnostic error before the new batched draft-prefill
-path runs. The final core engine and snapshot test binaries build with GCC 15.2,
-CUDA 13.4, SM89 and portable AVX2. Five host CTests pass with GPU visibility
-disabled: policy, admission, checkpoint retention, validation and injected
-transfers. Model correctness remains unverified on this base. No benchmark server or GPU
-was used for these checks. The core frontend suite passes 66 tests (three skipped)
-on 0.1.27. Upstream changes include a HIP-only compilation fix and a changed draft
-vocabulary; the latter requires new model evidence with its exact loaded assets.
+EPYC 7532, RTX 4090, GCC 15.2, CUDA 13.4, SM89, portable AVX2, IQ3_S.
+All model engines used `numactl --interleave=all --physcpubind=0-31` and matched
+expert residency (7,846 slots, PCIe share 0.55). INT8 streamed/ring tests used
+131,072 context and 32,768 main resident cells; batched INT8/K8V4 tests used
+16,384 context with full device KV. These are correctness gates, not a Pi speed
+comparison or measurements at the production server's 262,144 context limit.
 
-## Recorded Linux evidence (2026-09-29)
+Core executable SHA-256:
+`f3eda68ad0dce9a1604345743ba5432ed73f2efeaf6b4f84f435317d7f2ba9ff`.
+Local commands, configs, raw logs and result JSON are under
+`logs/review-0.1.27/`; full-model artifacts are in its `model-window/` directory.
+Documentation-only commits after this build do not change the tested code.
 
-EPYC 7532, RTX 4090, GCC 15.2, CUDA 13.4, SM89, portable AVX2, IQ3_S. Paired
-engines used 131,072 context, INT8 KV, 32,768 resident cells, 7,846 expert slots,
-and PCIe share 0.55. Evidence remains in that worktree's `logs/upstream-20260929/`.
+## Passed gates
 
-| Gate | Result and scope |
+| Gate | Evidence |
 | --- | --- |
-| Components | Seven CTest targets passed: cache policy, admission, GPU round trips, host validation, injected transfers, checkpoint retention, sampler parity |
-| Python | 65 server tests (three skipped), 47 tool tests, 22 harness tests under `-O` |
-| ASan/UBSan | 35 policy, 23 admission, 1,116 host validation/transfer checks passed |
-| CLI | Ten malformed/range/layer-split checks passed |
-| Full model | Nine paired gates: reuse/checkpoints, long speculation, pressure, oversize, exchange, admission denial, synthetic image/grid and add/project steering isolation |
-| Soak | 30 known-answer returns at 2,026 / 39,985 / 119,987 tokens; exact outputs/main-state fingerprints and stable retained payload |
-| HTTP | Twelve requests passed reuse, eviction, disconnect and recovery without an engine restart |
+| Components | Policy, admission, checkpoint retention, validation, injected transfers and sampler parity CTests |
+| GPU snapshot fixture | 1,298 checks; FP16/INT8/Q4/K8V4 supported layouts, partial pages, indexer spare keys, early checkpoints, zero-QSA, 256/512-expert metadata and draft ring read-back |
+| Python | 66 frontend tests (three skipped), 47 tool tests, 22 cache-harness tests under Python `-O` |
+| Transfer diagnostics | 1,188 ASan/UBSan host checks, including corrupted bytes and failed copies |
+| RAM model reuse | Streamed INT8; batched INT8 and K8V4; known answers, exact output tokens and main-state parity |
+| Long speculation | Speculation width four beyond resident KV, with output/state parity |
+| Capacity/fallback | 400 MiB pressure and exchange, 1 MiB oversized entry, impossible RAM-floor rejection in ring and batched paths |
+| Isolation | Synthetic image/grid identity and add/project steering isolation |
+| Soak | 30 returns at 2,026 / 39,985 / 119,987 tokens; exact output/state parity and bounded retention |
+| HTTP | Twelve requests passed reuse, slot eviction, disconnect and recovery on a private endpoint |
 
-The nine INT8 gates and soak used executable SHA-256
-`0d8cbca38ce27153cea516cf6454df4653196ae875e0224fd3dd3c51e1d27ea0`.
-K8V4 then exposed incorrect hybrid-format flags. After correction, executable
-`4e174e8a4b602f1f8efe846cf19570478fcc7d2b50f3c48373c799d39b3610c7`
-passed K8V4/INT8 model parity, the three affected CTest targets, the 1,116 sanitizer
-checks, and HTTP recovery. The full nine-gate suite was not repeated on that fix.
-An initial unequal-expert-residency comparison was rejected, not counted as a pass.
-
-Four bounded Pi coding runs passed ten independent checks each. Return prompt
-processing took 4.33–5.78 s with parking off and 1.50–1.52 s with it on, with
-similar but unequal prompts. Whole-task timing favored opposite modes in the two
-pairs, so there is no demonstrated overall speedup/regression. The benchmark
-harness, detailed results and failed preliminary tool-budget trial are separate
-from the core patch. These are not version-to-version or Windows measurements.
+The opt-in `STRATA_SNAPSHOT_VERIFY=1` diagnostic records the actual draft-prefill
+path and verifies restored authoritative bytes and resident ring pages before
+emitting a fingerprint. Main-model state hashes alone do not cover draft state.
+The GPU fixture checks the ring produced by restore without refilling it first.
+Host fault injection does not simulate recovery of a broken CUDA context.
 
 ## Reproduction
 
-Configure the engine normally with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`, then:
+Configure the normal engine with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`, then:
 
 ```sh
 cmake --build build --target conversation_cache_test conversation_memory_test conversation_snapshot_test conversation_validation_test conv_cache_test sampler_parity
@@ -60,37 +51,31 @@ ctest --test-dir build -R '^(conversation_.*|conv_cache_test|sampler_parity)$' -
 python -m unittest tools.test_conversation_cache_parity tools.test_conversation_cache_isolation tools.test_conversation_cache_soak tools.test_conversation_cache_http_smoke
 ```
 
-On GNU/Clang ELF CUDA builds also build `conversation_transfer_test`; it wraps
-copies and synchronization for host fault injection. It does not simulate recovery
-of a broken CUDA context. GPU fixtures cover partial pages, distinct indexer spare
-keys, early checkpoints, zero-QSA and 256/512-expert metadata.
+On GNU/Clang ELF CUDA builds also build `conversation_transfer_test` for wrapped
+copy/synchronization fault injection. Focused targets were used; this record does
+not claim the full optional upstream test configuration passes.
 
-Model tools default to a dry run. With `--config CONFIG --engine ENGINE --output
-NEW_DIRECTORY --run`, run parity at `--spec 1` and `--spec 4`, then scenarios
-`pressure`, `oversized`, `exchange` and `admission`. Select byte budgets that
-actually force the named condition; use a RAM floor above available memory for
-denial. Isolation scenarios are `image`, `add`, and `project`. The soak requires
-at least 30 cycles and three lengths crossing resident KV and approaching the
-configured context limit. HTTP smoke requires an exclusive idle test endpoint.
-Run model/GPU gates only in an exclusive test window.
+Model tools default to dry runs. Supply `--config CONFIG --engine ENGINE --output
+NEW_DIRECTORY --run` to parity at `--spec 1` and `--spec 4`, then scenarios
+`pressure`, `oversized`, `exchange` and `admission`. Budgets must force the named
+condition. Isolation scenarios are `image`, `add` and `project`. The soak requires
+at least 30 cycles and three lengths crossing residency and approaching context.
+Use `STRATA_SNAPSHOT_VERIFY=1` and verify actual batched-prefill evidence when
+claiming that path. HTTP smoke needs an exclusive idle test endpoint. Run model
+and GPU checks only in an exclusive test window.
 
-## Outstanding evidence
+## Limits and separate work
 
-- Repeat affected build/model gates on 0.1.27, including batched draft prompt KV
-  and its fingerprint. Previous main-model hashes excluded draft scratch/state.
-- NVMe restart, corruption, foreign identity, eviction/promotion and explicit
-  staging bounds; no disk acceptance is claimed yet.
-- Windows runtime: only contributor-reported 25 MSVC admission checks, not locally
-  reproduced. HIP execution, multi-GPU parking, real vision encoder and full
-  Coder-model runs are untested; synthetic fixtures do not substitute for them.
-- Full optional upstream test configuration was blocked on 0.1.25 by missing
-  `native_mmvq_multi.cpp` and `hit_cpu_order_parity.cu`; focused tests were used.
+- Windows implementation reviewed, not locally executed. Contributor reports
+  concern separate Windows work and do not validate this branch.
+- HIP execution, real vision encoding and the full Coder model are untested.
+  Synthetic image inputs test cache identity, not the vision encoder.
+- Whole-conversation multi-GPU parking and hybrid K8V4 streaming/rings are
+  unsupported; ordinary upstream stage checkpoints remain available.
+- Optional disk persistence is a dependent change with its own acceptance record.
 
-The opt-in draft read-back diagnostic is part of the core branch. It verifies
-restored authoritative and resident-ring bytes before emitting a draft fingerprint.
-The GPU fixture no longer refills the ring itself, which could hide a restore bug.
-On the 0.1.26 core, 1,188 ASan/UBSan host transfer checks passed, including corrupted
-bytes and failed copies, and affected translation units passed syntax checks.
-The actual GPU fixture and final 0.1.27 model tests remain pending. The linked
-engine SHA-256 is `f3eda68ad0dce9a1604345743ba5432ed73f2efeaf6b4f84f435317d7f2ba9ff`;
-build and host-test records are in `logs/review-0.1.27/`.
+Historical 0.1.25 evidence remains on local `feat/conversation-cache-upstream`
+at `cb8d90c`. General Pi tooling is isolated on
+`tools/conversation-cache-benchmark`. Four historical bounded Pi trials passed
+correctness, but overall timing favored opposite modes in the two pairs; no
+whole-task speedup or version-to-version performance claim follows from them.

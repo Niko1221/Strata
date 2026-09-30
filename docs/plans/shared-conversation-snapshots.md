@@ -66,8 +66,8 @@ entries. A failed spill may drop the already-evicted entry; it must not exceed
 RAM limits or stop inference. Eviction-only persistence does not promise that
 the latest active turn survives a crash. Files contain conversation content.
 
-The adapter is being integrated from @maedoc's #52; disk restart/corruption,
-staging-budget, compatibility and eviction/promotion tests remain required.
+The dependent adapter follows @maedoc's #52 streaming-envelope approach; its
+implementation and disk acceptance evidence belong to that dependent branch.
 Windows admission coverage includes @midhatn's contribution, preserved with its
 original authorship. See the [validation record](shared-conversation-upstream-validation.md)
 for results, commands, and hardware limits.
