@@ -49,6 +49,25 @@ def engine_args(cfg, budget, spec):
         '--mtp-max-t', str(spec), '--suffix-draft', '0', '--spec-min-p', '0']
 
 
+def pressure_budget_hint(results, budget_mib):
+    sizes = [p['snapshot_bytes'] for p in results['pressure']['parks'] if p.get('snapshot_bytes', 0) > 0]
+    message = f'Configured --cache-mib {budget_mib}.'
+    if not sizes:
+        return message + ' No snapshot sizes recorded; use an engine that reports snapshot_bytes.'
+    mib = 1024 * 1024
+    message += ' Observed snapshots: ' + ', '.join(f'{n / mib:.2f} MiB ({n} bytes)' for n in sizes) + '.'
+    if len(sizes) < 2:
+        return message + ' Need at least two captured snapshots to determine a pressure budget.'
+    # Fit every individual image but no adjacent pair in the A/B/C sequence.
+    low = (max(sizes) + mib - 1) // mib
+    high = (min(a + b for a, b in zip(sizes, sizes[1:])) - 1) // mib
+    if low <= high:
+        message += f' Use --cache-mib {low}..{high} to fit each snapshot but not two adjacent snapshots.'
+    else:
+        message += ' No whole-MiB budget fits every snapshot while excluding each adjacent pair; use similarly sized prompts.'
+    return message
+
+
 def verify_pressure(results, budget_mib, oversized=False):
     """Require actual byte-pressure evidence, not just correct output on misses."""
     baseline, candidate = results['baseline'], results['candidate']
@@ -59,7 +78,9 @@ def verify_pressure(results, budget_mib, oversized=False):
         require(len(before['ids']) == len(after['ids']) == 1, 'missing pressure output')
         require(before['finish'] in ('length', 'stop') and after['finish'] in ('length', 'stop'),
                 'pressure request did not finish normally')
-        require(before['reused'] == after['reused'] == 0, 'pressure did not force a cache miss')
+        require(before['reused'] == after['reused'] == 0,
+                'pressure did not force a cache miss; this run did not exercise the required fallback. ' +
+                pressure_budget_hint(results, budget_mib))
         require(before['ids'] == after['ids'], 'pressure output differs')
         keys = set(STATE_KEYS)
         require(keys <= before['state'].keys() and keys <= after['state'].keys(), 'missing pressure state')
@@ -78,7 +99,8 @@ def verify_pressure(results, budget_mib, oversized=False):
     else:
         require(evidence['skips'] == 0 and len(parks) == 3, 'snapshots must fit individually')
         require(all(0 < p['parked'] < 4 for p in parks), 'slot pressure confounds byte-pressure test')
-        require(parks[-1]['evictions'] > 0, 'no byte-pressure eviction observed; reduce --cache-mib')
+        require(parks[-1]['evictions'] > 0, 'no byte-pressure eviction observed. ' +
+                pressure_budget_hint(results, budget_mib))
 
 
 def verify_results(results, prompt_tokens, spec):
@@ -202,12 +224,15 @@ def main():
         results[label] = records
         if label == 'candidate' and a.scenario != 'reuse':
             log_text = log.read_text()
-            parks = re.findall(r'conversation cache: parked \d+ tokens .*?parked=(\d+) bytes=(\d+) evictions=(\d+)', log_text)
+            parks = re.findall(r'conversation cache: parked \d+ tokens .*?parked=(\d+) bytes=(\d+) evictions=(\d+)(?: snapshot_bytes=(\d+))?', log_text)
             results['pressure'] = {
-                'parks': [dict(zip(('parked', 'bytes', 'evictions'), map(int, p))) for p in parks],
+                'parks': [dict(zip(('parked', 'bytes', 'evictions', 'snapshot_bytes'),
+                                  (int(value) if value else 0 for value in p))) for p in parks],
                 'skips': log_text.count('conversation cache: skip parking (snapshot '),
                 'memory_skips': log_text.count('conversation cache: skip parking (physical RAM admission;')}
     (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+    if a.scenario == 'pressure':
+        print(pressure_budget_hint(results, a.cache_mib), flush=True)
     if a.scenario == 'admission':
         verify_admission(results, a.cache_mib, a.min_free_mib)
         print('PASS: physical-memory admission denial, output and byte-exact main-model state')

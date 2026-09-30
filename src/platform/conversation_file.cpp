@@ -18,6 +18,7 @@ namespace {
 using core::ConversationCheckpoint;
 using core::ConversationImageKey;
 using core::ConversationKv;
+using core::ConversationBuffer;
 using core::SavedConversation;
 constexpr std::array<uint8_t, 8> magic{'S','T','R','S','N','A','P',1};
 // GPU state blobs retain their native scalar representation.
@@ -70,7 +71,13 @@ uint64_t allocation_bound(const SavedConversation& image) {
     checkpoint(image.live);
     for (const auto& c : image.checkpoints) checkpoint(c);
     for (const auto& kv : image.kv)
-        for (const auto* v : {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled}) add(total, v->size());
+        for (const auto* v : {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled}) {
+            add(total, v->size());
+            // The reader rebuilds canonical segments, independently of how many
+            // small appends produced the in-memory image. Allow portable directory storage.
+            add(total, v->size() / ConversationBuffer::segment_bytes +
+                       (v->size() % ConversationBuffer::segment_bytes != 0), 64);
+        }
     return total;
 }
 
@@ -102,6 +109,10 @@ struct Writer {
     }
     void integer(uint64_t value) { const auto b = little(value); bytes(b.data(), b.size()); }
     void blob(const std::vector<uint8_t>& v) { integer(v.size()); bytes(v.data(), v.size()); }
+    void blob(const ConversationBuffer& v) {
+        integer(v.size());
+        v.visit(0, v.size(), [&](const uint8_t* p, size_t n, size_t) { bytes(p,n); return true; });
+    }
     void checkpoint(const ConversationCheckpoint& c) {
         integer(c.ids.size());
         for (int32_t id : c.ids) {
@@ -147,6 +158,21 @@ struct Reader {
         remaining -= extra;
     }
     void blob(std::vector<uint8_t>& v) { allocate(v, integer()); bytes(v.data(), v.size()); }
+    void blob(ConversationBuffer& v) {
+        const uint64_t n = integer();
+        if (n > SIZE_MAX) throw std::runtime_error("snapshot buffer size overflow");
+        const size_t admitted = v.allocation_peak(size_t(n));
+        if (admitted == SIZE_MAX || admitted > remaining)
+            throw std::runtime_error("snapshot segmented buffer exceeds staging bound");
+        remaining -= admitted;
+        v.resize(size_t(n));
+        if (v.bytes() > admitted) {
+            const size_t extra = v.bytes() - admitted;
+            if (extra > remaining) throw std::runtime_error("snapshot segment capacity exceeds staging bound");
+            remaining -= extra;
+        }
+        v.visit(0, v.size(), [&](uint8_t* p, size_t count, size_t) { bytes(p,count); return true; });
+    }
     void checkpoint(ConversationCheckpoint& c) {
         allocate(c.ids, integer());
         for (auto& id : c.ids) id = std::bit_cast<int32_t>(static_cast<uint32_t>(integer(4)));

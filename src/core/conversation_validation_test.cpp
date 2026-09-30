@@ -15,9 +15,11 @@
 // host-backend fault injection, not a claim of hardware-failure recovery.
 namespace {
 int copy_calls = 0, sync_calls = 0, fail_copy = 0, fail_sync = 0;
+size_t copied_bytes = 0;
 }
 extern "C" cudaError_t __wrap_cudaMemcpy(void* dst, const void* src, size_t n, cudaMemcpyKind) {
     if (++copy_calls == fail_copy) return cudaErrorInvalidValue;
+    copied_bytes += n;
     std::memcpy(dst, src, n);
     return cudaSuccess;
 }
@@ -178,6 +180,34 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     draft.data[0][0] ^= 1;
     fail_copy = copy_calls + 1;
     check(!conversation_kv_verify(image.kv.back(),draft.st,g,9,false,fingerprint,error), "read-back transfer failure is not a successful fingerprint");
+    reset(); copied_bytes = 0;
+    const ConversationView view{image.live.ids,image.live.imgs,image.checkpoints,true};
+    SavedConversation full,incremental;
+    check(conversation_snapshot_save(full,view,ss,g,draft.st,error), "full capture through host transfer backend");
+    const size_t full_copies = copied_bytes;
+    ConversationKvReuse reuse{full.kv,9,9};
+    size_t peak = 0, reused = 0;
+    check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "incremental capture admission without transfers");
+    copied_bytes = 0;
+    const bool saved_incrementally = conversation_snapshot_save(incremental,view,ss,g,draft.st,error,std::move(reuse),&reused);
+    if (!saved_incrementally) std::fprintf(stderr,"capture error: %s\n",error.c_str());
+    check(saved_incrementally, "incremental capture through host backend");
+    check(reused > 0 && copied_bytes + reused == full_copies, "reused byte count measures transfers actually omitted");
+    check(incremental.bytes() <= peak && incremental.live.gdn == full.live.gdn, "running state refreshed within admitted allocation");
+    for (size_t i=0;i<full.kv.size();++i)
+        check(incremental.kv[i].k==full.kv[i].k && incremental.kv[i].v==full.kv[i].v &&
+              incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&
+              incremental.kv[i].pooled==full.kv[i].pooled, "incremental and full capture agree across every payload");
+    reuse = {full.kv,9,9};
+    reuse.kv.back().k.pop_back();
+    copy_calls = sync_calls = 0;
+    check(!conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "malformed retained draft rejected before admission");
+    check(!copy_calls && !sync_calls, "invalid retained storage performs no CUDA calls");
+    reuse = {full.kv,9,9};
+    fail_copy = copy_calls + 1;
+    SavedConversation unpublished;
+    check(!conversation_snapshot_save(unpublished,view,ss,g,draft.st,error,std::move(reuse)), "incremental capture copy failure is reported");
+    check(unpublished.kv.empty() && unpublished.live.ids.empty(), "failed incremental capture cannot publish a partial image");
 #endif
 }
 }

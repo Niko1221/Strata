@@ -142,6 +142,20 @@ int main() {
     std::istringstream input(bytes, std::ios::binary);
     check(conversation_file_read(input, id, bound, bound + 17, 17, decoded, error), "exact staging and floor admitted");
     check(same(source, decoded), "all formats, checkpoints and buffers survive round trip");
+    {
+        auto segmented = source, canonical = source;
+        segmented.kv[0].k = {};
+        canonical.kv[0].k = {};
+        for (size_t n=1;n<=17;++n) segmented.kv[0].k.resize(n*1024*1024,71);
+        canonical.kv[0].k.resize(17*1024*1024,71);
+        const auto encoded = encode(segmented,id);
+        check(encoded == encode(canonical,id), "disk bytes are independent of incremental buffer segmentation");
+        const auto staging = integer(encoded,40);
+        std::istringstream read(encoded,std::ios::binary);
+        SavedConversation roundtrip;
+        check(conversation_file_read(read,id,staging,staging+17,17,roundtrip,error), "read segmented snapshot within exact staging bound");
+        check(same(segmented,roundtrip) && roundtrip.bytes() <= staging, "segmented snapshot round trip preserves payload and admission");
+    }
     rejected(bytes, id, bound - 1);
     rejected(bytes, id, bound, bound + 16, 17);
     rejected(bytes, id, bound, std::nullopt);
