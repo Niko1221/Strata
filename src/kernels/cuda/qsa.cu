@@ -188,9 +188,17 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
         // Position 0 is NOT an identity rotation by default: row 0 of the CONFIGURED table is
         // cos = mscale, sin = 0 (cos(0) times the magnitude multiplier), so applying it here scales the
         // spare by mscale exactly once - the multiplier is already inside the table and the kernel adds
-        // nothing on top.  An unscaled table has cos = 1, sin = 0, which keeps today's bit-exact spare.
+        // nothing on top.  An unscaled table has cos = 1, sin = 0, and the parity test confirms the
+        // spare bitwise for its fixture (a*1 - b*0 is exact for finite values; the claim is the tested
+        // fixture, not a proof over every input).
         // The barrier first: the pairing below reads the partner element another thread has just written,
         // and every thread of the block is inside this branch (pos is uniform), so the sync is uniform too.
+        // OWNERSHIP after the barrier: thread d (< half) is the SINGLE owner of pair {d, d+half} - it
+        // reads BOTH original values (rope_neox_pair takes them by value, so both are in registers
+        // before either output lands) and writes both outputs; no other participating thread touches
+        // either element, and threads >= half read and write nothing.  No read can race a write, and
+        // no second cross-thread dependency exists after the rotation - this one barrier is the only
+        // synchronization the pairing needs.
         __syncthreads();
         const int half = n_rot / 2;
         if (d < half) {
