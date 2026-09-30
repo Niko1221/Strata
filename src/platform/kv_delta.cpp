@@ -717,7 +717,7 @@ bool delta_dump_at(const DeltaHead* prev, const std::string& dir, const SessionS
 strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState& ss, QsaState& mtp_state,
                                                 const ModelGeometry& g, uint64_t weights_fp,
                                                 std::vector<int32_t>& ids, std::vector<ConversationImageKey>& imgs,
-                                                bool& cvec, int64_t& L, std::string& err) {
+                                                bool& cvec, int64_t& L, std::string& err, uint64_t* image_bytes) {
     using Restore = strata::core::ConversationRestore;
     ids.clear();
     imgs.clear();
@@ -822,6 +822,9 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                                  (size_t) arr_total +   // the drafter: T <= max_cells, so the ring covers the prefix
                                  sizeof(uint64_t);
     std::vector<uint8_t> buf(payload_bytes, 0);
+    // the RAM this promote stages, for the record (the KV line's staging_bytes).  Reported from the size of the
+    // buffer, which is what the C10 cost IS; nothing here changes what the buffer holds.
+    if (image_bytes) *image_bytes = payload_bytes;
 
     NvmeHeader v3;
     v3.L = T;
@@ -1005,7 +1008,7 @@ bool KvDeltaStore::open(const std::string& v3_dir, const ModelGeometry& g, int k
 
 bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const ModelGeometry& g,
                         const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
-                        const ConversationCheckpoint* at, std::string& err) {
+                        const ConversationCheckpoint* at, std::string& err, TierActivity* act) {
     if (!at || at->ids.empty()) { err = "kv-delta: the delta tier dumps turn boundaries only"; return false; }
     const std::vector<int32_t>& key = at->ids;
     const std::vector<ConversationImageKey>& stored = at->imgs;
@@ -1014,6 +1017,7 @@ bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const
         if (e.L == (int64_t) key.size() && e.cvec == cvec && e.imgs.size() == stored.size() &&
             std::equal(key.begin(), key.end(), e.ids.begin()) && std::equal(stored.begin(), stored.end(), e.imgs.begin())) {
             e.mtime = (int64_t) ::time(nullptr);
+            if (act) act->skipped = true;   // the head already holds this state: recency refreshed, nothing written
             return true;
         }
     // this process's previous head, if the new ids extend it (a fork or a rewrite reuses none - the writer
@@ -1074,6 +1078,7 @@ bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const
     if (superseded) {
         for (size_t i = 0; i < entries_.size(); ++i)
             if (entries_[i].path == last_path_) {
+                if (act) { ++act->dropped; act->dropped_bytes += entries_[i].bytes; }
                 total_ -= entries_[i].bytes;
                 entries_.erase(entries_.begin() + (long) i);
                 entry_chunks_.erase(entry_chunks_.begin() + (long) i);
@@ -1096,6 +1101,8 @@ bool KvDeltaStore::dump(const SessionState& ss, const QsaState& mtp_state, const
     std::fprintf(stderr, "strata serve: nvme delta: appended %lld chunks (%.1f MiB) T %lld->%lld\n",
                  (long long) ((int64_t) refs.size() - reused), (double) appended / (double) (1 << 20),
                  (long long) prev_T, (long long) e.L);
+    if (act) act->written = appended;   // THE SAME NUMBER the line above prints, so a counter is checkable
+                                        // against a line the oracles can already grep
     return true;
 }
 
@@ -1105,8 +1112,9 @@ strata::core::ConversationRestore KvDeltaStore::restore(const NvmeEntry& e, Sess
     std::vector<ConversationImageKey> imgs;
     bool cvec = false;
     int64_t L = 0;
+    last_image_bytes_ = 0;   // a refusal before step 3 staged nothing
     const strata::core::ConversationRestore r =
-        delta_restore(e, ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err);
+        delta_restore(e, ss, mtp_state, g, weights_fp_, ids, imgs, cvec, L, err, &last_image_bytes_);
     if (r != strata::core::ConversationRestore::restored) return r;
     if (L != e.L || cvec != e.cvec || imgs != e.imgs || ids != e.ids) {
         // the file disagreed with the index the scan built - the v3 store's TOCTOU rule, same class: the image
@@ -1131,7 +1139,8 @@ void KvDeltaStore::drop(const NvmeEntry& e) {
         }
 }
 
-void KvDeltaStore::sweep() {
+TierActivity KvDeltaStore::sweep() {
+    TierActivity act;
     // mark: the union of everything the LIVE MANIFESTS reference - read from the DISK, not from the in-memory
     // entry list, because the disk can be AHEAD of it: a dump that failed after its manifest was renamed (the
     // crash matrix's C4/C5) left a committed head this instance never registered, and sweeping against the
@@ -1182,12 +1191,16 @@ void KvDeltaStore::sweep() {
         if (de.is_regular_file() && de.path().filename().string().rfind("log-", 0) == 0)
             total_ += (uint64_t) de.file_size(ec);
     }
+    act.swept = (int64_t) swept;
+    act.swept_bytes = bytes;
     if (swept)
         std::fprintf(stderr, "strata serve: kv-delta: swept %zu orphan chunks (%.2f GiB)\n",
                      swept, (double) bytes / (double) (1LL << 30));
+    return act;
 }
 
-void kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes) {
+TierActivity kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_bytes) {
+    TierActivity act;
     // the last entry is kept even over the cap (never empty the store) - the v3 store's own documented policy
     while (cap_bytes > 0 && v3.total_bytes() + delta.total_bytes() > (uint64_t) cap_bytes &&
            v3.size() + delta.size() > 1) {
@@ -1198,10 +1211,16 @@ void kv_delta_enforce_cap(KvNvmeStore& v3, KvDeltaStore& delta, int64_t cap_byte
         for (const NvmeEntry& e : delta.entries())
             if (!oldest || e.mtime < oldest->mtime) { oldest = &e; from_delta = true; }
         if (!oldest) break;
+        const uint64_t victim_bytes = oldest->bytes;   // read it BEFORE the drop erases the entry
         if (from_delta) delta.drop(*oldest);
         else v3.drop(*oldest);
+        ++act.evicted;
+        act.evicted_bytes += victim_bytes;
     }
-    delta.sweep();   // §5.12: at cap pressure, AFTER eviction
+    const TierActivity swept = delta.sweep();   // §5.12: at cap pressure, AFTER eviction
+    act.swept = swept.swept;
+    act.swept_bytes = swept.swept_bytes;
+    return act;
 }
 
 }  // namespace strata::platform

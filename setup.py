@@ -101,6 +101,10 @@ FAMILIES = {
               "profile": "expert-profile-coder.bin"},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+# The NVMe cold tier (docs/nvme-kv-cache-design.md): the store directory and the cap setup recommends, offered in
+# step 7 and off unless chosen there.  100 GB is the engine's own --kv-nvme-max default (generate.cpp:291).
+KV_CACHE_DIR = ROOT / "kvstore"
+KV_CACHE_CAP_GB = 100
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
 ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection.gguf"
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
@@ -1408,12 +1412,53 @@ def main() -> int:
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.
     kv_ram_gb = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9   # 12 QSA layers + the draft layer
+    kv_stream_off = None                       # why KV streaming was refused, if it was (the NVMe tier needs it)
     # the RAM copy must be pinned, and under WSL the NVIDIA driver pins only about 1 GB in all
     if is_wsl() and ctx >= 65536:
+        kv_stream_off = "KV streaming is off under WSL (the driver pins only about 1 GB of RAM)"
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
     elif ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
+    elif ctx >= 65536:
+        kv_stream_off = f"the KV cache stays in VRAM: its {kv_ram_gb:.1f} GB RAM copy does not fit this PC's {ram:.0f} GB"
+    # The NVMe cold tier (docs/nvme-kv-cache-design.md): the conversation's KV state is stored on disk at every
+    # DONE and a returning chat is restored from it instead of re-read (measured: a 110k-token chat, ~110 s of
+    # reading -> 1.3-1.9 s).  Off unless chosen here.  Three things decide whether it can even be offered: a layer
+    # split makes the tier inert, it stores the KV host copy that KV streaming just refused, and its cap is bytes
+    # on the volume that holds the store.  Answering "no" leaves args exactly as it was.
+    if multi:
+        ok("NVMe cache: off - with the layers split across GPUs " + ",".join(str(g) for g in multi) +
+           " a stored snapshot carries only the main card's share of the conversation, so it would be written and "
+           "never read (the tier is inert under a split)")
+    elif kv_stream_off:
+        ok(f"NVMe cache: off - {kv_stream_off}, and the tier stores the KV cache from that RAM copy: it would "
+           "force KV streaming back on")
+    else:
+        # the store directory need not exist to know the space on its volume (the engine creates it at start)
+        disk_free = shutil.disk_usage(KV_CACHE_DIR if KV_CACHE_DIR.is_dir() else KV_CACHE_DIR.parent).free / 1e9
+        if disk_free < 1:
+            ok(f"NVMe cache: off - the disk holding {KV_CACHE_DIR} has {disk_free:.1f} GB free")
+        else:
+            say()
+            say("  NVMe cache: what the model has already read is kept on disk, so a returning chat resumes from it")
+            say("  instead of re-reading it (measured: a 110k-token chat, ~110 s of reading -> ~2 s).  It stores in")
+            say(f"  {KV_CACHE_DIR} and evicts the oldest stored sessions when full (cap {KV_CACHE_CAP_GB} GB).")
+            if ask("Turn on the NVMe cache?", ["y", "n"], "y", a.yes) == "y":
+                if KV_CACHE_CAP_GB > disk_free:                 # a cap the volume cannot hold is not a cap
+                    cap = max(1, int(disk_free))
+                    ok(f"NVMe cache: the cap here is {cap} GB, not {KV_CACHE_CAP_GB} GB - only {disk_free:.0f} GB "
+                       f"is free on the disk that holds {KV_CACHE_DIR}")
+                else:
+                    cap = KV_CACHE_CAP_GB
+                delta = ask("  Each turn: append only what it adds (recommended), or rewrite the whole stored "
+                            "session?", ["y", "n"], "y", a.yes) == "y"
+                args += ["--kv-nvme", str(KV_CACHE_DIR), "--kv-nvme-max", str(cap),
+                         "--kv-delta", "1" if delta else "0"]
+                ok(f"NVMe cache: on - {KV_CACHE_DIR}, cap {cap} GB, " +
+                   ("append-only (the delta tier)" if delta else "whole-session snapshots"))
+            else:
+                ok("NVMe cache: off (a returning chat re-reads its history every time)")
     if vision != "none":
         args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
     if esp is not None:

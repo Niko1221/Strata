@@ -43,6 +43,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             images_of, openai_to_messages)
+from serve.kvcache import KV_STORE_KEYS, KvCache, parse_kv  # noqa: E402
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -162,6 +163,10 @@ class StrataEngine:
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.last_kv = None              # THIS request's KV line (the cache tiers), captured by _pump; None = no line
+        self.store_kv = {}               # the engine's store fields: the start=1 line and every request's
+        self.cache = None                # the service's KvCache (main() attaches it; restart() keeps it)
+        self.in_request = False          # _pump is reading a request's lines: a KV line is that request's event
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -189,9 +194,46 @@ class StrataEngine:
 
     def _pump(self):
         for line in self.proc.stdout:
+            if line.startswith("KV "):
+                self._kv_line(line)                     # the cache tiers: never a token line, never the queue
+                continue
             self.lines.put(line)
         self.ended = True                               # its output closed: it is gone, even before the OS says so
         self.lines.put(None)
+
+    def _kv_line(self, line: str) -> None:
+        """The engine's `KV k=v ...` line, captured on the pump thread rather than in generate(): the early-stop
+        drain (generate's finally) discards queue entries, and the startup `start=1` line arrives after READY.
+        A line with `start=1` or with no `src=` is store state; a `src=` line seen while a request runs is that
+        request's event (Service.run's finally reads `last_kv`).  Nothing here can raise, and nothing here can
+        change what the request path sees: a KV line is dropped, so `DONE` is parsed exactly as before."""
+        try:
+            kv = parse_kv(line)
+            if not kv:
+                return
+            store = {k: v for k, v in kv.items() if k in KV_STORE_KEYS or k == "start"}
+            if store:
+                self.store_kv.update(store)             # store state, never an event (design §3, note 2)
+                if self.cache is not None:
+                    self.cache.store_state(store)       # a startup line before any request still reaches it
+            if "src" in kv and kv.get("start") != 1 and self.in_request:
+                self.last_kv = kv                       # this request's event; Service.run's finally reads it
+        except Exception:  # noqa: BLE001 - the pump must survive anything the engine prints
+            pass
+
+    def attach_cache(self, cache) -> None:
+        """The pump can feed a KvCache only once one is attached, and main() attaches it AFTER the engine has
+        been started: the constructor waits for READY, the engine prints its `KV start=1` store state just after
+        that, and the pump thread may well have read it already - so the state it carried is replayed here.
+        Without the replay a tier-on server reports `enabled: true` with every store fact null until some request
+        line happens to arrive (found on a live server, not in a unit test: the tests attach the cache by hand).
+        Either path delivers it exactly once: replay if the line is already read, direct if it is still to come."""
+        self.cache = cache
+        if cache is not None and self.store_kv:
+            try:
+                cache.store_state(dict(self.store_kv))
+            except Exception:  # noqa: BLE001 - the tiers are reporting, they never take the server down
+                pass
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -214,6 +256,13 @@ class StrataEngine:
     def alive(self) -> bool:
         return not getattr(self, "ended", False) and self.proc.poll() is None
 
+    @property
+    def pid(self) -> int | None:
+        """The id of the engine process THIS object is running NOW - a property, not a number captured at startup:
+        `restart()` replaces `self.proc` (a transfer failure is exactly the path that does it, design §5.2), and
+        telemetry reads the engine's RSS per sample, so it must follow the process (design §6)."""
+        return self.proc.pid if self.proc is not None else None
+
     def exit_code(self):
         try:
             return self.proc.wait(timeout=5)
@@ -226,10 +275,11 @@ class StrataEngine:
             self.proc.kill()
         except OSError:
             pass
-        info = dict(self.info)
+        info, cache = dict(self.info), self.cache
         self.ended = False
-        self.__init__(*self.spawn)
+        self.__init__(*self.spawn)                      # its __init__ resets cache to None: the tiers outlive it
         self.info = {**info, **self.info}
+        self.cache = cache                              # a transfer failure restarts the engine (design §5.2)
 
     def _parse_done(self, line):
         f = line.split()
@@ -299,6 +349,7 @@ class StrataEngine:
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
+        self.last_kv, self.in_request = None, True      # _pump routes this request's KV line to last_kv
         head = f"GENI {int(max_new)}{self.projection_key(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {}) if not embeddings else ''}"
         try:
@@ -338,20 +389,23 @@ class StrataEngine:
                     done = True
                     raise ValueError(line[4:].strip())
         finally:
-            if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
-                if self.can_stop:
-                    try:
-                        self.proc.stdin.write("STOP\n")
-                        self.proc.stdin.flush()
-                    except OSError:
-                        pass
-                while True:
-                    line = self.lines.get()
-                    if line is None or line.startswith("ERR"):
-                        break
-                    if line.startswith("DONE"):
-                        self._parse_done(line)
-                        break
+            try:
+                if not done:                              # the consumer stopped early: stop the engine, drain to DONE
+                    if self.can_stop:
+                        try:
+                            self.proc.stdin.write("STOP\n")
+                            self.proc.stdin.flush()
+                        except OSError:
+                            pass
+                    while True:
+                        line = self.lines.get()
+                        if line is None or line.startswith("ERR"):
+                            break
+                        if line.startswith("DONE"):
+                            self._parse_done(line)
+                            break
+            finally:
+                self.in_request = False                   # a KV line that arrives after this is store state
 
     def close(self):
         try:
@@ -544,9 +598,10 @@ class Service:
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
+        self.cache = None                               # serve/kvcache.py's KvCache for the engine's KV lines
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0}
+                       "prompt_ms": 0.0, "decode_ms": 0.0, "reused_from_disk": 0}
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
@@ -591,8 +646,18 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s()},
-                                       gpu_index=int(getattr(self, "gpu_index", 0) or 0))
+
+            def extra() -> dict:
+                # the cache sparklines are SAMPLED here, so they share telemetry's thread and its clock;
+                # Telemetry._loop records a fixed key list, so the cache series ride in extra()'s dict
+                s = {"tok_s": self._tok_s()}
+                if getattr(self, "cache", None) is not None:
+                    s.update(self.cache.series() or {})
+                return s
+            self.telemetry = Telemetry(extra=extra, gpu_index=int(getattr(self, "gpu_index", 0) or 0),
+                                       # a LOOKUP, not a value: restart() replaces the engine process (design §5.2),
+                                       # and a mock engine has none - the reading is then absent, never 0
+                                       pid=lambda: getattr(self.engine, "pid", None))
 
     def _tok_s(self):
         with self.status_lock:
@@ -602,8 +667,13 @@ class Service:
         return s["generated"] / max(1e-6, time.time() - s["first_token"])
 
     def metrics(self, all_requests=False) -> dict:
-        """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
-        the hardware (with a minute of history per series)."""
+        """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, the
+        hardware (with a minute of history per series), and the cache tier's cheap summary.
+
+        The `cache` block is KvCache.summary() and nothing more: no directory walk, no stat, no read (the walk is
+        KvCache.scan(), and GET /cache is the only route that asks for it).  A server with no tier - no KvCache, or
+        one built without --kv-nvme - reports {"enabled": False} in the same shape, so the web app can hide its
+        Cache tab from /metrics alone (design §4, §5)."""
         with self.status_lock:
             s = dict(self.status)
             hist = list(self.history)
@@ -627,10 +697,13 @@ class Service:
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+        cache = self.cache
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"],
+                "cache": cache.summary() if cache is not None and cache.enabled else {"enabled": False},
+                "time": now}
 
     def prepare(self, messages, tools, kwargs, max_new=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
@@ -788,6 +861,10 @@ class Service:
                     started = self.status.get("started", time.time())
                     loaded = str((getattr(self.engine, "info", {}) or {}).get("cvec", 0)) not in ("0", "", "None")
                     hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                    kv = getattr(self.engine, "last_kv", None)
+                    kv = kv if isinstance(kv, dict) and kv else None   # no KV line: UNKNOWN, never "cold" (§3 note 1)
+                    src = kv.get("src") if kv and isinstance(kv.get("src"), str) else None
+                    resume = kv.get("resume") if kv else None
                     self.history.append({
                         "projection": (sampling or {}).get("experimental_speed_projection") is not False
                         if loaded else None,
@@ -796,7 +873,10 @@ class Service:
                         "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                         "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                         if n and last.get("generated") and last.get("decode_ms") else None,
-                        "hit_rate": hit_rate})
+                        "hit_rate": hit_rate,
+                        "cache": None if kv is None else
+                        {"src": src, "resume": resume, "promote_ms": kv.get("promote_ms"),
+                         "promote_bytes": kv.get("promote_bytes"), "staging_bytes": kv.get("staging_bytes")}})
                     t = self.totals
                     t["requests"] += 1
                     t["prompt_tokens"] += len(ids)
@@ -804,6 +884,13 @@ class Service:
                     t["output_tokens"] += n
                     t["prompt_ms"] += last.get("prompt_ms") or 0.0
                     t["decode_ms"] += last.get("decode_ms") or 0.0
+                    if src in ("nvme", "delta") and isinstance(resume, int) and not isinstance(resume, bool):
+                        t["reused_from_disk"] += resume     # the tokens the disk tier actually resumed
+                    if self.cache is not None:
+                        try:
+                            self.cache.observe(kv, last)    # event rows + the engine's own cumulative totals
+                        except Exception:  # noqa: BLE001 - the cache can never take a request down
+                            pass
                     now = time.time()
                     el = now - self.status.get("started", now)
                     ft = self.status.get("first_token")
@@ -1166,6 +1253,15 @@ def make_handler(svc: Service):
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
+                return
+            if path == "/cache":
+                # the cache tiers in full: this is where the throttled store walk happens (design §4), so an
+                # unwatched Cache page costs nothing.  Read-only - there is no POST route (design §8): the serve
+                # protocol has no store-mutation command, and a web-side one would re-derive the drop/sweep
+                # contract from the wrong side of the pipe.
+                if self._authorized():
+                    c = svc.cache
+                    self._json(200, c.detail() if c is not None and c.enabled else {"enabled": False})
                 return
             if path == "":
                 body = (ROOT / "serve" / "web" / "index.html").read_bytes()
@@ -1550,6 +1646,9 @@ def main() -> int:
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
+    if a.engine == "strata":                            # the cache tiers, from the FINAL engine arguments
+        svc.cache = KvCache(engine_args(cfg), cfg.get("log"))
+        engine.attach_cache(svc.cache)                  # replays the startup line the pump already read
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:

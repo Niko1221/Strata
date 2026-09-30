@@ -314,6 +314,87 @@ Results:
   request falls back to a full re-prefill and still answers correctly.  **Read that last result as §5.1, not as
   §5.2**: a corrupt file is refused before the tier writes anything, so this suite has never exercised a
   transfer failure - which is why the never-running fallback §5.0 describes survived all of it.
+- **The `KV` line on a live server - RUN, ALL PASS** (web-plan step 2, C11's engine half; run on this machine's
+  4090 with the production engine stopped and `NVME_ENGINE` pointed at the tree under test, 2026-09-30):
+  `tools/nvme_steps123_test.sh` asserts one `KV start=1 entries=` line after `READY`, one `KV src=` line per
+  `DONE` line, and that the capped process prints a `KV` line with `evict>=1` and non-zero `evict_bytes` - and
+  it passed: 3 `KV src=` lines for 3 `DONE` lines in each of the three processes, exactly one `start=1` each,
+  and the cap turn reported `evict=1 evict_bytes=178042216`.  `tools/nvme_failure_contract_test.sh` asserts the
+  refused promote reports `src=none refused=1 transfer=0`, and that a dying engine's `KV … transfer=1` lands on
+  stdout strictly BEFORE its `ERR` line and the exit 1 - and it passed, on all three CUDA hooks: the promote-path
+  line carried `transfer=1 … total_transfer=1` on stdout line 4, the `ERR` line was line 5.
+- **Three oracles had been silently asserting a tier they never asked for** (found by running them, not by
+  writing them): `nvme_steps123_test.sh`, `nvme_failure_contract_test.sh` and `nvme_delta_p0_test.sh`'s `runv3`
+  all read v3 snapshot files (`kv-*.bin`) while passing only `--kv-nvme` - and the delta tier has been the
+  DEFAULT cascade since Phase 6 (`kv_delta = 1`, `generate.cpp:298`), so with `--kv-nvme` alone a turn appends
+  chunks, states and a manifest and writes NO snapshot.  steps123's helper died on the empty glob and Step 2
+  then read `RESUME 0` off a store it believed held a snapshot; failure_contract had nothing to corrupt; and
+  delta_p0's `--nvme-restore ""` died with rc=2 while the §5.2 comparison's other half never existed.  Each now
+  names its tier with `--kv-delta 0` (`tools` commit).  **The lesson is the oracle's, not the tier's: a gate that
+  cannot find its fixture must fail loudly, and this one reported a PASS-shaped silence for months.**
+- **Why `tools/short_tests.py` cannot be a `KV` gate**: the server hands the engine's **stderr** to the log file
+  (`serve/server.py:159-160`) and keeps **stdout** on a pipe, so a log tail never sees a `KV` line.  The two shell
+  oracles above capture engine stdout directly; the serve-side assertions live in `serve/test_server.py` (80 host
+  tests), which read the facts off `/metrics` and `/cache` instead of off a log.
+- **Byte and decision neutrality - RUN, ALL PASS** (the line must not have changed what the tiers write or choose).
+  `tools/nvme_p0_test.sh`: `RESUME 4104` and the post-restore `STATE_HASH` equal to the dumping process's `DONE`
+  hash (bit-exact dump/restore), negative control fires, a corrupt file refused as `invalid` and not as a
+  transfer.  `tools/nvme_delta_p0_test.sh`: P1 holds - the v3 snapshot and the delta manifest key the SAME 2355
+  tokens and their restored-prefix hashes are equal across the two tiers; forks: 644 chunk FILES for 1176
+  references (content-shared); the cascade wrote 112.8-115.8 MiB for turns adding 15-217 tokens; crash points
+  C1..C5 each relaunched, promoted and swept exactly.  14 PASS, 0 FAIL.
+- **The web page against a real engine - RUN** (the worktree's `serve.server` + worktree binary on port 8090,
+  a scratch store, the production engine off the GPU; this is the first time the whole chain - store counters,
+  `KV` line, `_pump`, `KvCache`, `/metrics`, `/cache` - was exercised on silicon):
+  - a cold 1,458-token turn: `src=none`, the cascade wrote 140 MB (`dump_ms=600`);
+  - the same conversation after an engine restart, i.e. a real promote seen through the page: `src=delta
+    resume=1453 promote_ms=581 promote_bytes=140319780 staging_bytes=140293564`, the prompt read in 652 ms
+    instead of 1751 ms, `totals.reused_from_disk` 1453, and the events table holding a promote row AND a cascade
+    row whose `tokens` is `null` (the line carries no dumped-token count, so the page renders `–`, never 0);
+  - §5.1 seen through the page: a promote refused because a chunk `short_tests` had corrupted is *shared* into
+    this conversation's manifest - `refuse` + `sweep` rows, `src=none resume=0`, the prompt re-read (1702 ms),
+    the answer served correctly, the orphan swept as 0.11 GiB.  A corrupt chunk in one conversation is a refused
+    promote in another, which is exactly why the cap accounting counts a shared chunk once per manifest;
+  - the two books on that store: cap accounting 6,170,642,908 bytes vs the walk's on-disk 3,267,409,228 -
+    **1.89× apart** over 5 v3 snapshots + 19 manifests + 3,607 chunks + 19 states (3,650 files).  Merging them
+    into one "cache size" would have been off by 89 %.
+- **What the live run also caught, in the wiring not the tiers**: a tier-on server reported `enabled: true` with
+  every store fact NULL until the first request's line arrived, because `main()` attaches the `KvCache` after the
+  engine is constructed and the pump had often already consumed the `start=1` line.  No unit test could see it -
+  every test attached the cache by hand, before the line.  Fixed by `StrataEngine.attach_cache()`, which replays
+  the state the pump kept (`serve` commit bf69e20); verified live with ZERO requests, `ram_tier` still honestly
+  null because `checkpoints`/`live` ride the request line, not the store line.
+- **`tools/needle_bench.py` with the tier on - RUN**: 3 of 3 needles FOUND at 32K (depths 10/50/90).  Note what
+  the `KV` line says about those runs, because it is the reason the line exists: all three are `src=none` with a
+  555 MiB cascade each - three needles at three depths are three DIFFERENT prompts, so nothing on disk matched -
+  and the 2nd/3rd were faster for the RAM prompt-cache, not for the tier.  A page that showed only wall-clock
+  would have credited the disk with a saving it did not make.
+
+### The page's metric definitions (so the page and these oracles count the same things)
+
+The Cache tab is the consumer of these numbers, so its definitions (`docs/nvme-kv-cache-web-design.md` §6) are
+binding here too - a number on the page must be a number an oracle already measures:
+
+- **"Warm" is two numbers and the page names both.** *Stored prefixes* = `entries + delta_entries` - snapshots,
+  not conversations (§7: no cross-restart identity, so one five-turn conversation is five prefixes).  *RAM tier*
+  = `checkpoints` + `live`.
+- **`entries_bytes` / `delta_bytes` are CAP ACCOUNTING, not a disk footprint.** The delta store sums every
+  `chunks/` and `states/` file once - including the residue a coming sweep will remove, because "the cap must not
+  lie about the disk" - and then adds each entry's own `bytes` (manifest + State + its chunks), so a chunk shared
+  by three manifests is counted four times (`kv_delta.cpp:921-970`, deliberately).  The serve-side walk
+  (`serve/kvcache.py scan()`) reports what the volume actually holds, including files this engine refuses to
+  promote.  The page labels the two *cap accounting* and *on disk* and never merges them into one "cache size".
+- **Store fill** = `(entries_bytes + delta_bytes) / cap`, shown beside `disk_free_bytes` from
+  `shutil.disk_usage(dir)`: the cap is a policy the user set, free space is what actually stops the tier.
+- **Overhead is three costs, not one**: `dump_ms` (server occupancy at `DONE`), `promote_ms` (the TTFT price paid
+  instead of a re-prefill), and `staging_bytes` plus the engine's own process RSS (the ~2 GiB transient measured
+  above, now visible as a bump in the hardware series).
+- **Endurance** is cumulative bytes written since the engine started, quoted with §10.2's ratio -
+  `(total_tokens × 16 KB + 118 MB) / (new_tokens × 16 KB + 118 MB)`, ~6.5× at the production average turn - **not**
+  the handoff's 33×.
+- **Time saved** is derived and labelled as derived: `saved_s ≈ resume_from_disk / fresh_prefill_tok_s −
+  promote_ms`, with `fresh_prefill_tok_s` measured from this server's own cold turns, not from the 110 s figure
+  above.
 
 ## 7. Known limitations / follow-ups
 
@@ -327,9 +408,17 @@ Results:
 - **The v2 originals of the converted store live in `/local/strata/kvstore-v2-backup/`** (106 files,
   ~200 GiB) until deleted. Delete only after a few days of production promotes from converted files; the
   converter and its verification are in the branch history if they are ever needed again.
-- **Metrics (issue #57's C11)**: the three failure classes, promotes, refusals and dump results are
-  stderr-only; `serve/telemetry.py` parses nothing NVMe-related. A log reader - not a metric - is currently
-  the only way to tell the failure classes apart.
+- **Metrics (issue #57's C11) - closed as a build** (web-plan steps 1-7, `docs/nvme-kv-cache-web-design.md`):
+  the tiers return what they did (`TierActivity`, step 1); the serve loop prints one `KV key=value` line per
+  request before `DONE`, plus the store's own `KV start=1` state after `READY` (step 2); `serve/kvcache.py`
+  parses it, walks the store directory and feeds `GET /cache` and the `cache` block of `/metrics` (steps 3-5);
+  the web Cache tab, the Monitor's Cache column and the About card render it (steps 6-7). A log reader is no
+  longer the only way to tell the three failure classes apart, and the live-server `KV` gates have since been RUN
+  on silicon, ALL PASS - including a promote, a refusal and a sweep seen through `/metrics` (§6). What the page
+  does **not** do: it cannot mutate the store - `/cache` is a GET, the only POST paths
+  are `/settings` and the two chat routes, and the engine's stdin takes `QUIT`/`STOP`/`GEN`/`GENI` only - and it
+  has no conversation identity across a restart, so its "stored prefixes" are prefixes, not conversations - the
+  next bullet.
 - **Per-turn snapshot accumulation** (no cross-restart supersession) - bounded by the cap; a
   conversation identity would enable per-conversation supersession.
 - **Sparsity** (Step 4, default skip): only the blocks the QSA selection can reach need storing;
@@ -418,7 +507,10 @@ Each item below was a real incompatibility between the two designs when the work
 - **C10 - physical-RAM admission**: NOT settled. The restore still reads the whole file (§7, measured ~2 GiB
   transient); the core's `conversation_available_memory` / `conversation_memory_admit` are imported dormant
   (`conversation_memory.cpp` builds only the memory fixture, not the engine).
-- **C11 - metrics**: NOT settled (§7).
+- **C11 - metrics**: settled as a build (§7): `TierActivity` out-params, the per-request `KV` line and the
+  `KV start=1` store state, `serve/kvcache.py`'s parse + store walk behind `GET /cache` and `/metrics`, and the
+  web Cache tab. The page reads and never mutates (`/cache` is a GET; no POST path reaches the store), and it
+  still has no conversation identity across a restart. Its live-server gates are RUN, ALL PASS (§6).
 
 ### Where step 2 leaves NvmeHeader
 
@@ -487,6 +579,9 @@ converts:
 ### 10.2 Measured, and WHERE THE HANDOFF'S ESTIMATE WAS WRONG
 
 `tools/nvme_delta_p0_test.sh` (ALL PASS) and `tools/short_tests.py` (19/19 with `--kv-delta 1`) are the gates.
+The 2026-09-30 re-run of both on the `KV`-line build: ALL PASS - delta_p0 14 checks (the "19/19" above counts
+short_tests' VERDICT line as a check; that suite prints 18 assertions and then the verdict), and the §5.2
+cross-tier P1 comparison only passes once `runv3` is told to turn the delta tier off (§6).
 The numbers that matter:
 
 | quantity | v3 cascade | delta cascade |

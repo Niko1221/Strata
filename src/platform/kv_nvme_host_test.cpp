@@ -1133,6 +1133,93 @@ void fixture_stale_store(const std::string& dir) {
     }
 }
 
+// ================================ fixture 6: WHAT A DUMP REPORTS (TierActivity) ================================
+//
+// docs/nvme-kv-cache-web-design.md §3 wants the tier's own facts as a RETURN VALUE, not as a prose line.  Every
+// number asserted here is one the store already knew - its entry bytes, its cap victims, its exact-match skip -
+// so the check is always REPORT vs THE STORE'S OWN BOOKS: a counter that drifts from what the store did fails
+// here rather than on the page.  No decision is re-litigated: the idempotent skip, the supersede rule and the
+// "the last entry is kept even over the cap" policy are the ones fixtures 1-5 already exercise; this fixture
+// only asks what the call said while it did them.
+void fixture_activity(const std::string& dir) {
+    using strata::platform::TierActivity;
+    Session S;
+    S.seed_indexer(41.0f, L_CONSUMED / SHP.idx_block, 42.0f);
+    S.tag_kv();
+    std::string err;
+    const int kvf = strata::core::qsa_kv_format(S.layers[0]);
+
+    {   // A WRITE, THEN THE IDEMPOTENT RE-DUMP OF IT, THEN THE SUPERSEDE OF A GROWN CONVERSATION
+        strata::platform::KvNvmeStore store;
+        ck(store.open(dir + "/report", S.g, kvf, err), "the report store opens");
+        TierActivity w;
+        ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err, &w), "a snapshot is dumped");
+        ck(!w.skipped, "a real write does not report a skip");
+        ck_eq((int64_t) w.written, (int64_t) store.entries()[0].bytes, "written is the entry the store now holds");
+        std::error_code ec;
+        ck_eq((int64_t) w.written, (int64_t) fs::file_size(store.entries()[0].path, ec),
+              "and the size of the file it just wrote");
+        ck_eq(w.dropped, 0, "nothing was superseded");
+        ck_eq(w.evicted, 0, "and nothing evicted (no cap set)");
+        const uint64_t first_bytes = store.entries()[0].bytes;
+
+        TierActivity r;
+        ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err, &r),
+           "the same state is dumped again");
+        ck(r.skipped, "the exact-match skip reports itself");
+        ck_eq((int64_t) r.written, 0, "an idempotent re-dump writes ZERO bytes");
+        ck_eq(r.dropped, 0, "and supersedes nothing");
+        ck_eq(r.evicted, 0, "and evicts nothing");
+        ck_eq(store.size(), 1, "the store still holds the ONE snapshot it already had");
+        ck_eq((int64_t) store.total_bytes(), (int64_t) first_bytes, "and its books did not move");
+
+        TierActivity g;
+        ck(store.dump(S.ss, S.draft, S.g, ids_of(L_CONSUMED), {}, true, nullptr, err, &g),
+           "the conversation grows and is dumped again");
+        ck(!g.skipped, "a grown conversation is not a skip");
+        ck_eq(g.dropped, 1, "the previous head of THIS process was superseded");
+        ck_eq((int64_t) g.dropped_bytes, (int64_t) first_bytes, "with the superseded entry's own bytes");
+        ck_eq((int64_t) g.written, (int64_t) store.entries()[0].bytes, "written is the NEW entry's bytes");
+        ck_eq(store.size(), 1, "a conversation stays one snapshot");
+        ck_eq((int64_t) store.total_bytes(), (int64_t) store.entries()[0].bytes, "and the books hold only it");
+    }
+    {   // THE CAP: the dump that pushes the store over the cap reports the eviction its enforce_cap caused
+        const std::string cdir = dir + "/cap";
+        strata::platform::KvNvmeStore store;
+        ck(store.open(cdir, S.g, kvf, err), "the cap store opens");
+        TierActivity a1;
+        ck(store.dump(S.ss, S.draft, S.g, ids_of(L_BOUNDARY), {}, true, nullptr, err, &a1),
+           "the first conversation dumps");
+        const uint64_t stale_bytes = store.entries()[0].bytes;
+        ck_eq(a1.evicted, 0, "a store under its cap evicts nothing");
+        ::sleep(1);   // mtime resolution is SECONDS: make the age order the LRU rule reads real, not incidental
+        store.set_cap_bytes((int64_t) stale_bytes);   // a second snapshot cannot fit beside the first
+        std::vector<int32_t> other = ids_of(L_BOUNDARY);
+        other[(size_t) L_BOUNDARY - 1] = 709;   // a DIFFERENT conversation: not an extension, so not superseded
+        TierActivity a2;
+        ck(store.dump(S.ss, S.draft, S.g, other, {}, true, nullptr, err, &a2), "the second conversation dumps");
+        ck_eq(a2.dropped, 0, "and supersedes nothing: the supersede rule is untouched by the cap");
+        ck_eq(a2.evicted, 1, "the cap dropped exactly one entry");
+        ck_eq((int64_t) a2.evicted_bytes, (int64_t) stale_bytes, "and reports the victim's own bytes");
+        ck_eq((int64_t) a2.written, (int64_t) store.entries()[0].bytes, "written is still only this call's write");
+        ck_eq(store.size(), 1, "the store is back to one snapshot");
+        ck(store.entries()[0].ids == other, "the victim was the OLDER entry: the LRU rule is unchanged");
+        ck_eq((int64_t) store.total_bytes(), (int64_t) store.entries()[0].bytes, "and the books match what is left");
+
+        // THE LAST ENTRY IS KEPT EVEN OVER THE CAP - reported as ZERO evictions, never as an emptied store.
+        store.set_cap_bytes(1);
+        std::vector<int32_t> grown = other;
+        grown.push_back(900);   // the same conversation grown: the supersede leaves ONE entry, over the cap
+        TierActivity a3;
+        ck(store.dump(S.ss, S.draft, S.g, grown, {}, true, nullptr, err, &a3),
+           "a dump under a 1-byte cap still writes");
+        ck_eq(a3.dropped, 1, "the supersede still happened");
+        ck_eq(a3.evicted, 0, "the cap evicted nothing: the last entry is kept even over the cap");
+        ck_eq(store.size(), 1, "the store was not emptied");
+        ck((int64_t) store.total_bytes() > 1, "even though it sits over the cap - the documented policy");
+    }
+}
+
 /// The row count itself, at the boundaries that matter - including the non-aligned one C3 lives at.
 void fixture_pooled_rows() {
     ck_eq(strata::kernels::qsa_pooled_rows(0, SHP), 0, "an empty prefix owns no rows");
@@ -1165,6 +1252,7 @@ int main() {
     fixture_refusals(root + "/refusals");
     fixture_failure_contract(root + "/failure");
     fixture_stale_store(root + "/stale");
+    fixture_activity(root + "/activity");
 
     fs::remove_all(root, ec);
     std::printf("kv_nvme_host_test: %d checks passed (%d refusals, %d transfer failures asserted); no CUDA context, "

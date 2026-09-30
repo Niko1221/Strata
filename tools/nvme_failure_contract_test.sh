@@ -34,7 +34,11 @@ ARGS="--serve --pack packs/iq3_xxs
  --ple-gguf models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 2048
  --spec 4 --spec-min-p 0.5 --mtp mtp/rt --max-context 131072 --kv int8
- --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0"
+ --kv-resident 20480 --prompt-cache 12 --adapt-swaps 0 --kv-delta 0"
+# --kv-delta 0, and it is load-bearing: this oracle corrupts a v3 SNAPSHOT ($STORE/kv-1-1.bin) and hooks a v3
+# TRANSFER, and the delta tier has been the DEFAULT cascade since Phase 6 (kv_delta = 1, generate.cpp:298) - with
+# `--kv-nvme` alone no snapshot is ever written, so there would be nothing to corrupt and no promote to refuse.
+# The delta tier's own recoverable class is gated by tools/nvme_delta_p0_test.sh.
 ARGS=$(echo "$ARGS" | tr '\n' ' ')
 rm -rf "$OUT"; mkdir -p "$STORE"
 
@@ -114,6 +118,15 @@ TOK=$(grep -c '^T ' "$OUT/B.out")
 [ "$TOK" -ge 8 ] || { echo "FAIL: only $TOK tokens after the refusal - the engine is not serving"; STATUS=1; }
 LEFT=$(ls "$STORE" 2>/dev/null | wc -l)
 [ ! -f "$STORE/kv-1-1.bin" ] || { echo "FAIL: the refused entry was not dropped"; STATUS=1; }
+# THE KV LINE for the refused promote (design §3): the tier served nothing (src=none), the request was refused,
+# and it was NOT the fatal class
+KV=$(grep -m1 "^KV src=" "$OUT/B.out" 2>/dev/null)
+[ -n "$KV" ] || { echo "FAIL: the refused promote printed no KV line"; STATUS=1; }
+if grep -qE "^KV src=none .* refused=1 transfer=0 " "$OUT/B.out"; then
+  echo "PASS invalid class reports itself on the KV line: $(grep -oE 'src=[a-z]+ refused=[0-9]+ transfer=[0-9]+' "$OUT/B.out" | head -1)"
+else
+  echo "FAIL: the refusal's KV line is not 'src=none ... refused=1 transfer=0': '$KV'"; STATUS=1
+fi
 # run B holds the store too, so its own DONE-cascade dump may legitimately be there; the CORRUPT entry must not be
 [ "$STATUS" -eq 0 ] && echo "PASS invalid class: refused, dropped, re-prefilled, still serving, store cleaned"
 
@@ -147,6 +160,17 @@ grep -q "ERR" "$OUT/H.err" "$OUT/H.out" || { echo "FAIL (promote path): no ERR l
 grep -q "clean reset" "$OUT/H.err" || { echo "FAIL (promote path): the no-clean-reset note is gone"; STATUS=1; }
 grep -qiE "failed? \(transfer\)" "$OUT/H.err" "$OUT/H.out" || { echo "FAIL (promote path): the class is not named"; STATUS=1; }
 [ -f "$STORE2/kv-2-1.bin" ] || { echo "FAIL (promote path): the snapshot was removed on a TRANSFER failure"; STATUS=1; }
+# THE KV LINE must reach the server BEFORE the ERR line and the exit 1: the engine is dying, and this line is
+# the only thing that names the class (design §3, ordering note 1)
+KVL=$(grep -n "^KV src=" "$OUT/H.out" 2>/dev/null | head -1 | cut -d: -f1)
+ERRL=$(grep -n "^ERR" "$OUT/H.out" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -z "$KVL" ] || [ -z "$ERRL" ]; then
+  echo "FAIL (promote path): no KV line (line '$KVL') or no ERR line (line '$ERRL') on stdout"; STATUS=1
+elif [ "$KVL" -ge "$ERRL" ] || ! grep -qE "^KV src=.* refused=0 transfer=1 " "$OUT/H.out"; then
+  echo "FAIL (promote path): the KV transfer=1 line did not arrive before the ERR line (KV $KVL, ERR $ERRL)"; STATUS=1
+else
+  echo "PASS transfer_failed (promote path): KV transfer=1 on stdout line $KVL, before the ERR line $ERRL and the exit"
+fi
 [ "$STATUS" -eq 0 ] && echo "PASS transfer_failed (promote path): ERR, no clean reset attempted, snapshot kept"
 
 echo "== PART 3: the process AFTER the fatal exit serves normally (the supervisor-restart recovery) =="

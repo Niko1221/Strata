@@ -237,6 +237,59 @@ inline const NvmeEntry* kv_nvme_match(const std::vector<NvmeEntry>& entries, con
     return best;
 }
 
+/// WHAT A TIER DID, reportable without a log line (docs/nvme-kv-cache-web-design.md §3).  Every field is a fact
+/// the tier already knew and only ever printed: `enforce_cap` and `sweep` counted their removals for a stderr
+/// line, and `KvDeltaStore::dump` already summed this turn's write volume for its `appended N chunks` line.
+/// This struct makes those facts RETURNABLE - it changes no decision the tiers make, and a caller that passes no
+/// out-param behaves exactly as before.  Shared by both tiers (it lives here because `kv_delta.hpp` already
+/// includes this header); `swept` / `swept_bytes` are the delta tier's only.
+struct TierActivity {
+    bool skipped = false;          // an idempotent dump: nothing was written, recency refreshed
+    uint64_t written = 0;          // bytes this call wrote (delta: only the chunks THIS turn sealed)
+    int64_t dropped = 0;           // entries this call superseded
+    uint64_t dropped_bytes = 0;
+    int64_t evicted = 0;           // LRU cap evictions caused by this call
+    uint64_t evicted_bytes = 0;
+    int64_t swept = 0;             // orphan records reclaimed (delta only)
+    uint64_t swept_bytes = 0;
+};
+
+/// WHAT THE CACHE TIERS DID FOR ONE REQUEST, plus what they have done for the life of the process - the facts
+/// the serve loop prints as its `KV` line (docs/nvme-kv-cache-web-design.md §3).  REPORTING ONLY: nothing in
+/// the engine reads this struct, and filling it changes no resume / promote / dump / cap / sweep decision.  A
+/// plain aggregate of defaults, filled where the serve loop already knows the number.
+///
+/// The per-request fields describe ONE request (the serve loop resets them at the top of every request); the
+/// `total_*` fields are cumulative over the process and are never reset, so a `KV` line the server never saw
+/// (a cancelled request, a malformed line) cannot corrupt the totals it reads off the LAST line it did see.
+struct TierCounters {
+    // ---- this request
+    const char* src = "none";      ///< none (cold re-prefill) | ram (live session or a checkpoint) | nvme (v3
+                                   /// snapshot) | delta (manifest).  The serve loop already computes exactly
+                                   /// this (`from_live`, `from_nvme`, `NvmeEntry::kind`); it is a `const char*`
+                                   /// because the line prints it verbatim.
+    int64_t resume = 0;            ///< tokens this request did not read (the same number DONE reports)
+    double promote_ms = 0.0;       ///< wall time of the restore() call - the promote's TTFT cost
+    uint64_t promote_bytes = 0;    ///< what the tier read: NvmeEntry::bytes, for either tier
+    uint64_t staging_bytes = 0;    ///< the whole-file buffer the restore staged (the accepted C10 cost); for
+                                   /// delta the assembled image, which is NOT the entry's byte count
+    double dump_ms = 0.0;          ///< the cascade's server occupancy at DONE: dump + cap, after the reply
+                                   /// streamed and before the next request can start
+    uint64_t dump_bytes = 0;       ///< what this turn's cascade wrote (0 when the dump was the idempotent skip)
+    int64_t evict = 0;             ///< entries the LRU cap dropped this turn
+    uint64_t evict_bytes = 0;
+    int64_t sweep = 0;             ///< orphan records the delta sweep reclaimed this turn
+    uint64_t sweep_bytes = 0;
+    int64_t refused = 0;           ///< `invalid` promotes this request (design doc §5.1)
+    int64_t transfer = 0;          ///< `transfer_failed` this request (§5.2) - the engine stops after it
+    // ---- the process, cumulative
+    uint64_t total_dump_bytes = 0;
+    uint64_t total_promote_bytes = 0;
+    uint64_t total_evict_bytes = 0;
+    int64_t total_refused = 0;
+    int64_t total_transfer = 0;
+};
+
 class KvNvmeStore {
 public:
     /// Creates `dir` if needed and scans the snapshots already in it, dropping any whose geometry/format tag
@@ -248,10 +301,14 @@ public:
     /// `at` takes the snapshot at a turn boundary (see nvme_dump_at): its `ids` are the key, its `imgs` the
     /// pictures below that boundary, and its blobs the running state there.  Without it the snapshot is the full
     /// consumed state at DONE, and `imgs` are the pictures below the whole consumed prefix.
+    /// `act`, when given, reports what THIS call did (docs/nvme-kv-cache-web-design.md §3): `skipped` on the
+    /// exact-match skip, `written` the new snapshot's bytes, `dropped`/`dropped_bytes` the supersede, and the
+    /// evictions the call's own `enforce_cap()` caused.  Defaulted, so every existing caller is untouched.
     bool dump(const strata::core::SessionState& ss, const strata::core::QsaState& mtp_state,
               const strata::core::ModelGeometry& g, const std::vector<int32_t>& ids,
               const std::vector<strata::core::ConversationImageKey>& imgs, bool cvec,
-              const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err());
+              const strata::core::ConversationCheckpoint* at = nullptr, std::string& err = dummy_err(),
+              TierActivity* act = nullptr);
     /// Reads `e` back into the live arena (see nvme_restore for the failure contract).  The caller then sets
     /// `live` from `e`.
     /// The one failure this class adds is a TOCTOU: the file disagreed with its own digest and applied cleanly,
@@ -272,7 +329,8 @@ public:
 
 private:
     static std::string& dummy_err() { static std::string s; return s; }
-    void enforce_cap();                                      ///< evict by oldest mtime until under the cap
+    /// evict by oldest mtime until under the cap; reports how many entries it removed and their bytes
+    TierActivity enforce_cap();
     std::string dir_;
     std::vector<NvmeEntry> entries_;
     int64_t cap_ = 0;
