@@ -21,6 +21,51 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
 }
 
 int main() {
+    {
+        ConversationBuffer bytes;
+        const size_t first = ConversationBuffer::segment_bytes + 17;
+        const size_t peak = bytes.allocation_peak(first);
+        bytes.resize(first, 7);
+        check(bytes.bytes() <= peak, "segmented payload and directory fit admitted bytes");
+        uint8_t* original = nullptr;
+        bytes.visit(0, 1, [&](uint8_t* p, size_t, size_t) { original = p; return true; });
+        const size_t grown_peak = bytes.allocation_peak(first + 99);
+        bytes.resize(first + 99, 9);
+        bytes.visit(0, 1, [&](uint8_t* p, size_t, size_t) {
+            check(p == original, "appending preserves existing payload addresses"); return true;
+        });
+        check(bytes.bytes() <= grown_peak, "growth including transient directory fits admission");
+        std::vector<uint8_t> tail(116);
+        check(bytes.read(tail.data(), ConversationBuffer::segment_bytes, tail.size()), "read spans segment boundaries");
+        check(std::all_of(tail.begin(), tail.begin()+17, [](auto v){return v==7;}) &&
+              std::all_of(tail.begin()+17, tail.end(), [](auto v){return v==9;}), "growth preserves prefix and initializes only suffix");
+        auto copy = bytes;
+        bytes.resize(ConversationBuffer::segment_bytes + 10);
+        bytes.resize(first, 7); bytes.resize(first + 99, 9);
+        check(bytes == copy, "equality ignores differing segmentation after rewind and regrowth");
+        check(!bytes.read(tail.data(), bytes.size()-1, 2), "range check rejects a truncated payload");
+        check(bytes.allocation_peak(SIZE_MAX) == SIZE_MAX, "allocation estimate rejects overflow");
+    }
+    {
+        ConversationKv layer;
+        layer.k.resize(400);
+        std::vector<ConversationKv> layers;
+        layers.push_back(std::move(layer));
+        const size_t retained = layers.capacity()*sizeof(ConversationKv) + layers[0].bytes();
+        const size_t parked = image({1,2,3}).bytes();
+        ConversationCache cache(retained + parked, 4);
+        check(cache.put(image({1,2,3})), "park before retaining active storage");
+        cache.retain(std::move(layers), 16);
+        check(cache.bytes() == retained + parked && cache.size() == 1, "active retained storage consumes bytes but no parked slot");
+        cache.limit_reuse(9); cache.limit_reuse(12);
+        auto reuse = cache.take_reuse();
+        check(reuse.unchanged_tokens == 9, "a later continuation cannot undo a rewind's dirty boundary");
+        check(cache.bytes() == parked, "taking retained buffers releases their budget accounting");
+        cache.retain(std::move(reuse.kv), 16);
+        check(cache.make_room(parked), "reservation can discard optional active buffers");
+        check(cache.retained_bytes() == 0 && cache.size() == 1 && cache.evictions() == 0,
+              "pressure drops retained storage before evicting parked conversations");
+    }
     const std::vector<int64_t> a = {1, 2, 3, 4}, b = {9, 8, 7, 6};
     {
         ConversationCache cache(1024, 2);

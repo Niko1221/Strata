@@ -3220,11 +3220,23 @@ int main(int argc, char** argv) {
         auto park_current = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
+            auto reuse = conversations.take_reuse();
             size_t estimate = 0;
             if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
                 err.clear(); // A recoverable miss must not poison the batched draft prefill's error channel.
                 return true;
+            }
+            const size_t fresh_estimate = estimate;
+            if (!reuse.kv.empty() && !strata::core::conversation_snapshot_capture_bytes(
+                    reuse, view, ss, g, mtp.kv_state(), estimate, err)) {
+                reuse = {};
+                estimate = fresh_estimate;
+                err.clear();
+            }
+            if (!conversations.make_room(estimate, held) && !reuse.kv.empty()) {
+                reuse = {}; // Optional retained storage must not prevent a full capture.
+                estimate = fresh_estimate;
             }
             if (!conversations.make_room(estimate, held)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
@@ -3234,22 +3246,26 @@ int main(int argc, char** argv) {
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
-                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), estimate, floor)) {
+                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(),
+                        estimate - reuse.bytes(), floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, or telemetry unavailable)\n",
                                  estimate >> 20, (long long) o.conversation_cache_min_free_mib);
                     return true;
                 }
                 strata::core::SavedConversation image;
-                if (!strata::core::conversation_snapshot_save(image, view, ss, g, mtp.kv_state(), err)) return false;
+                size_t reused_bytes = 0;
+                if (!strata::core::conversation_snapshot_save(image, view, ss, g, mtp.kv_state(), err,
+                        std::move(reuse), &reused_bytes)) return false;
                 if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after capture, or telemetry unavailable)\n");
                     return true;
                 }
+                const size_t snapshot_bytes = image.bytes();
                 const bool stored = conversations.put(std::move(image), held);
-                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu\n",
+                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
                              stored ? "parked" : "skipped", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
-                             conversations.size(), conversations.bytes(), conversations.evictions());
+                             conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
             } catch (const std::bad_alloc&) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
@@ -3840,7 +3856,9 @@ int main(int argc, char** argv) {
                 cvec_cached = incoming->cvec;
                 resume = parked.tokens;
                 from_live = parked.live;
-                incoming.reset(); // release the transfer image before prompt processing
+                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr)
+                    conversations.retain(std::move(incoming->kv), int64_t(live.size()));
+                incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -3907,6 +3925,7 @@ int main(int argc, char** argv) {
             tr("request", n, geni ? 1 : 0);
             mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
+            conversations.limit_reuse(read_from);
             pp_total = n;
             pp_from = read_from;
             pp_t0 = r0;

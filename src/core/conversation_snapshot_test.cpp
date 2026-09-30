@@ -90,6 +90,14 @@ struct Fixture {
             if (!data.empty()) cuda_check(cudaMemcpy(sources[i],data.data(),data.size(),cudaMemcpyDefault));
         }
     }
+    void fill_after(uint8_t salt, int64_t first_dirty) {
+        for (size_t i=0;i<sources.size();++i) {
+            const size_t offset = i == 4 ? size_t(first_dirty/4)*g.idx_key_dim*4
+                                         : (sizes[i]/size_t(state.max_cells))*size_t((first_dirty/4)*4);
+            if (sizes[i] > offset)
+                cuda_check(cudaMemset(static_cast<uint8_t*>(sources[i])+offset, salt, sizes[i]-offset));
+        }
+    }
     ~Fixture() { for (void* p:device) cudaFree(p); for (void* p:host) cudaFreeHost(p); }
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {
@@ -149,6 +157,35 @@ void full_session(int fmt, int mode, int experts) {
           restored.live.dead==a.live.dead && restored.live.block_pos==a.live.block_pos &&
           equal(restored.kv[0],a.kv[0]) && equal(restored.kv[1],a.kv[1]),"whole-session A/B/A exactness including spare key");
     check(ss.ple_prev[0]==64 && ss.ple_prev[1]==65,"PLE token window reconstructed");
+    for (int64_t dirty : {65, 3, 0}) {
+        check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
+        ConversationKvReuse reuse{a.kv,65,dirty};
+        const uint8_t* original = nullptr;
+        reuse.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
+        main.fill_after(91,dirty); draft.fill_after(91,std::max<int64_t>(0,dirty-1));
+        cuda_check(cudaMemset(ss.gdn_state,91,sizes.gdn));
+        ids.resize(70);
+        for (size_t i=65;i<ids.size();++i) ids[i]=int32_t(i+1);
+        cuda_check(cudaMemcpy(main.state.idx_pooled+(ids.size()/4)*g.idx_key_dim,
+                              main.state.idx_dead,sizes.dead,cudaMemcpyDeviceToDevice));
+        SavedConversation fresh,incremental;
+        check(conversation_snapshot_save(fresh,view,ss,g,draft.state,err),"full capture reference after growth or rewind");
+        size_t peak=0,reused=0;
+        check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.state,peak,err),"admit incremental capture peak");
+        check(conversation_snapshot_save(incremental,view,ss,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
+        check(incremental.bytes() <= peak,"incremental allocation stays within admitted bound");
+        check(incremental.live.gdn==fresh.live.gdn && incremental.live.ple==fresh.live.ple &&
+              incremental.live.dead==fresh.live.dead && equal(incremental.kv[0],fresh.kv[0]) &&
+              equal(incremental.kv[1],fresh.kv[1]),"incremental capture equals full capture after growth or rewind");
+        check((dirty>=4)==(reused>0),"only complete unchanged pages or rows are retained");
+        incremental.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){
+            check(p==original,"growth never reallocates the retained payload");return true;
+        });
+        check(conversation_snapshot_restore(incremental,ss,g,draft.state,err)==ConversationRestore::restored,"restore segmented incremental snapshot");
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(incremental.kv.back(),draft.state,g,70,false,fingerprint,err),"incremental draft authoritative and ring read-back");
+        ids.resize(65);
+    }
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
@@ -214,7 +251,9 @@ int main() {
                 std::vector<uint8_t> got(code_block);
                 for (int64_t page=b0;page<b1;++page) {
                     cuda_check(cudaMemcpy(got.data(),(const uint8_t*)slots+(page%f.state.n_slots)*code_block,code_block,cudaMemcpyDeviceToHost));
-                    check(std::equal(got.begin(),got.end(),a.k.begin()+page*code_block),"draft ring contains restored pages");
+                    std::vector<uint8_t> expected(code_block);
+                    check(a.k.read(expected.data(), page*code_block, code_block),"read segmented expected draft page");
+                    check(got == expected,"draft ring contains restored pages");
                 }
             }
             auto bad=a; bad.head_dim++;

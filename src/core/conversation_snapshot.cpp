@@ -113,21 +113,40 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
 }
 } // namespace
 
-size_t conversation_kv_bytes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index) {
-    std::string error;
+bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
+                                   int64_t upto, bool index, size_t& bytes, std::string& error) {
     Layout l{};
-    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return 0;
-    size_t bytes = l.pooled;
-    for (size_t n : {l.data, l.value_data, l.scales, l.value_scales})
-        if (!conversation_detail::add(bytes, n)) return 0;
-    return bytes;
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    const std::array<const ConversationBuffer*,5> buffers = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    bytes = 0;
+    for (size_t i = 0; i < buffers.size(); ++i) {
+        const size_t n = buffers[i]->allocation_peak(sizes[i]);
+        if (n == SIZE_MAX || !conversation_detail::add(bytes, n)) {
+            error = "conversation snapshot: segmented K/V allocation overflow";
+            return false;
+        }
+    }
+    return true;
+}
+
+size_t conversation_kv_bytes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index) {
+    size_t bytes = 0;
+    std::string error;
+    return conversation_kv_capture_bytes({}, st, g, upto, index, bytes, error) ? bytes : 0;
 }
 
 bool conversation_kv_save(ConversationKv& image, const QsaState& st, const ModelGeometry& g,
-                          int64_t upto, bool index, std::string& error) {
+                          int64_t upto, bool index, std::string& error,
+                          int64_t unchanged_tokens, size_t* reused_bytes) {
     Layout l{};
     if (!layout(st, g, upto, index, l, error)) return false;
     if (!valid(st, l, upto, error)) return false;
+    if (unchanged_tokens < 0 || unchanged_tokens > upto || unchanged_tokens > image.cells) {
+        error = "conversation snapshot: invalid unchanged prefix";
+        return false;
+    }
+    const int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
     image.format = l.format;
     image.cells = l.cells;
     image.heads = g.n_head_kv;
@@ -137,10 +156,18 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     image.idx_dim = g.idx_key_dim;
     const auto src = pools(st);
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<std::vector<uint8_t>*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     for (size_t i = 0; i < dst.size(); ++i) {
+        // Recopy the partial page and the indexer's moving spare row. Completed
+        // pages/rows strictly before the first rewritten token remain identical.
+        const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
+                                  : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
+        if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
-        if (!transfer(dst[i]->data(), src[i], sizes[i], error)) return false;
+        if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
+                return transfer(p, src[i] ? static_cast<const uint8_t*>(src[i]) + at : nullptr, n, error);
+            })) return false;
+        if (reused_bytes) *reused_bytes += keep;
     }
     return true;
 }
@@ -151,7 +178,7 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     if (!layout(st, g, upto, index, l, error)) return false;
     if (!valid(st, l, upto, error)) return false;
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<const std::vector<uint8_t>*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
         image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
         image.idx_dim != g.idx_key_dim) {
@@ -169,10 +196,12 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                              int64_t upto, bool index, std::string& error) {
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
-    const std::array<const std::vector<uint8_t>*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
-        if (!transfer(dst[i], src[i]->data(), src[i]->size(), error)) return false;
+        if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
+            })) return false;
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
@@ -207,10 +236,12 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
         }
         return true;
     };
-    const std::array<const std::vector<uint8_t>*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const std::array<const ConversationBuffer*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto authoritative = pools(st);
     for (size_t i = 0; i < saved.size(); ++i)
-        if (!compare(authoritative[i], saved[i]->data(), saved[i]->size(), true)) return false;
+        if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                return compare(static_cast<const uint8_t*>(authoritative[i]) + at, p, n, true);
+            })) return false;
     if (st.kv_mode == 2 && image.cells > 0) {
         const auto resident = pools(st, true);
         const int64_t end = image.cells / image.page_size;
@@ -219,8 +250,11 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
             if (saved[i]->empty()) continue;
             const size_t page_bytes = saved[i]->size() / size_t(end);
             for (int64_t page = begin; page < end; ++page)
-                if (!compare(static_cast<const uint8_t*>(resident[i]) + size_t(page % st.n_slots) * page_bytes,
-                             saved[i]->data() + size_t(page) * page_bytes, page_bytes, false)) return false;
+                if (!saved[i]->visit(size_t(page) * page_bytes, page_bytes,
+                        [&](const uint8_t* p, size_t n, size_t at) {
+                            const size_t offset = size_t(page % st.n_slots) * page_bytes + at - size_t(page) * page_bytes;
+                            return compare(static_cast<const uint8_t*>(resident[i]) + offset, p, n, false);
+                        })) return false;
         }
     }
     fingerprint = hash;

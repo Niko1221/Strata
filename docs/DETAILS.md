@@ -379,7 +379,12 @@ reported separately from Linux/CUDA evidence.
 
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
-an incoming snapshot during a switch; oldest parked entries are evicted first.
+an incoming snapshot during a switch. After a restore, unchanged K/V pages can be
+retained for the next parking operation; growth appends storage without copying
+the existing pages. Rewinds refresh the affected pages, and running state and
+checkpoints are captured again. Retained active K/V counts against the same byte
+budget and is discarded before evicting parked entries under memory pressure.
+Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 physical-RAM headroom remain available: the engine checks before allocation and
@@ -392,7 +397,9 @@ The shared snapshot core validates all layers and checkpoints before applying an
 state. Invalid entries are discarded; transfer/synchronization failure is fatal
 rather than permission to continue with partial state. Indexer spare keys and the
 moving spare row are preserved, including checkpoint rewinds.
-The engine log reports parking, restoration, bytes and evictions. Snapshots are not
+The engine log reports parking, restoration, bytes, evictions, individual snapshot
+sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
+retention for diagnostic comparisons. Snapshots are not
 persisted across restarts.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats

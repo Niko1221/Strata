@@ -202,22 +202,54 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
     return true;
 }
 
+bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
+                                         const SessionState& ss, const ModelGeometry& g,
+                                         const QsaState& draft, size_t& bytes, std::string& error) {
+    if (!conversation_snapshot_bytes(view, ss, g, draft, bytes, error)) return false;
+    if (reuse.kv.empty()) return true;
+    const size_t layers = size_t(g.n_qsa_layers()) + 1;
+    if (reuse.kv.size() != layers || reuse.unchanged_tokens < 0 ||
+        reuse.unchanged_tokens > reuse.captured_tokens || reuse.unchanged_tokens > int64_t(view.ids.size()))
+        return fail(error, "invalid retained K/V prefix");
+    for (size_t i = 0; i < layers; ++i) {
+        const bool index = i + 1 != layers;
+        const auto& st = index ? ss.qsa_states[i] : draft;
+        if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
+        const size_t fresh = conversation_kv_bytes(st, g, int64_t(view.ids.size()), index);
+        size_t retained = 0;
+        if (!conversation_kv_capture_bytes(reuse.kv[i], st, g, int64_t(view.ids.size()), index, retained, error)) return false;
+        bytes -= fresh;
+        if (!add(bytes, retained)) return fail(error, "retained K/V allocation overflow");
+    }
+    size_t directory = 0;
+    if (!product(directory, {reuse.kv.capacity() - layers, sizeof(ConversationKv)}) || !add(bytes, directory))
+        return fail(error, "retained K/V directory overflow");
+    return true;
+}
+
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& ss, const ModelGeometry& g,
-                                const QsaState& draft, std::string& error) {
+                                const QsaState& draft, std::string& error,
+                                ConversationKvReuse reuse, size_t* reused_bytes) {
     size_t estimate = 0;
-    if (!conversation_snapshot_bytes(view, ss, g, draft, estimate, error) || !sync(error)) return false;
+    if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
     SavedConversation captured;
     captured.geometry = geometry_key(g);
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
+    captured.kv = std::move(reuse.kv);
     captured.kv.resize((size_t) g.n_qsa_layers() + 1);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     for (int64_t i = 0; i < g.n_qsa_layers(); ++i)
-        if (!conversation_kv_save(captured.kv[(size_t) i], ss.qsa_states[i], g, upto, true, error)) return false;
-    if (!conversation_kv_save(captured.kv.back(), draft, g, upto, false, error)) return false;
+        if (!conversation_kv_save(captured.kv[(size_t) i], ss.qsa_states[i], g, upto, true, error,
+                                  unchanged, reused_bytes)) return false;
+    // The draft's final cell may not have been computed when the output cap was
+    // reached. Refresh that page even when the main prefix continued unchanged.
+    if (!conversation_kv_save(captured.kv.back(), draft, g, upto, false, error,
+                              std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
     image = std::move(captured);
     return true;
 }

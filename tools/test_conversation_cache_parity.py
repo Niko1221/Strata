@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from tools.conversation_cache_parity import STATE_KEYS, engine_args, verify_admission, verify_exchange, verify_pressure, verify_results
+from tools.conversation_cache_parity import STATE_KEYS, engine_args, pressure_budget_hint, verify_admission, verify_exchange, verify_pressure, verify_results
 
 
 def fixture():
@@ -89,6 +89,22 @@ def pressure_fixture():
 
 
 class PressureGate(unittest.TestCase):
+    def test_pressure_budget_hint_uses_individual_sizes(self):
+        data = pressure_fixture()
+        for park in data['pressure']['parks']:
+            park['snapshot_bytes'] = 266 * 1024 * 1024
+        self.assertIn('--cache-mib 266..531', pressure_budget_hint(data, 600))
+        data['candidate'][-1]['reused'] = 100
+        with self.assertRaisesRegex(AssertionError, r'Configured --cache-mib 600.*266\.00 MiB.*266\.\.531'):
+            verify_pressure(data, 600)
+
+    def test_pressure_budget_hint_handles_missing_or_incompatible_sizes(self):
+        data = pressure_fixture()
+        self.assertIn('No snapshot sizes', pressure_budget_hint(data, 600))
+        for park, size in zip(data['pressure']['parks'], [1, 2, 10]):
+            park['snapshot_bytes'] = size * 1024 * 1024
+        self.assertIn('No whole-MiB budget', pressure_budget_hint(data, 600))
+
     def test_physical_memory_admission_evidence(self):
         data = pressure_fixture()
         data['pressure'] = {'memory_skips': 3, 'skips': 0, 'parks': []}
