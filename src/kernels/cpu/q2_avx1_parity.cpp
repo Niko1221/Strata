@@ -1,4 +1,4 @@
-// src/kernels/cpu/q2_avx1_parity.cpp - LOCAL PORT (Z620): proves the AVX1 Q2_0 kernel against a scalar reference.
+// src/kernels/cpu/q2_avx1_parity.cpp - proves the AVX1 Q2_0 kernel against a scalar reference.
 //
 // WHICH Q2_0 THIS IS ABOUT  (the trap in this codebase)
 // -----------------------------------------------------
@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
     // discard every line already printed.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
-    std::printf("AVX1 native-layout Q2_0 kernel vs an independent scalar reference (LOCAL PORT, Z620)\n");
+    std::printf("AVX1 native-layout Q2_0 kernel vs an independent scalar reference \n");
 #if defined(__AVX2__)
     std::printf("  WARNING: this TU was compiled with AVX2, so a pass here would not prove the kernel\n"
                 "          runs on a CPU without AVX2.  It should be built with no per-file ISA flag.\n");

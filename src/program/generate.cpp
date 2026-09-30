@@ -1356,7 +1356,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
         }
     }
-    // LOCAL PORT (Z620): the canonical Q2_0 pack's CPU kernels now have three rungs, not one, so the gate
+    // The canonical Q2_0 pack's CPU kernels now have three rungs, not one, so the gate
     // is `cpu_require_expert_support_any()` (AVX-512 -> AVX2 -> AVX1) instead of the AVX-512-only
     // `cpu_require_expert_support()`.  Keeping the old call would refuse every pre-AVX-512 CPU at startup
     // even though the AVX1 kernel in q2_avx1.cpp is exactly what such a CPU should use.  Upstream's comment

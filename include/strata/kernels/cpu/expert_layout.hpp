@@ -41,19 +41,19 @@ struct ExpertLayout {
 /// Plan v0.3 P6: whether this CPU (and its OS) runs the AVX-512 kernels (F, BW, VL, VNNI, VBMI).  Probed in a
 /// file compiled without AVX-512, so asking is safe everywhere; STRATA_FORCE_AVX2=1 answers no (for tests).
 bool cpu_avx512_ok();
-/// LOCAL PORT (Z620): whether this CPU has AVX2, which upstream's `q2_rows_any` never asks.  Without it the
+/// Whether this CPU has AVX2, which upstream's `q2_rows_any` never asks.  Without it the
 /// AVX2 path in `q2_avx2.cpp` raises SIGILL, so this is a safety test as much as a dispatch input.
 bool cpu_avx2_ok();
-/// LOCAL PORT (Z620): whether this CPU has the AVX+FMA3+F16C+SSSE3+SSE4.1 set that `q2_avx1.cpp` needs.
+/// Whether this CPU has the AVX+FMA3+F16C+SSSE3+SSE4.1 set that `q2_avx1.cpp` needs.
 /// FMA3 and F16C are the two that are easy to assume: both arrived with Sandy Bridge, but the probe asks
 /// CPUID rather than trusting the model name.
 bool cpu_avx1_ok();
-/// LOCAL PORT (Z620): the startup gate for the whole ladder (AVX-512, then AVX2, then AVX1).  Lives in
+/// The startup gate for the whole ladder (AVX-512, then AVX2, then AVX1).  Lives in
 /// `expert_layout.cpp` rather than calling `cpu_require_expert_support()` because that one is defined in a
 /// `/arch:AVX512` translation unit, where the compiler may emit AVX-512 into the error path itself.
 void cpu_require_expert_support_any();
 
-// ---- LOCAL PORT (Z620): the canonical expert path, dispatched on what the CPU has.
+// ---- the canonical expert path, dispatched on what the CPU has.
 //
 // `pool.cpp` is the CPU expert worker loop.  Every entry point it uses is defined in `expert.cpp`, an
 // `/arch:AVX512` translation unit, so calling those on a pre-AVX-512 CPU traps rather than merely running

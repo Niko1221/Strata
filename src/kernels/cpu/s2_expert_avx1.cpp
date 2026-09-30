@@ -1,9 +1,9 @@
-// src/kernels/cpu/s2_expert_avx1.cpp - LOCAL PORT (Z620): the CANONICAL Q2_0 expert path for CPUs with AVX but
+// src/kernels/cpu/s2_expert_avx1.cpp - the CANONICAL Q2_0 expert path for CPUs with AVX but
 // no AVX2, no FMA3, no F16C and no AVX-512 (Sandy Bridge / Westmere-era Xeons, e.g. Xeon E5-2600 v1).
 //
 // WHY THIS IS THE FILE THAT MATTERS
 // ---------------------------------
-// The previous local port (q2_avx1.cpp) covered the NATIVE pack layout, reached through `q2_rows_any`.
+// q2_avx1.cpp (above) covered the NATIVE pack layout, reached through `q2_rows_any`.
 // But `pool.cpp` - the actual CPU worker loop, i.e. the main expert compute path - does not use it.  The pool
 // calls `s2_expert_vnni_q`, `s2_expert_gu_rows`, `s2_expert_down_rows` and their `_multi` forms, and EVERY one
 // of those is defined in `expert.cpp`, a translation unit compiled with `/arch:AVX512`.  `generate.cpp` gates

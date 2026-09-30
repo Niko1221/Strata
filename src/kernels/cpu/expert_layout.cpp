@@ -21,7 +21,7 @@ const ExpertLayout& expert_layout() { return g_layout; }
 
 namespace {
 
-/// LOCAL PORT (Z620): raw CPUID leaf 1, shared by the AVX2 and AVX1 probes below.
+/// Raw CPUID leaf 1, shared by the AVX2 and AVX1 probes below.
 /// Kept as one helper because both probes need the same OSXSAVE/XCR0 dance, and duplicating it is how
 /// the two end up disagreeing about what "this CPU has AVX" means.
 struct Leaf1 {
@@ -60,6 +60,28 @@ Leaf1 read_leaf1() {
     return s;
 }
 
+/// CPUID leaf 7 subleaf 0, EBX.  This is where AVX2 lives - leaf 7 EBX bit 5.
+/// Separated from read_leaf1 because AVX2 is NOT in leaf 1 at all, and conflating the two is what
+/// produced the bug this comment replaced (see cpu_avx2_ok below).  Returns false on a CPU whose
+/// max basic leaf is below 7, which is every pre-Haswell part.
+bool avx2_ebx_bit5() {
+    unsigned r[4] = {0, 0, 0, 0};
+#if defined(_MSC_VER)
+    int x[4];
+    __cpuidex(x, 0, 0);
+    const unsigned maxleaf = (unsigned) x[0];
+    if (maxleaf < 7) return false;
+    __cpuidex(x, 7, 0);
+    r[1] = (unsigned) x[1];
+#else
+    unsigned maxleaf = 0;
+    __cpuid_count(0, 0, maxleaf, r[1], r[2], r[3]);
+    if (maxleaf < 7) return false;
+    __cpuid_count(7, 0, r[0], r[1], r[2], r[3]);
+#endif
+    return ((r[1] >> 5) & 1u) != 0;
+}
+
 }  // namespace
 
 bool cpu_avx512_ok() {
@@ -94,9 +116,13 @@ bool cpu_avx512_ok() {
     return ok;
 }
 
-/// LOCAL PORT (Z620): AVX2 = leaf 1 ECX bit 5, and the OS must save the YMM state (XCR0 bits 1 and 2).
-/// Without the XCR0 test this reports AVX2 on a kernel that has not enabled it, and the first 256-bit
-/// instruction traps.
+/// AVX2 is CPUID leaf 7 subleaf 0, EBX bit 5 - it is NOT leaf 1 ECX bit 5.
+/// Leaf 1 ECX bit 5 is plain AVX, which arrived two generations earlier (Sandy Bridge, 2011); AVX2 came
+/// with Haswell (2013).  An earlier version of this probe read leaf 1 ECX bit 5, which reported AVX2 as
+/// true on the Sandy Bridge-E this port targets, so the dispatcher sent that CPU to the AVX2 kernel - a
+/// translation unit compiled /arch:AVX2, i.e. an illegal instruction.  The s2_avx1_parity test caught it
+/// as `avx2=1 avx1=1` on a CPU that has no AVX2.  The XCR0 test stays: without it the answer is true on
+/// an OS that has not enabled saving of the YMM state, and the first 256-bit instruction traps.
 bool cpu_avx2_ok() {
     static const bool ok = [] {
         if (std::getenv("STRATA_FORCE_AVX2") != nullptr) return false;   // upstream's "use the lower path" switch
@@ -104,13 +130,13 @@ bool cpu_avx2_ok() {
         const Leaf1 s = read_leaf1();
         if (!s.osxsave) return false;
         if ((s.xcr0 & 0x6) != 0x6) return false;         // XMM + YMM state saved
-        return ((s.ecx >> 5) & 1u) != 0;                  // AVX2
+        return avx2_ebx_bit5();                           // leaf 7 EBX bit 5 = AVX2
     }();
     return ok;
 }
 
-/// LOCAL PORT (Z620): the AVX1 kernel needs AVX (256-bit FLOAT), SSSE3 and SSE4.1.  Deliberately NOT
-/// FMA3 or F16C: the target CPU is a Sandy Bridge-E (Xeon E5-2680), and those two arrived with Ivy
+/// The AVX1 kernel needs AVX (256-bit FLOAT), SSSE3 and SSE4.1.  Deliberately NOT
+/// FMA3 or F16C: the reference CPU is a Sandy Bridge-E (Xeon E5-2680), and those two arrived with Ivy
 /// Bridge one generation later.  Measured on that machine - FMA (leaf 1 ECX 12) = 0, F16C (ECX 29) = 0,
 /// and `vfmadd*` / `vcvtph2ps` each raise #UD there.  `q2_avx1.cpp` therefore does a software fp16 decode
 /// and a mul+add rather than an FMA, so this probe must not demand what the kernel does not use.
@@ -129,7 +155,7 @@ bool cpu_avx1_ok() {
     return ok;
 }
 
-/// LOCAL PORT (Z620): the added rung.  Upstream dispatches AVX-512 -> AVX2 with no AVX2 test, which means a
+/// The added rung.  Upstream dispatches AVX-512 -> AVX2 with no AVX2 test, which means a
 /// pre-AVX2 CPU either traps or is refused; this picks the widest path the CPU actually has, in order
 /// AVX-512, AVX2, AVX1.  Each candidate lives in its own translation unit compiled for exactly that ISA, so
 /// a wrong answer costs speed rather than a fault.
@@ -158,7 +184,7 @@ void act_quant_any(const float* x, int n, ActQ& a) {
     else std::exit(1);
 }
 
-/// LOCAL PORT (Z620): the startup gate, in the same file as the dispatch and for the same reason.
+/// The startup gate, in the same file as the dispatch and for the same reason.
 ///
 /// `cpu_require_expert_support()` lives in `expert.cpp`, which is compiled with `/arch:AVX512`, and the
 /// CMakeLists comment above says why that is a hazard: a TU built with the flag may use those instructions
@@ -179,7 +205,7 @@ void cpu_require_expert_support_any() {
     std::exit(1);
 }
 
-// ================================ LOCAL PORT: the canonical expert path, dispatched ================
+// ================================ the canonical expert path, dispatched ================
 //
 // `pool.cpp` is the CPU expert worker loop and it calls `s2_expert_vnni_q` / `s2_expert_gu_rows` /
 // `s2_expert_down_rows` and their `_multi` forms directly.  All of those are DEFINED in `expert.cpp`, a

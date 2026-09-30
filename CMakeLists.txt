@@ -583,7 +583,7 @@ endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp
-            # LOCAL PORT (Z620): the AVX rung for Sandy Bridge / Westmere-era Xeons (Xeon E5-2600 v1).
+            # The AVX rung for Sandy Bridge / Westmere-era Xeons (Xeon E5-2600 v1).
             # q2_avx1.cpp is the NATIVE pack layout; s2_expert_avx1.cpp is the CANONICAL one, which is
             # what pool.cpp (the expert worker loop, i.e. the main CPU compute path) actually runs.
             src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/s2_expert_avx1.cpp)
@@ -593,7 +593,7 @@ target_include_directories(strata_kernels_cpu PUBLIC include)
 if(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
-  # LOCAL PORT (Z620): /arch:AVX only.  Deliberately NO /mfma and NO /mf16c: the target CPU is a Sandy
+  # /arch:AVX only.  Deliberately NO /mfma and NO /mf16c: the reference CPU is a Sandy
   # Bridge-E (Xeon E5-2680), which has neither - those arrived with Ivy Bridge - and enabling them here
   # produces vfmadd* and vcvtph2ps, which raise #UD on exactly the machine this file is written for.
   # q2_avx1.cpp does a software fp16 decode and a mul+add instead.  The per-file flag is also what keeps
@@ -605,7 +605,7 @@ else()
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-  # LOCAL PORT (Z620): AVX only, and deliberately WITHOUT -mfma / -mf16c - see the MSVC branch above.
+  # AVX only, and deliberately WITHOUT -mfma / -mf16c - see the MSVC branch above.
   # -mavx implies the SSE4.1/SSSE3 the int8 dot and the code unpack need.
   set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
   set_source_files_properties(src/kernels/cpu/s2_expert_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
@@ -762,7 +762,7 @@ if(STRATA_BUILD_TESTS)
   add_executable(expert_parity src/kernels/cpu/expert_parity.cpp)
   target_link_libraries(expert_parity PRIVATE strata_kernels_cpu)
 
-  # LOCAL PORT (Z620): the two AVX1 parity tests.  Both are SELF-CONTAINED - they synthesise their own
+  # The two AVX1 parity tests.  Both are SELF-CONTAINED - they synthesise their own
   # expert blobs and check against an independent longhand scalar reference, so unlike `expert_parity`
   # they need neither the 38 GB pack nor an AVX-512 CPU, which is the point: upstream's own test skips
   # itself on exactly the hardware this port targets.  Each is built with NO per-file ISA flag, because a
