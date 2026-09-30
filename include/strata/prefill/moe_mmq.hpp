@@ -12,7 +12,8 @@ namespace strata::prefill::mmq {
 
 /// This build has the MMQ path (the ggml sources were available to the build).
 bool built();
-/// MMQ covers this ggml type (the i-quants and Q2_0 the packs use; IQ1_M is not covered).
+/// MMQ covers this ggml type (the i-quants and Q2_0 of ISTA-DASLab's files, the K-quants, Q5_1 and Q8_0 of
+/// unsloth's; IQ1_M is not covered).
 bool supported(int ggml_type);
 /// Bytes of one expert's gate+up ([2*n_ff, n_embd]) or down ([n_embd, n_ff]) weights in `ggml_type`.
 size_t matrix_bytes(int ggml_type, int64_t rows, int64_t cols);

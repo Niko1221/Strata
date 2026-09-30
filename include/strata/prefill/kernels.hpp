@@ -55,6 +55,8 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
+/// The same from FP16 rows into FP32 ones (MMQ's quantizer reads floats).
+void gather_rows16_f32(const uint16_t* x16, const int32_t* src, float* dst, int64_t n, int64_t width, void* stream);
 /// y = FP16 bits of x, saturated at +-65504 (the second GPU's expert sums on their way back: below ~20 measured)
 void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream);
 /// In place: x[t, :] *= sigmoid(sg[t])   (the shared expert's scalar gate)

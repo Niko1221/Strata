@@ -5,9 +5,12 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/moe_mmq.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 
 namespace strata::prefill {
 namespace {
@@ -22,6 +25,7 @@ constexpr int SLOTS = 2;                 // batches in staging: the copies of on
 constexpr size_t GEMM_WS = 32u << 20;    // cuBLAS workspace
 constexpr int NPTR = 7;                  // per-expert device pointers: blob, xs, gate/up, gu, h, down, d
 constexpr int PRE_GROUP = 16;            // prefetched blobs per copy event
+constexpr size_t MMQ_TAIL = 4096;        // zeroed after a batch's gathered experts: MMQ reads past the last one
 
 struct OnDevice {   // a remote runner's GPU current for one call, the main one again afterwards
     int main;
@@ -45,8 +49,23 @@ struct Alloc {
 
 size_t blob_cap() { return ((size_t) strata::kernels::cpu::expert_layout().max_blob + 255) & ~(size_t) 255; }
 
-// the pinned upload block: NPTR x n_expert pointers, then the adds (at most 3 per row, 2 per expert), rows, weights
-size_t adds_cap(int64_t chunk, int64_t n_expert) { return (size_t) (chunk * K * 3 + n_expert * 2); }
+// the pinned upload block: NPTR x n_expert pointers, then the adds (at most 3 per row, 2 per expert) with each
+// batch's row bounds (2 per expert), rows, weights
+size_t adds_cap(int64_t chunk, int64_t n_expert) { return (size_t) (chunk * K * 3 + n_expert * 4); }
+
+// a native layer whose expert types llama.cpp's MMQ covers takes it (STRATA_PREFILL_MMQ=0: FP16 for every layer)
+bool mmq_layer(const strata::kernels::cpu::NativeFmt& f) {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_PREFILL_MMQ");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    return on && strata::kernels::cpu::expert_layout().native && mmq::supported(f.gu_type) && mmq::supported(f.d_type);
+}
+bool mmq_any() {
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    for (const auto& f : lay.fmt) if (mmq_layer(f)) return true;
+    return false;
+}
 size_t up_bytes(int64_t chunk, int64_t n_expert) {
     return (size_t) NPTR * (size_t) n_expert * sizeof(void*) + (adds_cap(chunk, n_expert) + (size_t) chunk * K * 2) * 4;
 }
@@ -65,11 +84,14 @@ struct ExpertRunner::Impl {
     cudaEvent_t t0 = nullptr, t1 = nullptr;   // the previous layer's GPU time (remote), read at the next one
     bool timed = false, live[SLOTS] = {};
     Gemm gemm;
+    std::unique_ptr<mmq::Context> mmq_ctx;   // the MMQ layers' launches (null: none)
     void* owned = nullptr;   // the buffers' own allocation (no region)
     uint16_t *input = nullptr, *xs = nullptr, *hh = nullptr, *dq_gu = nullptr, *dq_d = nullptr;
     float *sum = nullptr, *w = nullptr, *gu = nullptr, *d = nullptr;
     int32_t* rows_src = nullptr;
-    int32_t* adds = nullptr;   // per batch: its tokens, their row lists' starts, the row lists (moe_gather_add)
+    int32_t* adds = nullptr;   // per batch: its tokens, their row lists' starts, the row lists (moe_gather_add), bounds
+    uint8_t* xq = nullptr;     // MMQ: a batch's rows as q8_1 (gate/up's input, then down's)
+    int32_t* ident = nullptr;  // MMQ: the identity row map
     std::vector<int32_t> mark, first, count;
     uint8_t* stage[SLOTS] = {};
     void** ptrs = nullptr;                    // NPTR arrays of n_expert device pointers
@@ -96,7 +118,7 @@ struct ExpertRunner::Impl {
         float* sum = remote ? a.take<float>(t * N, ok) : nullptr;
         int32_t* rows_src = a.take<int32_t>(t * K, ok);
         float* w = a.take<float>(t * K, ok);
-        int32_t* adds = a.take<int32_t>(t * K * 3 + (size_t) n_expert * 2, ok);
+        int32_t* adds = a.take<int32_t>(adds_cap(T, n_expert), ok);
         uint16_t* xs = a.take<uint16_t>((size_t) ROWS * N, ok);
         float* gu = a.take<float>((size_t) ROWS * FF2, ok);
         uint16_t* hh = a.take<uint16_t>((size_t) ROWS * FF, ok);
@@ -108,7 +130,11 @@ struct ExpertRunner::Impl {
             for (auto& p : stage) p = a.take<uint8_t>((size_t) G * blob_cap(), ok);
         void** ptrs = a.take<void*>((size_t) NPTR * (size_t) n_expert, ok);
         *ws = a.take<uint8_t>(GEMM_WS, ok);
+        const bool q = mmq_any();
+        uint8_t* xq = q ? a.take<uint8_t>(mmq::q8_bytes(ROWS, N), ok) : nullptr;
+        int32_t* ident = q ? a.take<int32_t>((size_t) ROWS, ok) : nullptr;
         if (m == nullptr) return;
+        m->xq = xq; m->ident = ident;
         m->input = input; m->sum = sum; m->rows_src = rows_src; m->w = w; m->adds = adds;
         m->xs = xs; m->gu = gu; m->hh = hh; m->d = d; m->dq_gu = dq_gu; m->dq_d = dq_d;
         for (int i = 0; i < SLOTS; ++i) m->stage[i] = stage[i];
@@ -188,6 +214,7 @@ bool ExpertRunner::init(int device, int main_device, void* stream, core::ExpertS
         if (err.empty()) err = "prompt experts: streams or events";
         return false;
     }
+    if (mmq_any()) m.mmq_ctx = std::make_unique<mmq::Context>();
     // the input and the sums: pinned and portable, both GPUs copy them
     if (m.remote && (cudaHostAlloc((void**) &m.h_input, (size_t) max_chunk * N * 2, cudaHostAllocPortable) != cudaSuccess ||
                      cudaHostAlloc((void**) &m.h_sum, (size_t) max_chunk * N * 2, cudaHostAllocPortable) != cudaSuccess)) {
@@ -333,6 +360,9 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
     const auto& f = lay.fmt.empty() ? strata::kernels::cpu::NativeFmt{} : lay.fmt[(size_t) layer];
     const size_t bb = (size_t) lay.blob_bytes(layer);
     const size_t stride = (bb + 255) & ~(size_t) 255;   // staging: a run of arena blobs lands as one copy when equal
+    const bool use_mmq = m.mmq_ctx != nullptr && mmq_layer(f);
+    const size_t gub = use_mmq ? mmq::matrix_bytes(f.gu_type, FF2, N) : 0;
+    const size_t db = use_mmq ? mmq::matrix_bytes(f.d_type, N, FF) : 0;
     auto held = [&](int32_t e) -> int32_t {
         return m.res && m.cache ? m.res[(size_t) layer * (size_t) m.n_expert + (size_t) e] : -1;
     };
@@ -378,7 +408,7 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
     }
     // per batch, its tokens and each one's rows in order (a token may be routed to several of the batch's experts):
     // [tokens | starts (n + 1) | rows] at adds_at[b]
-    std::vector<size_t> adds_at(batches.size());
+    std::vector<size_t> adds_at(batches.size()), bounds_at(batches.size());
     std::vector<int32_t> ntok(batches.size());
     size_t n_adds = 0;
     for (size_t b = 0; b < batches.size(); ++b) {
@@ -409,6 +439,8 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
         }
         for (int32_t r = r0; r < r1; ++r) h_list[m.count[(size_t) m.first[(size_t) src[(size_t) r]]]++] = r;
         for (int32_t t : toks) m.mark[(size_t) t] = -1;
+        bounds_at[b] = n_adds;   // MMQ: the batch's experts' rows, from the batch's first
+        for (size_t j = batches[b].first; j <= batches[b].second; ++j) h_adds[n_adds++] = off[j] - r0;
     }
     if (m.remote) {
         cudaStreamWaitEvent(m.s, input_ready, 0);
@@ -425,6 +457,7 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
         cudaMemcpyAsync(m.rows_src, h_rows, n_rows * 4, cudaMemcpyHostToDevice, m.s);
         cudaMemcpyAsync(m.w, h_w, n_rows * 4, cudaMemcpyHostToDevice, m.s);
     }
+    if (use_mmq) mmq::iota(m.ident, ROWS, m.s);   // each layer: the local runner's buffers share the dense steps'
     cudaEventRecord(m.up_done, m.s);
     m.up_live = true;
     if (m.remote) cudaMemsetAsync(m.sum, 0, (size_t) T * N * 4, m.s);
@@ -468,7 +501,19 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
         for (size_t j = j0; j < j1; ++j)
             if (held(experts[j]) < 0 && pre(experts[j]) >= 0) last_grp = std::max(last_grp, m.pre_grp[(size_t) experts[j]]);
         if (last_grp >= 0) cudaStreamWaitEvent(m.s, m.pre_ev[(size_t) last_grp], 0);
-        if (lay.native)
+        const int64_t r0 = off[j0], rows = off[j1] - r0;
+        const bool q = use_mmq && rows <= ROWS;   // an expert with more rows is multiplied in pieces, in FP16
+        if (q) {
+            // the batch's GGUF blocks side by side in the dequantization buffers' place (MMQ reads the experts at
+            // one stride), a zeroed tail after them
+            for (size_t j = j0; j < j1; ++j) {
+                const uint8_t* bl = (const uint8_t*) P[0 * E + j];
+                mmq::gather_native(bl, bl + f.up_off, gub / 2, bl + f.down_off, db, (uint8_t*) m.dq_gu + (j - j0) * gub,
+                                   (uint8_t*) m.dq_d + (j - j0) * db, m.s);
+            }
+            cudaMemsetAsync((uint8_t*) m.dq_gu + (size_t) n * gub, 0, MMQ_TAIL, m.s);
+            cudaMemsetAsync((uint8_t*) m.dq_d + (size_t) n * db, 0, MMQ_TAIL, m.s);
+        } else if (lay.native)
             strata::kernels::iq_dequant_experts_f16(f.gu_type, f.d_type, (const uint8_t* const*) (m.ptrs + 0 * E + j0), n,
                                                     f.up_off, f.down_off, f.n_ff, f.n_embd, m.dq_gu, m.dq_d, m.s);
         else
@@ -480,7 +525,6 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
             m.pre_live = true;
         }
         for (size_t j = j0; j < j1; ++j) if (held(experts[j]) >= 0) ++experts_resident;
-        const int64_t r0 = off[j0], rows = off[j1] - r0;
         if (rows > ROWS) {   // one expert: its rows in pieces
             for (int64_t p = 0; p < rows; p += ROWS) {
                 const int64_t nr = std::min<int64_t>(ROWS, rows - p);
@@ -490,6 +534,27 @@ bool ExpertRunner::run_layer(int64_t layer, int64_t T, const std::vector<int32_t
                 m.gemm.f16(m.hh, m.dq_d, m.d, nr, N, FF);
                 moe_scatter_add(out, m.d, m.w + r0 + p, m.rows_src + r0 + p, nr, m.s);
             }
+            continue;
+        }
+        if (q) {
+            // the rows in FP32 in down's output place, as q8_1 for the gate/up product; h in the FP16 rows' place
+            gather_rows16_f32(in, m.rows_src + r0, m.d, rows, N, m.s);
+            mmq::quantize(m.d, nullptr, m.xq, f.gu_type, N, N, rows, m.s);
+            int64_t maxr = 0;
+            for (size_t j = j0; j < j1; ++j) maxr = std::max<int64_t>(maxr, off[j + 1] - off[j]);
+            mmq::Product p;
+            p.w = m.dq_gu; p.type = f.gu_type; p.w_rows = FF2; p.w_cols = N; p.expert_bytes = gub; p.n = n;
+            p.xq = m.xq; p.bounds = m.adds + bounds_at[b]; p.ids = m.ident; p.total_rows = rows; p.max_rows = maxr;
+            p.dst = m.gu; p.ld_dst = FF2;
+            m.mmq_ctx->run(p, m.s);
+            float* h = (float*) m.xs;
+            mmq::swiglu(m.gu, h, rows, FF, false, m.s);
+            mmq::quantize(h, nullptr, m.xq, f.d_type, FF, FF, rows, m.s);
+            p.w = m.dq_d; p.type = f.d_type; p.w_rows = N; p.w_cols = FF; p.expert_bytes = db;
+            p.dst = m.d; p.ld_dst = N;
+            m.mmq_ctx->run(p, m.s);
+            const int32_t* a = m.adds + adds_at[b];
+            moe_gather_add(out, m.d, r0, m.w, a, a + ntok[b], a + 2 * ntok[b] + 1, ntok[b], m.s);
             continue;
         }
         gather_rows16(in, m.rows_src + r0, m.xs, rows, N, m.s);

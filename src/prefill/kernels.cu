@@ -412,6 +412,19 @@ __global__ void gather_rows16_kernel(const uint16_t* __restrict__ x, const int32
     const int64_t r = i / per, j = i % per;
     reinterpret_cast<uint4*>(dst)[r * per + j] = reinterpret_cast<const uint4*>(x)[(int64_t) src[r] * per + j];
 }
+__global__ void gather_rows16_f32_kernel(const uint16_t* __restrict__ x, const int32_t* __restrict__ src,
+                                         float* __restrict__ dst, int64_t n, int64_t width) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // 8 values
+    const int64_t per = width / 8;
+    if (i >= n * per) return;
+    const int64_t r = i / per, j = i % per;
+    const uint4 v = reinterpret_cast<const uint4*>(x)[(int64_t) src[r] * per + j];
+    const __half2* h = reinterpret_cast<const __half2*>(&v);
+    float4* o = reinterpret_cast<float4*>(dst + r * width + j * 8);
+    const float2 a = __half22float2(h[0]), b = __half22float2(h[1]), c = __half22float2(h[2]), d = __half22float2(h[3]);
+    o[0] = make_float4(a.x, a.y, b.x, b.y);
+    o[1] = make_float4(c.x, c.y, d.x, d.y);
+}
 __global__ void moe_shared_gate_kernel(float* __restrict__ x, const float* __restrict__ sg, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * N) return;
@@ -609,6 +622,11 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     if (n <= 0) return;
     gather_rows16_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst16, n, width);
     check("gather_rows16");
+}
+void gather_rows16_f32(const uint16_t* x16, const int32_t* src, float* dst, int64_t n, int64_t width, void* stream) {
+    if (n <= 0) return;
+    gather_rows16_f32_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst, n, width);
+    check("gather_rows16_f32");
 }
 __global__ void sums_to_f16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
