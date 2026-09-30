@@ -1521,16 +1521,9 @@ int main(int argc, char** argv) {
             check(cudaMemset(deadT.p, 0, (size_t) IDXD * 4), "zero");
             check(cudaMemset(tailT.p, 0, trows7 * 4), "zero");
             strata::kernels::QsaIndexerBuffers bufsT{tailT.p, deadT.p, pooledT.p, bposT.p};
-            for (int64_t t = 0; t < R; ++t) {          // one block: positions BASE..BASE+R-1
-                check(cudaMemcpy(drawT.p, &rawb[(size_t) t * IDXD], (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw");
-                const int32_t tp = (int32_t) t;   // the DEVICE cell index; pos_base carries the offset
-                check(cudaMemcpy(dposT.p, &tp, 4, cudaMemcpyHostToDevice), "pos");
-                strata::kernels::indexer_key_append(drawT.p, dposT.p, BASE7, dw_kn.p, EPS, bufsT, S,
-                                                    dct7.p, dst7.p, (void*) cs7);
-            }
-            check(cudaStreamSynchronize(cs7), "sync");
-            // the host expectation for the completed row and the spare, from the CONFIGURED tables
-            std::vector<double> exp0((size_t) IDXD, 0.0), expS((size_t) IDXD, 0.0), expB((size_t) IDXD, 0.0);
+            // the host expectations, from the CONFIGURED tables: the spare (position 0) and the completed
+            // block row (position BASE)
+            std::vector<double> expS((size_t) IDXD, 0.0), expB((size_t) IDXD, 0.0);
             const size_t row100 = (size_t) (BASE7 % TPOS7) * half7;
             for (int64_t d = 0; d < half7; ++d) {
                 const double c0 = ct7[(size_t) d], s0 = st7[(size_t) d];
@@ -1541,39 +1534,43 @@ int main(int argc, char** argv) {
                 expB[(size_t) d + half7] = pool_un[(size_t) d] * sb + pool_un[(size_t) d + half7] * cb;
             }
             for (int64_t d = NR7; d < IDXD; ++d) { expB[(size_t) d] = pool_un[(size_t) d]; expS[(size_t) d] = spare_un[(size_t) d]; }   // partial RoPE: from n_rot on, the tail passes through
-            const std::vector<float> dh = deadT.get((size_t) IDXD), ph = pooledT.get(prows7);
-            double worst_s = 0.0, worst_b = 0.0;
-            for (int64_t d = 0; d < IDXD; ++d) {
-                const double den_s = std::fabs(expS[(size_t) d]) + 1e-30;
-                worst_s = std::max(worst_s, std::fabs((double) dh[(size_t) d] - expS[(size_t) d]) / den_s);
-                const double den_b = std::fabs(expB[(size_t) d]) + 1e-30;
-                worst_b = std::max(worst_b, std::fabs((double) ph[(size_t) d] - expB[(size_t) d]) / den_b);
+
+            // ---- append 1: cell 0, position 0.  The spare lands in dead AND pooled[0]; BOTH are checked
+            // right here, before later appends can overwrite the pooled[0] copy of the evidence.
+            {   check(cudaMemcpy(drawT.p, raw0.data(), (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw0");
+                const int32_t tp0 = 0;                     // the DEVICE cell index; pos_base carries the offset
+                check(cudaMemcpy(dposT.p, &tp0, 4, cudaMemcpyHostToDevice), "pos0");
+                strata::kernels::indexer_key_append(drawT.p, dposT.p, BASE7, dw_kn.p, EPS, bufsT, S,
+                                                    dct7.p, dst7.p, (void*) cs7);
             }
-            std::printf("  %-40s spare rel %.2e, block rel %.2e\n", v.name, worst_s, worst_b);
-            if (!(worst_s <= 1e-5) || !(worst_b <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
-            // pooled[0] must hold the SAME key as dead, word for word
-            int join_bad = 0;
-            for (int64_t d = 0; d < IDXD; ++d)
-                join_bad += std::memcmp(&ph[(size_t) IDXD + d], &dh[(size_t) d], 4) != 0;   // the spare row
+            check(cudaStreamSynchronize(cs7), "sync0");
+            const std::vector<float> dh = deadT.get((size_t) IDXD), p0 = pooledT.get((size_t) IDXD);
+            double worst_s = 0.0, worst_p = 0.0;
+            for (int64_t d = 0; d < IDXD; ++d) {
+                const double den = std::fabs(expS[(size_t) d]) + 1e-30;
+                worst_s = std::max(worst_s, std::fabs((double) dh[(size_t) d] - expS[(size_t) d]) / den);
+                worst_p = std::max(worst_p, std::fabs((double) p0[(size_t) d] - expS[(size_t) d]) / den);
+            }
+            std::printf("  %-40s dead rel %.2e, pooled[0] rel %.2e\n", v.name, worst_s, worst_p);
+            if (!(worst_s <= 1e-5) || !(worst_p <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
+            int join_bad = 0;   // the two buffers must hold the SAME spare key, word for word
+            for (int64_t d = 0; d < IDXD; ++d) join_bad += std::memcmp(&p0[(size_t) d], &dh[(size_t) d], 4) != 0;
             if (join_bad) { std::printf("    *** pooled[0] != dead (%d words) ***\n", join_bad); ++g_bad; }
-            // the independent magnitude check: the yarn formula computed HERE, not read from the table
             if (v.type == strata::kernels::RopeScalingType::YaRN && v.factor != 1.0) {
-                const double ms_ind = 1.0 * (1.0 + 0.1 * std::log(v.factor));   // the yarn formula, here
+                // the magnitude multiplier against the yarn formula computed HERE, not read from the table
+                const double ms_ind = 1.0 * (1.0 + 0.1 * std::log(v.factor));
                 double worst_ms = 0.0;
-                for (int64_t d = 0; d < half7; ++d) {   // sin row 0 is exactly 0: the pair scales, not mixes
+                for (int64_t d = 0; d < NR7; ++d) {    // the rotated region only; the tail is unscaled by design
                     worst_ms = std::max(worst_ms, std::fabs((double) dh[(size_t) d] - spare_un[(size_t) d] * ms_ind) /
                                                      (std::fabs(spare_un[(size_t) d] * ms_ind) + 1e-30));
                 }
-                std::printf("  %-40s independent mscale %.6f, spare rel %.2e\n", "magnitude vs the yarn formula",
+                std::printf("  %-40s independent mscale %.6f, dead rel %.2e\n", "magnitude vs the yarn formula",
                             ms_ind, worst_ms);
                 if (!(worst_ms <= 1e-5)) { std::printf("    *** the multiplier is wrong ***\n"); ++g_bad; }
             }
-            // identity cases (none, and yarn with a unit multiplier): the position-0 rotation degenerates
-            // to a*1 - b*0 / a*0 + b*1, which is exact in fp32 - the spare must stay BIT-EXACT to the
-            // unrotated float cast, preserving the established unscaled outputs.
+            int ident_bad = 0;   // identity cases (none, yarn with a unit multiplier): exact to the cast
             if (v.type == strata::kernels::RopeScalingType::None ||
                 (v.type == strata::kernels::RopeScalingType::YaRN && v.factor == 1.0)) {
-                int ident_bad = 0;
                 for (int64_t d = 0; d < IDXD; ++d) {
                     const float want = (float) spare_un[(size_t) d];
                     ident_bad += std::memcmp(&dh[(size_t) d], &want, 4) != 0;
@@ -1582,6 +1579,24 @@ int main(int argc, char** argv) {
                             (std::string("identity case, ") + v.name).c_str(), ident_bad, (size_t) IDXD);
                 if (ident_bad) { std::printf("    *** the identity case moved a value ***\n"); ++g_bad; }
             }
+
+            // ---- appends 2..4: cells 1..3 complete the block, which rotates pooled row 0 at BASE
+            for (int64_t t = 1; t < R; ++t) {
+                check(cudaMemcpy(drawT.p, &rawb[(size_t) t * IDXD], (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw");
+                const int32_t tp = (int32_t) t;   // the DEVICE cell index; pos_base carries the offset
+                check(cudaMemcpy(dposT.p, &tp, 4, cudaMemcpyHostToDevice), "pos");
+                strata::kernels::indexer_key_append(drawT.p, dposT.p, BASE7, dw_kn.p, EPS, bufsT, S,
+                                                    dct7.p, dst7.p, (void*) cs7);
+            }
+            check(cudaStreamSynchronize(cs7), "sync");
+            const std::vector<float> ph = pooledT.get(prows7);
+            double worst_b = 0.0;
+            for (int64_t d = 0; d < IDXD; ++d) {
+                const double den_b = std::fabs(expB[(size_t) d]) + 1e-30;
+                worst_b = std::max(worst_b, std::fabs((double) ph[(size_t) d] - expB[(size_t) d]) / den_b);
+            }
+            std::printf("  %-40s completed block rel %.2e\n", v.name, worst_b);
+            if (!(worst_b <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
             if (v.type == strata::kernels::RopeScalingType::None) none_row0 = ph;
             else if (v.factor != 1.0) {   // observability: a scaled row must differ from the none row.
                                           // yarn 1 is exempt: fs = 1 makes its angles and mscale exactly

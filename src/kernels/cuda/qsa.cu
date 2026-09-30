@@ -193,19 +193,25 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
         // fixture, not a proof over every input).
         // The barrier first: the pairing below reads the partner element another thread has just written,
         // and every thread of the block is inside this branch (pos is uniform), so the sync is uniform too.
-        // OWNERSHIP after the barrier: thread d (< half) is the SINGLE owner of pair {d, d+half} - it
-        // reads BOTH original values (rope_neox_pair takes them by value, so both are in registers
-        // before either output lands) and writes both outputs; no other participating thread touches
-        // either element, and threads >= half read and write nothing.  No read can race a write, and
-        // no second cross-thread dependency exists after the rotation - this one barrier is the only
-        // synchronization the pairing needs.
-        __syncthreads();
+        // OWNERSHIP of the ROTATION: thread d (< half) is the single owner of pair {d, d+half} - it reads
+        // BOTH original values (rope_neox_pair takes them by value, so both are in registers before either
+        // output lands) and writes both outputs to BOTH buffers.  No cross-thread copy follows: a
+        // __syncthreads before the copy was tried first and was empirically insufficient - the compiled
+        // kernel placed the copy's load of dead[d] BEFORE the barrier (legal for the d < half threads,
+        // racy for d >= half, deterministically reproducing the unscaled second half).  Writing each
+        // element's owner directly to both buffers removes the hazard by construction.
+        __syncthreads();       // the pairing reads the partner element written by another thread above
         const int half = n_rot / 2;
         if (d < half) {
             const size_t toff = (size_t) mrope_pos(mtab, 0, d) * half;   // position 0's table row
-            rope_neox_pair(dead[d], dead[half + d], cos_tab[toff + d], sin_tab[toff + d], dead[d], dead[half + d]);
+            float oa, ob;
+            rope_neox_pair(dead[d], dead[half + d], cos_tab[toff + d], sin_tab[toff + d], oa, ob);
+            dead[d] = oa;        dead[half + d] = ob;
+            pooled[d] = oa;      pooled[half + d] = ob;
+        } else if (d >= n_rot) {
+            pooled[d] = dead[d];   // the pass-through elements, by their own thread (no partner reads)
         }
-        pooled[d] = dead[d];     // own element: no partner read after the barrier above
+        // elements [half, n_rot) of both buffers are the pair owners' ob writes above
     }
 
     if (slot != r - 1) return;
