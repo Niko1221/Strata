@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -794,29 +796,18 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
             }
 
     const double t_manifest = delta_ms_since(t_start);
-    // ---- step 2: every chunk and the State record, fully validated (existence, key/range, file size, footer
-    // digest, identity via the tag) BEFORE anything is assembled.  A payload must also equal what THIS
-    // geometry's slice math says - the shapes were checked, but the arrays' formats are the live engine's word.
+    // ---- step 2: the State record, read and fully validated on the CALLER'S thread (existence, key, size,
+    // footer digest, identity via the tag, and the payload equal to what THIS geometry's slice math says -
+    // the shapes were checked, but the arrays' formats are the live engine's word).  The chunks fan out to
+    // workers below (the restore-perf handoff's Phase A); each chunk gets the SAME validation there, and every
+    // refusal in this function still happens before the first CUDA call, so it provably writes nothing to the
+    // session (P6) - the workers run host reads, digests and memcpys only (R2).
     const uint64_t tag = delta_tag(g, h.kv_format, h.cvec != 0, weights_fp, sh.block);
     // the chunk span this manifest was written with (0 = the pre-grouping layout: one block per chunk)
     const int64_t K = h.blocks_per_chunk > 0 ? h.blocks_per_chunk : 1;
     const int64_t T = h.L, S = delta_sealed(T, sh);
     const int64_t pages_per_chunk = sh.block * K / sh.shapes.page_size;
     const std::string dir = fs::path(e.path).parent_path().string();
-    std::vector<std::vector<uint8_t>> chunk_payloads(refs.size());
-    for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
-        const std::string path = dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin";
-        std::vector<uint8_t>& payload = chunk_payloads[(size_t) j];
-        if (!delta_read_chunk(path, refs[(size_t) j].key, refs[(size_t) j].a, refs[(size_t) j].a + sh.block * K,
-                              payload, err))
-            return Restore::invalid;   // the read's message already names the chunk and the reason
-        const int64_t want = delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[(size_t) j].a);
-        if (payload.size() != (size_t) want) {
-            err = "kv-delta: chunk " + path + ": payload " + std::to_string(payload.size()) +
-                  " bytes, this geometry's slice math says " + std::to_string(want);
-            return Restore::invalid;
-        }
-    }
     const std::string state_path = dir + "/states/" + delta_key_name(h.state_key) + ".bin";
     std::vector<uint8_t> state;
     if (!delta_read_state(state_path, tag, h.state_key, state, err)) return Restore::invalid;
@@ -829,9 +820,11 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         }
     }
 
-    const double t_chunks = delta_ms_since(t_start);
     // ---- step 3: assemble the EXACT v3 image in one buffer (the whole-file staging the v3 restore already
     // does - the measured, accepted C10 cost), interleaving chunk and State slices per the v3 walk's order.
+    // Phase A: the walk RECORDS each chunk slice's destination (the workers place them as they read), while
+    // every State-side and header put is written here, on the caller's thread - the destination offsets are
+    // byte-for-byte the ones the sequential assembly produced (same walk, same running offset).
     const bool has_ple = ss.ple_hist != nullptr;
     const int64_t pagesT = (T + sh.shapes.page_size - 1) / sh.shapes.page_size;
     const int64_t rowsT = strata::kernels::qsa_pooled_rows(T, sh.shapes);
@@ -861,9 +854,11 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                                  (size_t) arr_total +   // the drafter: T <= max_cells, so the ring covers the prefix
                                  sizeof(uint64_t);
     std::vector<uint8_t> buf(payload_bytes, 0);
-    // the RAM this promote stages, for the record (the KV line's staging_bytes).  Reported from the size of the
-    // buffer, which is what the C10 cost IS; nothing here changes what the buffer holds.
-    if (image_bytes) *image_bytes = payload_bytes;
+
+    // each chunk's placement plan: (destination in the image, source offset in the chunk's payload, bytes).
+    // The workers' writes are DISJOINT by construction - every destination comes from this one walk.
+    struct ChunkSlice { size_t dest, src, bytes; };
+    std::vector<std::vector<ChunkSlice>> chunk_plans(refs.size());
 
     NvmeHeader v3;
     v3.L = T;
@@ -875,6 +870,10 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     v3.mtp_host = h.mtp_host;
     size_t at = 0;
     auto put = [&](const void* p, size_t n) { std::memcpy(buf.data() + at, p, n); at += n; };
+    auto put_chunk = [&](int64_t j, size_t src, size_t n) {   // recorded, not written: a worker places it
+        chunk_plans[(size_t) j].push_back({at, src, n});
+        at += n;
+    };
     put(&v3, sizeof v3);
     put(ids.data(), (size_t) T * 4);
     if (!imgs.empty()) put(imgs.data(), imgs.size() * sizeof(ConversationImageKey));
@@ -887,14 +886,14 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         for (int k = 0; k < n_arrays; ++k) {
             const size_t slice = (size_t) (pages_per_chunk * page_kv * widths[k]);
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-                put(chunk_payloads[(size_t) j].data() + ch_base + (size_t) ch_off, slice);
+                put_chunk(j, ch_base + (size_t) ch_off, slice);
             put(state.data() + st_base + (size_t) st_off, (size_t) (st_pages * page_kv * widths[k]));
             ch_off += (int64_t) slice;
             st_off += (int64_t) (st_pages * page_kv * widths[k]);
         }
         const size_t rows_slice = (size_t) ((sh.span / sh.shapes.idx_block) * idx4);
         for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-            put(chunk_payloads[(size_t) j].data() + ch_base + (size_t) ch_off, rows_slice);
+            put_chunk(j, ch_base + (size_t) ch_off, rows_slice);
         put(state.data() + st_base + (size_t) st_off, (size_t) (st_rows * idx4));
         st_off += (int64_t) (st_rows * idx4);
         put(state.data() + st_base + (size_t) st_off, z.tail);   st_off += (int64_t) z.tail;
@@ -912,12 +911,67 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
             const size_t csz = (size_t) (pages_per_chunk * page_kv * widths[k]);
             const size_t ssz = (size_t) (st_pages * page_kv * widths[k]);
             for (int64_t j = 0; j < (int64_t) refs.size(); ++j)
-                put(chunk_payloads[(size_t) j].data() + ch_drafter + (size_t) ch_dr, csz);
+                put_chunk(j, ch_drafter + (size_t) ch_dr, csz);
             put(state.data() + st_drafter_base + (size_t) st_dr, ssz);
             ch_dr += (int64_t) csz;
             st_dr += (int64_t) ssz;
         }
     }
+
+    // ---- step 3.5: THE FAN-OUT (the restore-perf handoff's Phase A).  N workers (std::thread + an atomic
+    // index, no new dependency) each take the next chunk: open/read of the payload, the FNV digest check, the
+    // slice-math size check, and the placement memcpys into the image - host reads, digests and copies only,
+    // NO CUDA (R2).  A worker keeps ONE payload buffer and reuses it across chunks.  Any refusal aborts the
+    // restore as `invalid` with the chunk named; the error reported is the FIRST failure in CHUNK ORDER
+    // (lowest index), collected and chosen after the join, so the refusals stay deterministic despite the
+    // pool.  nvme_restore_image itself still runs on the caller's thread, after the join.
+    std::atomic<int64_t> next_j(0);
+    std::atomic<bool> any_failed(false);
+    std::vector<std::string> chunk_errs(refs.size());
+    std::atomic<uint64_t> read_back_chunks(0);
+    {
+        const int64_t n_workers = std::min<int64_t>(4, (int64_t) refs.size());
+        auto worker = [&](int) {
+            std::vector<uint8_t> payload;   // ONE buffer per worker, reused for every chunk it takes
+            for (;;) {
+                if (any_failed.load(std::memory_order_relaxed)) return;   // another worker already refused
+                const int64_t j = next_j.fetch_add(1);
+                if (j >= (int64_t) refs.size()) return;
+                const std::string path = dir + "/chunks/" + delta_key_name(refs[(size_t) j].key) + ".bin";
+                std::string werr;
+                if (!delta_read_chunk(path, refs[(size_t) j].key, refs[(size_t) j].a,
+                                      refs[(size_t) j].a + sh.block * K, payload, werr)) {
+                    chunk_errs[(size_t) j] = werr;   // already names the chunk and the reason
+                    any_failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                const int64_t want = delta_chunk_payload_bytes(ss, mtp_state, g, sh, refs[(size_t) j].a);
+                if (payload.size() != (size_t) want) {
+                    chunk_errs[(size_t) j] = "kv-delta: chunk " + path + ": payload " +
+                                            std::to_string(payload.size()) + " bytes, this geometry's slice math "
+                                            "says " + std::to_string(want);
+                    any_failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                for (const ChunkSlice& s : chunk_plans[(size_t) j])
+                    std::memcpy(buf.data() + s.dest, payload.data() + s.src, s.bytes);
+                read_back_chunks.fetch_add((uint64_t) payload.size(), std::memory_order_relaxed);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (int64_t w = 0; w < n_workers; ++w) pool.emplace_back(worker, (int) w);
+        for (std::thread& t : pool) t.join();   // the join barrier: the image is complete only after this
+    }
+    for (int64_t j = 0; j < (int64_t) refs.size(); ++j) {
+        if (!chunk_errs[(size_t) j].empty()) {
+            err = chunk_errs[(size_t) j];   // the LOWEST failing index - deterministic despite the pool
+            return Restore::invalid;
+        }
+    }
+    const double t_chunks = delta_ms_since(t_start);
+    // the RAM this promote stages, for the record (the KV line's staging_bytes): reported only once every
+    // refusal is past, so a refused restore stages NOTHING (P6's counter side - the fixture asserts it).
+    if (image_bytes) *image_bytes = payload_bytes;
     // the walk must land exactly on the footer - an assembly bug here would otherwise hide behind the digest
     // check as a mysterious "corrupt" verdict, so it refuses loudly instead
     if (at + sizeof(uint64_t) != payload_bytes) {
@@ -938,8 +992,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
     if (delta_timing_on()) {
         // one line, all phases: read-back volume for context, then ms per phase, then the process's peak RSS
         // (VmHWM) beside the RSS the process held at entry, so the promote's OWN transient is the difference.
-        uint64_t read_back = state.size();
-        for (const std::vector<uint8_t>& p : chunk_payloads) read_back += p.size();
+        const uint64_t read_back = state.size() + read_back_chunks.load(std::memory_order_relaxed);
         uint64_t hwm_mb = 0, now_mb = 0;
         delta_rss_mb(hwm_mb, now_mb);
         std::fprintf(stderr,
