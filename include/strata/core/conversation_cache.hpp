@@ -118,6 +118,10 @@ public:
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
     size_t retained_bytes() const { return reuse_.bytes(); }
+    bool can_fit(size_t incoming, size_t held = 0) const {
+        return enabled() && held <= budget_ && incoming <= budget_ - held &&
+               entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+    }
 
     template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {

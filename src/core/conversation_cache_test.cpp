@@ -47,6 +47,17 @@ int main() {
         check(bytes.allocation_peak(SIZE_MAX) == SIZE_MAX, "allocation estimate rejects overflow");
     }
     {
+        ConversationBuffer bytes;
+        for (size_t n=1;n<=4096;++n) {
+            const size_t peak = bytes.allocation_peak(n*17);
+            bytes.resize(n*17,7);
+            check(bytes.bytes() <= peak,"small append stays within the predicted allocation peak");
+        }
+        size_t segments = 0;
+        bytes.visit(0,bytes.size(),[&](const uint8_t*,size_t,size_t){++segments;return true;});
+        check(segments <= 4,"thousands of small turns do not create thousands of restore transfers");
+    }
+    {
         ConversationKv layer;
         layer.k.resize(400);
         std::vector<ConversationKv> layers;
@@ -62,6 +73,10 @@ int main() {
         check(reuse.unchanged_tokens == 9, "a later continuation cannot undo a rewind's dirty boundary");
         check(cache.bytes() == parked, "taking retained buffers releases their budget accounting");
         cache.retain(std::move(reuse.kv), 16);
+        check(!cache.can_fit(parked),"retained storage is counted when checking a capture without eviction");
+        check(cache.retained_bytes() == retained && cache.size() == 1 && cache.evictions() == 0,
+              "optional reuse admission does not evict or release anything");
+        check(!cache.can_fit(SIZE_MAX) && !cache.can_fit(1,SIZE_MAX),"non-mutating reservation rejects overflow");
         check(cache.make_room(parked), "reservation can discard optional active buffers");
         check(cache.retained_bytes() == 0 && cache.size() == 1 && cache.evictions() == 0,
               "pressure drops retained storage before evicting parked conversations");
