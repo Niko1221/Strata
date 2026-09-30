@@ -1247,7 +1247,14 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
             o.native_dense_gguf = model_shards(o.native_preset);
-            if (std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
+            // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
+            bool ple_only = false;
+            try {
+                strata::GgufFile pg(o.ple_gguf);
+                if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
+            } catch (const std::exception&) {}
+            if (!ple_only &&
+                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
@@ -1657,8 +1664,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: the PLE run is not ready after construction\n");
             return 1;
         }
-        std::fprintf(stderr, "strata generate: PLE on, table %llu rows of %s\n",
-                     (unsigned long long) ple_table.rows(), o.ple_gguf.c_str());
+        std::fprintf(stderr, "strata generate: PLE on, table %llu rows (%s) of %s\n",
+                     (unsigned long long) ple_table.rows(), ple_table.format(), o.ple_gguf.c_str());
     } else {
         std::fprintf(stderr,
                      "strata generate: PLE OFF by explicit --no-ple diagnostic request.\n"

@@ -1,6 +1,6 @@
 // include/strata/ngram/ple_reader.hpp - plan v0.3 P2: the n-gram table read straight from the SSD.
 //
-// The table is 320,001,536 rows of 90 bytes (26.8 GiB) and is never held in RAM: every row comes from an
+// The table is 320,001,536 rows of 90 bytes (IQ4_NL, 26.8 GiB) or 160 (FP8 E4M3, 51.2 GB) and is never held in RAM: every row comes from an
 // unbuffered 4 KiB read (platform::DirectFile). A token needs 16 rows on 16 different pages, and all 16 depend
 // on the token itself, so the only time to hide them is the embedding plus layer 0. Hence the split API:
 //
@@ -24,7 +24,7 @@
 
 namespace strata::ngram {
 
-inline constexpr uint32_t ROW_BYTES = 90;
+inline constexpr uint32_t ROW_BYTES = 90;          ///< an IQ4_NL row; `open` takes the table's own size
 inline constexpr uint32_t PAGE = 4096;
 
 struct ReaderStats {
@@ -56,13 +56,15 @@ public:
     /// validated GGUF parse (PleTable::open checks the table exactly fills the file from there).
     /// `io_thread` (default): a worker thread submits and reaps reads, so `issue` costs the caller no ReadFile
     /// calls. false: the caller's thread does it (A/B arm).
+    /// `row_bytes`: one row's size in the file (90 IQ4_NL, 160 FP8), at most one page.
     bool open(const std::string& path, uint64_t table_offset, uint64_t n_rows, uint32_t max_inflight,
-              uint64_t cache_rows, std::string& err, bool io_thread = true);
+              uint64_t cache_rows, std::string& err, bool io_thread = true, uint32_t row_bytes = ROW_BYTES);
+    uint32_t row_bytes() const;
     void close();
     bool is_open() const;
 
-    /// Start fetching `n` rows; row i's 90 raw bytes land at `out_raw + 90 * i`. `out_raw` must stay valid
-    /// until `collect` returns. Out-of-range rows produce 90 zero bytes (the mmap path's behaviour).
+    /// Start fetching `n` rows; row i's raw bytes land at `out_raw + row_bytes * i`. `out_raw` must stay valid
+    /// until `collect` returns. Out-of-range rows produce zero bytes (the mmap path's behaviour).
     Ticket issue(const uint32_t* rows, size_t n, uint8_t* out_raw);
 
     /// Block until every row of the ticket is in `out_raw`. Returns false on an I/O error (message in `err`).
