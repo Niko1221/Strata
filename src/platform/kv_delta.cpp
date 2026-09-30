@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -104,6 +105,39 @@ FailAt fail_at_env() {
 }
 std::string fail_at_err(const char* what) {
     return std::string("kv-delta: ") + what + " aborted by STRATA_DELTA_FAIL_AT (injected crash point)";
+}
+
+/// The restore's own instrumentation (the restore-perf handoff's Phase 0): STRATA_DELTA_RESTORE_TIMING=1 makes
+/// delta_restore print ONE line - manifest scan / chunk read+digest / assemble / apply / rss peak - so the
+/// parallel-read (A) and streaming (B) work is measured, not felt.  Unset - the default, and the only shipped
+/// configuration - nothing is printed.  Read live, like STRATA_DELTA_FAIL_AT.
+bool delta_timing_on() {
+    const char* e = std::getenv("STRATA_DELTA_RESTORE_TIMING");
+    return e && e[0] && e[0] != '0';
+}
+
+/// The process's high-water RSS in MB, and the RSS at the moment of the call in MB (VmHWM / VmRSS).  The pair
+/// is what makes the restore's OWN staging visible even inside the engine: the peak minus the entry RSS is the
+/// transient the promote added.  0/0 when /proc is not there (Windows hosts) - the line then still carries the
+/// phase timings.
+void delta_rss_mb(uint64_t& hwm_mb, uint64_t& rss_mb) {
+    hwm_mb = rss_mb = 0;
+#ifndef _WIN32
+    std::FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[256];
+    while (std::fgets(line, sizeof line, f)) {
+        long long kb = 0;
+        if (std::sscanf(line, "VmHWM: %lld", &kb) == 1) hwm_mb = (uint64_t) (kb / 1024);
+        else if (std::sscanf(line, "VmRSS: %lld", &kb) == 1) rss_mb = (uint64_t) (kb / 1024);
+    }
+    std::fclose(f);
+#endif
+}
+
+using DeltaClock = std::chrono::steady_clock;
+inline double delta_ms_since(DeltaClock::time_point t0) {
+    return std::chrono::duration<double, std::milli>(DeltaClock::now() - t0).count();
 }
 
 long pid_of() {
@@ -719,6 +753,9 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                                                 std::vector<int32_t>& ids, std::vector<ConversationImageKey>& imgs,
                                                 bool& cvec, int64_t& L, std::string& err, uint64_t* image_bytes) {
     using Restore = strata::core::ConversationRestore;
+    const DeltaClock::time_point t_start = DeltaClock::now();
+    uint64_t rss_entry_mb = 0, hwm0_mb = 0;
+    if (delta_timing_on()) delta_rss_mb(hwm0_mb, rss_entry_mb);   // the engine's own RSS, before the promote
     ids.clear();
     imgs.clear();
     // ---- step 1: the manifest.  Every refusal in this function happens before the first CUDA call, so it
@@ -756,6 +793,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                 return Restore::invalid;
             }
 
+    const double t_manifest = delta_ms_since(t_start);
     // ---- step 2: every chunk and the State record, fully validated (existence, key/range, file size, footer
     // digest, identity via the tag) BEFORE anything is assembled.  A payload must also equal what THIS
     // geometry's slice math says - the shapes were checked, but the arrays' formats are the live engine's word.
@@ -791,6 +829,7 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
         }
     }
 
+    const double t_chunks = delta_ms_since(t_start);
     // ---- step 3: assemble the EXACT v3 image in one buffer (the whole-file staging the v3 restore already
     // does - the measured, accepted C10 cost), interleaving chunk and State slices per the v3 walk's order.
     const bool has_ple = ss.ple_hist != nullptr;
@@ -891,9 +930,28 @@ strata::core::ConversationRestore delta_restore(const NvmeEntry& e, SessionState
                                        payload_bytes - sizeof(NvmeHeader) - sizeof(uint64_t));
     std::memcpy(buf.data() + payload_bytes - sizeof digest, &digest, sizeof digest);
 
+    const double t_assemble = delta_ms_since(t_start);
     // ---- step 4: the EXISTING validation+apply pass, unchanged - layout walk, drift diagnostics, digest,
     // apply, the STATE_HASH gate; the failure classes are its own (§5.10 step 4)
-    return nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+    const strata::core::ConversationRestore rc =
+        nvme_restore_image(buf.data(), buf.size(), ss, mtp_state, g, ids, imgs, cvec, L, err);
+    if (delta_timing_on()) {
+        // one line, all phases: read-back volume for context, then ms per phase, then the process's peak RSS
+        // (VmHWM) beside the RSS the process held at entry, so the promote's OWN transient is the difference.
+        uint64_t read_back = state.size();
+        for (const std::vector<uint8_t>& p : chunk_payloads) read_back += p.size();
+        uint64_t hwm_mb = 0, now_mb = 0;
+        delta_rss_mb(hwm_mb, now_mb);
+        std::fprintf(stderr,
+                     "strata serve: kv-delta restore timing: manifest %.1f ms, read+digest %.1f ms, "
+                     "assemble %.1f ms, apply %.1f ms, rss peak %llu MB (entry %llu MB), T %lld, %lld chunks, "
+                     "%.2f GiB read\n",
+                     t_manifest, t_chunks - t_manifest, t_assemble - t_chunks,
+                     delta_ms_since(t_start) - t_assemble, (unsigned long long) hwm_mb,
+                     (unsigned long long) rss_entry_mb, (long long) h.L, (long long) refs.size(),
+                     (double) read_back / (double) (1LL << 30));
+    }
+    return rc;
 }
 
 

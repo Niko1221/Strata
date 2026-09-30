@@ -46,6 +46,18 @@ block, and the live server at :8080 runs `--kv-delta 1` with `STRATA_WATCHDOG_S=
 
 ## 1. Where the restore time goes (measured, 142k-token promote ≈ 10 s ≈ 14k tok/s; v3 ≈ 50k)
 
+**Before, re-measured on the merged binary (Phase 0's own line, on-device, 2026-09-30; `GEN`-driven
+143,495-token conversation, 560 chunks, 2.15 GiB read, server stopped):**
+
+```
+strata serve: kv-delta restore timing: manifest 0.5 ms, read+digest 3115.3 ms, assemble 2378.8 ms,
+                                                  apply 1887.8 ms, rss peak 50606 MB (entry 46202 MB)
+```
+
+≈ 7.4 s wall ≈ 19k tok/s, and the promote's own transient = 50,606 − 46,202 ≈ **4.4 GB** — the §1 cost model
+below is confirmed phase-by-phase (read+digest and assemble are the two ~2.5 s blocks A and B attack; the
+~1.9 s apply is the inherited v3 choreography, unchanged).
+
 | step | v3 restore | delta restore (today) |
 |---|---|---|
 | read | one sequential 2.2 GB file | 557 separate 4 MB chunk files (open/read/close + digest each) |
