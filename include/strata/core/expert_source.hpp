@@ -27,6 +27,12 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <string>
 #include <vector>
@@ -98,7 +104,24 @@ public:
     virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
     /// Plan v0.3 P6: the DEVICE address of a pinned, mapped blob (the GPU can read it over PCIe), or null.
     virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return nullptr; }
+    /// Whether a layer's misses may take the PCIe share at all (each blob still says pinned() for itself).  A
+    /// source that holds only some blobs pinned (TieredExpertSource) answers for the layer, not for expert 0.
+    virtual bool dma_capable(int64_t layer) const { return device_alias(layer, 0) != nullptr; }
+    /// Reads a blob that lives only in a file straight into `dst` (4 KiB-aligned, `cap` bytes), bypassing the OS
+    /// cache: the blob starts at dst + `pad`.  false = not such a blob (copy from blob() instead).  With little RAM
+    /// a copy through the mapped file drags its pages into the working set and Windows starts trimming.
+    virtual bool read_blob(int64_t layer, int64_t expert, uint8_t* dst, size_t cap, size_t& pad) {
+        (void) layer; (void) expert; (void) dst; (void) cap; (void) pad;
+        return false;
+    }
 };
+
+/// The physical RAM Windows (or Linux: MemAvailable, cgroup-limited) can hand out now, or 0 when unknown.
+uint64_t available_ram_bytes();
+/// The machine's physical RAM, or 0 when unknown.
+uint64_t total_ram_bytes();
+/// The RAM installed (Windows: the modules' size, a little above what the OS can use), or total_ram_bytes().
+uint64_t installed_ram_bytes();
 
 /// Plan v0.3 P6: what the GPU computes in a verify window's layer, written by the pool (mapped host memory) right
 /// after the ring and published before the CPU starts its own share.  Groups of entries that share a blob; the
@@ -423,6 +446,116 @@ private:
     double load_copy_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
     std::string gguf_;
+};
+
+// ================================ THE TIERED SOURCE (low RAM) ================================
+//
+// The resident arena above holds every expert (35.5 GB for IQ2_XS, 50 GB for IQ3_S) - with the VRAM cache's share of
+// them a second time - so a PC whose RAM cannot hold them beside the system cannot run it.  This source keeps host
+// copies only where the engine reads them:
+// a pinned, registered tier (large pages when allowed) sized to a RAM budget, filled in the order the caller
+// gives (the experts the CPU and the PCIe share compute on every token first, then the VRAM cache's tail, which
+// the prompt path borrows), and experts.bin read without the OS file cache for everything else (a decode token's
+// misses are prefetched at begin_layer; the prompt path's stager reads them with read_blob).  blob()/pinned()/
+// device_alias() say which
+// a blob is, so the dispatcher, the prompt path's stager and the refills take the right path per blob.
+//
+// The adaptive tier moves experts between VRAM and host: an evicted expert without a host copy gets a spare
+// slot (the caller copies it back from its VRAM slot before that slot is refilled: demote_begin, then
+// demote_commit once the copy has landed), and an expert that moved into VRAM gives its slot back
+// (promote_done), so the spares stay in balance.
+class TieredExpertSource : public ExpertSource {
+public:
+    TieredExpertSource() = default;
+    ~TieredExpertSource() override;
+    TieredExpertSource(const TieredExpertSource&) = delete;
+    TieredExpertSource& operator=(const TieredExpertSource&) = delete;
+
+    /// Maps `<pack_dir>/experts.bin` (the fallback for every blob outside the tier).
+    bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+    /// Allocates the tier for as many of `order`'s pairs as `budget_bytes` holds (after `spare` empty slots for
+    /// the adaptive tier) and reads them in, unbuffered.  Pairs past the budget stay file-backed.
+    bool load(const std::vector<std::pair<int32_t, int32_t>>& order, uint64_t budget_bytes, int64_t spare,
+              int threads, std::string& err);
+    /// Reads `pairs` from the file in order, `threads` at a time, handing each blob (in pinned memory, valid until
+    /// `sink` returns) to `sink(index, blob)` on the calling thread - to fill VRAM slots without a host copy.
+    bool stream(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                const std::function<bool(size_t, const uint8_t*)>& sink, int threads, std::string& err);
+
+    const uint8_t* blob(int64_t layer, int64_t expert) override;
+    bool pinned(int64_t layer, int64_t expert) const override;
+    const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
+    bool dma_capable(int64_t layer) const override { (void) layer; return registered_; }
+    bool read_blob(int64_t layer, int64_t expert, uint8_t* dst, size_t cap, size_t& pad) override;
+    void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
+    /// The room a read_blob destination needs (the largest blob plus its 4 KiB alignment on both sides).
+    uint64_t read_room() const { return stride_; }
+    int64_t reads() const override { return reads_.load(std::memory_order_relaxed); }
+
+    bool has_copy(int64_t layer, int64_t expert) const;
+    /// Its host copy, or its bytes in the mapped file - never a prefetch buffer (for copies that outlive a layer).
+    const uint8_t* stable_blob(int64_t layer, int64_t expert);
+    /// Per pair (layer * n_expert + expert): the profile's rank, 0 = most routed.  Without it nothing is evicted.
+    void set_rank(std::vector<int32_t> rank) { rank_ = std::move(rank); }
+    /// The residency table (per pair: a VRAM slot, or < 0): begin_layer prefetches only what the CPU computes.
+    void set_residency(const int32_t* host_res) { res_ = host_res; }
+    /// A slot for an expert leaving VRAM without a host copy: a spare, else the least-ranked member's (which
+    /// becomes file-backed now).  Null: it stays file-backed.  blob() keeps returning the file until demote_commit.
+    /// Call it for every swap of a batch before reading any promoted expert's bytes (stable_blob).
+    uint8_t* demote_begin(int64_t layer, int64_t expert);
+    void demote_commit(int64_t layer, int64_t expert);
+    /// The copy back failed: the slot returns to the spares and the expert stays file-backed.
+    void demote_abort(int64_t layer, int64_t expert);
+    /// An expert now resident in VRAM: its host copy (if any) becomes a spare slot.
+    void promote_done(int64_t layer, int64_t expert);
+
+    int64_t tier_slots() const { return slots_; }
+    int64_t tier_members() const { return members_; }
+    uint64_t tier_bytes() const { return (uint64_t) slots_ * stride_; }
+    int64_t spares() const { return (int64_t) free_.size(); }
+    const std::string& note() const { return note_; }
+    double load_seconds() const { return load_s_; }
+    void close();
+
+private:
+    size_t idx(int64_t layer, int64_t expert) const { return (size_t) layer * (size_t) n_expert_ + (size_t) expert; }
+    uint64_t file_offset(int64_t layer, int64_t expert) const;
+    FileExpertSource file_;
+    std::string path_;
+    void* arena_ = nullptr;                  ///< the PinnedArena, owned
+    uint8_t* base_ = nullptr;
+    uint64_t stride_ = 0;                    ///< bytes per slot: the largest blob + room for a 4 KiB-aligned read
+    int64_t slots_ = 0, members_ = 0;
+    std::vector<const uint8_t*> host_;       ///< per pair: its blob in the tier, or null (file-backed)
+    std::vector<int32_t> slot_of_;           ///< per pair: its tier slot, or -1
+    std::vector<int32_t> pending_;           ///< per pair: the slot a demotion is copying into, or -1
+    std::vector<int32_t> free_;              ///< spare slots
+    std::vector<uint64_t> slice_start_;      ///< registration slices (byte offsets), and their device aliases
+    std::vector<const uint8_t*> dev_slice_;
+    bool registered_ = false;
+    int64_t n_layers_ = 0, n_expert_ = 0;
+    std::atomic<int64_t> reads_{0}, file_reads_{0};   ///< statistics, bumped by the stager's threads too
+    std::string note_;
+    double load_s_ = 0.0;
+    std::mutex handed_mu_;
+    std::vector<std::pair<const uint8_t*, size_t>> handed_;   ///< file-backed blobs handed out since begin_layer
+    std::vector<int32_t> rank_;
+    std::vector<std::pair<int32_t, int32_t>> heap_;           ///< (rank, pair) of members: the coldest on top
+    const int32_t* res_ = nullptr;
+    // decode prefetch: the file-backed experts a layer computes on the CPU, read unbuffered into pinned buffers
+    static constexpr int kScratch = 48;
+    uint8_t* scratch_ = nullptr;
+    std::vector<int16_t> scratch_of_;                         ///< per pair: its buffer this layer, or -1
+    std::vector<int32_t> scratch_pair_;                       ///< per buffer: the pair it holds, or -1
+    std::vector<size_t> scratch_pad_;
+    std::unique_ptr<std::atomic<int>[]> scratch_state_;       ///< per buffer: 0 reading, 1 ready, -1 failed
+    std::atomic<int> scratch_busy_{0};
+    std::vector<int> jobs_;
+    std::mutex jobs_mu_;
+    std::condition_variable jobs_cv_;
+    std::vector<std::thread> readers_;
+    bool readers_quit_ = false;
+    void reader_loop();
 };
 
 }  // namespace strata::core

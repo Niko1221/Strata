@@ -86,6 +86,14 @@ On the Coder the engine's committed memory drops from 36 to ~13 GB, with the sam
 experts come from the SSD and it is much slower (setup says so). `START-HERE.bat --setup --low-ram on|off` overrides
 the choice.
 
+On Windows the low-RAM mode is a tier (`--low-ram`): RAM keeps pinned copies of as many experts as fit in the free
+RAM minus 6 GB (`STRATA_RAM_RESERVE_GIB`), most-read first: the experts outside VRAM, then the part of the VRAM
+cache the prompt path borrows. The GPU copies them by DMA like the full arena's. The rest are read from
+`experts.bin` unbuffered when needed, so the OS file cache neither grows nor gets trimmed, and they are prefetched
+per layer while decoding. It starts by itself when the pack has `experts.bin` and the experts plus 16 GiB are more
+than the RAM installed; `--no-low-ram` turns it off, `--ram-budget GIB` caps it. Its answers are the same tokens
+as the full arena's.
+
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
 

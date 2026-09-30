@@ -1823,8 +1823,10 @@ def main() -> int:
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     if low_ram:
         share = low_ram_gpu_share(model, gpu["vram_gb"])
-        ok(f"low-RAM mode: {model}'s experts ({MODELS[model]['arena_gb']:.0f} GB) are read from the model folder "
-           f"through the OS file cache instead of a copy in RAM ({ram:.0f} GB); the GPU holds ~{100 * share:.0f}% of them")
+        how = ("RAM keeps pinned copies of the most-read ones it can hold, the rest are read from the model folder"
+               if WIN else "they are read from the model folder through the OS file cache instead of a copy in RAM")
+        ok(f"low-RAM mode: {model}'s experts ({MODELS[model]['arena_gb']:.0f} GB, RAM {ram:.0f} GB): {how}; "
+           f"the GPU holds ~{100 * share:.0f}% of them")
         if share < 0.6:
             warn("most of the experts are read from the SSD while it answers: expect it to be much slower than with "
                  "enough RAM (a faster SSD and a smaller size help)")
@@ -2029,7 +2031,11 @@ def main() -> int:
     if ctx > 8192:
         args += ["--kv", kv]
     if low_ram:
-        args += ["--mmap-experts"]   # the experts from the pack's experts.bin, not copied into RAM
+        # Windows: the engine's low-RAM tier (pinned copies of what RAM can hold, unbuffered reads of the rest);
+        # elsewhere the experts mapped from the pack's experts.bin
+        args += ["--low-ram"] if WIN else ["--mmap-experts"]
+    elif a.low_ram == "off":
+        args += ["--no-low-ram"]
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.

@@ -184,6 +184,10 @@ struct Options {
     bool no_host_worker = false;
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
+    /// Low RAM (TieredExpertSource): -1 = when the pack has experts.bin and the experts plus 16 GiB exceed the RAM
+    /// installed, 0 = never (--no-low-ram), 1 = always (--low-ram)
+    int low_ram = -1;
+    double ram_budget_gib = 0.0;   ///< --ram-budget: at most this many GiB of host copies (implies --low-ram)
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -438,7 +442,12 @@ void usage() {
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
                  "  --resident-cpu-experts  with mmap and a static profile, keep CPU misses resident in ordinary RAM.\n"
-                 "                       Borrowed GPU-cache entries may read from mmap during prompt prefill.\n");
+                 "                       Borrowed GPU-cache entries may read from mmap during prompt prefill.\n"
+                 "  --low-ram            host copies only of the experts outside VRAM (then the cache's borrowed\n"
+                 "                       tail) as far as the free RAM goes, the rest read from experts.bin.\n"
+                 "                       On by itself when the pack has experts.bin and the experts plus 16 GiB\n"
+                 "                       exceed the RAM installed; --no-low-ram: never.\n"
+                 "  --ram-budget GIB     --low-ram with at most GIB of host copies.\n");
 }
 
 /// All shards of a split GGUF, from shard 1's path ("...-00001-of-00002.gguf"); just the path when it is not split.
@@ -1072,6 +1081,9 @@ int main(int argc, char** argv) {
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--ram-budget") { o.ram_budget_gib = std::atof(next("--ram-budget")); o.low_ram = 1; }
+        else if (a == "--low-ram") o.low_ram = 1;
+        else if (a == "--no-low-ram") o.low_ram = 0;
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = true;
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
@@ -1407,7 +1419,38 @@ int main(int argc, char** argv) {
         std::thread& t;
         ~ThreadJoiner() { if (t.joinable()) t.join(); }   // an early return must not leave it running
     } arena_joiner{arena_thread};
-    if (!o.mmap_experts) {
+    // Low RAM: the tiered host copy (TieredExpertSource) instead of the whole arena - by itself when the pack has an
+    // experts.bin (setup writes it for its low-RAM mode) and the experts plus 16 GiB exceed the RAM installed, or
+    // when asked.  Unlike --mmap-experts it keeps the experts RAM can hold in pinned memory (most-read first, so the
+    // PCIe share and the prompt path DMA them) and reads the rest from the file without the OS cache.
+    bool tiered = false;
+    if (!o.mmap_experts && o.low_ram != 0) {
+        const uint64_t avail = strata::core::available_ram_bytes(), need = strata::kernels::cpu::expert_layout().total;
+        const uint64_t installed = strata::core::installed_ram_bytes();
+        const bool can = !multi_gpu && o.expert_cache_remote[0] == 0 && !o.resident_cpu_experts &&
+                         !o.expert_profile.empty() && std::filesystem::exists(std::filesystem::path(o.pack) / "experts.bin");
+#if defined(_WIN32)
+        const bool small = installed > 0 && installed < (96ull << 30) && need + (16ull << 30) > installed;
+#else
+        const bool small = false;   // the tier's loader is Windows-only for now
+#endif
+        if (o.low_ram == 1 && !can) {
+            std::fprintf(stderr, "strata generate: --low-ram needs one GPU, an --expert-profile, the pack's experts.bin "
+                                 "and no remote experts\n");
+            return 2;
+        }
+        tiered = o.low_ram == 1 || (small && can);
+        if (small && !can && o.low_ram != 1)
+            std::fprintf(stderr, "strata generate: %.1f GiB of RAM installed, but this setup cannot use the low-RAM tier "
+                                 "(one GPU, an --expert-profile, experts.bin): the whole expert arena\n",
+                         (double) installed / 1073741824.0);
+        if (tiered)
+            std::fprintf(stderr, "strata generate: low RAM (%s; %.1f GiB installed, %.1f available, the experts are "
+                                 "%.1f GiB): host copies only of the experts the engine reads from RAM, the rest from "
+                                 "experts.bin\n", o.low_ram == 1 ? "--low-ram" : "the experts plus 16 GiB exceed the RAM installed",
+                         (double) installed / 1073741824.0, (double) avail / 1073741824.0, (double) need / 1073741824.0);
+    }
+    if (!o.mmap_experts && !tiered) {
         arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
         // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
         // Unregistered layers remain in the resident arena and use the CPU expert path.
@@ -1838,6 +1881,7 @@ int main(int argc, char** argv) {
     // CUDA error left set by the failed `cudaHostRegister` and read later by `gr_read`'s launch check.  See the
     // note in `pinned.cu`.
     strata::core::FileExpertSource src;
+    strata::core::TieredExpertSource tiered_src;
     strata::core::ExpertSource* srcp = nullptr;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
@@ -1856,6 +1900,12 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; the A/B arm of R2.1)\n");
         srcp = &src;
+    } else if (tiered) {
+        if (!tiered_src.open(o.pack, g.n_layers, g.n_expert, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        srcp = &tiered_src;   // file-backed until the tier is loaded beside the VRAM cache's fill, below
     } else {
         arena_thread.join();   // started after the native pack checks, above
         if (!arena_ok) {
@@ -2218,7 +2268,80 @@ int main(int argc, char** argv) {
     // admission finds no room and every non-profiled expert stays a CPU miss.  That is what makes the profile
     // the policy rather than a hint.
     int64_t prefilled = 0;
-    if (!profile.empty() && srcp != nullptr) {
+    if (tiered && !profile.empty()) {
+        const int64_t want = std::min<int64_t>((int64_t) profile.size(), xcache.slots());
+        // what RAM holds, in order: the experts outside VRAM by rank (the CPU and the PCIe share read them every
+        // token), then VRAM's own experts from its last slot back (the prompt path borrows the cache from its end
+        // and refills it after); whatever the budget leaves out is read from experts.bin
+        std::vector<std::pair<int32_t, int32_t>> order(profile.begin() + want, profile.end());
+        {
+            std::vector<uint8_t> ranked((size_t) (g.n_layers * g.n_expert), 0);
+            for (const auto& pr : profile) ranked[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
+            for (int64_t i = 0; i < g.n_layers * g.n_expert; ++i)
+                if (!ranked[(size_t) i]) order.emplace_back((int32_t) (i / g.n_expert), (int32_t) (i % g.n_expert));
+        }
+        const int64_t outside = (int64_t) order.size();
+        for (int64_t i = want - 1; i >= 0; --i) order.push_back(profile[(size_t) i]);
+        const char* rv = std::getenv("STRATA_RAM_RESERVE_GIB");     // left free for Windows' own needs (default 6)
+        const uint64_t reserve = (uint64_t) ((rv ? std::atof(rv) : 6.0) * 1073741824.0);
+        const uint64_t avail = strata::core::available_ram_bytes();
+        uint64_t budget = avail > reserve ? avail - reserve : 0;
+        if (o.ram_budget_gib > 0.0) budget = std::min<uint64_t>(budget, (uint64_t) (o.ram_budget_gib * 1073741824.0));
+        {
+            std::vector<int32_t> rank((size_t) (g.n_layers * g.n_expert), INT32_MAX);
+            for (size_t r = 0; r < profile.size(); ++r)
+                rank[(size_t) profile[r].first * (size_t) g.n_expert + (size_t) profile[r].second] = (int32_t) r;
+            tiered_src.set_rank(std::move(rank));
+        }
+        if (!tiered_src.load(order, budget, /*spare=*/2 * (int64_t) std::max(0, o.adapt_swaps), /*threads=*/16, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        const int64_t in_ram = tiered_src.tier_members();
+        std::fprintf(stderr, "strata generate: low-RAM tier: %s\n", tiered_src.note().c_str());
+        std::fprintf(stderr, "strata generate: low-RAM tier: %lld of the %lld experts outside VRAM in RAM, %lld of VRAM's "
+                             "%lld (its borrowed tail); %lld from the file (budget %.1f GiB of %.1f available)\n",
+                     (long long) std::min(in_ram, outside), (long long) outside,
+                     (long long) std::max<int64_t>(0, in_ram - outside), (long long) want,
+                     (long long) std::max<int64_t>(0, outside - in_ram), (double) budget / 1073741824.0,
+                     (double) avail / 1073741824.0);
+        // VRAM: the pairs the tier holds straight from it, the rest read from the file into pinned buffers
+        std::vector<std::pair<int32_t, int32_t>> from_file;
+        std::vector<int32_t> file_slot;
+        for (int64_t i = 0; i < want; ++i) {
+            const auto& pr = profile[(size_t) i];
+            const int32_t slot = xcache.admit(pr.first, pr.second);
+            if (slot == strata::core::kNotResident) break;
+            if (tiered_src.has_copy(pr.first, pr.second)) {
+                if (!xcache.fill_slot_blocking(slot, tiered_src.blob(pr.first, pr.second), err,
+                                               (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(pr.first))) {
+                    std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n", (long long) i,
+                                 err.c_str());
+                    return 1;
+                }
+            } else {
+                from_file.push_back(pr);
+                file_slot.push_back(slot);
+            }
+            ++prefilled;
+        }
+        if (!tiered_src.stream(from_file, [&](size_t k, const uint8_t* b) {
+                return xcache.fill_slot_blocking(file_slot[k], b, err,
+                    (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(from_file[k].first));
+            }, /*threads=*/16, err)) {
+            std::fprintf(stderr, "strata generate: the profile fill from the file failed: %s\n", err.c_str());
+            return 1;
+        }
+        if (prefilled > 0 && !xcache.verify_slot(xcache.slot_of(profile[0].first, profile[0].second),
+                                srcp->blob(profile[0].first, profile[0].second), err,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[0].first))) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        mem_mark("the profile fill");
+        std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile (%zu from the file); "
+                             "slot 0 verified\n", (long long) prefilled, (long long) want, from_file.size());
+    } else if (!profile.empty() && srcp != nullptr) {
         const int64_t want = std::min<int64_t>((int64_t) profile.size(), xcache.slots());
         for (int64_t i = 0; i < want; ++i) {
             const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
@@ -2966,6 +3089,7 @@ int main(int argc, char** argv) {
                 host_res[(size_t) (l * g.n_expert + e)] = slot;
                 if (slot != strata::core::kNotResident) ++resident;
             }
+        if (tiered) tiered_src.set_residency(host_res.data());   // its decode prefetch skips what VRAM computes
         if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
             cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
             cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -3399,6 +3523,7 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        std::vector<std::pair<int32_t, int32_t>> tier_moves;   // low RAM: (in, out) residency indices of those swaps
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
@@ -3422,6 +3547,11 @@ int main(int argc, char** argv) {
             for (auto& st : stages) st->adapt_live = false;
             for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
             pending.clear();
+            for (const auto& [in, out] : tier_moves) {   // the copies have landed: the tier follows VRAM
+                tiered_src.demote_commit(out / g.n_expert, out % g.n_expert);
+                tiered_src.promote_done(in / g.n_expert, in % g.n_expert);
+            }
+            tier_moves.clear();
             res_upload();
         };
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
@@ -3451,11 +3581,26 @@ int main(int argc, char** argv) {
             }
             std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
+            // low RAM: every evicted expert without a host copy gets a tier slot first (a spare, or a colder
+            // member's), copied back from its VRAM slot before the slot is refilled (the same stream); only then
+            // are the promoted experts' sources read, so none of them is one of the slots just given away
+            if (tiered)
+                for (const Swap& s : swaps) {
+                    const int32_t slot = host_res[(size_t) s.layer * g.n_expert + s.out];
+                    if (slot >= 0)
+                        if (uint8_t* keep = tiered_src.demote_begin(s.layer, s.out))
+                            if (cudaMemcpyAsync(keep, xcache.device_slot(slot),
+                                                (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
+                                                cudaMemcpyDeviceToHost, adapt_stream) != cudaSuccess) {
+                                (void) cudaGetLastError();
+                                tiered_src.demote_abort(s.layer, s.out);
+                            }
+                }
             bool main_live = false;
             for (const Swap& s : swaps) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
-                const uint8_t* b = srcp->blob(s.layer, s.in);
+                const uint8_t* b = tiered ? tiered_src.stable_blob(s.layer, s.in) : srcp->blob(s.layer, s.in);
                 const int stn = multi_gpu ? stage_of(s.layer) : 0;   // the swap stays in the layer's own cache
                 GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
                 const strata::core::OnDevice on(gs ? gs->dev : -1);
@@ -3468,6 +3613,7 @@ int main(int argc, char** argv) {
                 else main_live = true;
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+                if (tiered) tier_moves.emplace_back((int32_t) in, (int32_t) out);
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             (void) main_live;
@@ -3950,7 +4096,15 @@ int main(int argc, char** argv) {
             auto refill = [&](std::string& e) -> bool {
                 if (lent_now.empty()) return true;
                 tr("refill start", (long long) lent_now.size());
+                std::vector<std::pair<int32_t, int32_t>> lent_file;   // low RAM: the lent experts the tier lacks
+                std::vector<int32_t> lent_file_slot;
                 for (const auto& [i, slot] : lent_now) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                    if (tiered && !tiered_src.has_copy(i / g.n_expert, i % g.n_expert)) {
+                        lent_file.emplace_back((int32_t) (i / g.n_expert), (int32_t) (i % g.n_expert));
+                        lent_file_slot.push_back(slot);
+                        host_res[(size_t) i] = slot;
+                        continue;
+                    }
                     const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                     if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, e, nb)
@@ -3958,6 +4112,12 @@ int main(int argc, char** argv) {
                         return false;
                     host_res[(size_t) i] = slot;
                 }
+                if (!lent_file.empty() &&
+                    !tiered_src.stream(lent_file, [&](size_t k, const uint8_t* b) {
+                        return xcache.fill_slot_blocking(lent_file_slot[k], b, e,
+                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(lent_file[k].first));
+                    }, /*threads=*/16, e))
+                    return false;
                 if (!xcache.sync_queued(e)) return false;
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
                 lent_now.clear();
@@ -4467,7 +4627,15 @@ int main(int argc, char** argv) {
         // refill the lent slots from the arena and give them back to the decode tier
         if (!lent.empty()) {
             const Clock::time_point tr = Clock::now();
+            std::vector<std::pair<int32_t, int32_t>> lent_file;   // low RAM: the lent experts the tier lacks
+            std::vector<int32_t> lent_file_slot;
             for (const auto& [i, slot] : lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                if (tiered && !tiered_src.has_copy(i / g.n_expert, i % g.n_expert)) {
+                    lent_file.emplace_back((int32_t) (i / g.n_expert), (int32_t) (i % g.n_expert));
+                    lent_file_slot.push_back(slot);
+                    host_res[(size_t) i] = slot;
+                    continue;
+                }
                 const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
                 const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                 if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
@@ -4476,6 +4644,14 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 host_res[(size_t) i] = slot;
+            }
+            if (!lent_file.empty() &&
+                !tiered_src.stream(lent_file, [&](size_t k, const uint8_t* b) {
+                    return xcache.fill_slot_blocking(lent_file_slot[k], b, err,
+                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(lent_file[k].first));
+                }, /*threads=*/16, err)) {
+                std::fprintf(stderr, "strata generate: refilling the lent slots from the file failed: %s\n", err.c_str());
+                return 1;
             }
             if (!xcache.sync_queued(err)) {
                 std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
@@ -4777,6 +4953,7 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        std::vector<std::pair<int32_t, int32_t>> tier_moves;   // low RAM: (in, out) residency indices of those swaps
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         auto apply_pending = [&](bool wait) {
@@ -4785,6 +4962,11 @@ int main(int argc, char** argv) {
             else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
             for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
             pending.clear();
+            for (const auto& [in, out] : tier_moves) {   // the copies have landed: the tier follows VRAM
+                tiered_src.demote_commit(out / g.n_expert, out % g.n_expert);
+                tiered_src.promote_done(in / g.n_expert, in % g.n_expert);
+            }
+            tier_moves.clear();
             if (d_res != nullptr)
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
         };
@@ -4818,10 +5000,25 @@ int main(int argc, char** argv) {
             }
             std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
+            // low RAM: every evicted expert without a host copy gets a tier slot first (a spare, or a colder
+            // member's), copied back from its VRAM slot before the slot is refilled (the same stream); only then
+            // are the promoted experts' sources read, so none of them is one of the slots just given away
+            if (tiered)
+                for (const Swap& s : swaps) {
+                    const int32_t slot = host_res[(size_t) s.layer * g.n_expert + s.out];
+                    if (slot >= 0)
+                        if (uint8_t* keep = tiered_src.demote_begin(s.layer, s.out))
+                            if (cudaMemcpyAsync(keep, xcache.device_slot(slot),
+                                                (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
+                                                cudaMemcpyDeviceToHost, adapt_stream) != cudaSuccess) {
+                                (void) cudaGetLastError();
+                                tiered_src.demote_abort(s.layer, s.out);
+                            }
+                }
             for (const Swap& s : swaps) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
-                const uint8_t* b = srcp->blob(s.layer, s.in);
+                const uint8_t* b = tiered ? tiered_src.stable_blob(s.layer, s.in) : srcp->blob(s.layer, s.in);
                 // asynchronous: the copies run while the MTP drafts; the next window waits for them
                 if (slot < 0 || b == nullptr ||
                     cudaMemcpyAsync(xcache.device_slot(slot), b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
@@ -4831,6 +5028,7 @@ int main(int argc, char** argv) {
                 }
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+                if (tiered) tier_moves.emplace_back((int32_t) in, (int32_t) out);
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             for (float& v : drive.d.usage) v *= 0.7f;

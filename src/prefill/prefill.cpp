@@ -131,8 +131,11 @@ struct Stager {
     // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
     // DMAs of the unpinned experts' blobs
     int kRing = 16;
-    struct Job { const uint8_t* src; size_t bytes; };
+    // `from`: when set, the blob may be read from its file straight into the ring (read_blob) instead of copied
+    struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t layer = -1, expert = -1; };
     std::vector<uint8_t*> buf;
+    std::unique_ptr<size_t[]> pad;   // per job: where its blob starts in the ring buffer (a direct read's alignment)
+    size_t room = 0;
     std::vector<char> pinned;
     std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
     std::vector<cudaEvent_t> dma_done;
@@ -152,6 +155,8 @@ struct Stager {
 
     bool init(size_t blob_bytes, int nthreads) {
         if (const char* v = std::getenv("STRATA_STAGER_RING")) kRing = std::clamp(std::atoi(v), 2, 256);
+        blob_bytes = (blob_bytes + 3 * 4096 - 1) / 4096 * 4096;   // room for a 4 KiB-aligned read of the blob
+        room = blob_bytes;
         buf.assign((size_t) kRing, nullptr);
         pinned.assign((size_t) kRing, 0);
         dma_done.assign((size_t) kRing, nullptr);
@@ -198,7 +203,13 @@ struct Stager {
                     while (issued.load(std::memory_order_acquire) <= j - kRing) std::this_thread::yield();
                     cudaEventSynchronize(dma_done[b]);
                 }
-                std::memcpy(buf[b], jobs[(size_t) j].src, jobs[(size_t) j].bytes);
+                const Job& jb = jobs[(size_t) j];
+                size_t p = 0;
+                if (!(jb.from && pinned[b] && jb.from->read_blob(jb.layer, jb.expert, buf[b], room, p))) {
+                    p = 0;
+                    std::memcpy(buf[b], jb.src, jb.bytes);
+                }
+                pad[(size_t) j] = p;
                 ready[(size_t) j].store(1, std::memory_order_release);
                 active.fetch_sub(1, std::memory_order_acq_rel);
             }
@@ -221,6 +232,7 @@ struct Stager {
         if (ready_cap < jobs.size()) {
             ready_cap = jobs.size() * 2;
             ready.reset(new std::atomic<int>[ready_cap]);
+            pad.reset(new size_t[ready_cap]);
         }
         for (size_t i = 0; i < jobs.size(); ++i) ready[i].store(0, std::memory_order_relaxed);
         issued.store(0);
@@ -231,7 +243,7 @@ struct Stager {
     /// Job j's bytes, in a pinned buffer (waits for the copy).
     const uint8_t* wait(int j) {
         while (!ready[(size_t) j].load(std::memory_order_acquire)) std::this_thread::yield();
-        return buf[j % kRing];
+        return buf[j % kRing] + pad[(size_t) j];
     }
     /// The launching thread queued job j's DMA on `copy`: its buffer is free once that is done.
     void issued_one(int j, cudaStream_t copy) {
@@ -1093,7 +1105,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     int job = -1;
                     if (!m.src->pinned(l, e)) {
                         job = (int) js.size();
-                        js.push_back({b, (size_t) lay0.blob_bytes(l)});
+                        js.push_back({b, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
                     }
                     seq.push_back({(int32_t) l, e, b, job});
                 }
@@ -1581,7 +1593,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             const uint8_t* b = m.src->blob(l, e);
                             if (!b) { err = "prefill: expert source has no blob"; return false; }
                             job_of[j] = (int) js.size();
-                            js.push_back({b, (size_t) lay.blob_bytes(l)});
+                            js.push_back({b, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
                         }
                         m.stager->start(std::move(js));
                     }
