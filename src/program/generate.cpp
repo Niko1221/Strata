@@ -1989,19 +1989,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
-    // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
-    //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
-    //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
-    //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
-    //     in prompts (fitted: the sweep's best K, 26-28, is where one more layer on the faster card stops paying
-    //     for the ~0.1% of the mass it pushes out of its cache);
-    //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
-    //     reserve, the prompt path's buffers and, on a later GPU, 1 GiB for its windows and the drafter) is used;
-    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
-    //     99.53/99.34/99.15%, measured 99.5/99.4/99.0%).
-    // Up to 3 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
-    // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher).
+    // ---- layer split across GPUs: "auto" places the split points by layer_split::Planner's model of one decode
+    // window (layer_split.hpp); STRATA_SPLIT_MISS_MS, STRATA_SPLIT_HANDOFF_MS and STRATA_SPLIT_MASS_EXP tune it.
     // THE PROMPT PATH'S BUFFERS ARE BORROWED FROM THE CACHE, NOT WITHHELD BESIDE IT.  With borrowing the cache
     // is sized first and at full size, and the prompt path is laid out in the tail of it (`Prefill::relayout`),
     // so it withholds no VRAM of its own and this reserve is zero.  Only without borrowing - no profile to fill
@@ -2032,93 +2021,38 @@ int main(int argc, char** argv) {
     if (multi_gpu && split_auto) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int ns = (int) stages.size() + 1;
-        std::vector<int64_t> cap((size_t) ns), used((size_t) ns);
-        std::vector<double> layer_ms((size_t) ns);
+        std::vector<layer_split::Card> cards((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, i + 1 == ns);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
             cudaGetLastError();
-            const double speed = std::max(1.0, (double) sms * (double) khz / 1e6);   // SMs x GHz
-            layer_ms[(size_t) i] = 0.33 * (84.0 * 2.617) / speed;
+            cards[(size_t) i] = {stage_room(i == 0 ? -1 : dev, i > 0, i + 1 == ns), layer_split::layer_ms_estimate(sms, khz / 1e6)};
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d %d SMs at %.2f GHz -> %.2f ms per layer, "
-                                 "%.2f GiB free before its session carve\n", dev, sms, khz / 1e6, layer_ms[(size_t) i],
-                         (double) cap[(size_t) i] / 1073741824.0);
+                                 "%.2f GiB free before its session carve\n", dev, sms, khz / 1e6, cards[(size_t) i].layer_ms,
+                         (double) cards[(size_t) i].cap_bytes / 1073741824.0);
         }
-        const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        std::vector<double> mass(profile.size());
-        double total_mass = 0;
-        for (size_t r = 0; r < profile.size(); ++r) total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
-        auto cost = [&](int64_t l) -> int64_t {
-            return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
-        };
-        // the predicted window time (ms) of a placement, and the routed mass its caches hold
-        auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
-            // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
-            // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
-            // is why the sessions are allocated after the search: `session_bytes` is pure arithmetic.
-            std::vector<int64_t> capr((size_t) ns);
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1];
-                const int64_t le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
-            }
-            std::fill(used.begin(), used.end(), 0);
-            held_mass = 0;
-            held = 0;
-            std::vector<bool> full((size_t) ns, false);
-            for (size_t r = 0; r < profile.size(); ++r) {
-                const int64_t l = profile[r].first;
-                int st = 0;
-                while (st + 1 < ns && l >= at[(size_t) st]) ++st;
-                if (full[(size_t) st]) continue;
-                if (used[(size_t) st] + cost(l) > capr[(size_t) st]) { full[(size_t) st] = true; continue; }   // as the fill
-                used[(size_t) st] += cost(l);
-                held_mass += mass[r];
-                ++held;
-            }
-            held_mass /= std::max(total_mass, 1e-9);
-            double ms = miss_ms * (1.0 - held_mass);
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1], le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                ms += (double) (le - lb) * layer_ms[(size_t) i];
-            }
-            return ms;
-        };
-        std::vector<int64_t> best, at((size_t) ns - 1);
-        double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0;
-        auto consider = [&]() {
-            double hm = 0;
-            int64_t held = 0;
-            const double ms = predict(at, hm, held);
-            if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
-        };
-        const int64_t L = g.n_layers;
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-        } else {
-            double total = 0;
-            for (const double c : layer_ms) total += 1.0 / c;
-            double acc = 0;
-            for (int i = 0; i + 1 < ns; ++i) {
-                acc += 1.0 / layer_ms[(size_t) i];
-                at[(size_t) i] = std::clamp<int64_t>((int64_t) std::llround(acc / total * (double) L),
-                                                    i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
-            }
-            consider();
-        }
-        split_at = best;
+        auto env_or = [](const char* name, double v) { const char* s = std::getenv(name); return s ? std::atof(s) : v; };
+        layer_split::Costs costs;
+        costs.miss_ms = env_or("STRATA_SPLIT_MISS_MS", costs.miss_ms);
+        costs.handoff_ms = env_or("STRATA_SPLIT_HANDOFF_MS", costs.handoff_ms);
+        costs.mass_exp = env_or("STRATA_SPLIT_MASS_EXP", costs.mass_exp);
+        std::vector<int64_t> slot_bytes((size_t) g.n_layers);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            slot_bytes[(size_t) l] = native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
+        // session_bytes prices each placement's sessions: they are allocated after the search
+        const layer_split::Planner planner(g.n_layers, profile, std::move(slot_bytes), costs,
+                                           [&](int64_t lb, int64_t le) -> int64_t {
+                                               return (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
+                                           });
+        const layer_split::Placement best = planner.best(cards);
+        split_at = best.at;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
         std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
-                     (long long) best_held, profile.size(), 100.0 * best_mass);
+                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best.ms,
+                     (long long) best.held, profile.size(), 100.0 * best.held_mass);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
