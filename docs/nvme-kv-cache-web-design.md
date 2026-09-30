@@ -252,6 +252,9 @@ like the Monitor tab and costs no new CSS beyond a few rows.
 │ Store directory  /local/strata/kvstore                                             │
 │ Format version   3 (this build) · 0 files of another version on disk              │
 │ Chunk BLOCK      lcm(page_size, idx_block) = 1,024 tokens                         │
+│ Sealed CHUNK     64 blocks = 256 tokens (kDeltaBlocksPerChunk; per-manifest       │
+│                  blocks_per_chunk, 0 = the legacy 1-block layout - the store      │
+│                  holds both, nothing converts)                                    │
 │ Weight set       7f3ac1… (delta tier only)                                        │
 │ Not cached       layer-split sessions · boundaries past the drafter ring          │
 └───────────────────────────────────────────────────────────────────────────────────┘
@@ -289,14 +292,20 @@ Two smaller additions, both cheap and both high-value:
 `shutil.disk_usage(dir)`. The cap is a policy the user set; free space is what actually stops the tier. Showing
 only the cap would let a 100 GB cap on a 120 GB volume look healthy at 99 GB.
 
-**The engine's byte totals are cap accounting, not a footprint** (found while building step 1). The delta store's
-`total_` sums every `chunks/` + `states/` file once — shared records included — and *then* adds each entry's own
-`bytes` (its manifest + its State + its chunks), so a chunk shared by three manifests is counted four times
-(`kv_delta.cpp:921-970`, deliberately: "the cap must not lie about the disk"). Consequence for the page: the
-engine's `delta_bytes` and the directory walk's bytes are **different quantities measuring different things**, and
-the page must label them — *cap accounting* (what the LRU compares against the cap) vs *on disk* (what the volume
-actually holds). Reconciling them into one "cache size" number would be wrong in both directions: the accounting
-over-counts shared chunks, and the walk includes records the engine refuses to promote.
+**The engine's byte totals are cap accounting, a SAWTOOTH - not a footprint** (found while building step 1;
+re-worded for the sweep recompute, `6648be7`). The delta store's `total_` sums every `chunks/` + `states/`
+file once — shared records included — and *then* adds each entry's own `bytes` (its manifest + its State +
+its chunks), so a chunk shared by three manifests is counted four times (`kv_delta.cpp:945-993`, deliberately:
+the over-estimate is the safety direction, over-evict rather than let the disk grow past the cap). On append
+the same per-reference counting applies (`kv_delta.cpp:1089`), and at every sweep the total is RECOMPUTED
+from the disk (`kv_delta.cpp:1183`) — which the live serve path does after every turn's dump, so the two
+books agree byte-exactly at page-refresh time (measured: `delta_bytes` 25,008,877,848 == the walk's delta
+subtree). That equality is a *sweep-just-ran* coincidence that happens to be the steady state here, not an
+invariant. Consequence for the page: the engine's `delta_bytes` and the directory walk's bytes are **different
+quantities measuring different things**, and the page must label them — *cap accounting* (what the LRU compares
+against the cap) vs *on disk* (what the volume actually holds). Reconciling them into one "cache size" number
+would be wrong in both directions: the accounting over-counts shared chunks between sweeps, and the walk
+includes records the engine refuses to promote.
 
 **Written per turn** = `dump_bytes` (and its mean over the last 60 turns). **Read per promote** = `promote_bytes`.
 

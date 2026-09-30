@@ -340,9 +340,11 @@ Results:
   `tools/nvme_p0_test.sh`: `RESUME 4104` and the post-restore `STATE_HASH` equal to the dumping process's `DONE`
   hash (bit-exact dump/restore), negative control fires, a corrupt file refused as `invalid` and not as a
   transfer.  `tools/nvme_delta_p0_test.sh`: P1 holds - the v3 snapshot and the delta manifest key the SAME 2355
-  tokens and their restored-prefix hashes are equal across the two tiers; forks: 644 chunk FILES for 1176
-  references (content-shared); the cascade wrote 112.8-115.8 MiB for turns adding 15-217 tokens; crash points
-  C1..C5 each relaunched, promoted and swept exactly.  14 PASS, 0 FAIL.
+  tokens and their restored-prefix hashes are equal across the two tiers; forks: 10 chunk FILES for 28
+  references (content-shared - the 64-block grouping collapsed the old 644-file/1176-ref shape ~64×, and
+  `f665d14` moved this oracle's threshold to shared span-chunks accordingly); the cascade wrote 113.5 MiB for
+  turns adding 16 new tokens, flat within 3.5 MiB (3.1 % of the floor); crash points C1..C5 each relaunched,
+  promoted and swept exactly.  14 PASS, 0 FAIL (re-run on the merged binary, 2026-09-30).
 - **The web page against a real engine - RUN** (the worktree's `serve.server` + worktree binary on port 8090,
   a scratch store, the production engine off the GPU; this is the first time the whole chain - store counters,
   `KV` line, `_pump`, `KvCache`, `/metrics`, `/cache` - was exercised on silicon):
@@ -355,9 +357,19 @@ Results:
     this conversation's manifest - `refuse` + `sweep` rows, `src=none resume=0`, the prompt re-read (1702 ms),
     the answer served correctly, the orphan swept as 0.11 GiB.  A corrupt chunk in one conversation is a refused
     promote in another, which is exactly why the cap accounting counts a shared chunk once per manifest;
-  - the two books on that store: cap accounting 6,170,642,908 bytes vs the walk's on-disk 3,267,409,228 -
-    **1.89× apart** over 5 v3 snapshots + 19 manifests + 3,607 chunks + 19 states (3,650 files).  Merging them
-    into one "cache size" would have been off by 89 %.
+  - **the two books re-measured on the merged binary, live, post-redeploy** (after the gate run's test traffic
+    grew the store): cap accounting `delta_bytes` 25,008,877,848 vs the walk's delta subtree 25,008,877,848 -
+    **byte-exact**, over 5 v3 snapshots + 84 manifests + 3,808 chunks + 84 states (3,981 files).  This is not
+    luck and not an invariant: since `6648be7` the sweep runs after EVERY turn's dump (`kv_delta_enforce_cap`
+    sweeps unconditionally, `generate.cpp`'s cascade tail), so on the live serve path the sawtooth sits at its
+    snap-back point and the books meet the disk at page-refresh time.  The pre-merge 1.89× figure was the old
+    binary's drift, measured before the recompute existed - kept here only as the history of why the two
+    quantities are labeled apart.  They remain TWO measurements (the walk counts what the volume holds,
+    including v3 snapshots and files the engine refuses to promote; the books count per-reference between
+    sweeps) and are never merged into one "cache size".  A promote seen live through the page on the same
+    redeploy: `src=delta resume=3018 promote_ms=560 promote_bytes=164173592 staging_bytes=164172720` - the
+    restore path is untouched by the merge, re-verified; and a live small turn's cascade write: 118.9 MB
+    (~113.4 MiB) for a turn adding a handful of tokens, the State floor.
 - **What the live run also caught, in the wiring not the tiers**: a tier-on server reported `enabled: true` with
   every store fact NULL until the first request's line arrived, because `main()` attaches the `KvCache` after the
   engine is constructed and the pump had often already consumed the `start=1` line.  No unit test could see it -
