@@ -1066,9 +1066,43 @@ class SharingTheGpu(unittest.TestCase):
         self.assertEqual(order, ["vision", "engine"])             # the encoder first, as at a start
         self.assertTrue(self.svc.vision.alive())
 
+    def test_load_counts_as_activity(self):
+        """The idle thread must not unload between load() and the request it was called for (PR review)."""
+        self.svc.last_request_at = time.time() - 3600
+        self.svc.load()
+        self.assertEqual(self.svc.unload(idle_for=60), "busy")
+        self.assertTrue(self.engine.alive())
+
     def test_off_by_default(self):
         self.assertEqual((self.svc.idle_unload_s, self.svc.min_free_vram_mib, self.svc.before_load), (0, 0, None))
         self.assertEqual(self.req("/health")[1]["loaded"], True)
+
+
+@unittest.skipIf(os.name == "nt", "the fake engine is a script with a shebang")
+class EngineUnloadQuits(unittest.TestCase):
+    """StrataEngine.unload() asks the engine to QUIT (as close() does) instead of terminating it straight away."""
+
+    def test_quit_before_terminate(self):
+        d = Path(tempfile.mkdtemp())
+        fake, mark = d / "fake-engine", d / "how-it-ended"
+        fake.write_text("#!" + sys.executable + "\n"
+                        "import signal, sys\n"
+                        "mark = sys.argv[-1]\n"
+                        "signal.signal(signal.SIGTERM, lambda *a: (open(mark, 'w').write('terminated'), sys.exit(1)))\n"
+                        "print('READY 4096', flush=True)\n"
+                        "for line in sys.stdin:\n"
+                        "    if line.strip() == 'QUIT':\n"
+                        "        open(mark, 'w').write('quit')\n"
+                        "        sys.exit(0)\n")
+        fake.chmod(0o755)
+        eng = StrataEngine(str(fake), [str(mark)])
+        self.assertTrue(eng.alive())
+        t0 = time.time()
+        eng.unload()
+        self.assertFalse(eng.alive())
+        self.assertTrue(eng.unloaded)
+        self.assertEqual(mark.read_text(), "quit")
+        self.assertLess(time.time() - t0, 5)
 
 if __name__ == "__main__":
     unittest.main()

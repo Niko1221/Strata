@@ -247,15 +247,22 @@ class StrataEngine:
 
     def unload(self):
         """Stop the engine process so its VRAM and RAM go back to the system (idle unload, POST /unload); the next
-        request starts it again with restart().  Only between requests: the caller holds the service's fifo."""
+        request starts it again with restart().  Only between requests: the caller holds the service's fifo.
+        It is asked to QUIT first, as close() does; terminated, then killed, only if it does not end by itself."""
         try:
-            self.proc.terminate()
-            self.proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=20)
-        except OSError:
-            pass
+            self.proc.stdin.write("QUIT\n")
+            self.proc.stdin.flush()
+            self.proc.wait(timeout=10)
+        except Exception:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=10)
+            except Exception:
+                self.proc.kill()
+                try:
+                    self.proc.wait(timeout=10)
+                except Exception:
+                    pass
         self.ended = True
         self.unloaded = True
 
@@ -695,6 +702,8 @@ class Service:
 
     def load(self):
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
+        with self.status_lock:              # a request is on its way: the idle thread must not unload it in between
+            self.last_request_at = time.time()
         if self.loaded() and not self._vision_down():
             return
         with self.fifo:
@@ -820,7 +829,7 @@ class Service:
             state = "reading"
         elif s.get("busy"):
             state = "generating"
-        elif not self.loaded():
+        elif getattr(self.engine, "unloaded", False):   # the flag, not alive(): /metrics never probes the process
             state = "unloaded"
         else:
             state = "idle"
