@@ -355,7 +355,9 @@ function cacheCell(c) {
   else note = `${c.resume ? `resumed ${fmt(c.resume)} tokens from the ${tier}` : `promoted from the ${tier}`}` +
               (c.promote_ms == null ? "" : ` in ${dur(c.promote_ms)}`) +
               (c.promote_bytes ? ` · ${gb(c.promote_bytes, 2)} GB read` : "") +
-              (c.staging_bytes ? ` · ${gb(c.staging_bytes, 2)} GB staged in RAM at once` : "");
+              (c.staging_bytes ? (c.src === "delta"
+                  ? ` · ${gb(c.staging_bytes, 2)} GB of bounded staging (no assembled image)`
+                  : ` · ${gb(c.staging_bytes, 2)} GB staged in RAM at once`) : "");
   return `<span class="st-badge ${cls}" title="${esc(note)}">${esc(label)}</span>`;
 }
 
@@ -505,7 +507,9 @@ function renderCache(c) {
     ["Disk free", free == null ? null : `${gb(free, 0)} GB free of ${gb(walk.disk_total_bytes, 0)} GB on ${c.dir}`],
     ["RAM tier", rt.checkpoints == null ? null : `${fmt(rt.checkpoints)} checkpoints, ${fmt(rt.live_tokens)} tokens live - resumable without touching disk`],
     ["Not cached", "layer-split sessions are not cached; a boundary past the drafter ring falls back to a v3 snapshot"],
-    ["Promote cost", "a promote stages the whole snapshot in RAM at once (measured: ~2 GiB for a 964 MiB snapshot)"],
+    ["Promote cost", c.mode === "delta"
+      ? "the delta tier reads each chunk straight into the arrays it belongs in (no assembled image): a 142k-token promote staged ~150 MB and took ~2.7 s, against ~4.4 GB and ~7.4 s before"
+      : "the v3 tier stages the whole snapshot in RAM at once (measured: ~2 GiB for a 964 MiB snapshot)"],
   ]);
   const warns = (c.warnings || []).filter((x) => x !== c.inert_reason).map((x) => `<div class="cache-warn">${esc(x)}</div>`);
   if (stale && stale.count) warns.push(`<div class="cache-warn">both options are legitimate: re-dump them with the binary that wrote them, or remove them and let the store rebuild</div>`);
@@ -571,7 +575,9 @@ function renderAbout(eng, hw, st, cache) {
       ["Tier family", c.mode === "delta" ? "delta (chunks + states + manifests), with the v3 snapshot fallback" : "v3 snapshots only"],
       ["RAM tier", rt.checkpoints == null ? null : `${fmt(rt.checkpoints)} checkpoints, ${fmt(rt.live_tokens)} tokens live - resumable without touching disk`],
       ["Not cached", "layer-split sessions are not cached"],
-      ["Promote cost", "a promote stages the whole snapshot in RAM at once"],
+      ["Promote cost", c.mode === "delta"
+        ? "the delta tier reads each chunk straight into the arrays it belongs in (no assembled image)"
+        : "the v3 tier stages the whole snapshot in RAM at once"],
     ]);
   }
 }

@@ -584,8 +584,12 @@ class WebApp(unittest.TestCase):
             with self.subTest(want=want):
                 self.assertIn(want, body)
         app = self.get("/web/app.js")[2]
+        # the About card's "Promote cost" row is mode-dependent since the delta tier's streaming restore
+        # (restore-perf handoff §3, B2): it reads chunks straight into the arrays, so the whole-snapshot
+        # staging is the v3 tier's claim alone and must not be the card's unconditional one.
         for want in (b'$("card-cache").hidden', b'facts($("facts-cache")', b"layer-split sessions are not cached",
-                     b"a promote stages the whole snapshot in RAM at once", b'renderAbout(eng, hw, st, cache)'):
+                     b"reads each chunk straight into the arrays it belongs in",
+                     b'the v3 tier stages the whole snapshot in RAM at once', b'renderAbout(eng, hw, st, cache)'):
             with self.subTest(want=want):
                 self.assertIn(want, app)
 
