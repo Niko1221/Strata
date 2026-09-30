@@ -1,6 +1,7 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -813,7 +814,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (first_of[i] == i) {
                 distinct[nd++] = i;
                 const int32_t e = ids[i];
-                if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0) ++nmiss;
+                if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
+                    !(d.peer != nullptr && d.peer->has(d.layers, e))) ++nmiss;
             }
         }
         const bool pcie_ok = d.pcie_num > 0 && d.src->device_alias(d.layers, 0) != nullptr;
@@ -833,6 +835,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     kd = 0;
                     ptr = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
                                                                                  : (size_t) slot * (size_t) d.cache_blob));
+                } else if (d.peer != nullptr && d.peer->has(d.layers, e)) {
+                    kd = 2;                        // multi-GPU: the second GPU computes it
                 } else {
                     if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
                         const uint8_t* src = d.src->blob(d.layers, e);
@@ -887,7 +891,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t i = 0; i < n; ++i) {
             const int32_t e = ids[i];
             kind[i] = (e >= 0 && e < d.n_expert && d.host_res != nullptr &&
-                       d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0 : -1;
+                       d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0
+                    : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2 : -1;
+        }
+    }
+    if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
+        std::string perr;
+        if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, out)) {
+            std::fprintf(stderr, "strata: %s (layer %lld)\n", perr.c_str(), (long long) d.layers);
+            d.failed = true;
+            d.fail = "the peer GPU's experts could not be launched";
+            d.fail_layer = d.layers;
+            return;
         }
     }
     if (d.remote_count > 0) {
@@ -921,9 +936,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 d.fail_expert = e;
                 return;
             }
-            if (kind[i] >= 0) {             // CUDA0, PCIe, or a remote result staged into this row below
+            if (kind[i] >= 0) {             // CUDA0, PCIe, or a remote/peer result staged into this row below
                 if (kind[i] == 0) ++d.cache_hits;
-                std::memset(row, 0, (size_t) H * sizeof(float));
+                else if (kind[i] == 2 && d.peer != nullptr) ++d.peer_entries;
+                // multi-GPU: a direct peer launch is writing this row right now - zeroing it would race it
+                if (!(kind[i] == 2 && d.peer != nullptr && d.peer->launched_direct()))
+                    std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
             }
             ++d.cache_refused;
@@ -960,6 +978,16 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (!d.remote[r]->finish(out, remote_error)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
+    }
+    if (d.peer != nullptr) {                 // multi-GPU: the second GPU's rows, into the same mapped rows
+        std::string perr;
+        if (!d.peer->finish(out, perr)) {
+            std::fprintf(stderr, "strata: %s (layer %lld)\n", perr.c_str(), (long long) d.layers);
+            d.failed = true;
+            d.fail = "the peer GPU's experts failed";
+            d.fail_layer = d.layers;
+            return;
+        }
     }
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");

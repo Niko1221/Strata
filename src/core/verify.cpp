@@ -68,7 +68,7 @@ struct Bump {
 };
 
 bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped) != cudaSuccess) return false;
+    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) return false;   // multi-GPU: portable - the peer card writes its rows into them
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
