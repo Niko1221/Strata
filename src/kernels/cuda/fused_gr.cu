@@ -299,18 +299,22 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
 }
 
 
-// ================================ dual-3090 (session 8): hc read v3 - two kernels, stream-split ================
-// The norm kernel ran on only T blocks (~16 us of pure latency per call) and `down` on 41 blocks (~280 GB/s).
-// v3: `down` is split over (row group, stream) = 164 blocks; each block stages its stream's R' * w_norm for the T
-// tokens, reduces that stream's sum of squares itself, and writes UNSCALED per-stream partial dots.  The rms scale
-// is per stream, so  w_down . xn = sum_c rs[c] * (w_down[:, c] . (R'[c] * w_norm[c]))  - `up` applies it in its
-// prologue (lo, inject, rs).  Same maths, another summation order (not bitwise the old kernels).
+// ================================ hc read v3 (opt-in: STRATA_GR_V3=1) - two kernels, stream-split ================
+// The norm kernel runs on only T blocks (~16 us of pure latency per call) and `down` on 41 blocks (~280 GB/s).
+// v3: `down` is split over (row group, stream[, column half]) = 164 or 328 blocks; each block stages its slice of
+// R' * w_norm for the T tokens, reduces that slice's sum of squares itself, and writes UNSCALED partial dots.  The
+// rms scale is per stream, so  w_down . xn = sum_c rs[c] * (w_down[:, c] . (R'[c] * w_norm[c]))  - `up` applies it
+// in its prologue (lo, inject, rs).  Same maths, ANOTHER SUMMATION ORDER: not bitwise the default kernels, hence
+// opt-in.  Dynamic shared memory is T * (N / S) floats: S (1 or 2 column halves) is the smallest that fits the
+// card's opt-in limit at kFusedGrMaxT tokens (Ampere 99 KB: S = 1; Turing / HIP 64 KB: S = 2); a card where
+// neither fits keeps the default kernels.
 constexpr int PR = LR + HC;                        // partial rows per (token, stream): 320 down + 4 inject
 constexpr int TQ3 = N / 8 / 32;                    // uint4 weight chunks per lane in one stream's slice (10)
 
-template <int R2, int S>
+template <int S>
 __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* __restrict__ part, float* __restrict__ ssg) {
-    extern __shared__ __align__(16) float xs[];    // [T][N]
+    extern __shared__ __align__(16) float xs[];    // [T][N / S]
+    constexpr int R2 = 1;                          // down rows per warp
     __shared__ float red[WARPS][kFusedGrMaxT];
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int T = m.T;
@@ -391,7 +395,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
     }
 }
 
-template <bool PF, int S>
+template <int S>
 __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const float* __restrict__ part,
                                                            const float* __restrict__ ssg) {
     __shared__ __align__(16) float lo[kFusedGrMaxT][LR];
@@ -401,17 +405,6 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
     const int T = m.T;
     const int d0 = blockIdx.x * UPM_COLS;
     constexpr int RPW = HC * UPM_COLS / WARPS;     // 8 rows per warp
-    uint4 pa[RPW], pb[RPW];
-    if (PF) {   // every row's weights in flight at once (the loads do not wait for the prologue's arithmetic)
-#pragma unroll
-        for (int q = 0; q < RPW; ++q) {
-            const int r = warp + q * WARPS;
-            const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
-            const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
-            pa[q] = __ldg(w4 + lane);
-            pb[q] = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
-        }
-    }
     if (t < T * HC) {
         const int k = t / HC, c = t - k * HC;
         float ss = 0.0f;
@@ -455,8 +448,8 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
         const int r = warp + q * WARPS;
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
-        const uint4 wa = PF ? pa[q] : __ldg(w4 + lane);
-        const uint4 wb = PF ? pb[q] : (lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0));
+        const uint4 wa = __ldg(w4 + lane);
+        const uint4 wb = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
         float rv = 0.0f, wn = 0.0f, bo = 0.0f, ip = 0.0f;
         bool apply = false;
         if (lane < T) {
@@ -515,40 +508,39 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     m.xn = xn_scratch;
     m.T = n_tok;
     cudaStream_t st = (cudaStream_t) stream;
-    static const bool v3 = [] { const char* v = std::getenv("STRATA_GR_V3"); return v == nullptr || std::atoi(v) != 0; }();
-    if (v3) {   // dual-3090 (session 8): 2 kernels, 164 + 160 blocks; scratch = partials + sums of squares
-        static bool attr3[64] = {};
-        int dev = 0;
-        cudaGetDevice(&dev);
-        if (dev < 0 || dev >= 64 || !attr3[dev]) {
+    // STRATA_GR_V3=1: the two-kernel read above (another summation order - opt-in)
+    static const bool v3 = [] { const char* v = std::getenv("STRATA_GR_V3"); return v != nullptr && std::atoi(v) != 0; }();
+    static int split3[64] = {};   // per device: 0 = not decided yet, 1 / 2 = column halves S, -1 = does not fit
+    int dev3 = 0;
+    if (v3) {
+        cudaGetDevice(&dev3);
+        if (dev3 >= 0 && dev3 < 64 && split3[dev3] == 0) {
             int optin = 0;
-            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-            int want = (int) (kFusedGrMaxT * N * sizeof(float));
-            if (optin > 0 && want > optin) want = optin;
-            cudaFuncSetAttribute(gr_down_v3_kernel<1, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_v3_kernel<2, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_v3_kernel<1, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaGetLastError();
-            if (dev >= 0 && dev < 64) attr3[dev] = true;
+            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev3);
+            const int limit = optin > 0 ? optin : 48 * 1024;
+            const int need1 = (int) (kFusedGrMaxT * N * sizeof(float)), need2 = need1 / 2;
+            int split = -1;
+            if (need1 <= limit &&
+                cudaFuncSetAttribute(gr_down_v3_kernel<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, need1) == cudaSuccess)
+                split = 1;
+            else if (need2 <= limit &&
+                     cudaFuncSetAttribute(gr_down_v3_kernel<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, need2) == cudaSuccess)
+                split = 2;
+            cudaGetLastError();   // drop any error the attempts left behind
+            split3[dev3] = split;
         }
+    }
+    const int split = v3 && dev3 >= 0 && dev3 < 64 ? split3[dev3] : -1;
+    if (split > 0) {   // 2 kernels; scratch = partials + sums of squares
         float* part = xn_scratch;
         float* ssg = xn_scratch + (size_t) n_tok * HC * 2 * PR;   // room for S = 2
+        const size_t sm = (size_t) n_tok * (N / split) * sizeof(float);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
-        static const int r2 = [] { const char* v = std::getenv("STRATA_GR_DOWN_R2"); return v != nullptr && std::atoi(v) == 2 ? 2 : 1; }();
-        static const bool upf = [] { const char* v = std::getenv("STRATA_GR_UP_PF"); return v != nullptr && std::atoi(v) != 0; }();   // measured slower: off
-        static const int ks = [] { const char* v = std::getenv("STRATA_GR_KSPLIT"); return v != nullptr && std::atoi(v) == 2 ? 2 : 1; }();
-        const size_t sm = (size_t) n_tok * (N / ks) * sizeof(float);
-        if (ks == 2) gr_down_v3_kernel<1, 2><<<dim3(LR / WARPS + 1, HC * 2), THREADS, sm, st>>>(m, part, ssg);
-        else if (r2 == 2) gr_down_v3_kernel<2, 1><<<dim3(LR / (WARPS * 2) + 1, HC), THREADS, sm, st>>>(m, part, ssg);
-        else gr_down_v3_kernel<1, 1><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
+        if (split == 2) gr_down_v3_kernel<2><<<dim3(LR / WARPS + 1, HC * 2), THREADS, sm, st>>>(m, part, ssg);
+        else gr_down_v3_kernel<1><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
-        if (ks == 2) {
-            if (upf) gr_up_v3_kernel<true, 2><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
-            else gr_up_v3_kernel<false, 2><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
-        } else {
-            if (upf) gr_up_v3_kernel<true, 1><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
-            else gr_up_v3_kernel<false, 1><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
-        }
+        if (split == 2) gr_up_v3_kernel<2><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
+        else gr_up_v3_kernel<1><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         const cudaError_t e3 = cudaGetLastError();
         if (e3 != cudaSuccess) {
             std::fprintf(stderr, "fused_gr_read_multi v3: %s\n", cudaGetErrorString(e3));
