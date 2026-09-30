@@ -1524,12 +1524,14 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
 OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}   # to 0.1.26: 27 Han tokens
 
 
-DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin"}
+DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin"}
 
 
 def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
-    """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137) or `en`
-    (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster).
+    """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137), `en`
+    (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster) or
+    `cyrillic` (data/draft_vocab_cyrillic.bin: English/code and the whole Cyrillic script, for Ukrainian, Russian,
+    Bulgarian, Serbian... answers).
     Copied when missing or when a shipped subset other than the chosen one is there; a subset made by hand is kept."""
     new, dst = ROOT / "data" / DRAFT_VOCABS.get(choice, "draft_vocab.bin"), rt / "draft_vocab.bin"
     if not new.exists() or not rt.is_dir():
@@ -1540,8 +1542,9 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
                                       for f in DRAFT_VOCABS.values() if (ROOT / "data" / f).exists()}
         if old not in shipped or old == hashlib.sha256(new.read_bytes()).hexdigest():
             return
-        ok("draft layer: the token subset " + ("with Chinese, Japanese and Korean" if choice == "cjk" else
-                                               "for English and code (less VRAM)"))
+        ok("draft layer: the token subset " + {"cjk": "with Chinese, Japanese and Korean",
+                                               "cyrillic": "with the Cyrillic script"}.get(choice,
+                                                                                          "for English and code (less VRAM)"))
     shutil.copyfile(new, dst)
 
 
@@ -1622,7 +1625,8 @@ def main() -> int:
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
                     help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
-                         "and code only (~110 MiB less VRAM, English answers 1-2%% faster)")
+                         "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
+                         "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster)")
     ap.add_argument("--low-ram", choices=["auto", "on", "off"], default="auto",
                     help="map the model's experts from its folder instead of copying them into RAM (for a PC with a big "
                          "GPU and little RAM); auto: when the experts would not fit the RAM")

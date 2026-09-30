@@ -8,7 +8,7 @@ Chinese drafted almost nothing (#137).  This adds whole scripts to a subset:
     python tools/draft_vocab.py --gguf <model>-00001-of-0000N.gguf --base data/draft_vocab.bin --add cjk \
         --out data/draft_vocab.bin
 
---add takes han, kana, hangul, cjk_punct, or cjk (all four).  The base ids keep their order; the added ones follow in
+--add takes han, kana, hangul, cjk_punct, cjk (those four) or cyrillic.  The base ids keep their order; the added ones follow in
 id order.  --stats prints what a subset holds.
 """
 from __future__ import annotations
@@ -26,6 +26,8 @@ SCRIPTS = {
     "kana": [(0x3040, 0x30FF), (0x31F0, 0x31FF), (0xFF66, 0xFF9F)],
     "hangul": [(0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)],
     "cjk_punct": [(0x3000, 0x303F), (0xFF00, 0xFF65), (0xFFA0, 0xFFEF)],
+    # Ukrainian, Russian, Bulgarian, Serbian...: the shipped subset held 142 of the vocabulary's 18,580 Cyrillic tokens
+    "cyrillic": [(0x0400, 0x04FF), (0x0500, 0x052F), (0x1C80, 0x1C8F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
 }
 GROUPS = {"cjk": ["han", "kana", "hangul", "cjk_punct"]}
 
@@ -52,7 +54,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gguf", required=True, help="the model's (first) GGUF file: its vocabulary")
     ap.add_argument("--base", help="the subset to extend (int32 ids)")
-    ap.add_argument("--add", default="", help="comma list: han, kana, hangul, cjk_punct, cjk")
+    ap.add_argument("--add", default="", help="comma list: han, kana, hangul, cjk_punct, cjk, cyrillic")
     ap.add_argument("--out", help="where to write the new subset")
     ap.add_argument("--stats", action="store_true", help="print what the base (and the new) subset holds")
     a = ap.parse_args()
