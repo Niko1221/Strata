@@ -180,7 +180,8 @@ def ask(question, choices, default, yes):
         try:
             a = input(f"{question} [{default}]: ").strip()
         except EOFError:
-            return default
+            fail("input ended before a setup answer was received",
+                 "run setup in a terminal, or pass --yes to accept the recommended answers")
         if not a:
             return default
         if a.lower() in [c.lower() for c in choices]:
