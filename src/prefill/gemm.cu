@@ -46,14 +46,22 @@ void ck(cublasStatus_t s, const char* what) {
 #if !defined(__HIPCC__)
 // The device's compute capability, asked once per device.  It is a RUNTIME property, not a compile target: a
 // binary built for several archs (or a Pascal build carried to an Ampere card) has to know what it landed on.
+//
+// 0 MEANS "NOT KNOWN", and the caller must read that as "not Pascal".  This is the whole safety property of the
+// change on a card this branch was not built for: the fallback is taken only when a pre-Ampere capability has been
+// POSITIVELY read, so a build for sm_75 and up keeps the exact base behaviour unless it is actually running on
+// Pascal.  Treating an unreadable attribute as 0 would instead send an Ampere card down the fp32 path - correct,
+// but 10-20x slower, on precisely the hardware this project is for.  A failed read is also not cached, so a
+// transient one can still succeed on the next call rather than pinning the wrong answer forever.
 int device_cc_major() {
     static int s_cc[64] = {};
     int dev = 0;
-    cudaGetDevice(&dev);
+    if (cudaGetDevice(&dev) != cudaSuccess) return 0;
     const int slot = (dev >= 0 && dev < 64) ? dev : 0;
     if (s_cc[slot] == 0) {
         int major = 0;
-        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess || major <= 0)
+            return 0;
         s_cc[slot] = major;
     }
     return s_cc[slot];
@@ -389,9 +397,14 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     // cuBLAS's bf16 GEMM is an Ampere (sm_80) feature and there is no flag that gives a pre-Ampere card one: it is
     // the library, not the compiler.  Gating this on the RUNTIME card rather than on __CUDA_ARCH__ is the only
     // correct place - a fat binary can carry several archs, and a Pascal build is expected to run on newer cards
-    // too.  HIP is deliberately left exactly as it was: RDNA3 and RDNA4 have bf16 in hardware, so it has no such
+    // too.  HIP is deliberately left exactly as was: RDNA3 and RDNA4 have bf16 in hardware, so it has no such
     // gap to fill, and its blasLt path above is the one that should win.
-    if (device_cc_major() < 8) {
+    //
+    // `cc > 0 &&` is the load-bearing part on every card this branch was NOT built for: the fallback is entered
+    // only on a capability positively read as pre-Ampere, and an unreadable one leaves the base call below in
+    // place.  So an sm_75+ build runs the identical cuBLAS path it always did, with one extra cached attribute
+    // read the first time bf16 is used on a device.
+    if (const int cc = device_cc_major(); cc > 0 && cc < 8) {
         bf16_via_f32(X, W, Y, T, N, K, ldy, beta);
         return;
     }
