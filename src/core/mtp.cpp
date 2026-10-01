@@ -121,6 +121,7 @@ MtpDrafter::~MtpDrafter() {
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
     if (dhead_) cudaFree(dhead_);
+    if (head_dev_) cudaFree(head_dev_);
     if (dvocab_) cudaFree(dvocab_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
@@ -342,7 +343,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     return true;
 }
 
-uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
+uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab, bool remote_head) const {
     uint64_t bytes = head_logits_ ? 0 : (uint64_t) max_t_ * (uint64_t) n_vocab * sizeof(float);
     if (dhead_ == nullptr) {
         if (FILE* f = std::fopen((rt_dir_ + "/draft_vocab.bin").c_str(), "rb")) {
@@ -350,6 +351,10 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
             const long size = std::ftell(f);
             std::fclose(f);
             if (size >= 4 && size % 4 == 0) bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
+        } else if (remote_head) {
+            // Fase 3 (hetero multi-GPU): without a token subset the full head is the draft head - when the roles
+            // place the drafter on another GPU, that whole table crosses to it (bind makes the copy)
+            bytes += (uint64_t) n_vocab * head_row_bytes;
         }
     }
     // coupled draft sampling (STRATA_SPEC_COUPLED=1 only): an upper bound - the id -> subset map, the penalty ring,
@@ -418,6 +423,31 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
     wt_ = &wt;
     head_ = head;
     window_R_ = window_R;
+    // Fase 3 (hetero multi-GPU): the head's weights are the model's device's memory (the main device; a layer
+    // split has none here).  This drafter reads them across GPUs only through peer access, which the engine
+    // never requires - when they belong to another device, both paths below copy what they read to THIS device:
+    // the token-subset head rows one row through the host (a one-time gather), the full head as one table.
+    bool remote_head = false;
+    {
+        cudaPointerAttributes attr{};
+        const cudaError_t q = cudaPointerGetAttributes(&attr, head->weights());
+        if (q == cudaSuccess)
+            remote_head = attr.type == cudaMemoryTypeDevice && (int) attr.device != (int) device_;
+        else
+            cudaGetLastError();
+    }
+    if (remote_head && head_dev_ == nullptr) {
+        const uint64_t rows = (uint64_t) (head->weight_bytes() / head->row_bytes());
+        if (cudaMalloc((void**) &head_dev_, head->weight_bytes()) != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft head's copy on the draft device does not fit";
+            return false;
+        }
+        cudaMemcpy(head_dev_, head->weights(), head->weight_bytes(), cudaMemcpyDeviceToDevice);
+        vram_ += head->weight_bytes();
+        std::fprintf(stderr, "strata mtp: the draft head copied to the draft device (%.1f MiB)\n",
+                     (double) head->weight_bytes() / 1048576.0);
+    }
     const WeightRef* wo = wt.find("output.weight");
     if (!wo) { err = "mtp: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
@@ -439,8 +469,22 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 return false;
             }
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
-            strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
-            cudaDeviceSynchronize();
+            if (remote_head) {
+                // one-time: the subset rows gather on the head's device's rows through the host, then land here
+                std::vector<uint8_t> rows((size_t) (n_dvocab_ * row_bytes));
+                std::vector<uint8_t> staging((size_t) row_bytes);
+                for (int64_t i = 0; i < n_dvocab_; ++i) {
+                    const int32_t id = ((const int32_t*) raw.data())[i];
+                    cudaMemcpy(staging.data(), (const uint8_t*) head->weights() + (size_t) id * row_bytes,
+                               (size_t) row_bytes, cudaMemcpyDeviceToHost);
+                    std::memcpy(rows.data() + (size_t) i * row_bytes, staging.data(), (size_t) row_bytes);
+                }
+                cudaMemcpy(dhead_, rows.data(), rows.size(), cudaMemcpyHostToDevice);
+                cudaDeviceSynchronize();
+            } else {
+                strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+                cudaDeviceSynchronize();
+            }
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
@@ -599,7 +643,7 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        native_mmvq(head_->type(), sub ? (const void*) dhead_ : (const void*) (head_dev_ ? head_dev_ : head_->weights()), xq_, head_logits_, (int) N, (int) nv, T, cs);
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
             // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
