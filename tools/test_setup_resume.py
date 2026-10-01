@@ -7,10 +7,13 @@ model folder filled with small stand-in files.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -141,6 +144,32 @@ class DownloadedBytes(unittest.TestCase):
                 self.skipTest("no hard links here")
             setup.mark(dst)
             self.assertEqual(setup.downloaded_bytes([t / "B" / "s1.gguf", dst]), 9)
+
+
+class FinishedPart(unittest.TestCase):
+    """A .part with every byte (stopped between the last byte and the rename): download() renames it instead of asking
+    for a range past its end, which the server answers with 416 - retried 30 times, 10 s apart."""
+
+    def test_a_complete_part_is_finished_without_a_request(self):
+        seen = []
+
+        class Head:
+            headers = {"Content-Length": "11"}
+
+        def urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.headers.get("Range")))
+            if req.get_method() == "HEAD":
+                return Head()
+            raise urllib.error.HTTPError(req.full_url, 416, "Range Not Satisfiable", {}, None)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup.time, "sleep", lambda s: None), contextlib.redirect_stdout(io.StringIO()):
+            dst = Path(tmp) / "m.gguf"
+            dst.with_name("m.gguf.part").write_bytes(b"model bytes")
+            setup.download("https://example.com/m.gguf", dst)
+            self.assertEqual(dst.read_bytes(), b"model bytes")
+            self.assertTrue(setup.done(dst))
+        self.assertEqual(seen, [("HEAD", None)])
 
 
 if __name__ == "__main__":
