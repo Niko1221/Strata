@@ -1071,8 +1071,12 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
     download(base + PREBUILT_ASSET, z, "Strata engine")
     tmp = ROOT / "engine" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+    try:
+        with zipfile.ZipFile(z) as f:
+            f.extractall(tmp)
+    finally:                                           # #397: dropped even when refused below - a kept .done mark
+        z.unlink(missing_ok=True)                      # would make every later run unpack this same archive again
+        z.with_name(z.name + ".done").unlink(missing_ok=True)
     meta = json.loads((tmp / "BUILD.json").read_text())
     if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit()) < MIN_ENGINE:
         need = ".".join(map(str, MIN_ENGINE))
@@ -1098,8 +1102,6 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
             shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
         p.replace(dst)
     shutil.rmtree(tmp, ignore_errors=True)
-    z.unlink(missing_ok=True)
-    z.with_name(z.name + ".done").unlink(missing_ok=True)
     if not (eng / EXE).exists():
         fail("the ready-made engine archive has no " + EXE)
     if not WIN:

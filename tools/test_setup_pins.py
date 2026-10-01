@@ -1,6 +1,7 @@
 """Tests for setup.py's reproducible installs (#214): the engine of the checkout's own release first (the latest as
 the fallback), Hugging Face files at pinned revisions (the current files when a revision is gone), the pinned
-requirements file, and an existing install left as it is.  Mocked network - nothing is downloaded.
+requirements file, an existing install left as it is, and no reuse of a refused engine archive (#397).  Mocked
+network - nothing is downloaded.
 
     python -m unittest tools.test_setup_pins
 """
@@ -166,6 +167,32 @@ class Engine(unittest.TestCase):
             eng, out = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"old")
+
+    def publish(self, folder, version, archs):
+        with zipfile.ZipFile(Path(folder) / setup.PREBUILT_ASSET, "w") as z:
+            z.writestr("BUILD.json", json.dumps({"version": version, "archs": archs}))
+            z.writestr(setup.EXE, version.encode())
+
+    def refused_then_published(self, version, archs):
+        """get_prebuilt over a --prebuilt folder, with the real download() and its .done marks."""
+        new = ".".join(map(str, setup.MIN_ENGINE))
+        with tempfile.TemporaryDirectory() as folder:
+            self.publish(folder, version, archs)
+            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu", updating=True)
+            self.assertIsNone(eng)
+            self.publish(folder, new, [89])
+            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu", updating=True)
+        self.assertEqual(eng, self.root / "engine")
+        self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), new.encode())
+        self.assertEqual(list((self.root / "engine").glob(setup.PREBUILT_ASSET + "*")), [])
+
+    def test_an_archive_refused_as_too_old_is_not_reused(self):
+        """#397: an engine refused as older than MIN_ENGINE is not unpacked again once the right one is published."""
+        self.refused_then_published("0.0.1", [89])
+
+    def test_an_archive_refused_for_the_gpu_is_not_reused(self):
+        """#397: the same for an engine without code for the GPU."""
+        self.refused_then_published(".".join(map(str, setup.MIN_ENGINE)), [86])
 
 
 class Requirements(unittest.TestCase):
