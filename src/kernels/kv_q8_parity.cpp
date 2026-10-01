@@ -136,6 +136,68 @@ int main() {
     // |x - q*sf| <= sf/2 (the stored scale keeps |x|/sf <= 127.06, so no clamping), plus the fp16 rounding of each
     // side: at most 2^-11 relative of a value up to 127*sf, i.e. 127/2048 = 0.062 steps each -> 0.5 + 0.124
     if (!(worst <= 0.5 + 2.0 * 127.0 / 2048.0 + 1e-3)) { std::fprintf(stderr, "FAIL: INT8 vs FP16 error %.3f steps\n", worst); ++g_fail; }
+
+    // 4. the verify window's batch vs the repeated step calls: the pools BITWISE.  T = 1..8 cells, positions
+    // straddling page boundaries, and the commit-adjacent overwrite - window 2's batch rewrites the tail of
+    // window 1 (a rejected draft's cell), so only the FINAL bytes count.
+    {
+        const int T_max = 8;
+        const int pos_table[T_max] = {0, 62, 63, 64, 65, 66, 127, 501};   // around pages 1 and 2, and mid-page
+        int32_t* dsteps = dalloc<int32_t>((size_t) T_max * k::kStepCount);
+        float* dkc = dalloc<float>((size_t) T_max * H * D);
+        float* dvc = dalloc<float>((size_t) T_max * H * D);
+        int8_t *kqA = dalloc<int8_t>((size_t) cells * H * D), *kqB = dalloc<int8_t>((size_t) cells * H * D);
+        int8_t *vqA = dalloc<int8_t>((size_t) cells * H * D), *vqB = dalloc<int8_t>((size_t) cells * H * D);
+        uint16_t *ksA = dalloc<uint16_t>((size_t) cells * H * G), *ksB = dalloc<uint16_t>((size_t) cells * H * G);
+        uint16_t *vsA = dalloc<uint16_t>((size_t) cells * H * G), *vsB = dalloc<uint16_t>((size_t) cells * H * G);
+        void* pA[4] = {kqA, vqA, ksA, vsA};
+        void* pB[4] = {kqB, vqB, ksB, vsB};
+        const size_t pbytes[4] = {(size_t) cells * H * D, (size_t) cells * H * D,
+                                  (size_t) cells * H * G * 2, (size_t) cells * H * G * 2};
+        auto check = [&](const char* what) -> long {
+            long bad = 0;
+            std::vector<uint8_t> x, y;
+            for (int p = 0; p < 4; ++p) {
+                x.resize(pbytes[p]); y.resize(pbytes[p]);
+                ck(cudaMemcpy(x.data(), pA[p], pbytes[p], cudaMemcpyDeviceToHost), "batch cmp");
+                ck(cudaMemcpy(y.data(), pB[p], pbytes[p], cudaMemcpyDeviceToHost), "batch cmp");
+                for (size_t i = 0; i < pbytes[p]; ++i) bad += x[i] != y[i];
+            }
+            if (bad) std::fprintf(stderr, "FAIL: kv_append_q8_batch vs step loop, %s: %ld bytes differ\n", what, bad);
+            return bad;
+        };
+        auto stage = [&](int T, int pos0, bool reset) {
+            for (int t = 0; t < T; ++t) {
+                std::vector<float> kv(H * D), vv(H * D);
+                for (auto& x : kv) x = nd(rng);
+                for (auto& x : vv) x = nd(rng);
+                ck(cudaMemcpy(dkc + (size_t) t * H * D, kv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "kc");
+                ck(cudaMemcpy(dvc + (size_t) t * H * D, vv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "vc");
+                const int32_t st[k::kStepCount] = {pos0 + t, pos0 + t + 1, 0, 0};
+                ck(cudaMemcpy(dsteps + (size_t) t * k::kStepCount, st, sizeof st, cudaMemcpyHostToDevice), "st");
+            }
+            if (reset) for (int p = 0; p < 4; ++p) { ck(cudaMemset(pA[p], 0, pbytes[p]), "zero"); ck(cudaMemset(pB[p], 0, pbytes[p]), "zero"); }
+            for (int t = 0; t < T; ++t)
+                k::kv_append_q8_step(kqA, vqA, ksA, vsA, d_table, dsteps + (size_t) t * k::kStepCount,
+                                     dkc + (size_t) t * H * D, dvc + (size_t) t * H * D, s, nullptr);
+            k::kv_append_q8_batch(kqB, vqB, ksB, vsB, d_table, dsteps, dkc, dvc, T, s, nullptr);
+            ck(cudaDeviceSynchronize(), "batch");
+        };
+        long cd = 0;
+        for (int t = 0; t < T_max; ++t) {
+            stage(t + 1, pos_table[t], true);
+            char c[32];
+            std::snprintf(c, sizeof c, "T=%d pos0=%d", t + 1, pos_table[t]);
+            cd += check(c);
+        }
+        // the commit-adjacent overwrite: window 1 [63, 68) then window 2 [64, 68) on the SAME pools - 63 is
+        // kept, 64+ rewritten (a rejected tail); only the final state is compared (the first pass is setup)
+        stage(5, 63, true);
+        stage(4, 64, false);
+        cd += check("rejected tail rewritten");
+        if (cd) ++g_fail;
+    }
+    // (the KV-streaming host mirror of the batch is in kv_stream_parity, which drives all three formats)
     std::printf("kv_q8_parity: %s (worst INT8-vs-FP16 error %.3f quantization steps)\n", g_fail ? "FAILED" : "OK", worst);
     return g_fail ? 1 : 0;
 }

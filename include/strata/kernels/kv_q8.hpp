@@ -32,6 +32,15 @@ void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                        const KvHostPools* host = nullptr);
 
+/// One launch for `n_steps` CONSECUTIVE window tokens (the verify window's batch).  `steps` is the FIRST of the
+/// group's step records, stride kStepCount; every cell's position comes from ITS OWN record's kStepPos, so a
+/// captured graph replays it for any window (only pointers are baked, never a position).  K/V are the group's
+/// contiguous [t][kv_head][head_dim] rows.  Bitwise identical to `n_steps` `kv_append_q8_step` calls with the
+/// same records: the position math, quantization and destination addresses are the step kernel's per cell.
+void kv_append_q8_batch(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
+                        const int32_t* page_table, const int32_t* steps, const float* kcur, const float* vcur,
+                        int64_t n_steps, const QsaShapes& s, void* stream, const KvHostPools* host = nullptr);
+
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch `[id][kv_head][head_dim]`; the grid is sized by
 /// `max_ids` (capacity), the kernel reads the real count from `step`.
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,

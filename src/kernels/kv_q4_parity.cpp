@@ -324,6 +324,62 @@ int main() {
     }
     std::printf("  -> Max reconstruction error after 4-bit quant + dequant: %.4f (OK)\n", worst_quant_err);
 
+    // -------------------------------------------------------------
+    // Test 5: the verify window's batch vs the repeated step calls (bitwise)
+    // -------------------------------------------------------------
+    std::printf("[5/5] Verifying kv_append_q4_batch vs kv_append_q4_step, byte-identical pools...\n");
+    {
+        const int T_max = 8;
+        const int pos_table[T_max] = {0, 61, 62, 63, 64, 65, 126, 500};   // around pages 1 and 2, and mid-page
+        int32_t* dsteps = dalloc<int32_t>((size_t) T_max * k::kStepCount);
+        float* dkc = dalloc<float>((size_t) T_max * H * D);
+        float* dvc = dalloc<float>((size_t) T_max * H * D);
+        uint8_t *kA = dalloc<uint8_t>(pool_bytes), *kB = dalloc<uint8_t>(pool_bytes);
+        uint8_t *vA = dalloc<uint8_t>(pool_bytes), *vB = dalloc<uint8_t>(pool_bytes);
+        auto check = [&](const char* what) -> long {
+            std::vector<uint8_t> x(pool_bytes), y(pool_bytes);
+            long bad = 0;
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                ck(cudaMemcpy(x.data(), is_v ? vA : kA, pool_bytes, cudaMemcpyDeviceToHost), "batch cmp");
+                ck(cudaMemcpy(y.data(), is_v ? vB : kB, pool_bytes, cudaMemcpyDeviceToHost), "batch cmp");
+                for (size_t i = 0; i < pool_bytes; ++i) bad += x[i] != y[i];
+            }
+            if (bad) std::fprintf(stderr, "FAIL: kv_append_q4_batch vs step loop, %s: %ld bytes differ\n", what, bad);
+            return bad;
+        };
+        auto stage = [&](int T, int pos0, bool reset) {
+            for (int t = 0; t < T; ++t) {
+                std::vector<float> kv(H * D), vv(H * D);
+                for (auto& x : kv) x = nd(rng) * 2.0f;
+                for (auto& x : vv) x = nd(rng) * 2.0f;
+                ck(cudaMemcpy(dkc + (size_t) t * H * D, kv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "kc");
+                ck(cudaMemcpy(dvc + (size_t) t * H * D, vv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "vc");
+                const int32_t st[k::kStepCount] = {pos0 + t, pos0 + t + 1, 0, 0};
+                ck(cudaMemcpy(dsteps + (size_t) t * k::kStepCount, st, sizeof st, cudaMemcpyHostToDevice), "st");
+            }
+            if (reset) for (void* p : {kA, kB, vA, vB}) ck(cudaMemset(p, 0, pool_bytes), "zero");
+            for (int t = 0; t < T; ++t)
+                k::kv_append_q4_step(kA, vA, d_table, dsteps + (size_t) t * k::kStepCount,
+                                     dkc + (size_t) t * H * D, dvc + (size_t) t * H * D, s, nullptr);
+            k::kv_append_q4_batch(kB, vB, d_table, dsteps, dkc, dvc, T, s, nullptr);
+            ck(cudaDeviceSynchronize(), "batch");
+        };
+        long cd = 0;
+        for (int t = 0; t < T_max; ++t) {
+            stage(t + 1, pos_table[t], true);
+            char c[32];
+            std::snprintf(c, sizeof c, "T=%d pos0=%d", t + 1, pos_table[t]);
+            cd += check(c);
+        }
+        // the commit-adjacent overwrite on the SAME pools: 63 kept, 64+ rewritten (a rejected tail); the first
+        // pass is setup, only the final state is compared
+        stage(5, 63, true);
+        stage(4, 64, false);
+        cd += check("rejected tail rewritten");
+        if (cd) ++g_fail;
+        cudaFree(dsteps); cudaFree(dkc); cudaFree(dvc); cudaFree(kA); cudaFree(kB); cudaFree(vA); cudaFree(vB);
+    }
+
     cudaFree(d_src);
     cudaFree(d_dst);
     cudaFree(d_table);

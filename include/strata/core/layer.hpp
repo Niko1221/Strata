@@ -266,10 +266,14 @@ struct QsaState {
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0);
 /// KV streaming: keep `cells` cells of each QSA layer in VRAM and the rest in pinned host memory (0: all in VRAM,
 /// the default). Set before sizing and initializing the session; a context that fits in `cells` is not streamed.
-/// Also puts the MTP drafter's K/V in a ring of its window (`ring_cells` of qsa_state_bytes/init; -1 forces a fully
-/// resident state).
+/// `ring_cells` of qsa_state_bytes/init is a SEPARATE request, independent of this: a positive value puts the
+/// state's K/V in a windowed ring of that many cells over its own pinned host copy (the MTP drafter's layout,
+/// mtp.cpp), while the main layers still follow `qsa_set_kv_resident`; -1 forces a fully resident state.
 void qsa_set_kv_resident(int64_t cells);
 int64_t qsa_kv_resident();
+/// The drafter's windowed ring for `qsa_state_bytes`/`qsa_state_init` is chosen by `ring_cells`, NOT by
+/// `qsa_kv_resident()`: the MTP layer attends only its last `ring_cells` cells, so it never needs the full
+/// context in VRAM even when every main layer is resident.
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
 /// in whole blocks) must fit at once, with room to spare.
 int64_t qsa_kv_resident_min();

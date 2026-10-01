@@ -206,9 +206,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const strata::kernels::QsaShapes s = shapes_of(g);
     const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
-    // KV streaming: the drafter only reads its last `window` cells, so with streaming on its K/V is a ring of the
-    // window (plus the cells a round writes ahead of its queries) over a host copy, refilled on a resume. The host copy
-    // is pinned after the expert arena has pinned what it could: if it does not fit, the K/V stays whole in VRAM.
+    // The drafter's windowed ring is INDEPENDENT of the main KV's streaming (--kv-resident): it only reads its
+    // last `window` cells, so its K/V is ALWAYS a ring of the window (plus the cells a round writes ahead of
+    // its queries) over its own host copy, refilled on a resume - the main layers stay resident on their own
+    // terms.  The host copy is pinned after the expert arena has pinned what it could: if it does not fit,
+    // the K/V stays whole in VRAM.
     int64_t ring = (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).

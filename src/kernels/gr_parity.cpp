@@ -338,6 +338,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                std::memcmp(a.inject.data(), b.inject.data(), a.inject.size() * sizeof(float)) == 0 &&
                std::memcmp(a.mixed.data(), b.mixed.data(), a.mixed.size() * sizeof(float)) == 0;
     };
+    auto prefix = [](const std::vector<float>& a, const std::vector<float>& b, size_t n) {
+        return std::memcmp(a.data(), b.data(), n * sizeof(float)) == 0;
+    };
 
     cudaStream_t stream = nullptr;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "multi stream");
@@ -388,8 +391,56 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         std::printf("  fused GR changed graph replay differs from single-token calls\n");
         ++bad;
     }
+    // The windows run the batched two-kernel launch on sm_70 across the full valid window (1..kFusedGrMaxT
+    // tokens) and the split norm+down path elsewhere; assert every token of every window is bitwise the
+    // scalar path, injection included.  (The buffers past tt still hold the previous run's data, so the
+    // comparison covers only the first tt tokens.)
+    for (int tt = 1; tt <= T; ++tt) {
+        fused_gr_read_multi(args.data(), tt, d_xn, stream);
+        check(cudaStreamSynchronize(stream), "multi small-T sync");
+        const Snapshot batched = snapshot();
+        for (int t = 0; t < tt; ++t) fused_gr_read(args[t], stream);
+        check(cudaStreamSynchronize(stream), "small-T single reference sync");
+        const Snapshot single = snapshot();
+        if (!prefix(batched.r_out, single.r_out, (size_t) tt * D) ||
+            !prefix(batched.lo, single.lo, (size_t) tt * LR) ||
+            !prefix(batched.rs, single.rs, (size_t) tt * HC) ||
+            !prefix(batched.inject, single.inject, (size_t) tt * HC) ||
+            !prefix(batched.mixed, single.mixed, (size_t) tt * N)) {
+            std::printf("  fused GR multi T=%d batched window differs from single-token calls\n", tt);
+            ++bad;
+        }
+    }
 
-    std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
+    // The final mixer's shape: no injection and no pending write.  The batched window must reproduce the scalar
+    // plain-residual outputs; R_out and inject_out are left untouched by both paths, so only the live outputs
+    // are compared.
+    {
+        const int tt = 4;
+        FusedGrArgs saved[kFusedGrMaxT];
+        for (int t = 0; t < tt; ++t) {
+            saved[t] = args[t];
+            args[t].apply = false;
+            args[t].w_inject = nullptr;
+            args[t].inject_out = nullptr;
+        }
+        fused_gr_read_multi(args.data(), tt, d_xn, stream);
+        check(cudaStreamSynchronize(stream), "multi no-inject sync");
+        const Snapshot batched = snapshot();
+        for (int t = 0; t < tt; ++t) fused_gr_read(args[t], stream);
+        check(cudaStreamSynchronize(stream), "no-inject single reference sync");
+        const Snapshot single = snapshot();
+        for (int t = 0; t < tt; ++t) args[t] = saved[t];
+        if (!prefix(batched.lo, single.lo, (size_t) tt * LR) ||
+            !prefix(batched.rs, single.rs, (size_t) tt * HC) ||
+            !prefix(batched.mixed, single.mixed, (size_t) tt * N)) {
+            std::printf("  fused GR multi T=4 no-inject batched window differs from single-token calls\n");
+            ++bad;
+        }
+    }
+
+
+    std::printf("  fused GR multi max-T LDS launch, changing graph replay, and full-window batched parity %s\n",
                 bad == 0 ? "pass" : "FAIL");
     check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");
     check(cudaGraphDestroy(graph), "multi graph destroy");

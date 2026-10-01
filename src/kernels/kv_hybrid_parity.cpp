@@ -351,6 +351,76 @@ int main() {
         }
     }
 
+    // ---- 6. the verify window's batch vs the repeated composed calls: T consecutive cells through the
+    // hybrid branch's EXACT call shapes (q8 with k=k, q4 with v=v), byte-identical pools, page straddles,
+    // and the commit-adjacent rewrite of a rejected tail.
+    {
+        const int Tmax = 8, pos_table[Tmax] = {0, P - 1, P, P + 1, 2 * P - 1, 3 * P, 700, cells - Tmax};
+        int32_t* dsteps = dalloc<int32_t>((size_t) Tmax * k::kStepCount);
+        float* dkc = dalloc<float>((size_t) Tmax * H * D);
+        float* dvc = dalloc<float>((size_t) Tmax * H * D);
+        int8_t *ka = dalloc<int8_t>((size_t) cells * H * D), *kb = dalloc<int8_t>((size_t) cells * H * D);
+        uint16_t *ksa = dalloc<uint16_t>((size_t) cells * H * G), *ksb = dalloc<uint16_t>((size_t) cells * H * G);
+        uint8_t *va = dalloc<uint8_t>((size_t) cells * H * q4_row), *vb = dalloc<uint8_t>((size_t) cells * H * q4_row);
+        auto check = [&](const char* what) -> long {
+            long bad = 0;
+            std::vector<uint8_t> x, y;
+            auto by = [&](void* a, void* b, size_t bytes) {
+                x.resize(bytes); y.resize(bytes);
+                ck(cudaMemcpy(x.data(), a, bytes, cudaMemcpyDeviceToHost), "cmp");
+                ck(cudaMemcpy(y.data(), b, bytes, cudaMemcpyDeviceToHost), "cmp");
+                for (size_t i = 0; i < bytes; ++i) bad += x[i] != y[i];
+            };
+            by(ka, kb, (size_t) cells * H * D);
+            by(ksa, ksb, (size_t) cells * H * G * 2);
+            by(va, vb, (size_t) cells * H * q4_row);
+            if (bad) std::fprintf(stderr, "FAIL: hybrid kv_append_*_batch vs step loop, %s: %ld bytes differ\n", what, bad);
+            return bad;
+        };
+        auto stage = [&](int T, int pos0, bool reset) {
+            for (int t = 0; t < T; ++t) {
+                std::vector<float> kv(H * D), vv(H * D);
+                for (auto& x : kv) x = nd(rng) * 0.5f;
+                for (auto& x : vv) x = nd(rng) * 0.5f;
+                ck(cudaMemcpy(dkc + (size_t) t * H * D, kv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "kc");
+                ck(cudaMemcpy(dvc + (size_t) t * H * D, vv.data(), (size_t) H * D * 4, cudaMemcpyHostToDevice), "vc");
+                const int32_t st[k::kStepCount] = {pos0 + t, pos0 + t + 1, 0, 0};
+                ck(cudaMemcpy(dsteps + (size_t) t * k::kStepCount, st, sizeof st, cudaMemcpyHostToDevice), "st");
+            }
+            if (reset) {
+                const std::initializer_list<void*> pools = {ka, kb, ksa, ksb, va, vb};
+                for (void* p : pools) ck(cudaMemset(p, 0, p == ksa || p == ksb ? (size_t) cells * H * G * 2
+                                                                              : p == va || p == vb ? (size_t) cells * H * q4_row
+                                                                              : (size_t) cells * H * D),
+                                              "zero");
+            }
+            for (int t = 0; t < T; ++t) {
+                const int32_t* st2 = dsteps + (size_t) t * k::kStepCount;
+                const float* kc2 = dkc + (size_t) t * H * D, * vc2 = dvc + (size_t) t * H * D;
+                k::kv_append_q8_step(ka, ka, ksa, ksa, d_table, st2, kc2, kc2, s, nullptr, nullptr);
+                k::kv_append_q4_step(va, va, d_table, st2, vc2, vc2, s, nullptr, nullptr);
+            }
+            k::kv_append_q8_batch(kb, kb, ksb, ksb, d_table, dsteps, dkc, dkc, T, s, nullptr);
+            k::kv_append_q4_batch(vb, vb, d_table, dsteps, dvc, dvc, T, s, nullptr);
+            ck(cudaDeviceSynchronize(), "batch");
+        };
+        long cd = 0;
+        for (int t = 0; t < Tmax; ++t) {
+            stage(t + 1, pos_table[t], true);
+            char c[32];
+            std::snprintf(c, sizeof c, "T=%d pos0=%d", t + 1, pos_table[t]);
+            cd += check(c);
+        }
+        // the commit-adjacent overwrite on the SAME pools: the first pass is setup, only the final state counts
+        stage(5, P - 1, true);
+        stage(4, P, false);
+        cd += check("rejected-tail rewrite");
+        std::printf("       hybrid batch-vs-step appends: %s (%ld bytes differ)\n", cd ? "FAIL" : "PASS", cd);
+        if (cd) g_fail = 1;
+        cudaFree(dsteps); cudaFree(dkc); cudaFree(dvc); cudaFree(ka); cudaFree(kb); cudaFree(ksa); cudaFree(ksb);
+        cudaFree(va); cudaFree(vb);
+    }
+
     const bool attn_ok = max_deq < 5e-3;   // fp32 kernel math vs fp64-ish host accumulation
     std::printf("[3/3] mode-3 attention + output fwht: %s (vs dequant ref %.2e, vs true fp32 %.2e)\n",
                 attn_ok ? "PASS" : "FAIL", max_deq, max_true);

@@ -575,23 +575,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 8, grp);
                 if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
-                for (int t = tb; t < te; ++t) {
-                    const int32_t* step_t = step_ + t * kStepCount;
-                    if (st.kv_hybrid) {   // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
-                        kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t,
-                                          kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, nullptr);
-                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
-                                          vcur_ + t * NKV * HD, s, cs, nullptr);
-                    } else if (st.kv_q4)
-                        kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
-                                          vcur_ + t * NKV * HD, s, cs, &st.host);
-                    else if (st.kv_int8)
-                        kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,
-                                          kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
-                    else
-                        kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
-                                       vcur_ + t * NKV * HD, s, cs, &st.host);
-                }
+                // The group's cells in ONE launch per format: every cell's position comes from its own step
+                // record (kStepPos), so the captured graph replays it for any window, and the cells' writes are
+                // pairwise disjoint - bitwise the per-token calls this replaced made in order.
+                const int32_t* steps = step_ + (size_t) tb * kStepCount;
+                const float* kcb = kcur_ + (size_t) tb * NKV * HD;
+                const float* vcb = vcur_ + (size_t) tb * NKV * HD;
+                if (st.kv_hybrid) {   // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
+                    kv_append_q8_batch(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, steps, kcb, kcb,
+                                       n, s, cs, nullptr);
+                    kv_append_q4_batch(st.v_q4, st.v_q4, st.page_table, steps, vcb, vcb, n, s, cs, nullptr);
+                } else if (st.kv_q4)
+                    kv_append_q4_batch(st.k_q4, st.v_q4, st.page_table, steps, kcb, vcb, n, s, cs, &st.host);
+                else if (st.kv_int8)
+                    kv_append_q8_batch(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, steps, kcb, vcb,
+                                       n, s, cs, &st.host);
+                else
+                    kv_append_batch(st.k_pool, st.v_pool, st.page_table, steps, kcb, vcb, n, s, cs, &st.host);
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 for (int t = tb; t < te; ++t)
                     native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,

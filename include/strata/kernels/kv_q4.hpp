@@ -47,6 +47,15 @@ void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, 
                        const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                        const KvHostPools* host = nullptr);
 
+/// One launch for `n_steps` CONSECUTIVE window tokens (the verify window's batch): like `kv_append_q4_step`,
+/// but `steps` is the FIRST of the group's step records (stride kStepCount) and K/V are the group's contiguous
+/// [t][kv_head][head_dim] rows.  Unlike `kv_append_q4` above (a host `pos0`), every cell's position comes from
+/// its own record's kStepPos, so a captured graph replays it for any window.  Bitwise identical to `n_steps`
+/// `kv_append_q4_step` calls with the same records.
+void kv_append_q4_batch(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* steps,
+                        const float* kcur, const float* vcur, int64_t n_steps, const QsaShapes& s, void* stream,
+                        const KvHostPools* host = nullptr);
+
 /// The prompt path: T consecutive (rotated) cells from pos0, K/V [T, n_head_kv, 256]; also into `stage` (identity
 /// layout, the one-layer staging pool of a streamed session) when given.
 void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64_t pos0, int64_t T, const float* K,
