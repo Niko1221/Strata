@@ -227,10 +227,12 @@ struct Stager {
                 const int j = claim(seen);
                 if (j < 0) { active.fetch_sub(1, std::memory_order_acq_rel); break; }
                 const int b = j % kRing;
-                if (j >= kRing) {
+                if (j >= kRing)   // job j - kRing's DMA from this buffer is queued
                     while (issued.load(std::memory_order_acquire) <= j - kRing) std::this_thread::yield();
-                    cudaEventSynchronize(dma_done[b]);
-                }
+                // and done - for a generation's first kRing jobs that is the previous generation's last DMA from
+                // the buffer, which nothing else waits for when a chunk ends without a sync (no MTP) or the DMA
+                // was a ring entry the routing skipped (an event never recorded returns at once)
+                cudaEventSynchronize(dma_done[b]);
                 const Job& jb = jobs[(size_t) j];
                 if (jb.from == nullptr) std::memcpy(buf[b], jb.src, jb.bytes);
                 else if (!jb.from->copy_blob(jb.l, jb.e, buf[b])) {
