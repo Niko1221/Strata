@@ -81,7 +81,7 @@ if(STRATA_ENABLE_CUDA)
     # these kernels were written for, so two intrinsics are replaced for it - `__dp4a` (6.1+) and
     # `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp, which is bit-exact for the first and
     # merely a shorter pause for the second.  RTX 20/30/40/50 cards must use the release engine instead.
-    if(_base LESS 70 OR (_base LESS 75 AND NOT STRATA_EXPERIMENTAL_SM60))
+    if(_base LESS 70 AND NOT STRATA_EXPERIMENTAL_SM60)
       message(FATAL_ERROR
         "Strata needs an NVIDIA GPU of compute capability 7.0 or newer (Volta / RTX 20 / 30 / 40 / 50 series), but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal build is "
@@ -101,7 +101,6 @@ elseif(STRATA_ENABLE_HIP)
   set(_strata_gpu_runtime_target strata_hip_runtime)
   set(_strata_gpu_blas_target roc::hipblas)
   set(_strata_gpu_include_directories ${STRATA_HIP_COMPAT_INCLUDE_DIR})
-endif()
 endif()
 
 # Warnings live on an INTERFACE target the project's own code links, NOT in add_compile_options: applied
