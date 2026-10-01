@@ -732,3 +732,20 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
+
+### Start the text API without occupying the GPU
+
+`serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true` in that
+config) starts the lightweight HTTP API without spawning the native engine. The first generation request
+loads it through the existing reload path, including `before_load` and `min_free_vram_mib`. Eager startup
+remains the default. This option is text-only: a vision configuration with lazy startup is rejected explicitly.
+
+`POST /v1/load` and `/v1/unload` are JSON control aliases for integrations, accepting `{}` or
+`{"model":"<configured model>"}` and returning model status. They require the configured API key,
+`application/json`, and no foreign browser Origin. They return **409** while a request is active or queued,
+and **404** for an unknown model. Existing `/load` and `/unload` behavior is preserved. `/api/health` aliases
+`/health`; `/v1/status` exposes `loaded` and `auto_load`. The unloaded model remains discoverable.
+
+Unloading and shutdown close the native engine's stdin after sending `QUIT`, allowing Windows' detached
+stdin reader to see EOF. Cleanup waits for process exit before releasing handles; if forced shutdown still
+times out, the server keeps ownership and reports an error rather than claiming the model was unloaded.

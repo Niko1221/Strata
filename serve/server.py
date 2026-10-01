@@ -97,6 +97,10 @@ class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
 
 
+class ModelBusy(RuntimeError):
+    """Explicit model controls must not interrupt active or queued requests."""
+
+
 class GpuBusy(RuntimeError):
     """The model is unloaded and the GPU has less free VRAM than min_free_vram_mib: something else (a game, another
     model server) is using it, so the engine is not started into the little that is left."""
@@ -163,21 +167,14 @@ class StrataEngine:
     """
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
-                 env: dict | None = None):
+                 env: dict | None = None, lazy: bool = False):
         self.spawn = (exe, list(args), cwd, log, env)   # to start it again after it died (issue #27)
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
-        self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
-        loading = threading.Event()                     # set once READY: the narrator below stops
-        if log:
-            threading.Thread(target=narrate_start, args=(log, os.path.getsize(log), args, loading),
-                             daemon=True).start()
-        self.proc = subprocess.Popen([exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
-        contain(self.proc)                               # ends with the server, however it ends (Windows)
-        self.max_context = 0
-        self.unloaded = False            # stopped on purpose (idle unload, POST /unload), not crashed
+        self.proc, self.pump, self.log = None, None, None
+        self.ended, self.unloaded = True, True
+        self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
@@ -187,6 +184,18 @@ class StrataEngine:
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
             self.info["version"] = None
+        if lazy:
+            return
+        self.ended, self.unloaded = False, False
+        self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
+        loading = threading.Event()                     # set once READY: the narrator below stops
+        if log:
+            threading.Thread(target=narrate_start, args=(log, os.path.getsize(log), args, loading),
+                             daemon=True).start()
+        self.proc = subprocess.Popen([exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
+        contain(self.proc)                               # ends with the server, however it ends (Windows)
+        self.max_context = 0
         for line in self.proc.stdout:
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
@@ -206,7 +215,8 @@ class StrataEngine:
             self.info["version"] = str(self.info["engine"])
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
-        threading.Thread(target=self._pump, daemon=True).start()
+        self.pump = threading.Thread(target=self._pump, daemon=True)
+        self.pump.start()
 
     def _pump(self):
         for line in self.proc.stdout:
@@ -238,39 +248,24 @@ class StrataEngine:
                 "smaller model (Q2_0 / IQ2_XS).")
 
     def alive(self) -> bool:
-        return not getattr(self, "ended", False) and self.proc.poll() is None
+        return self.proc is not None and not getattr(self, "ended", False) and self.proc.poll() is None
 
     def exit_code(self):
+        if self.proc is None:
+            return None
         try:
             return self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             return None
 
     def unload(self):
-        """Stop the engine process so its VRAM and RAM go back to the system (idle unload, POST /unload); the next
-        request starts it again with restart().  Only between requests: the caller holds the service's fifo."""
-        try:
-            try:                                        # QUIT first, as close() does: the engine frees its memory
-                self.proc.stdin.write("QUIT\n")
-                self.proc.stdin.flush()
-                self.proc.wait(timeout=20)
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                self.proc.terminate()
-                self.proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=20)
-        except OSError:
-            pass
-        self.ended = True
+        """Release GPU/RAM between requests, retaining the spawn config for automatic reloading."""
+        self.close()
         self.unloaded = True
 
     def restart(self):
         """Start the engine again (the same command) after it died; the new process has its own line queue."""
-        try:
-            self.proc.kill()
-        except OSError:
-            pass
+        self.close()
         info = dict(self.info)
         self.ended = False
         self.__init__(*self.spawn)
@@ -402,12 +397,31 @@ class StrataEngine:
                         break
 
     def close(self):
+        if self.proc is None:
+            return
         try:
-            self.proc.stdin.write("QUIT\n")
-            self.proc.stdin.flush()
-            self.proc.wait(timeout=10)
-        except Exception:
+            if self.proc.poll() is None:
+                self.proc.stdin.write("QUIT\n")
+                self.proc.stdin.flush()
+                self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
+                self.proc.wait(timeout=10)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Strata is still releasing GPU/RAM; retry unloading after it exits") from None
+        finally:
+            if self.proc.poll() is not None:
+                if self.pump is not None:
+                    self.pump.join(timeout=2)
+                self.proc.stdin.close()
+                self.proc.stdout.close()
+                if self.log not in (None, subprocess.DEVNULL):
+                    self.log.close()
+                self.proc = None
+                self.ended = True
+                self.progress, self.last = None, {}
 
 
 class Vision:
@@ -868,6 +882,7 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -1480,10 +1495,10 @@ def make_handler(svc: Service):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif path == "/health":
+            elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
-                                 "loaded": svc.loaded()})
+                                 "loaded": svc.loaded(), "service": "strata"})
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
@@ -1545,6 +1560,32 @@ def make_handler(svc: Service):
                 return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if not isinstance(req, dict):
+                    raise ValueError("send a JSON object")
+                if path in ("/v1/load", "/v1/unload"):
+                    if not self._own_page("the model can be loaded or unloaded"):
+                        return
+                    if req.get("model") not in (None, svc.model):
+                        self._json(404, {"error": {"message": "model not found"}})
+                        return
+                    if path == "/v1/unload":
+                        result = svc.unload()
+                        if result == "busy":
+                            raise ModelBusy("a request is running or queued")
+                    else:
+                        if not svc.fifo.acquire(blocking=False):
+                            raise ModelBusy("a request is running or queued")
+                        try:
+                            with svc.status_lock:
+                                if svc.status.get("busy") or svc.status.get("queued"):
+                                    raise ModelBusy("a request is running or queued")
+                            svc.ensure_loaded()
+                            svc.last_request_at = time.time()
+                        finally:
+                            svc.fifo.release()
+                        result = "loaded"
+                    self._json(200, {"status": result, **svc.v1_status()})
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     svc.load()                               # unloaded: load first (or 503 while the GPU is busy)
                 if path == "/v1/chat/completions":
@@ -1555,10 +1596,14 @@ def make_handler(svc: Service):
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except ModelBusy as e:
+                self._json(409, {"error": {"type": "model_busy", "message": str(e)}})
             except GpuBusy as e:
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
             except EngineDied as e:                          # before the answer started (not streamed)
                 self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
+            except RuntimeError as e:
+                self._json(503, {"error": {"type": "server_error", "message": str(e)}})
 
         def _props(self):
             model = parse_qs(urlsplit(self.path).query).get("model", [svc.model])[0]
@@ -1576,7 +1621,7 @@ def make_handler(svc: Service):
             params["n_predict"] = svc.shared.get("max_tokens", -1)
             props = {"default_generation_settings": {"n_ctx": svc.engine.max_context, "params": params},
                      "total_slots": 1, "model_alias": svc.model, "chat_template": svc.template.source,
-                     "modalities": {"vision": svc.vision is not None}, "models_autoload": False,
+                     "modalities": {"vision": svc.vision is not None}, "models_autoload": hasattr(svc.engine, "restart"),
                      "is_sleeping": not svc.loaded()}
             if getattr(svc.engine, "model_path", None):
                 props["model_path"] = svc.engine.model_path
@@ -1870,6 +1915,7 @@ def main() -> int:
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
+    ap.add_argument("--lazy", action="store_true", help="start the text-only API unloaded; load on first request")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -1914,14 +1960,18 @@ def main() -> int:
         if sampling_defaults:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
+        lazy = a.lazy or cfg.get("lazy_load") is True
+        if lazy and cfg.get("vision"):
+            ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
             print("loading the vision encoder ...", flush=True)
             vision = Vision(cfg["vision"], log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=env)
-        print("loading the model (the first start takes a minute or two) ...", flush=True)
+        print("model unloaded; the first request loads it ..." if lazy else
+              "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({cfg.get('layer_split') or 'auto'})", flush=True)
-        engine = StrataEngine(cfg["exe"], engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env)
+        engine = StrataEngine(cfg["exe"], engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
         warn_tight_ram(engine.info.get("arena_mib"))
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
