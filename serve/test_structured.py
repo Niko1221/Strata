@@ -79,7 +79,7 @@ class Structured(unittest.TestCase):
         self.assertIn("reasoning_content", raw)
         self.assertIn("data: [DONE]", raw)
 
-    def test_invalid_generation_is_an_error_and_never_streams_content(self):
+    def test_backend_violation_is_an_error_and_never_claims_completion(self):
         for script in ("## Film Plan - Photobooth", '{"title":"Only a title"}',
                        json.dumps({**STORY, "extra": True}),
                        json.dumps({**STORY, "boxes": [{**STORY["boxes"][0], "duration_ms": "15000"}]})):
@@ -89,7 +89,7 @@ class Structured(unittest.TestCase):
                 self.assertEqual(reply["error"]["code"], "structured_output_failed")
                 _, raw = self.chat(script, stream=True)
                 self.assertIn('"structured_output_failed"', raw)
-                self.assertNotIn('"delta"', raw)
+                self.assertNotIn('"finish_reason": "stop"', raw)
                 self.assertIn("data: [DONE]", raw)
 
     def test_object_mode_strict_json_and_truncation(self):
@@ -97,9 +97,12 @@ class Structured(unittest.TestCase):
         self.assertEqual(self.chat('{"answer":4}', response_format=fmt)[0], 200)
         for script in ('[]', '{"x":NaN}', '{"x":1,"x":2}', '{"x":1e999}', '```json\n{}\n```'):
             self.assertEqual(self.chat(script, response_format=fmt)[0], 502)
-        self.assertEqual(self.chat('{"answer":4}', response_format=fmt, max_tokens=5)[0], 502)
+        code, reply = self.chat('{"answer":4}', response_format=fmt, max_tokens=5)
+        self.assertEqual(code, 200)
+        self.assertEqual(reply['choices'][0]['finish_reason'], 'length')
         # Plain text callers retain normal streaming, without a JSON validation gate.
         self.assertEqual(self.chat("Prose.", response_format={"type": "text"})[0], 200)
+        self.assertEqual(self.chat("Prose.", response_format={"type": "text"}, _grammar={"injected": True})[0], 200)
 
     def test_rejected_schema_does_not_load_the_engine_or_retry(self):
         with mock.patch.object(self.svc, "load") as load:

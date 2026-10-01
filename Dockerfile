@@ -61,7 +61,7 @@ ARG BUILD_VISION=1
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
     && .venv/bin/pip install --no-cache-dir \
-        numpy jinja2 regex pyyaml tqdm requests cmake ninja pillow psutil "jsonschema>=4.23,<5" \
+        numpy jinja2 regex pyyaml tqdm requests cmake ninja pillow psutil "jsonschema>=4.23,<5" "llguidance>=1.9.1,<2" \
     && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built

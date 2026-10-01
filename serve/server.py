@@ -51,6 +51,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
+from serve.grammar import GrammarDecoder  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -180,6 +181,7 @@ class StrataEngine:
         self.max_context = 0
         self.unloaded = False            # stopped on purpose (idle unload, POST /unload), not crashed
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
+        self.can_grammar = False         # permission masks are enforced inside the native sampler
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
@@ -197,6 +199,7 @@ class StrataEngine:
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
+                self.can_grammar = "grammar_mask_v1" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -345,10 +348,15 @@ class StrataEngine:
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
+        grammar = (sampling or {}).get("_grammar")
+        if grammar is not None and not self.can_grammar:
+            raise ValueError("this native engine lacks grammar_mask_v1; build the structured-output engine")
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        if grammar is not None:
+            head += " grammar=1"
         try:
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
@@ -367,10 +375,21 @@ class StrataEngine:
                 if line is None:
                     done = True
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
-                if line.startswith("T "):
+                if line.startswith("MASK "):
                     if cancel.is_set():
                         return
-                    yield int(line[2:])
+                    if grammar is None:
+                        raise StructuredOutputError("native engine requested an unexpected grammar mask")
+                    mask = grammar.mask(int(line.split()[1]))
+                    self.proc.stdin.write("MASK " + mask.hex() + "\n")
+                    self.proc.stdin.flush()
+                elif line.startswith("T "):
+                    if cancel.is_set():
+                        return
+                    token = int(line[2:])
+                    if grammar is not None:
+                        grammar.accept(token)
+                    yield token
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -759,6 +778,7 @@ class Service:
 
     def with_shared(self, req: dict, api: str) -> dict:
         """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        req = {k: v for k, v in req.items() if k != "_grammar"}
         s = self.shared
         if not s:
             return req
@@ -869,8 +889,8 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
-            "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+            "structured_output": {"formats": ["json_object", "json_schema"], "method": "native_token_mask",
+                                  "constrained_decoding": True, "stream_buffered": False},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -985,6 +1005,7 @@ class Service:
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        parser.literal_content = (sampling or {}).get("_grammar") is not None
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
@@ -1308,25 +1329,20 @@ def openai_collect(chunks) -> dict:
 
 
 def structured_chunks(chunks, validator):
-    """Buffer structured streams so a client never receives unvalidated content."""
-    buffered = []
-    heartbeat = time.monotonic()
+    """Stream grammar-constrained prefixes; validate only a normally completed body.
+
+    Token limits remain normal Chat Completions with finish_reason=length. SDK
+    parse/stream helpers can then raise their native LengthFinishReasonError.
+    """
+    content = []
     try:
         for chunk in chunks:
             if chunk is not None:
-                buffered.append(chunk)
-            if chunk is None or time.monotonic() - heartbeat >= 1:
-                heartbeat = time.monotonic()
-                yield None
-        result = openai_collect(buffered)
-        choice = result["choices"][0]
-        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
-        yield buffered[0]
-        delta = {"content": content}
-        if choice["message"].get("reasoning_content"):
-            delta["reasoning_content"] = choice["message"]["reasoning_content"]
-        yield {**buffered[0], "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
-        yield buffered[-1]
+                choice = chunk["choices"][0]
+                content.append(choice["delta"].get("content") or "")
+                if choice.get("finish_reason") == "stop":
+                    validated_json("".join(content), validator, "stop")
+            yield chunk
     finally:
         chunks.close()
 
@@ -1654,6 +1670,8 @@ def make_handler(svc: Service):
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
+            grammar = GrammarDecoder(svc.tok, svc.stop_ids, validator.schema,
+                                     kw.get("enable_thinking", True) is not False) if validator is not None else None
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
@@ -1667,6 +1685,8 @@ def make_handler(svc: Service):
                 tools = (tools or []) + extra or None
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
+            if grammar is not None:
+                req = {**req, "_grammar": grammar}
             cancel = threading.Event()
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None

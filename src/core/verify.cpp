@@ -1082,7 +1082,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
-    if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
+    if (head_sampling_ && (sampled || hist_d_ != nullptr || token_mask_ != nullptr)) {
+        if (token_mask_ != nullptr) {
+            if (T != 1) { err = "verify: grammar sampling requires a single-token window"; return false; }
+            apply_token_mask(head_logits_, (int) n_vocab_, token_mask_, cs_);
+        }
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
         sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);

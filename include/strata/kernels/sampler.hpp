@@ -42,6 +42,10 @@ struct SamplerParams {
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream);
 
+// Restrict a single decoding row before top-k/top-p/penalties select a token.
+// Device pointers; bit i of mask[i / 32] permits token i. Never used in prompt prefill.
+void apply_token_mask(float* logits, int n_vocab, const uint32_t* mask, void* stream);
+
 // ---- COUPLED DRAFT SAMPLING (include/strata/core/coupled_draft.hpp, STRATA_SPEC_COUPLED=1).  Device pointers
 // throughout; every per-request / per-round value comes from device memory, so the calls can be captured.
 //

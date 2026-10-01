@@ -1,9 +1,6 @@
-"""JSON response formats at the HTTP boundary: prompt once, validate before delivery.
-
-The native engine has no grammar decoder. Failed generations are errors, never
-silently retried or returned as successful structured output.
-"""
+"""Validate the OpenAI response-format contract and completed constrained output."""
 import json
+import re
 
 from jsonschema import validators
 from jsonschema.exceptions import SchemaError
@@ -13,6 +10,56 @@ from referencing.exceptions import NoSuchResource
 
 class StructuredOutputError(RuntimeError):
     pass
+
+
+def check_strict_schema(schema):
+    """Reject unsupported strict schemas before loading or generating, as OpenAI does."""
+    unsupported = {"allOf", "oneOf", "not", "dependentRequired", "dependentSchemas", "if", "then", "else",
+                   "uniqueItems", "contains", "minContains", "maxContains", "unevaluatedProperties",
+                   "unevaluatedItems", "patternProperties", "propertyNames", "minProperties", "maxProperties"}
+    counts = {"properties": 0, "enum": 0, "strings": 0}
+
+    def visit(node, depth=1):
+        if not isinstance(node, dict):
+            raise ValueError("strict response_format requires schema objects")
+        bad = unsupported.intersection(node)
+        if bad:
+            raise ValueError("unsupported strict response_format keyword: " + sorted(bad)[0])
+        types = node.get("type", [])
+        types = [types] if isinstance(types, str) else types
+        if "object" in types or "properties" in node:
+            props = node.get("properties", {})
+            if node.get("additionalProperties") is not False:
+                raise ValueError("strict response_format objects require additionalProperties: false")
+            if set(node.get("required", [])) != set(props):
+                raise ValueError("strict response_format requires every property; use a nullable type for optional values")
+            if depth > 10:
+                raise ValueError("strict response_format exceeds 10 object nesting levels")
+            counts["properties"] += len(props)
+            counts["strings"] += sum(map(len, props))
+            for child in props.values():
+                visit(child, depth + 1)
+        values = node.get("enum", [])
+        counts["enum"] += len(values)
+        counts["strings"] += sum(len(x) for x in values if isinstance(x, str))
+        if len(values) > 250 and sum(len(x) for x in values if isinstance(x, str)) > 15000:
+            raise ValueError("strict response_format string enum exceeds 15000 characters")
+        if isinstance(node.get("const"), str):
+            counts["strings"] += len(node["const"])
+        for name in ("$defs", "definitions"):
+            defs = node.get(name, {})
+            counts["strings"] += sum(map(len, defs))
+            for child in defs.values():
+                visit(child, depth)
+        if "items" in node:
+            visit(node["items"], depth)
+        for child in node.get("anyOf", []):
+            visit(child, depth)
+    if "anyOf" in schema:
+        raise ValueError("strict response_format root cannot use anyOf")
+    visit(schema)
+    if counts["properties"] > 5000 or counts["enum"] > 1000 or counts["strings"] > 120000:
+        raise ValueError("strict response_format exceeds OpenAI schema size limits")
 
 
 def _no_remote(uri):
@@ -33,13 +80,15 @@ def prepare_format(response_format, messages):
         spec = response_format.get("json_schema")
         if not isinstance(spec, dict) or not isinstance(spec.get("schema"), dict):
             raise ValueError("response_format.json_schema needs a schema object")
-        if not isinstance(spec.get("name"), str) or not spec["name"]:
+        if not isinstance(spec.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", spec["name"]):
             raise ValueError("response_format.json_schema needs a name")
         if "strict" in spec and not isinstance(spec["strict"], bool):
             raise ValueError("response_format.json_schema.strict must be boolean")
         schema = spec["schema"]
         if schema.get("type") != "object":
             raise ValueError("response_format schema must have type object at its root")
+        if spec.get("strict") is True:
+            check_strict_schema(schema)
     else:
         raise ValueError("response_format.type must be text, json_object or json_schema")
 

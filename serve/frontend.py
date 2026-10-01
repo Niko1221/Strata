@@ -483,6 +483,12 @@ class OutputParser:
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead = "content", True
             elif self.state == "content":
+                if getattr(self, "literal_content", False):
+                    # Structured JSON strings can contain literal tool tags.
+                    if self.buf:
+                        out.append(Event("content", self.buf))
+                        self.buf = ""
+                    return out
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
                     if not stripped:

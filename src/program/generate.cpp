@@ -73,6 +73,7 @@
 #include <algorithm>
 #include <iostream>
 #include <thread>
+#include "strata/core/grammar_mask.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -4006,7 +4007,12 @@ int main(int argc, char** argv) {
             };
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "STOP") {
+                    std::lock_guard<std::mutex> lk(in_mu);
+                    stop_req.store(true);
+                    in_cv.notify_all();
+                    continue;
+                }
                 std::lock_guard<std::mutex> lk(in_mu);
                 in_lines.push_back(l);
                 in_cv.notify_one();
@@ -4015,9 +4021,9 @@ int main(int argc, char** argv) {
             in_eof = true;
             in_cv.notify_one();
         }).detach();
-        auto next_line = [&](std::string& out) -> bool {
+        auto next_line = [&](std::string& out, bool cancellable = false) -> bool {
             std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
+            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof || (cancellable && stop_req.load()); });
             if (in_lines.empty()) return false;
             out = std::move(in_lines.front());
             in_lines.pop_front();
@@ -4111,7 +4117,17 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
-        std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
+        const size_t mask_words = ((size_t) n_vocab + 31) / 32;
+        std::vector<uint32_t> host_mask(mask_words);
+        uint32_t* device_mask = nullptr;
+        {
+            const strata::core::OnDevice on_h(hist_dev);
+            if (cudaMalloc(&device_mask, mask_words * sizeof(uint32_t)) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: grammar mask allocation failed\n");
+                return 1;
+            }
+        }
+        std::printf("READY %lld stop grammar_mask_v1\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -4152,6 +4168,8 @@ int main(int argc, char** argv) {
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
+            bool req_grammar = false;
+            ver.set_token_mask(nullptr);
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
@@ -4168,7 +4186,8 @@ int main(int argc, char** argv) {
                     if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
-                    if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    if (key == "grammar") req_grammar = tok.substr(eq + 1) == "1";
+                    else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -4718,12 +4737,12 @@ int main(int argc, char** argv) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
-                if (first_window) T = 1;
+                if (first_window || req_grammar) T = 1;
                 // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
                 // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
                 bool from_sfx = false;
                 int sfx_match = 0;
-                if (o.suffix_draft > 0 && !first_window) {
+                if (o.suffix_draft > 0 && !first_window && !req_grammar) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
                     if (k > 0 && sbuf[0] == drafts[0]) {
@@ -4750,6 +4769,24 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on_h(hist_dev);
                     cudaMemcpy(d_hist, hist_stage.data(), (size_t) T * (size_t) hist_n * sizeof(int32_t),
                                cudaMemcpyHostToDevice);
+                }
+                if (req_grammar) {
+                    std::printf("MASK %lld\n", (long long) n_vocab);
+                    std::fflush(stdout);
+                    std::string mask_line;
+                    if (!next_line(mask_line, true)) { finish = "cancel"; break; }
+                    if (!strata::core::decode_token_mask(mask_line, (size_t) n_vocab, host_mask, err)) {
+                        std::printf("ERR %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    const strata::core::OnDevice on_h(hist_dev);
+                    if (cudaMemcpy(device_mask, host_mask.data(), mask_words * sizeof(uint32_t),
+                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        std::printf("ERR uploading grammar mask failed\n");
+                        return 1;
+                    }
+                    ver.set_token_mask(device_mask);
                 }
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
@@ -4790,7 +4827,7 @@ int main(int argc, char** argv) {
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = eos || produced_n >= max_new ||
+                const bool drafted = req_grammar || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
                 {
                     const Clock::time_point tw3 = Clock::now();
@@ -4815,6 +4852,7 @@ int main(int argc, char** argv) {
                 x = outv[(size_t) a];
                 p += a + 1;
             }
+            ver.set_token_mask(nullptr);
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             if (dec_timing && dec_windows > 0) {
                 const DecSnap d1 = dec_snap();

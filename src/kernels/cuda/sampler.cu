@@ -833,6 +833,15 @@ int2* split_scratch(void* stream, size_t entries) {
 
 }  // namespace
 
+__global__ void token_mask_kernel(float* logits, int n_vocab, const uint32_t* mask) {
+    const int i = (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    if (i < n_vocab && !(mask[i / 32] & (uint32_t(1) << (i % 32)))) logits[i] = -INFINITY;
+}
+
+void apply_token_mask(float* logits, int n_vocab, const uint32_t* mask, void* stream) {
+    token_mask_kernel<<<(n_vocab + 255) / 256, 256, 0, (cudaStream_t) stream>>>(logits, n_vocab, mask);
+}
+
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream) {
     if (n_tokens <= 0 || n_vocab <= 0) return;

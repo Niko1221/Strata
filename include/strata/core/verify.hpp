@@ -75,6 +75,12 @@ public:
         if (next_) next_->set_sampling(sp);
     }
 
+    /// Request-local device bitmask for ONE decoding token; speculative windows are disallowed.
+    void set_token_mask(const uint32_t* mask) {
+        token_mask_ = mask;
+        if (next_) next_->set_token_mask(mask);
+    }
+
     /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
     /// int32 slots at that stride (`strata::kernels::penalty_rows` builds them), most recent token LAST, unused
     /// front slots -1 (the kernel reads only the tail window).  Row t follows the window's drafts 1..t - staging
@@ -143,6 +149,7 @@ private:
     }();   ///< greedy by default; per-request via set_sampling
     const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
     int hist_len_ = 0;
+    const uint32_t* token_mask_ = nullptr; ///< request-local grammar mask, only during decoding
     bool head_sampling_ = true;          ///< set_head_sampling
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
