@@ -1,0 +1,27 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect SRT Parsing Logic
+**Problem:** `parse_srt` assumes the timestamp line is always at index 0 or 1. Standard SRT format is `Index\nTimestamp\nText`. If the index is present (index 0), the timestamp is at index 1. The current logic `head = 1 if "-->" in lines[1] else ...` works for standard files but fails if the index line is missing or if there are blank lines within the block that aren't stripped correctly before indexing. More critically, it ignores the index line entirely, which is fine, but the fallback logic is fragile. A robust parser should find the line containing `-->`.
+
+**Fix:**
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line containing the timestamp separator
+        head_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if head_idx is None:
+            continue
+        a, _, z = lines[head_idx].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[head_idx + 1:]})
+    return cues
+```
+
+### 2. ASS Time Format Precision Loss
+**Problem:** `_ass_time` uses `f"{s:05.2f}"` for seconds. This truncates milliseconds to 2 decimal places (centiseconds). ASS format expects `H:MM:SS.cc` (centiseconds). While 2 decimals is technically correct for ASS, the calculation `s = t % 60` can result in floating point errors (e.g., `59.999999` becoming `60.00` which breaks the minute rollover if not handled, though `int(t // 3600)` handles hours). The bigger issue is that `s` is a float, and `05.2f` rounds

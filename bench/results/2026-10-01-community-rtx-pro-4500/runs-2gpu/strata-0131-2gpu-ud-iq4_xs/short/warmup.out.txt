@@ -1,0 +1,20 @@
+Here are the three most important problems found in the code:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR`. The code places the alpha value in the first two hex digits (`AA`), but standard ASS implementations often expect the alpha to be inverted or handled differently depending on the renderer, but more critically, the format string `f"&H{alpha:02X}..."` produces `&H00RRGGBB` for opaque. However, the standard ASS color format is actually `&HAABBGGRR` where `AA` is alpha (00=opaque, FF=transparent). The code is technically correct for the format string, but `st['bg']` usage with `0x40` alpha might be intended as semi-transparent. A more critical bug is that `st['fg']` and `st['accent']` are passed without alpha, defaulting to 0 (opaque), which is correct. However, if `hexcolor` is not 6 chars, it crashes. More importantly, **`_ass_colour` does not handle the case where `hexcolor` is None or invalid gracefully beyond the default**, but the real bug is often that `st['bg']` might not exist in `DEFAULT_STYLE`. Assuming `DEFAULT_STYLE` has it, the main issue is **potential KeyError** if `st['fg']`, `st['accent']`, or `st['bg']` are missing from the merged style dict.
+
+*Correction:* Ensure keys exist or use `.get()`.
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) != 6:
+        c = "FFFFFF"
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+And in `ass_header`:
+```python
+    # Use .get() to prevent KeyError if style dict is incomplete
+    fg = st.get('fg', '#FFFFFF')
+    accent = st.get('accent', '#FFFF

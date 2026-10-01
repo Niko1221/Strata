@@ -1,0 +1,20 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Conversion (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The function assumes input is `#RRGGBB` but outputs `&HAABBGGRR`. However, it slices `c[4:6]` (Blue), `c[2:4]` (Green), `c[0:2]` (Red). This is correct for RGB->BGR. However, if `hexcolor` is not 6 chars (e.g., `#FFF`), it crashes or produces garbage. More critically, standard ASS colors are `&HAABBGGRR`. The logic is technically correct for 6-digit hex, but `lstrip("#")` fails if the string is empty or malformed, and `alpha` is applied to the wrong byte position if the input format varies. The biggest risk is `KeyError` or `IndexError` if `st['fg']` is missing or malformed in `ass_header`.
+**Correction:** Add validation and ensure strict 6-digit hex handling.
+
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) == 3:  # Expand shorthand #RGB to #RRGGBB
+        c = "".join([c[i]*2 for i in range(3)])
+    if len(c) != 6:
+        c = "FFFFFF"
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text with Blank Lines (Bug)
+**Lines:** `parse_srt` function, specifically `re.split(r"\n\s*\n", ...)`
+**Problem:** SRT blocks are separated by blank lines. However, if a subtitle text itself contains a blank line (rare but possible in some generators) or if the file has trailing whitespace, `re.split` might incorrectly merge or split blocks. More importantly, `lines = [x for x in b.splitlines() if x.strip() != ""]` removes *all* empty lines within a block. If a subtitle intentionally has an empty line for spacing, it is lost. But the critical bug is that

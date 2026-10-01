@@ -1,0 +1,142 @@
+```python
+"""
+jobqueue.py - A persistent, priority-aware job queue for a single machine.
+
+This module provides a thread-safe job queue backed by SQLite (WAL mode),
+supporting priority scheduling, fair-share round-robin among submitters,
+automatic retries with exponential backoff, and a multi-threaded worker pool.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Callable, Optional
+
+
+class JobState(str, Enum):
+    """Enumeration of possible job states."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class Job:
+    """
+    Represents a single job in the queue.
+
+    Attributes:
+        id: Unique identifier (UUID4 string).
+        kind: Type/category of the job.
+        priority: Integer priority; lower values run first.
+        payload: Arbitrary dictionary data for the job.
+        state: Current state of the job.
+        attempts: Number of times this job has been attempted.
+        max_attempts: Maximum number of attempts before marking as failed.
+        created_at: ISO format timestamp when the job was created.
+        started_at: ISO format timestamp when the job started running, or None.
+        finished_at: ISO format timestamp when the job finished, or None.
+        error: Error message if the job failed, or None.
+    """
+    id: str
+    kind: str
+    priority: int
+    payload: dict
+    state: JobState
+    attempts: int
+    max_attempts: int
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        """Convert the job to a dictionary for serialization."""
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "priority": self.priority,
+            "payload": self.payload,
+            "state": self.state.value,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_row(cls, row: tuple) -> "Job":
+        """Create a Job instance from a database row."""
+        return cls(
+            id=row[0],
+            kind=row[1],
+            priority=row[2],
+            payload=json.loads(row[3]),
+            state=JobState(row[4]),
+            attempts=row[5],
+            max_attempts=row[6],
+            created_at=row[7],
+            started_at=row[8],
+            finished_at=row[9],
+            error=row[10],
+        )
+
+
+class JobQueue:
+    """
+    A persistent, thread-safe job queue backed by SQLite.
+
+    Jobs are stored in a SQLite database with WAL mode enabled for better
+    concurrency. The queue supports priority scheduling, fair-share round-robin
+    among submitters (identified by payload["by"]), and automatic retries with
+    exponential backoff.
+    """
+
+    def __init__(self, path: str):
+        """
+        Initialize the job queue.
+
+        Args:
+            path: Path to the SQLite database file.
+        """
+        self.path = path
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA busy_timeout=5000;")
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Create the jobs table if it does not exist."""
+        with self._lock:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    error TEXT,
+                    next_run_at TEXT,
+                    submitter TEXT
+                )
+            """)
+            self._conn.execute("""
+                CREATE INDEX IF

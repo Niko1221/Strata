@@ -1,0 +1,27 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect SRT Parsing Logic
+**Problem:** `parse_srt` assumes the timestamp line is always at index 0 or 1. Standard SRT format is `Index\nTimestamp\nText`. If the index is present (standard), `lines[0]` is the index, `lines[1]` is the timestamp. The code checks `lines[1]` for `-->`, which works, but if the index is missing or malformed, it might fail. More critically, if there are blank lines within a block (rare but possible in malformed files), the index shifts. The current logic `head = 1 if "-->" in lines[1]...` is fragile. A robust parser should find the line containing `-->`.
+
+**Fix:**
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line containing the arrow
+        head_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if head_idx is None:
+            continue
+        a, _, z = lines[head_idx].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[head_idx + 1:]})
+    return cues
+```
+
+### 2. ASS Time Format Precision Loss
+**Problem:** `_ass_time` uses `f"{s:05.2f}"`. This formats seconds with 2 decimal places (centiseconds). However, ASS format expects `H:MM:SS.CC` (centiseconds). While `05.2f` produces `SS.CC`, it fails for seconds >= 10 (e.g., `10.00` becomes `10.00`, which is fine, but `5.00` becomes `05.00`). The real issue is that `s = t % 60` can be a float like `59.

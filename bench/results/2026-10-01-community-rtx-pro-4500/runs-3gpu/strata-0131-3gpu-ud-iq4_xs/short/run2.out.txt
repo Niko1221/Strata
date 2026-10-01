@@ -1,0 +1,7 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The function returns a string starting with `&H`, but the ASS format requires `&H` followed by 8 hex digits (AABBGGRR). The current implementation produces `&HAABBGGRR` (9 chars) if alpha is 2 digits, or fails if alpha is 1 digit. More critically, standard ASS expects `&H` + 8 hex digits. The current code `f"&H{alpha:02X}..."` produces `&H00FFFFFF` (correct length) but the logic assumes `alpha` is 0-255. However, the bigger issue is that `&H` is not part of the hex string in some parsers, but standard is `&H` + 8 hex. Wait, the real bug is that `&H` is correct, but the order is AABBGGRR. The code does `alpha:02X` + `c[4:6]` (BB) + `c[2:4]` (GG) + `c[0:2]` (RR). This is correct for AABBGGRR. 
+*Correction:* Actually, the bug is that `&H` is not always required or handled correctly by all parsers, but the main issue is that `alpha` is passed as `0x40` (64) in `ass_header`, which is fine. Let's look closer. `&H` + 8 hex digits. `0x40` is `40`. `40` + `RR` + `GG` + `BB`. The code does `alpha:02X` (2 chars) + 6 chars = 8 chars. This seems correct. 
+*Re-evaluating:* The bug is in `_ass_time`. It uses `s:05.2f`. If `s` is 59.99, it becomes `59.99`. If `s` is 60.00, it becomes `60.00`, which is invalid (seconds must be < 60). The modulo `t % 60` handles this, but floating point errors can cause `s` to be `60.00`. Also, `h` and `m

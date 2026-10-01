@@ -1,0 +1,23 @@
+Here are the three most important problems:
+
+### 1. Incorrect ASS Color Alpha Handling
+**Lines:** `_ass_colour` definition and usage in `ass_header`.
+**Problem:** The ASS format expects `&HAABBGGRR` where `AA` is alpha (0=opaque, 255=transparent). The code passes `0x40` and `0x60` as integers, but `_ass_colour` formats them as hex. However, the logic `alpha:02X` works, but the *usage* in `ass_header` passes `0x40` (64) for background and `0x60` (96) for shadow. While technically valid, the bigger issue is that `st['bg']` might be missing or invalid, and the default `#FFFFFF` in `_ass_colour` ignores the passed alpha if the color string is malformed. More critically, `st['accent']` and `st['bg']` are accessed directly without `.get()`, risking `KeyError` if the style dict is incomplete.
+**Fix:** Use `.get()` with defaults and ensure alpha is clamped.
+
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) != 6: c = "FFFFFF"
+    alpha = max(0, min(255, alpha))
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+
+# In ass_header:
+f"{_ass_colour(st.get('fg', '#FFFFFF'))},"
+f"{_ass_colour(st.get('accent', '#FFFF00'))},"
+f"{_ass_colour(st.get('bg', '#000000'), 0x40)},"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text with Blank Lines
+**Lines:** `parse_srt`, specifically `re.split(r"\n\s*\n", ...)` and subsequent filtering.
+**Problem:** SRT blocks are separated by blank lines. If a caption text itself contains a blank line (rare but possible in raw input) or if the file has trailing whitespace, the regex split might create empty blocks or misalign indices. More importantly, `lines = [x

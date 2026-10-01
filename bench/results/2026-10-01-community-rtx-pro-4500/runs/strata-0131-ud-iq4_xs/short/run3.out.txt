@@ -1,0 +1,19 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR` (Alpha, Blue, Green, Red). The code incorrectly maps the hex string `#RRGGBB` by slicing `c[4:6]` (Blue) into the Alpha position, `c[2:4]` (Green) into Blue, and `c[0:2]` (Red) into Green, while putting the passed `alpha` into the Red position. This results in completely wrong colors.
+**Fix:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # Input is RRGGBB. Output needs AABBGGRR.
+    # Alpha is passed separately.
+    r, g, b = c[0:2], c[2:4], c[4:6]
+    return f"&H{alpha:02X}{b}{g}{r}"
+```
+
+### 2. SRT Parsing Fails on Standard Files (Bug)
+**Lines:** `parse_srt` function, specifically the `secs` helper and block splitting.
+**Problem:** Standard SRT timestamps use commas (e.g., `00:00:01,000`). The `secs` function replaces commas with dots, which is correct for parsing, but the regex split `re.split(r"\n\s*\n", ...)` can fail if there are trailing spaces or inconsistent newlines. More critically, `secs` assumes `h:m:s.ms` format after replacement, but if the input has spaces around the arrow or different spacing, `partition("-->")` might leave whitespace in `a` or `z` that `float()` cannot handle if not stripped properly (though `strip()` is called, the logic is fragile). A bigger issue is that `secs` fails if the timestamp format is `HH:MM:SS,mmm` because `float(rest)` works, but if the file uses `HH:MM:SS.mmm` it also works. However, the

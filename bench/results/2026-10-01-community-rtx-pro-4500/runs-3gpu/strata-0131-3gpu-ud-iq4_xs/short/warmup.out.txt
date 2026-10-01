@@ -1,0 +1,14 @@
+Here are the three most important problems found in the code:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR`. The code places the alpha value in the first two hex digits (`AA`), but standard ASS implementations often expect the alpha to be inverted or handled differently depending on the renderer, but more critically, the format string `f"&H{alpha:02X}..."` produces `&H00RRGGBB` for opaque. However, the standard ASS color format is actually `&HAABBGGRR` where `AA` is alpha (00=opaque, FF=transparent). The code is technically correct for the format string, but `st['bg']` is passed with `0x40` alpha. The bigger issue is that `st['fg']` and `st['accent']` are passed with default `alpha=0`. If `st['fg']` is `#FFFFFF`, it becomes `&H00FFFFFF`. This is correct.
+*Wait, looking closer at `_ass_colour`:*
+`return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"`
+If `alpha=0`, it produces `&H00...`. This is correct for opaque.
+However, there is a subtle bug in `srt_to_ass`: `text = "\\N".join(...)`. If `c["lines"]` is empty, this produces an empty string, which is fine.
+Let's look for a more critical bug.
+
+**Re-evaluating Problem 1: `parse_srt` timestamp parsing failure on standard SRT.**
+**Lines:** `parse_srt` -> `secs` function
+**Problem:** The `secs` function assumes the timestamp format is strictly `HH:MM:SS,mmm`. However, `ts.split(":")` will fail if the format is `HH:MM:SS.mmm` (dot instead of comma) or if there are spaces. More importantly, `rest` will contain the milliseconds part (e.g., `123,456` or `123.456`). `float(rest)` works for `123.456` but fails for `123,456` if the

@@ -1,0 +1,17 @@
+Here are the three most important problems:
+
+### 1. Incorrect ASS Color Alpha Handling
+**Lines:** `_ass_colour` definition and usage in `ass_header`.
+**Problem:** The ASS format expects `&HAABBGGRR` where `AA` is alpha (0=opaque, 255=transparent). The code passes `0x40` and `0x60` as integers, but `_ass_colour` formats them as hex. However, the logic `alpha:02X` works, but the *usage* in `ass_header` passes `0x40` (64) for `bg` and `0x60` (96) for `shadow`. While technically valid hex, the bigger issue is that `st['bg']` might be missing or invalid, and the default `#000000` for shadow is hardcoded. More critically, if `st['fg']` or `st['accent']` are missing, it crashes. But the most subtle bug is that `alpha` is treated as an integer in the format string, which is correct, but the *default* alpha for opaque is 0. The code uses `0x40` (64) for background, which is semi-transparent. This is likely intended, but if `st['bg']` is not defined in `DEFAULT_STYLE`, it raises a KeyError. Assuming `DEFAULT_STYLE` exists, the real bug is that `_ass_colour` doesn't validate hex length. If `hexcolor` is short, slicing fails.
+**Correction:** Ensure robust hex parsing and handle missing keys.
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) != 6:
+        c = "FFFFFF"
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text with Blank Lines
+**Lines:** `parse_srt`, specifically `re.split(r"\n\s*\n", f.read().strip())`.
+**Problem:** SRT blocks are separated by blank lines. However, if a subtitle text itself contains a blank line (rare but possible in some generators) or if the file has trailing whitespace

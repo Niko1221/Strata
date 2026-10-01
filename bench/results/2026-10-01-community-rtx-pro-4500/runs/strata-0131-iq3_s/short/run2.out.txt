@@ -1,0 +1,9 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` fails on standard SRT files (IndexError)
+**Problem:** The parser assumes the timestamp line is always at index 0 or 1. Standard SRT files have the index number on line 0, timestamp on line 1, and text on line 2+. If the file has extra blank lines or different formatting, `lines[head]` might be out of bounds or `lines[head+1:]` might miss text. More critically, if `head` is 0 (timestamp first), `lines[head+1:]` works, but if `head` is 1, it works. However, the logic `if len(lines) < 2: continue` is too strict for valid cues with empty text (rare but possible) or fails if the block structure is slightly off. The biggest bug is that `secs()` crashes if the timestamp format is slightly off (e.g., missing milliseconds), but the main structural bug is that `parse_srt` is used by `srt_to_ass` which expects `lines` to be the text. If `head` is 0, `lines[1:]` is correct. If `head` is 1, `lines[2:]` is correct. The code uses `lines[head + 1:]`. This is actually correct for standard SRT.
+**Wait, looking closer:** The real bug is in `build_srt`. It writes `f"{i}\n{_ts(t0)} --> {_ts(t1)}\n{text}\n"`. This creates a trailing newline after the text. `parse_srt` splits by `\n\s*\n`. If the last cue has a trailing newline, it might create an empty block or mess up the split.
+**Actually, the most critical bug is in `build_srt`'s cue fixing logic.**
+
+### 1. Overlapping cues not fully resolved in `build_srt`
+**Problem:** The loop fixes overlaps by clamping `t1` to `nxt - GAP`. However, it does not check if the *previous* cue's end time was already clamped, potentially causing a cascade of overlaps or negative durations if cues are very close. More importantly, `t1 = max(t0 + 0.4, nxt - GAP)` can result in `t1 < t0` if `nxt

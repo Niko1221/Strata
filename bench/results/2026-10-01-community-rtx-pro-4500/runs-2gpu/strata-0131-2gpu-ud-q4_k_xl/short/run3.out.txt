@@ -1,0 +1,17 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function.
+**Problem:** ASS color format is `&HAABBGGRR` where `AA` is **transparency** (0=opaque, 255=transparent). The code uses `0` for opaque, which is correct, but the docstring says "alpha 0 = opaque" while standard ASS usage often confuses this. More critically, if `alpha` is passed as `0x40` (64) for background, it means 64/255 transparency. However, the bigger bug is that `lstrip("#")` fails if the string is empty or malformed, and `c[4:6]` etc. will raise `IndexError` if the hex string is short. But the most subtle bug is that `alpha` in ASS is **transparency**, not opacity. If the intent is "opaque", `alpha` should be `0`. If the intent is "semi-transparent", `alpha` should be higher. The code seems to treat `alpha` as transparency correctly, but the default `0` for `fg` is opaque. The real bug is that `lstrip` removes *all* leading `#`, but if `hexcolor` is `None`, it becomes `""`, causing index errors.
+**Correction:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) < 6:
+        c = "FFFFFF"
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text with Blank Lines
+**Lines:** `parse_srt` function, specifically `re.split(r"\n\s*\n", ...)` and subsequent logic.
+**Problem:** SRT blocks are separated by blank lines. However, if a caption text itself contains a blank line (rare but possible in some generators) or if the file has trailing whitespace, the split might misalign. More importantly, the logic `head = 1 if "-->" in lines[1] else ...` assumes the timestamp is always on the second line.

@@ -1,0 +1,11 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` crashes on standard SRT files
+**Lines:** 138-140
+**Problem:** The code assumes the timestamp line is either at index 0 or 1. Standard SRT files have the index number on line 0, timestamps on line 1, and text on line 2+. If the file has an index, `lines[1]` contains timestamps, but `lines[0]` (the index) does not contain `-->`. The logic `head = 1 if "-->" in lines[1] else (0 if "-->" in lines[0] else None)` works for index-less files but fails if `lines[0]` is an index and `lines[1]` is timestamps (it correctly picks 1). However, if the file *doesn't* have indices, `lines[0]` is timestamps. The real bug is that `lines` filters out empty strings, but SRT blocks often have trailing newlines or specific formatting. More critically, if `lines` has only 1 element (malformed), it skips. But the main issue is robustness: if `lines[1]` exists but doesn't have `-->`, and `lines[0]` doesn't either, it skips. This is okay.
+**Actual Critical Bug:** The `secs` function inside `parse_srt` assumes the format `HH:MM:SS,mmm`. If the SRT uses `HH:MM:SS.mmm` (dot instead of comma), `replace(",", ".")` handles it. However, `ts.split(":")` will fail if the timestamp is malformed or if there are extra spaces not stripped correctly.
+**More Critical Bug:** In `build_srt`, `cues.sort(key=lambda c: c[0])` sorts by start time. Then it iterates `for i, (t0, t1, text) in enumerate(cues):`. It checks `nxt = cues[i + 1][0]`. This is correct.
+**Let's look closer at `parse_srt`:**
+`lines = [x for x in b.splitlines() if x.strip() != ""]`
+If a cue has no text (just timestamps), `lines` has 1 element. `len(lines) < 2` skips it. Correct.
+If a

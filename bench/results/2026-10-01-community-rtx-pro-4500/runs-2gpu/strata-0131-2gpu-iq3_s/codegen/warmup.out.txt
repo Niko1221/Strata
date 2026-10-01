@@ -1,0 +1,144 @@
+```python
+"""
+jobqueue.py - Persistent, priority-aware job queue for a single machine.
+
+Provides a SQLite-backed job queue with priority scheduling, fair-share
+round-robin among submitters at equal priority, automatic retries with
+exponential backoff, and a multi-threaded worker pool with lease-based
+failure detection.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Job dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Job:
+    """Represents a single unit of work in the queue."""
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    kind: str = ""
+    priority: int = 100
+    payload: dict = field(default_factory=dict)
+    state: str = "queued"  # queued | running | done | failed | cancelled
+    attempts: int = 0
+    max_attempts: int = 3
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_row(self) -> tuple:
+        """Convert to a tuple suitable for SQLite insertion."""
+        return (
+            self.id,
+            self.kind,
+            self.priority,
+            json.dumps(self.payload),
+            self.state,
+            self.attempts,
+            self.max_attempts,
+            self.created_at,
+            self.started_at,
+            self.finished_at,
+            self.error,
+        )
+
+    @classmethod
+    def from_row(cls, row: tuple) -> "Job":
+        """Construct a Job from a SQLite row tuple."""
+        return cls(
+            id=row[0],
+            kind=row[1],
+            priority=row[2],
+            payload=json.loads(row[3]),
+            state=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            created_at=row[7],
+            started_at=row[8],
+            finished_at=row[9],
+            error=row[10],
+        )
+
+
+# ---------------------------------------------------------------------------
+# JobQueue – SQLite-backed persistent queue
+# ---------------------------------------------------------------------------
+
+class JobQueue:
+    """
+    Thread-safe, persistent job queue backed by SQLite in WAL mode.
+
+    Supports priority scheduling, fair-share round-robin among submitters
+    (identified by payload["by"]) at equal priority, automatic retries with
+    exponential backoff, and lease-based worker failure detection.
+    """
+
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        payload TEXT NOT NULL DEFAULT '{}',
+        state TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        error TEXT,
+        lease_expires_at TEXT,
+        submitter TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_state_priority ON jobs(state, priority, created_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind);
+    CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(state, lease_expires_at);
+    """
+
+    def __init__(self, path: str) -> None:
+        """
+        Initialize the job queue with a SQLite database at *path*.
+
+        Args:
+            path: Filesystem path to the SQLite database file.
+        """
+        self._path = path
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA busy_timeout=5000;")
+        self._conn.executescript(self._SCHEMA)
+        self._conn.commit()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return the shared connection (thread-safe via lock)."""
+        return self._conn
+
+    def submit(
+        self,
+        kind: str,
+        payload: dict,
+        priority: int = 100,
+        max_attempts: int = 3,
+    ) -> Job:
+        """
+        Submit a new job to the queue.
+
+        Args:
+            kind: Job type identifier.
+            payload: Arbitrary JSON-serializable dict.
+            priority:

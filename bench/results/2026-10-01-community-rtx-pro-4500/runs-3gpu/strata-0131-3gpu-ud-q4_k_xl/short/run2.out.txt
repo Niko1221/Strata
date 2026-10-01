@@ -1,0 +1,22 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Alpha Handling
+**Lines:** `_ass_colour` definition and usage in `ass_header`.
+**Problem:** The ASS format uses `&HAABBGGRR` where `AA` is the alpha channel. In ASS, `00` is opaque and `FF` is transparent. The code passes `0x40` and `0x60` as alpha values, which results in semi-transparent colors (approx 75% and 62% opacity) instead of the intended opaque or specific shadow/background colors. Additionally, the docstring claims `alpha 0 = opaque`, but the logic doesn't enforce standard opaque defaults correctly for all fields.
+**Fix:** Ensure alpha values are correct for ASS (00=opaque). If `bg` and shadow are meant to be opaque, use `0x00`. If they are meant to be semi-transparent, the current values are technically valid but likely unintended for standard captions. Assuming standard opaque text/background:
+
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # Ensure alpha is within 0-255 and format correctly
+    alpha = max(0, min(255, alpha))
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+
+# In ass_header, if opaque is desired:
+# _ass_colour(st['bg'], 0x00) and _ass_colour('#000000', 0x00)
+```
+
+### 2. Potential Zero-Division or Invalid Timing in `_segments`
+**Lines:** `total = float(scene.get("seconds") or 0.0) or max(1.5, len(text) / 15.0)`
+**Problem:** If `scene["seconds"]` is `0.0`, the `or` operator treats it as falsy and falls back to `max(1.5, ...)`. However, if `scene["seconds"]` is explicitly `0.0` (a valid

@@ -1,0 +1,33 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR` (Alpha, Blue, Green, Red). The current code outputs `&H{alpha}{RR}{GG}{BB}`, which swaps Red and Blue channels, resulting in incorrect colors (e.g., red text appearing blue).
+**Fix:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # Correct order: Alpha, Blue, Green, Red
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Standard Files (Bug)
+**Lines:** `parse_srt` function, specifically the `head` detection logic.
+**Problem:** Standard SRT files have the index on line 1, timestamps on line 2, and text on line 3+. The code checks `lines[1]` for `-->` but assumes if it's not there, `lines[0]` might be the header. If `lines[0]` is the index (e.g., "1"), it fails to find `-->` and skips the cue. It should explicitly look for the timestamp line.
+**Fix:**
+```python
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if len(lines) < 2:
+            continue
+        # Find the line containing the timestamp separator
+        head = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if head is None:
+            continue
+        a, _, z = lines[head].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[head + 1:]})
+```
+
+### 3. Potential Division by Zero / Empty Cue Handling (Edge Case)
+**Lines:** `build_srt` function

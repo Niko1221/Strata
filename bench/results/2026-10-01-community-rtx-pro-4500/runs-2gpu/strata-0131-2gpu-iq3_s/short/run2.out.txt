@@ -1,0 +1,10 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` fails on standard SRT files with index numbers
+**Problem:** The parser assumes the timestamp line is either the first or second line of a block. Standard SRT format is `Index\nTimestamp\nText`. If the index is present, `lines[0]` is the index, `lines[1]` is the timestamp. The code checks `if "-->" in lines[1]` (True) and sets `head=1`. However, if the index is missing or formatted differently, or if there are blank lines within the block (filtered out), the logic `head = 1 if "-->" in lines[1] else ...` is fragile. More critically, if `lines[0]` is the index and `lines[1]` is the timestamp, `head` becomes 1. The code then does `lines[head].partition("-->")`. This works. **However**, if the SRT has no index (some generators omit it), `lines[0]` is the timestamp. `head` becomes 0. This works.
+**Actual Bug:** The regex `re.split(r"\n\s*\n", ...)` splits on blank lines. If an SRT file has trailing whitespace or specific line endings, `lines` might be empty or malformed. But the bigger issue is **`_ts` vs `secs` mismatch in edge cases** or **`build_srt` writing invalid SRT if `cues` is empty**.
+**Real Critical Bug:** In `build_srt`, if `scenes_timing` is empty, `cues` is empty. `body` becomes an empty string. `f.write("")` is fine.
+**Let's look closer at `parse_srt`:**
+If `lines` has length 2 (e.g., `1\n00:00:01,000 --> 00:00:02,000`), `head` is 1. `lines[head+1:]` is `[]`. `cues` gets `lines: []`. This is valid.
+If `lines` has length 1 (malformed), it skips.
+**The actual bug is in `_segments`**: `float(s["t0"])` will raise `KeyError` if `t0` is missing, even if `w`

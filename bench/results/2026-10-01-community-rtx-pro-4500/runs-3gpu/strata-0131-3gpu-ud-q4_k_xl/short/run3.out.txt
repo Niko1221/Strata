@@ -1,0 +1,9 @@
+Here are the three most important problems found in `videogen/captions.py`:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function.
+**Problem:** ASS color format is `&HAABBGGRR` where `AA` is **transparency** (0=opaque, 255=transparent). The code uses `alpha` directly as the hex value, but standard RGB hex strings don't include alpha. More critically, if `alpha` is passed as an integer (e.g., `0x40`), it works, but the default `alpha=0` implies opaque. However, the bigger bug is that `hexcolor` might be `#RRGGBB`, but if it's `#RRGGBBAA`, the slicing `c[4:6]` etc. will be wrong. Assuming standard `#RRGGBB`, the logic is okay, but the **default alpha for background** in `ass_header` is `0x40` (64), which is semi-transparent. If the intent is opaque background, this is a bug. But the most critical bug is that **ASS alpha is inverted** relative to typical "opacity" mental models, and often users expect `0` to be transparent in other formats. However, the real bug is in `_ass_colour`: if `hexcolor` is `#FFFFFF`, `c` is `FFFFFF`. `c[4:6]` is `FF` (Blue), `c[2:4]` is `FF` (Green), `c[0:2]` is `FF` (Red). This is correct for BGR. But if `alpha` is meant to be opacity, it's wrong. Let's look closer. Actually, the most severe bug is in `srt_to_ass`: it calls `parse_srt(srt)` where `srt` is a **string** (the SRT content), but `parse_srt` expects a **file path**.
+
+### 2. `srt_to_ass` Passes String to `parse_srt` (Path vs Content)
+**Lines:** `srt_to_ass` function, line `for c in parse_srt(srt):`.
+**Problem:** `srt_to_ass` receives `srt` as a string (the SRT content), but `parse_srt` expects a file path and tries to open

@@ -1,0 +1,28 @@
+Here are the three most important problems found in the code:
+
+### 1. `parse_srt` fails on standard SRT files (IndexError)
+**Problem:** The parser assumes the timestamp line is always at index 0 or 1. Standard SRT files have the index number on line 0, timestamp on line 1, and text on line 2+. If the file has extra blank lines or different formatting, `lines[head]` might be out of bounds or `lines[head+1:]` might miss text. More critically, if `head` is calculated as `1` (timestamp at index 1), `lines[head+1:]` starts at index 2, which is correct for standard SRT. However, if the block structure varies (e.g., no index number), `head` logic is fragile. The biggest bug is that `re.split(r"\n\s*\n", ...)` can leave trailing newlines or empty blocks that cause `lines` to be empty or malformed, leading to `IndexError` when accessing `lines[head]` if `head` is not None but `len(lines)` is small.
+
+**Fix:** Robustly find the timestamp line and ensure sufficient lines exist.
+
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x.strip() for x in b.splitlines() if x.strip()]
+        if not lines:
+            continue
+        # Find the line containing "-->"
+        ts_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts_idx is None or ts_idx + 1 >= len(lines):
+            continue
+        a, _, z = lines[ts_idx].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[ts_idx + 1:]})
+    return cues
+```
+
+### 2. `build_srt` writes an empty file if `cues` is empty
+**Problem:** If `scenes_timing` is empty or all scenes have no text, `cues` is empty. The `body`

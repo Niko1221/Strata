@@ -1,0 +1,22 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect SRT Parsing Logic
+**Problem:** `parse_srt` assumes the timestamp line is always at index 0 or 1. Standard SRT format is `Index\nTimestamp\nText`. If the index is present (standard), `lines[0]` is the index, `lines[1]` is the timestamp. The code checks `lines[1]` for `-->`, which works, but if the index is missing or malformed, it might fail. More critically, if `lines[0]` contains `-->` (non-standard but possible in some parsers), it handles it. However, the biggest issue is that `lines[head + 1:]` assumes text starts immediately after the timestamp. If there are blank lines *within* a block (rare but possible in malformed files), they are stripped, which is good. But the real bug is that `re.split(r"\n\s*\n", ...)` can fail if the file ends with a newline or has Windows line endings (`\r\n`) not normalized, though `splitlines` handles `\r\n`. The most critical bug is actually in `build_srt`'s output vs `parse_srt`'s input compatibility regarding empty lines, but a clearer bug is in `_segments` where `float(s["t0"])` will crash if `t0` is missing or None, despite the `or []` check on the list, individual dicts might lack keys.
+
+Actually, looking closer at `parse_srt`:
+```python
+head = 1 if "-->" in lines[1] else (0 if "-->" in lines[0] else None)
+```
+If `lines` has length 2 (Index, Timestamp), `lines[1]` is timestamp. Correct.
+If `lines` has length 1 (Timestamp only), `lines[0]` is timestamp. Correct.
+However, `build_srt` writes:
+```python
+f"{i}\n{_ts(t0)} --> {_ts(t1)}\n{text}\n"
+```
+This produces:
+```
+1
+00:00:00,000 --> 00:00:01,000
+Text
+```
+`parse_srt` splits by `\n\s*\n`. This block is `1\n00:00:
