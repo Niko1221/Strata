@@ -2274,11 +2274,13 @@ int main(int argc, char** argv) {
         srcp = &src;
     } else {
         arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
-        // On the multi-GPU Windows experiment, start with at most 8 GiB of mapped host pages.
-        // Unregistered layers remain in the resident arena and use the CPU expert path.
-        // (a layer split across GPUs too: pinning all of it into two contexts leaves WDDM refusing every later
-        // allocation - measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail)
+#ifdef _WIN32
+        // Limit mapped pages on WDDM: registration in two contexts can prevent later allocations.
         const uint64_t pin_limit = (o.expert_cache_remote[0] > 0 || multi_gpu) ? (8ull << 30) : 0;
+#else
+        // Register the full arena on Linux so both stages can transfer experts directly.
+        const uint64_t pin_limit = 0;
+#endif
         if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                             o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());

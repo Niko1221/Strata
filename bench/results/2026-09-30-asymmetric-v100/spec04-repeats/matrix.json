@@ -1,0 +1,122 @@
+[
+ {
+  "label": "~8K",
+  "target": 8801,
+  "prompt_tokens": 8818,
+  "reused": 0,
+  "prompt_ms": 13466.0,
+  "prompt_tok_s": 654.8,
+  "output_tokens": 256,
+  "decode_ms": 3917.3,
+  "decode_tok_s": 65.4,
+  "hit_rate": 0.935,
+  "duration_s": 17.4,
+  "wall_s": 17.4,
+  "seed": 42,
+  "repeat": 0,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ },
+ {
+  "label": "~8K",
+  "target": 8801,
+  "prompt_tokens": 8819,
+  "reused": 0,
+  "prompt_ms": 13703.7,
+  "prompt_tok_s": 643.5,
+  "output_tokens": 256,
+  "decode_ms": 4616.1,
+  "decode_tok_s": 55.5,
+  "hit_rate": 0.978,
+  "duration_s": 18.3,
+  "wall_s": 18.4,
+  "seed": 42,
+  "repeat": 1,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ },
+ {
+  "label": "~8K",
+  "target": 8801,
+  "prompt_tokens": 8820,
+  "reused": 0,
+  "prompt_ms": 13727.3,
+  "prompt_tok_s": 642.5,
+  "output_tokens": 256,
+  "decode_ms": 4656.9,
+  "decode_tok_s": 55.0,
+  "hit_rate": 0.987,
+  "duration_s": 18.4,
+  "wall_s": 18.4,
+  "seed": 42,
+  "repeat": 2,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ },
+ {
+  "label": "32K",
+  "target": 29512,
+  "prompt_tokens": 29527,
+  "reused": 0,
+  "prompt_ms": 37198.7,
+  "prompt_tok_s": 793.8,
+  "output_tokens": 256,
+  "decode_ms": 4146.4,
+  "decode_tok_s": 61.7,
+  "hit_rate": 0.982,
+  "duration_s": 41.4,
+  "wall_s": 41.5,
+  "seed": 42,
+  "repeat": 0,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ },
+ {
+  "label": "32K",
+  "target": 29512,
+  "prompt_tokens": 29529,
+  "reused": 0,
+  "prompt_ms": 39945.2,
+  "prompt_tok_s": 739.2,
+  "output_tokens": 256,
+  "decode_ms": 4889.4,
+  "decode_tok_s": 52.4,
+  "hit_rate": 0.988,
+  "duration_s": 44.8,
+  "wall_s": 45.0,
+  "seed": 42,
+  "repeat": 1,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ },
+ {
+  "label": "32K",
+  "target": 29512,
+  "prompt_tokens": 29528,
+  "reused": 0,
+  "prompt_ms": 40998.9,
+  "prompt_tok_s": 720.2,
+  "output_tokens": 256,
+  "decode_ms": 4977.8,
+  "decode_tok_s": 51.4,
+  "hit_rate": 0.989,
+  "duration_s": 46.0,
+  "wall_s": 46.1,
+  "seed": 42,
+  "repeat": 2,
+  "max_tokens": 256,
+  "strata_tune": {
+   "spec_min_p": 0.4
+  }
+ }
+]

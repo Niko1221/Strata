@@ -289,8 +289,10 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
                           int64_t k, float* out);
 
 /// Plan v0.3 P6: the pool for a verify window of `n_tok` tokens.  `x_f` is (n_tok, n_embd), `ids` (n_tok, k) and
-/// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it;
-/// resident experts' rows are zeroed (the GPU adds them).  Requires `host_res` (the token-graph residency).
+/// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it.
+/// A published plan's GPU-owned (kind >= 0) rows are NOT written here - the readers zero them on the device -
+/// except when no plan was published (no sink or an undersized one), where the host rows are the only source
+/// and are zeroed as before.  Requires `host_res` (the token-graph residency).
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out);
 

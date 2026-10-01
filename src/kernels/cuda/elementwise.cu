@@ -230,8 +230,8 @@ __global__ void copy_from_mapped_kernel(float4* __restrict__ dst, const volatile
     }
 }
 
-// the CPU rows of a verify window, skipping the rows the GPU plan computes itself (the
-// pool writes +0.0 into those, so this writes +0.0 too): block = row, the plan's hit rows `dst[0, *count)`.
+// Copy CPU rows and write +0.0 for rows owned by the GPU plan. The host values of GPU-owned
+// rows can be stale and must not be read: block = row, hit rows = hit_rows[0, *count).
 __global__ void copy_rows_from_mapped_kernel(float4* __restrict__ dst, const volatile float4* src, int64_t row4,
                                              const int32_t* __restrict__ hit_rows, const int32_t* __restrict__ count) {
     const int row = blockIdx.x;

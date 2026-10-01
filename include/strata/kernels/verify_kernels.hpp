@@ -53,9 +53,11 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
 /// copy_i32_from_mapped unless *skip == value.
 void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, const uint32_t* skip, uint32_t value,
                                  void* stream);
-/// copy_from_mapped, or zeros when *skip == value (n a multiple of 4, 16-byte aligned).
-void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
-                              void* stream);
+/// Rows of mapped memory, except the group's GPU-owned rows: when *skip == value (the device planned the
+/// group) every row is written +0.0; otherwise hit_rows[0, *count) (the published plan's entries) are written
+/// +0.0 and the rest cross from `src`.  width a multiple of 4, 16-byte aligned.
+void copy_rows_or_zero_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const uint32_t* skip,
+                                   uint32_t value, const int32_t* hit_rows, const int32_t* count, void* stream);
 
 /// Rows of the S2/S4/S8 embedding for T token ids read from DEVICE memory; out (T, n).  Bitwise `embedding_gather`.
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

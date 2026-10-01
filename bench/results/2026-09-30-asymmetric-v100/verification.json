@@ -1,0 +1,119 @@
+{
+ "cuda_parity_tests": {
+  "passed": 6,
+  "failed": 0,
+  "names": [
+   "mmvq_multi_parity",
+   "shared_expert_parity",
+   "quantize_act_parity",
+   "elementwise_parity",
+   "decode_opt_regress",
+   "bf16_gemv_parity"
+  ]
+ },
+ "real_q2_0_experts": {
+  "layers": [
+   0,
+   1,
+   2,
+   3,
+   20,
+   47
+  ],
+  "failures": 0
+ },
+ "parity_controls": {
+  "adapt_swaps": 0,
+  "request_pcie_frac": 0.28,
+  "temperature": 0,
+  "seed": 123,
+  "max_tokens": 128,
+  "fresh_engine": true
+ },
+ "completion_comparisons": {
+  "normal": {
+   "matches_original_first_control": [
+    true,
+    true,
+    true
+   ],
+   "completion_tokens": [
+    128,
+    128,
+    128
+   ],
+   "cached_prompt_tokens": [
+    0,
+    0,
+    0
+   ],
+   "new_message_sha256": [
+    "84389c3572dedcff6c7d5d2de37ee51c81cc1c68d4040f1165f20e82d2334a36",
+    "3e9b5f8279b2c3a7b458430333dd066dec7adf1661ca6a0d30a9444844ee3cfd",
+    "82f3462b14adf4d66c483dc0c8b2a236a67ff7f5ab1e3b08f92851a59cb1b298"
+   ]
+  },
+  "unbatched": {
+   "matches_original_first_control": [
+    true,
+    false,
+    true
+   ],
+   "completion_tokens": [
+    128,
+    128,
+    128
+   ],
+   "cached_prompt_tokens": [
+    0,
+    0,
+    0
+   ],
+   "new_message_sha256": [
+    "84389c3572dedcff6c7d5d2de37ee51c81cc1c68d4040f1165f20e82d2334a36",
+    "7b8b4fe6773c759a8d1bf343ce46c1dbec0b8df2305e354739fc991dd6f7bd36",
+    "82f3462b14adf4d66c483dc0c8b2a236a67ff7f5ab1e3b08f92851a59cb1b298"
+   ],
+   "original_against_original": [
+    true,
+    false,
+    true
+   ],
+   "matches_original_second_control": [
+    true,
+    true,
+    true
+   ]
+  },
+  "device-split": {
+   "matches_original_first_control": [
+    true,
+    true,
+    true
+   ],
+   "completion_tokens": [
+    128,
+    128,
+    128
+   ],
+   "cached_prompt_tokens": [
+    0,
+    0,
+    0
+   ],
+   "new_message_sha256": [
+    "d49e0b471bf932aebb9514ca18ae2cd96ce8e206fa150bb208d7bd6908d4011e",
+    "9890c7b5a4bc03f1ffa32dead31ea9c96a346fb57cef167af4ea4934651fd2c2",
+    "82f3462b14adf4d66c483dc0c8b2a236a67ff7f5ab1e3b08f92851a59cb1b298"
+   ]
+  }
+ },
+ "rejected_quantizer_sharing": {
+  "reason": "native quantizer uses fast math; routed quantizer uses precise math",
+  "constructed_boundary_blocks": 32768,
+  "different_quant_bytes": 114165,
+  "different_scale_bytes": 0,
+  "different_sum_bytes": 0,
+  "kept": false
+ }
+}

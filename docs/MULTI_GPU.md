@@ -58,14 +58,20 @@ The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
 
-**auto** tries every placement (all of them for two or three cards; proportional to the free VRAM beyond that) and
-keeps the one whose caches would hold the most of the expert profile, hottest pairs weighted most; ties go to the
-placement that leaves the fullest card the most room. The startup log prints the choice:
+**auto** tries every placement (all of them for two or three cards; beyond that the layers are shared in proportion
+to card speed) and keeps the one whose predicted decode-window time is lowest: each card's per-layer time (less on
+a card with more SMs and a higher clock) plus the routed mass its caches would miss, hottest profile pairs
+weighted most. It is a decode-cost model, not a prompt-bandwidth one. The startup log prints the choice:
 
 ```
-strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)
-strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window
+strata generate: layer split auto: K=22 - predicted 19.7 ms per decode window; the caches hold 11298 of 12288 profiled pairs (~99.7% of the routed mass)
+strata serve: layer split: layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window
 ```
+
+**PCIe share, per card:** without `--pcie-frac`, every card probes its own host-to-device link. A slower link
+gets a smaller share of the missed experts. An explicit startup `--pcie-frac` value applies to every card.
+A request's `pcie_frac` value overrides every stage only when it differs from the first card's startup share.
+Otherwise, later cards keep their own startup shares.
 
 ## What each card holds
 
@@ -92,11 +98,17 @@ into the card that owns the layer.
     as it did without a split: its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`), with or without a split; a native (IQ) pack says so at
   start.
-- The prompt path has its own buffers on every card (1.5 GB each at the default 2048-token chunk; `--prefill 1024`
-  halves that) instead of borrowing cache slots as one card does. An explicit `--expert-cache` on the first card is
-  capped to leave room for them.
-- On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
-  allocations); the PCIe share covers those layers.
+- With an expert profile (the default), every stage's prompt path borrows the tail of its own expert cache for its
+  chunk buffers and refills it after the prompt; outside the prompt the whole cache is expert cache again, so the
+  buffers cost a stage no permanent VRAM. Without a profile, or with `--no-prefill-borrow`, each stage keeps its
+  own chunk-sized buffers for the whole session instead; then an explicit `--expert-cache` is capped to leave room
+  for them.
+- Every stage leaves room for its verify windows (~96 MiB) before its cache is sized; the draft layer and the head
+  (~1 GiB) sit on the last stage only.
+- On Windows, a layer split or a remote expert cache limits arena registration to 8 GiB. The limit prevents
+  WDDM allocation failures when two CUDA contexts map the arena. Only registered layers can use direct PCIe copies.
+  On Linux, Strata first attempts to register the full arena with `cudaHostRegister`. If that fails, Strata
+  registers one layer at a time. Unregistered layers use the existing CPU and host-staging paths.
 - Every card needs compute capability 7.0 (Volta or newer). The build includes code for each selected card's
   architecture; Ampere-only prompt kernels automatically use their portable fallback on Volta and Turing.
 
