@@ -192,6 +192,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata-load src/core/load_main.cpp)
   target_link_libraries(strata-load PRIVATE strata_core strata_kernels)
 
+  if(STRATA_BUILD_TESTS)
+    # the layer-range carve in the dense-weight loader: `pool_bytes` and `layer_bytes` must agree over
+    # every range, and the full range must reproduce the pack's own pool (a synthetic index, a real pack
+    # by argument; no GPU and no model - both functions are pure file parsing, which is what lets the
+    # split search price a placement before committing VRAM to it)
+    add_executable(weights_carve_test tests/core/weights_carve_test.cpp)
+    target_link_libraries(weights_carve_test PRIVATE strata_core)
+    add_test(NAME weights_carve_test COMMAND weights_carve_test)
+    set_tests_properties(weights_carve_test PROPERTIES TIMEOUT 60)
+  endif()
+
   add_executable(strata-concurrent src/core/concurrent_main.cpp)
   target_include_directories(strata-concurrent PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata-concurrent PRIVATE strata_core strata_kernels ${_strata_gpu_runtime_target})

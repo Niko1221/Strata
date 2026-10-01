@@ -104,23 +104,79 @@ struct LoadReport {
     double upload_ms = 0.0;
 };
 
+/// The layer ordinal of a per-layer tensor name (`blk.<n>.<suffix>`), or -1 for a model-global name
+/// (`token_embd`, `output`, `output_hc_*`) or anything that is not a per-layer name at all.
+///
+/// ONE PARSER.  The loader's range carve and NativeDense both have to answer "which layer is this", and
+/// two answers to that question is a stage quietly running another stage's layer - which is not a crash,
+/// it is a wrong number.  The suffix list lives in `layout.cpp` and is deliberately NOT duplicated here:
+/// this function only needs the `blk.<n>.` prefix, which is the whole of what a range carve cares about.
+inline int64_t tensor_layer(const std::string& name) {
+    if (name.size() < 6 || name.compare(0, 4, "blk.") != 0) return -1;
+    int64_t v = 0;
+    size_t i = 4;
+    for (; i < name.size() && name[i] >= '0' && name[i] <= '9'; ++i) {
+        v = v * 10 + (name[i] - '0');
+        if (v > 1000000) return -1;   // not a layer ordinal - refuse rather than overflow into one
+    }
+    return (i > 4 && i < name.size() && name[i] == '.') ? v : -1;
+}
+
+/// True when the layer range [lo, hi) DROPS this name: a per-layer tensor outside the range.
+///
+/// `hi < 0` disables the range entirely, which is the whole-model carve and is byte-identical to no
+/// filter at all (the kept rows land at the same offsets in the same order).  A name in `keep` is never
+/// dropped whatever the range says - that is for tensors a stage needs even though it does not run their
+/// layer.  Model-global tensors have no layer ordinal, so the range never drops them: they are needed by
+/// the stage the range would not have given them to (the head, the embedding).
+inline bool layer_out_of_range(const std::string& name, int64_t lo, int64_t hi,
+                               const std::set<std::string>* keep = nullptr) {
+    if (hi < 0) return false;
+    if (keep != nullptr && keep->count(name) != 0) return false;
+    const int64_t l = tensor_layer(name);
+    return l >= 0 && (l < lo || l >= hi);
+}
+
 class WeightTable {
 public:
     /// The arena size the index asks for, readable WITHOUT loading anything - so a caller can size its
     /// `DeviceArena` before committing to the load, and a plan that cannot fit is refused at startup rather
     /// than halfway through a 5 GB upload.
-    /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
+    ///
+    /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.  With a
+    /// layer range `[layer_lo, layer_hi)`, the size of the arena that holds only that range's per-layer
+    /// tensors plus every model-global one - what one stage of a layer split actually runs on.
     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                           const std::set<std::string>* skip = nullptr);
+                           const std::set<std::string>* skip = nullptr,
+                           int64_t layer_lo = 0, int64_t layer_hi = -1,
+                           const std::set<std::string>* keep = nullptr);
 
     /// Load every tensor in `<pack_dir>/index.txt` into `arena_base`.
     ///
     /// `arena_bytes` MUST be at least `pool_bytes`; the loader checks rather than trusting the caller,
     /// because the failure mode otherwise is a device write past the end of the arena.
-    /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
-    /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
+    /// With `skip`, or with a layer range, the dropped tensors are not read: their rows keep their metadata
+    /// with `data == nullptr` and `resident == false`, and the others are packed into the compacted arena
+    /// `pool_bytes` sized.  THE CALLER MUST NOT RUN A DROPPED TENSOR: `find` returns non-null for it, so a
+    /// consumer that only checks for null hands a null device pointer to a kernel.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-              const std::set<std::string>* skip = nullptr);
+              const std::set<std::string>* skip = nullptr,
+              int64_t layer_lo = 0, int64_t layer_hi = -1,
+              const std::set<std::string>* keep = nullptr);
+
+    /// What one stage's arena costs for a layer range, priced WITHOUT loading anything: per-layer and
+    /// model-global byte totals, aligned exactly as `load` places them.  Pure arithmetic, which is what
+    /// lets the split search price a candidate placement before committing VRAM to it - the same reason
+    /// `session_bytes` is pure (see the session carve).
+    ///
+    /// `per_layer` comes back sized to `n_layers`; `keep_bytes` totals the names in `keep`, which every
+    /// stage holds whatever its range.  For any range, `globals + keep_bytes + sum(per_layer[lo,hi))`
+    /// equals `pool_bytes(..., lo, hi)` - the per-row alignment is order-independent, so summing a range
+    /// agrees with the loader's own compaction exactly.
+    static bool layer_bytes(const std::string& pack_dir, int64_t n_layers, std::vector<uint64_t>& per_layer,
+                            uint64_t& globals, uint64_t& keep_bytes, std::string& err,
+                            const std::set<std::string>* skip = nullptr,
+                            const std::set<std::string>* keep = nullptr);
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }
