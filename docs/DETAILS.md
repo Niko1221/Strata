@@ -732,3 +732,21 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
+
+### JSON response formats
+
+`POST /v1/chat/completions` accepts `response_format: {"type":"json_object"}` or
+`{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"],"additionalProperties":false}}}`.
+The schema must describe an object at its root. Local `#` references work; remote references are refused.
+The installer and Docker image install `jsonschema`; for a manual or existing environment run
+`python -m pip install "jsonschema>=4.23,<5"` before starting this server version.
+
+This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
+is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
+duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
+`error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
+tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
+
+Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
+then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
+`/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.

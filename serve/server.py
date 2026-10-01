@@ -50,6 +50,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -868,6 +869,8 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
+                                  "constrained_decoding": False, "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -1304,6 +1307,30 @@ def openai_collect(chunks) -> dict:
     return out
 
 
+def structured_chunks(chunks, validator):
+    """Buffer structured streams so a client never receives unvalidated content."""
+    buffered = []
+    heartbeat = time.monotonic()
+    try:
+        for chunk in chunks:
+            if chunk is not None:
+                buffered.append(chunk)
+            if chunk is None or time.monotonic() - heartbeat >= 1:
+                heartbeat = time.monotonic()
+                yield None
+        result = openai_collect(buffered)
+        choice = result["choices"][0]
+        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
+        yield buffered[0]
+        delta = {"content": content}
+        if choice["message"].get("reasoning_content"):
+            delta["reasoning_content"] = choice["message"]["reasoning_content"]
+        yield {**buffered[0], "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+        yield buffered[-1]
+    finally:
+        chunks.close()
+
+
 # ------------------------------------------------------------------------------------------------ Anthropic
 def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel):
     mid = "msg_" + uuid.uuid4().hex[:24]
@@ -1545,8 +1572,8 @@ def make_handler(svc: Service):
                 return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-                if path in ("/v1/chat/completions", "/v1/messages"):
-                    svc.load()                               # unloaded: load first (or 503 while the GPU is busy)
+                if not isinstance(req, dict):
+                    raise ValueError("send a JSON object")
                 if path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
@@ -1555,6 +1582,9 @@ def make_handler(svc: Service):
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except StructuredOutputError as e:
+                self._json(502, {"error": {"type": "structured_output_failed", "code": "structured_output_failed",
+                                          "message": str(e)}})
             except GpuBusy as e:
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
             except EngineDied as e:                          # before the answer started (not streamed)
@@ -1621,6 +1651,10 @@ def make_handler(svc: Service):
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
+            messages, validator = prepare_format(req.get("response_format"), messages)
+            if validator is not None and (tools or req.get("strata_mcp")):
+                raise ValueError("structured response_format with tools/MCP is not supported")
+            svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or []}
@@ -1637,6 +1671,8 @@ def make_handler(svc: Service):
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
+            if validator is not None:
+                chunks = structured_chunks(chunks, validator)
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
             self._sse()
@@ -1654,11 +1690,15 @@ def make_handler(svc: Service):
             except EngineDied as e:                          # mid-stream: say so, then end the stream properly
                 err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+            except StructuredOutputError as e:
+                err = {"error": {"type": "structured_output_failed", "code": "structured_output_failed", "message": str(e)}}
+                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started: the
                 err = {"error": {"type": "server_error", "message": str(e)}}   # headers are sent, so no 400 now
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
 
         def _anthropic(self, req):
+            svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
