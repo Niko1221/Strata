@@ -41,10 +41,20 @@ inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
 inline constexpr float NG_RMS_EPS = 1e-6f;
 
-// The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements =
-// 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
+// The table: [160, 320001536].  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements = 5 blocks
+// of 32.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
-inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90
+inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90, the IQ4_NL row
+
+/// The row size of the same table under a different quantization.  The published checkpoints carry the PLE
+/// table as IQ4_NL (90 B/row) or as Q8_0 (5 blocks of 34 = 170 B/row, `d` once per 32 values, no min term);
+/// the geometry above is identical, so only the stride and the block decoder differ.  Returns 0 for a type
+/// this engine has no PLE decoder for.
+inline constexpr int ple_row_bytes(int ggml_type) {
+    return ggml_type == 20 ? PLE_ROW_BYTES : (ggml_type == 8 ? (PLE_HEAD_DIM / 32) * 34 : 0);
+}
+/// The largest `ple_row_bytes` of any supported type: a scratch buffer for 16 rows is sized with this.
+inline constexpr int PLE_ROW_BYTES_MAX = (PLE_HEAD_DIM / 32) * 34;       // 170
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -86,7 +96,7 @@ void ngram_rows(const int32_t* tokens, const int32_t* prev, int n_tokens, const 
 /// codebook value; at 3cf03257 they do not, and the difference would shift every one of the 51.2e9 elements.
 int iq4nl_code(int code);
 
-/// One 90-byte row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
+/// One 90-byte IQ4_NL row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
 /// because IQ4_NL has no min term (`has_offset` is false in the manifest).
 ///
 /// THE NIBBLE ORDER IS SPLIT-HALF, NOT INTERLEAVED, and that is the trap here.  `dequantize_row_iq4_nl` is
@@ -95,6 +105,15 @@ int iq4nl_code(int code);
 /// so byte j carries elements j and j+16 - NOT 2j and 2j+1, which is the natural reading and which produces
 /// a perfectly plausible embedding of the wrong 160 values.
 void iq4nl_dequant_row(const uint8_t* row, float* out160);
+
+/// One row of the table -> 160 floats, for whichever type the checkpoint carries it as.  `ggml_type` 20 is
+/// IQ4_NL and 8 is Q8_0 (5 blocks of 34, `d` once per 32 values, no min term); the row must be
+/// `ple_row_bytes(ggml_type)` bytes.  Returns false for a type with no decoder, leaving `out160` untouched.
+///
+/// Q8_0's blocks are 34 bytes instead of 18 and there is no codebook: `qs` is already signed, so a block is
+/// one fp16 `d` followed by 32 int8.  Both decoders live in `artifact/dequant.hpp` and this only dispatches,
+/// so the PLE row and the artifact reader cannot drift apart on the layout.
+bool ple_dequant_row(int ggml_type, const uint8_t* row, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
@@ -108,7 +127,7 @@ enum class PleIo { Direct, Mmap };
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
     uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
-    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
+    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows ~ 95 MB IQ4_NL / 180 MB Q8_0; 0 = off
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
     /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
