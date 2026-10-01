@@ -370,6 +370,14 @@ struct Options {
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
+
+    /// Fase 3 (hetero multi-GPU), explicit roles: MAIN runs the model + KV + verify, DRAFT keeps the MTP drafter
+    /// (its weights, own KV, drafting) in VRAM on its own GPU.  Opt-in and unset-by-default: without the flags
+    /// everything runs on CUDA0 exactly as today, and `--main-device 0 --draft-device 0` is the degenerate
+    /// all-on-one-GPU roles run.  Refused with --layer-split or --expert-cache-deviceN: those already own the
+    /// second GPU.  docs/HETERO_MGPU_PLAN.md
+    int main_device = -1;
+    int draft_device = -1;
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -544,6 +552,10 @@ void usage() {
                  "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
+                 "  --main-device N --draft-device M  Fase 3 (hetero multi-GPU): the roles. MAIN runs the\n"
+                 "                       model, its KV and verify; DRAFT keeps the MTP drafter (weights, own\n"
+                 "                       KV, drafting) in VRAM. Unset = everything on GPU 0, today's run.\n"
+                 "                       Not with --layer-split or --expert-cache-deviceN.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1142,6 +1154,8 @@ int main(int argc, char** argv) {
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
         else if (a == "--split-device") o.split_device = next("--split-device");
+        else if (a == "--main-device") o.main_device = std::atoi(next("--main-device"));
+        else if (a == "--draft-device") o.draft_device = std::atoi(next("--draft-device"));
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -1310,6 +1324,39 @@ int main(int argc, char** argv) {
                                  "distinct GPU per K in --split-device (1..%d; or 0 with one K: the same GPU)\n", n_dev - 1);
             return 2;
         }
+    }
+    // Fase 3 (hetero multi-GPU): explicit device roles (docs/HETERO_MGPU_PLAN.md).  This step validates and
+    // reports; the wiring lands with the next steps (the drafter's device override, the per-device head, the
+    // reservation that follows the role), so the banner says exactly what is already placed.
+    if (o.main_device >= 0 || o.draft_device >= 0) {
+        int n_dev = 1;
+        if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
+        cudaGetLastError();
+        if (!o.layer_split.empty()) {
+            std::fprintf(stderr, "strata generate: --main-device/--draft-device and --layer-split are mutually exclusive: a layer split already places stages on several GPUs\n");
+            return 2;
+        }
+        if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0) {
+            std::fprintf(stderr, "strata generate: --main-device/--draft-device and the remote expert caches (--expert-cache-deviceN) address the second GPU; pick one\n");
+            return 2;
+        }
+        if (o.main_device < 0) o.main_device = 0;
+        if (o.draft_device < 0) o.draft_device = 0;
+        if (o.main_device >= n_dev || o.draft_device >= n_dev) {
+            std::fprintf(stderr, "strata generate: --main-device %d / --draft-device %d: out of range (%d visible GPU%s)\n",
+                         o.main_device, o.draft_device, n_dev, n_dev == 1 ? "" : "s");
+            return 2;
+        }
+        if (o.mtp.empty() || o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --draft-device needs the MTP drafter (--mtp and --spec >= 2): without one there is nothing to place\n");
+            return 2;
+        }
+        if (o.main_device != o.draft_device)
+            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (two GPUs; the drafter still runs on the main path until a Fase 3 step wires it)\n",
+                         o.main_device, o.draft_device);
+        else
+            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (degenerate: both roles on this one GPU)\n",
+                         o.main_device, o.draft_device);
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
