@@ -35,6 +35,7 @@ trust their measurements over any assumption you make yourself. Decode is **memo
    (create the directory).
 
 ## Hard rules
+
 - Never use cancelled-request timing lines as throughput evidence.
 - Do not run the GPU server or benchmarks; the host (not opencode) will run
   `tools/hip/bench_prefill.py` afterwards.

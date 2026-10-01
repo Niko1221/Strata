@@ -248,4 +248,3 @@ post-benchmark reserve changes `256 → 616 → 1024` (final state differs from 
 line: `1024` vs the arm's `256`) plus the unrelated addition of `"fit_max_tokens": true` (clamps
 oversized `max_tokens` to the remaining context instead of returning 400 — added after a 50k-token
 chat request 400'd on `prompt + max_tokens > 65536`).
-

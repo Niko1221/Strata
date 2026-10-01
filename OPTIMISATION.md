@@ -226,6 +226,7 @@ backends, not a concession to HIP, and it is worth doing regardless of which of 
 backend. It is consistent with what `native_rope.cu` already assumes — its comment at line 90 reads
 "Match pinned host-side float powf before device fast powf/trigonometry", i.e. approximate device
 trigonometry is already the intended contract there — but it is still a change, and:
+
 - `-ffast-math` also turns `fma(x, y, 0)` into a plain multiply. That is bit-exact for all finite
   inputs and for inf/nan; it differs only in signed zero.
 - **No registered HIP test covers any of the eight files above.** `ctest` covers `hip_intrinsics`,
