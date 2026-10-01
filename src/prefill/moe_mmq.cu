@@ -29,6 +29,22 @@ __global__ void copy16_kernel(const uint4* __restrict__ a, int64_t na, const uin
     else if (i < na + nb) ab_dst[i] = b[i - na];
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
+// copy16_kernel for an MMQ group: blockIdx.y is the expert (first + y)
+struct GroupArgs {
+    const uint8_t* blob[kGatherGroupMax];
+    int64_t up_off, down_off, gu_stride, d_stride;   // in uint4
+};
+__global__ void copy16_group_kernel(GroupArgs ga, int first, int64_t na, int64_t nc, uint4* __restrict__ gu_dst,
+                                    uint4* __restrict__ d_dst) {
+    const int q = first + (int) blockIdx.y;
+    const uint4* src = (const uint4*) ga.blob[q];
+    uint4* ab = gu_dst + (int64_t) q * ga.gu_stride;
+    uint4* cd = d_dst + (int64_t) q * ga.d_stride;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < na) ab[i] = src[i];
+    else if (i < 2 * na) ab[i] = src[ga.up_off + (i - na)];
+    else if (i < 2 * na + nc) cd[i - 2 * na] = src[ga.down_off + (i - 2 * na)];
+}
 __global__ void copy1_kernel(const uint8_t* __restrict__ a, int64_t na, const uint8_t* __restrict__ b, int64_t nb,
                              uint8_t* __restrict__ ab_dst, const uint8_t* __restrict__ c, int64_t nc, uint8_t* __restrict__ c_dst) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -208,6 +224,25 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
                                                          (uint8_t*) gu_dst, (const uint8_t*) down, nc, (uint8_t*) d_dst);
     }
     ck(cudaGetLastError(), "gather_native");
+}
+
+bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_bytes, size_t down_off, size_t d_bytes,
+                         void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream) {
+    if (g.first < 0 || g.n <= g.first || g.n > kGatherGroupMax) return false;
+    uintptr_t a = (uintptr_t) gu_dst | (uintptr_t) d_dst | up_off | gu_half_bytes | down_off | d_bytes | gu_stride | d_stride;
+    for (int q = g.first; q < g.n; ++q) a |= (uintptr_t) g.blob[q];
+    if (a % 16 != 0) return false;
+    GroupArgs ga{};
+    for (int q = g.first; q < g.n; ++q) ga.blob[q] = g.blob[q];
+    ga.up_off = (int64_t) up_off / 16;
+    ga.down_off = (int64_t) down_off / 16;
+    ga.gu_stride = (int64_t) gu_stride / 16;
+    ga.d_stride = (int64_t) d_stride / 16;
+    const int64_t na = (int64_t) gu_half_bytes / 16, nc = (int64_t) d_bytes / 16;
+    copy16_group_kernel<<<dim3(blocks(2 * na + nc), (unsigned) (g.n - g.first)), 256, 0, (cudaStream_t) stream>>>(
+        ga, g.first, na, nc, (uint4*) gu_dst, (uint4*) d_dst);
+    ck(cudaGetLastError(), "gather_native_group");
+    return true;
 }
 
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
