@@ -38,6 +38,11 @@ std::string gpu_arch_problem(int ordinal);
 // The GPU architectures this binary was compiled for ("gfx1100,gfx1201"); "" on CUDA builds.
 const char* compiled_gpu_archs();
 
+// How many devices the runtime enumerates, as HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES number them.  0 when
+// there is none.  `device_info` throws on a card it cannot run, so a caller that wants to LIST every card -
+// including the ones this binary has no code for - needs the count first and must tolerate per-card errors.
+int device_count();
+
 // Throws when there is no CUDA device.  The engine targets sm_120 specifically and must say so rather than
 // run slowly on something else: `CMakeLists.txt` already refuses to COMPILE for another architecture, and
 // this is the matching check at run time (a binary can be carried to a different machine).

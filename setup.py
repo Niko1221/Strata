@@ -455,6 +455,41 @@ def choose_gpus(a, found) -> list:
     return [g["index"] for g in pick]
 
 
+def hip_ordinal(arch: str, index: int = 0) -> int:
+    """The card `index` (setup's registry order) as the HIP runtime numbers it, for HIP_VISIBLE_DEVICES.
+
+    setup enumerates display-class devices, so an integrated GPU that HIP also enumerates takes ordinal 0 and
+    pushes the discrete card to 1. Selecting the registry index would hand the engine the iGPU, which the
+    compiled-arch check then rejects. Only the ordinals HIP actually reports are counted, and a failure here
+    falls back to the registry index rather than failing setup.
+    """
+    exe = ROOT / "engine" / EXE
+    probe = ROOT / "engine" / "strata-device.exe" if WIN else None
+    if not exe.exists() or probe is None or not probe.exists():
+        return index
+    try:
+        out_text = out([str(probe), "--list-devices"]).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return index
+    want = AMD_NAMES.get(arch, arch).lower()
+    # Match on the ARCHITECTURE line that follows a "device N:" line, not the name: the name in the registry and
+    # the name the runtime reports can differ, and a card the binary has no code for prints its own complaint
+    # (which names this build's architectures) as its only line - matching on that text would pick the iGPU.
+    found: int | None = None
+    for line in out_text.splitlines():
+        m = re.match(r"\s*device\s+(\d+):\s*(.*)", line)
+        if m:
+            found = int(m.group(1))
+            continue
+        if found is None:
+            continue
+        a = re.search(r"\b(gfx\d+[a-z]?)\b", line)
+        if a and a.group(1) == arch:
+            return found
+        found = None                      # a device block ends at the next non-indented line
+    return index
+
+
 def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """Starting a model set up for one card on a PC with two or more that can share it: asked once (the answer is
     saved in its config)."""
@@ -2453,6 +2488,15 @@ def main() -> int:
            "lib_dirs": lib_dirs, "port": port}
     if hip:
         cfg["backend"] = "hip"
+        # HIP_VISIBLE_DEVICES counts the devices the HIP runtime enumerates, which on a PC with an integrated
+        # GPU is NOT the display-class order setup.py detected them in: the iGPU takes ordinal 0 and pushes the
+        # discrete card to 1. Record the ordinal this card actually has, or the server hands the engine the
+        # wrong device and the compiled-arch check refuses it.
+        ordinal = hip_ordinal(gpu["arch"], gpu["index"])
+        if ordinal != gpu["index"]:
+            warn(f"HIP numbers this card {ordinal}, not {gpu['index']} (an integrated GPU takes 0); "
+                 f"the engine will be pointed at ordinal {ordinal}")
+        cfg["hip_ordinal"] = ordinal
         # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
         # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
         # engine refuses any other one and falls back to plain hipBLAS)

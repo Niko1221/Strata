@@ -547,12 +547,29 @@ def engine_args(cfg: dict) -> list[str]:
     return args
 
 
+def hip_visible(cfg: dict) -> list[int]:
+    """The devices the engine should see, as HIP_VISIBLE_DEVICES numbers them.
+
+    setup.py detects AMD cards through display-class enumeration but the HIP runtime enumerates its own
+    devices, and the two orders differ whenever an integrated GPU is present: it takes ordinal 0 and pushes
+    the discrete card to 1. A config from setup carries the ordinal it resolved ("hip_ordinal"); without it
+    the registry index is the best guess, which is right only on a PC with no iGPU.
+    """
+    ordinal = cfg.get("hip_ordinal")
+    if ordinal is None or str(ordinal).strip() == "":
+        return gpu_list(cfg)
+    try:
+        return [int(str(ordinal).strip())]
+    except ValueError:
+        return gpu_list(cfg)
+
+
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
-    if gpu_list(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (setup's KFD order)
-        env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+    if hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: the ordinals the HIP runtime numbers them
+        env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))

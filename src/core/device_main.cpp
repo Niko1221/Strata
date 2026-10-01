@@ -19,15 +19,47 @@ static std::string human(uint64_t b) {
 
 int main(int argc, char** argv) {
     bool selftest = false;
+    bool list_devices = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;
+        else if (std::strcmp(argv[i], "--list-devices") == 0) list_devices = true;
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-            std::printf("usage: strata-device [--selftest]\n");
+            std::printf("usage: strata-device [--selftest] [--list-devices]\n"
+                        "  --list-devices  every GPU the runtime enumerates, as 'device N: name' plus its\n"
+                        "                  architecture. This is the numbering HIP_VISIBLE_DEVICES uses, which\n"
+                        "                  is NOT the order display-class enumeration reports (an integrated GPU\n"
+                        "                  takes ordinal 0 and pushes the discrete card to 1).\n");
             return 0;
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 2;
         }
+    }
+
+    // Listing must not run the arch check: its whole job is to report the cards this binary has no code for,
+    // which is exactly what that check refuses to do.
+    if (list_devices) {
+        const int count = strata::core::device_count();
+        if (count == 0) {
+            std::printf("(no GPU device)\n");
+            return 0;
+        }
+        for (int ordinal = 0; ordinal < count; ++ordinal) {
+            const std::string why = strata::core::gpu_arch_problem(ordinal);
+            try {
+                const strata::core::DeviceInfo d = strata::core::device_info(ordinal);
+                std::printf("device %d: %s\n", d.ordinal, d.name.c_str());
+#if defined(STRATA_USE_HIP)
+                std::printf("  arch %s (compiled for %s)\n", d.arch.c_str(), strata::core::compiled_gpu_archs());
+#else
+                std::printf("  compute capability %d.%d\n", d.cc_major, d.cc_minor);
+#endif
+            } catch (const std::exception& e) {
+                std::printf("device %d: %s\n", ordinal, e.what());
+            }
+            if (!why.empty()) std::printf("  %s\n", why.c_str());
+        }
+        return 0;
     }
 
     try {

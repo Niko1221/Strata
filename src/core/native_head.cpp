@@ -105,9 +105,11 @@ void set_native_embed(const NativeEmbed* e) { g_embed = e; }
 const NativeEmbed* native_embed() { return g_embed; }
 
 NativeEmbed::~NativeEmbed() {
-    if (dev_owned_) cudaFree(dev_owned_);
     if (host_) cudaFreeHost(host_);
-    else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
+    // dev_ is the VRAM copy made in load(): either because pinning failed, or because the host-mapped
+    // alias was unusable (it hands back the host pointer on the Windows HIP stack). It is a distinct
+    // allocation from host_, so it is freed on its own.
+    else if (dev_) cudaFree(const_cast<void*>(dev_));
 }
 
 bool NativeEmbed::load(const std::string& path, int64_t n_embd, int64_t n_vocab, std::string& err) {
