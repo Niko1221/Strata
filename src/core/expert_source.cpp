@@ -506,6 +506,12 @@ void FileExpertSource::close() {
     }
     role_ptr_.clear();
     role_bytes_.clear();
+    role_file_.clear();
+    paths_.clear();
+#if defined(_WIN32)
+    for (void* h : direct_) CloseHandle((HANDLE) h);
+#endif
+    direct_.clear();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         stage_buf_.clear();
@@ -571,6 +577,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
     std::map<std::string, size_t> index;
     role_ptr_.assign((size_t) (3 * n_layers_), nullptr);
     role_bytes_.assign((size_t) (3 * n_layers_), 0);
+    role_file_.assign((size_t) (3 * n_layers_), 0);
     for (int64_t l = 0; l < n_layers_; ++l) {
         const auto& fm = lay.fmt[(size_t) l];
         const uint64_t per[3] = {fm.up_off, fm.up_off, lay.bytes[(size_t) l] - fm.down_off};
@@ -620,9 +627,11 @@ bool FileExpertSource::open_gguf(std::string& err) {
                 m.base = (const uint8_t*) view;
 #endif
                 maps_.push_back(m);
+                paths_.push_back(path);
                 it = index.emplace(path, maps_.size() - 1).first;
             }
             const Map& m = maps_[it->second];
+            role_file_[i] = (int) it->second;
             const uint64_t at = lay.gguf_off[i], bytes = per[r] * (uint64_t) n_expert_;
             if (at > m.bytes || bytes > m.bytes - at) {   // check_experts_gguf proved it; the mapping must agree
                 err = "FileExpertSource: an expert span runs past the end of " + path;
@@ -640,6 +649,10 @@ bool FileExpertSource::open_gguf(std::string& err) {
 
 bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* dst) const {
     if (dst == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
+    if (!direct_.empty()) {   // #286: from the drive; a failed read falls back to the mapping below
+        const Fill f{0, layer, expert, dst};
+        if (read_direct(&f, 1)) return true;
+    }
     if (!role_ptr_.empty()) {
         uint64_t at = 0;
         for (int r = 0; r < 3; ++r) {
@@ -710,7 +723,11 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill) {
 bool FileExpertSource::fill_stage(size_t v, int64_t layer, int64_t expert, uint8_t* dst) {
     const auto t0 = std::chrono::steady_clock::now();
     const bool ok = copy_from_files(layer, expert, dst);
-    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    publish_stage(v, layer, ok, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+    return ok;
+}
+
+void FileExpertSource::publish_stage(size_t v, int64_t layer, bool ok, double us) {
     file_us_.fetch_add((uint64_t) us, std::memory_order_relaxed);
     if (ok) {
         file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
@@ -725,7 +742,6 @@ bool FileExpertSource::fill_stage(size_t v, int64_t layer, int64_t expert, uint8
         }
     }
     stage_cv_.notify_all();
-    return ok;
 }
 
 const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
@@ -750,7 +766,6 @@ const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
 
 void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
     if (role_ptr_.empty() || n <= 0 || layer < 0 || layer >= n_layers_) return;
-    struct Fill { size_t v; int64_t e; uint8_t* dst; };
     std::vector<Fill> todo;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -764,7 +779,7 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
             size_t v = 0;
             bool fill = false;
             if (!claim_stage(layer * n_expert_ + e, v, fill) && fill) {
-                todo.push_back({v, e, stage_buf_[v].get()});
+                todo.push_back({v, layer, e, stage_buf_[v].get()});
                 if (warm_stamp_) {
                     const uint32_t s = warm_stamp_[index].load(std::memory_order_relaxed);
                     if (s != 0 && (uint64_t) s + 3 >= epoch_ + 1) warm_hits_.fetch_add(1, std::memory_order_relaxed);
@@ -772,7 +787,52 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
             }
         }
     }
+    fill_many(todo);
+}
+
+void FileExpertSource::prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) {
+    if (direct_.empty() || pairs == nullptr || n <= 0) return;   // unbuffered only: the mapped fill stays as it was
+    std::vector<Fill> todo;
+    {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        for (int64_t i = 0; i < std::min<int64_t>(n, 64); ++i) {
+            const int64_t l = pairs[i].first, e = pairs[i].second;
+            if (l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) continue;
+            size_t v = 0;
+            bool fill = false;
+            if (!claim_stage(l * n_expert_ + e, v, fill) && fill) todo.push_back({v, l, e, stage_buf_[v].get()});
+        }
+    }
+    fill_many(todo);
+}
+
+void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
     if (todo.empty()) return;
+    if (!direct_.empty()) {
+        // #286: overlapped batches - every role window of 16 blobs in flight at once; a big batch (the profile
+        // fill) on up to 4 threads, a decode layer's few misses on this one
+        std::atomic<size_t> next{0};
+        auto work = [&] {
+            for (size_t at; (at = next.fetch_add(16)) < todo.size();) {
+                const size_t k = std::min<size_t>(16, todo.size() - at);
+                const auto t0 = std::chrono::steady_clock::now();
+                const bool ok = read_direct(todo.data() + at, k);
+                const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+                for (size_t i = at; i < at + k; ++i) {
+                    const Fill& f = todo[i];
+                    // a failed batch: each blob again on its own (copy_from_files falls back to the mapping)
+                    if (ok) publish_stage(f.v, f.layer, true, us / (double) k);
+                    else (void) fill_stage(f.v, f.layer, f.e, f.dst);
+                }
+            }
+        };
+        const size_t nt = std::min<size_t>(4, (todo.size() + 15) / 16);
+        std::vector<std::thread> th;
+        for (size_t t = 1; t < nt; ++t) th.emplace_back(work);
+        work();
+        for (auto& t : th) t.join();
+        return;
+    }
 #if defined(_WIN32)
     // One PrefetchVirtualMemory call for every slice about to be copied: the memory manager reads them in large
     // requests, all queued at once, where the copies' page faults would read a few clusters each.  The copies below
@@ -789,7 +849,7 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
             ranges.reserve(todo.size() * 3);
             for (const Fill& f : todo)
                 for (int r = 0; r < 3; ++r) {
-                    const size_t i = (size_t) (3 * layer + r);
+                    const size_t i = (size_t) (3 * f.layer + r);
                     ranges.push_back({(PVOID) (role_ptr_[i] + (size_t) ((uint64_t) f.e * role_bytes_[i])),
                                       (SIZE_T) role_bytes_[i]});
                 }
@@ -801,7 +861,7 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
     std::atomic<size_t> next{0};
     auto work = [&] {
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
-            (void) fill_stage(todo[i].v, layer, todo[i].e, todo[i].dst);
+            (void) fill_stage(todo[i].v, todo[i].layer, todo[i].e, todo[i].dst);
     };
     const size_t nt = std::min<size_t>(todo.size(), (size_t) fetch_threads_);
     std::vector<std::thread> th;
@@ -810,6 +870,148 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
     for (auto& t : th) t.join();
 }
 
+bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
+#if defined(_WIN32)
+    if (role_ptr_.empty() || !direct_.empty()) {
+        why = role_ptr_.empty() ? "only for the GGUF in place" : "already unbuffered";
+        return !direct_.empty();
+    }
+    if (!experts_unbuffered(paths_, ram_bytes, why, /*cache_counts=*/false)) return false;
+    for (const std::string& path : paths_) {
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            why += "; cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) +
+                   "), read through the file cache";
+            for (void* d : direct_) CloseHandle((HANDLE) d);
+            direct_.clear();
+            return false;
+        }
+        direct_.push_back(h);
+    }
+    return true;
+#else
+    (void) ram_bytes;
+    why = "through the file cache (not Windows)";
+    return false;
+#endif
+}
+
+bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
+#if defined(_WIN32)
+    // NTFS runs the unbuffered reads of a file one at a time while the file is mapped or cached anywhere (the engine
+    // maps the GGUF shards for the token embedding and the PLE table): measured on a PCIe 5 drive, 512 KiB reads at
+    // queue depth 48 make 10.4 GB/s on a file nobody maps and 3.4 GB/s on a mapped one, 8 MiB reads 8.6 GB/s.  So
+    // windows less than kGap apart (the same role of nearby experts) are merged into requests of up to kMerge bytes.
+    constexpr uint64_t kSector = 4096, kGap = 1ull << 20, kMerge = 32ull << 20;
+    struct Window { int file; uint64_t a0, size, skip, n, at; uint8_t* dst; size_t req; uint64_t in_req; };
+    struct Req { HANDLE h; uint64_t a0, size, pos; };
+    // this thread's aligned buffer and events, kept for its next batch
+    struct Scratch {
+        uint8_t* buf = nullptr;
+        size_t cap = 0;
+        std::vector<HANDLE> ev;
+        std::vector<OVERLAPPED> ov;
+        std::vector<Window> win;
+        std::vector<size_t> order;
+        std::vector<Req> req;
+        std::vector<DWORD> got;
+        ~Scratch() {
+            if (buf != nullptr) VirtualFree(buf, 0, MEM_RELEASE);
+            for (HANDLE e : ev) CloseHandle(e);
+        }
+    };
+    thread_local Scratch sc;
+    sc.win.clear();
+    for (size_t k = 0; k < n; ++k) {
+        const Fill& f = fills[k];
+        if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
+        uint64_t at = 0;
+        for (int r = 0; r < 3; ++r) {
+            const size_t i = (size_t) (3 * f.layer + r);
+            const uint64_t per = role_bytes_[i];
+            const Map& m = maps_[(size_t) role_file_[i]];
+            const uint64_t off = (uint64_t) (role_ptr_[i] - m.base) + (uint64_t) f.e * per;
+            const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
+            sc.win.push_back({role_file_[i], a0, a1 - a0, off - a0, per, at, f.dst, 0, 0});
+            at += per;
+        }
+    }
+    sc.order.resize(sc.win.size());
+    for (size_t w = 0; w < sc.win.size(); ++w) sc.order[w] = w;
+    std::sort(sc.order.begin(), sc.order.end(), [&](size_t a, size_t b) {
+        return sc.win[a].file != sc.win[b].file ? sc.win[a].file < sc.win[b].file : sc.win[a].a0 < sc.win[b].a0;
+    });
+    sc.req.clear();
+    uint64_t total = 0;
+    int last_file = -1;
+    for (size_t w : sc.order) {
+        Window& x = sc.win[w];
+        if (!sc.req.empty() && x.file == last_file) {
+            Req& q = sc.req.back();
+            const uint64_t end = q.a0 + q.size, xend = x.a0 + x.size;
+            if (x.a0 <= end + kGap && std::max(end, xend) - q.a0 <= kMerge) {
+                if (xend > end) {
+                    total += xend - end;
+                    q.size = xend - q.a0;
+                }
+                x.req = sc.req.size() - 1;
+                x.in_req = x.a0 - q.a0;
+                continue;
+            }
+        }
+        sc.req.push_back({(HANDLE) direct_[(size_t) x.file], x.a0, x.size, total});
+        total += x.size;
+        last_file = x.file;
+        x.req = sc.req.size() - 1;
+        x.in_req = 0;
+    }
+    if (total > sc.cap) {
+        if (sc.buf != nullptr) VirtualFree(sc.buf, 0, MEM_RELEASE);
+        sc.cap = (size_t) ((total + (1u << 20) - 1) >> 20 << 20);
+        sc.buf = (uint8_t*) VirtualAlloc(nullptr, sc.cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (sc.buf == nullptr) { sc.cap = 0; return false; }
+    }
+    while (sc.ev.size() < sc.req.size()) {
+        HANDLE e = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (e == nullptr) return false;
+        sc.ev.push_back(e);
+    }
+    sc.ov.assign(sc.req.size(), OVERLAPPED{});
+    // every request in flight before the first wait: the drive sees the whole batch as one queue
+    size_t issued = 0;
+    bool ok = true;
+    for (size_t q = 0; q < sc.req.size(); ++q) {
+        const Req& r = sc.req[q];
+        OVERLAPPED& o = sc.ov[q];
+        o.Offset = (DWORD) r.a0;
+        o.OffsetHigh = (DWORD) (r.a0 >> 32);
+        o.hEvent = sc.ev[q];
+        if (!ReadFile(r.h, sc.buf + r.pos, (DWORD) r.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+            ok = false;
+            break;
+        }
+        ++issued;
+    }
+    std::vector<DWORD>& got = sc.got;
+    got.assign(sc.req.size(), 0);
+    for (size_t q = 0; q < issued; ++q)
+        if (!GetOverlappedResult(sc.req[q].h, &sc.ov[q], &got[q], TRUE)) ok = false;
+    if (!ok || issued < sc.req.size()) return false;
+    for (const Window& x : sc.win) {
+        // a request may run past the end of the file: only the role's own bytes have to arrive
+        if ((uint64_t) got[x.req] < x.in_req + x.skip + x.n) return false;
+        std::memcpy(x.dst + x.at, sc.buf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
+    }
+    return true;
+#else
+    (void) fills; (void) n;
+    return false;
+#endif
+}
 
 void FileExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
     if (role_ptr_.empty() || n <= 0 || layer < 0 || layer >= n_layers_) return;
@@ -1271,16 +1473,42 @@ bool FileExpertSource::pin_cache_complement(
             const int64_t layer = next_layer.fetch_add(1);
             if (layer >= n_layers_ || failed.load()) return;
             const uint64_t blob_bytes = layer_blob_bytes_[(size_t) layer];
+            std::vector<Fill> batch;   // #286, unbuffered: 32 blobs' reads in flight at once, merged where near
+            auto flush = [&]() {
+                if (batch.empty()) return true;
+                bool ok = read_direct(batch.data(), batch.size());
+                for (size_t i = 0; !ok && i < batch.size(); ++i)
+                    if (!copy_from_files(batch[i].layer, batch[i].e, batch[i].dst)) return false;
+                copied.fetch_add(blob_bytes * (uint64_t) batch.size());
+                batch.clear();
+                return true;
+            };
             for (int64_t expert = 0; expert < n_expert_; ++expert) {
                 const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
                 const uint64_t offset = offsets[index];
                 if (offset == kNoComplement) continue;
-                if (offset > bytes || blob_bytes > bytes - offset ||
-                    !copy_from_files(layer, expert, (uint8_t*) host + (size_t) offset)) {
+                if (offset > bytes || blob_bytes > bytes - offset) {
+                    fail("FileExpertSource: invalid blob bounds while building the cache complement");
+                    return;
+                }
+                uint8_t* dst = (uint8_t*) host + (size_t) offset;
+                if (!direct_.empty()) {
+                    batch.push_back({0, layer, expert, dst});
+                    if (batch.size() == 32 && !flush()) {
+                        fail("FileExpertSource: an expert could not be read while building the cache complement");
+                        return;
+                    }
+                    continue;
+                }
+                if (!copy_from_files(layer, expert, dst)) {
                     fail("FileExpertSource: invalid blob bounds while building the cache complement");
                     return;
                 }
                 copied.fetch_add(blob_bytes);
+            }
+            if (!flush()) {
+                fail("FileExpertSource: an expert could not be read while building the cache complement");
+                return;
             }
 #if !defined(_WIN32)
             if (role_ptr_.empty()) {   // experts.bin; the GGUF in place leaves its pages to the OS

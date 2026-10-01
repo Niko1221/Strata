@@ -115,7 +115,10 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
 /// beside the arena (`arena_bytes`) could not keep them cached for the next start either - so a warm restart after
 /// an idle unload never gets slower, and only a start that reads the drive anyway skips the cache's copy.
 /// STRATA_UNBUFFERED_LOAD=1 / 0 forces it. `why` says what decided.
-bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why);
+/// `cache_counts` false (the file tier with a RAM budget): only whether the files could be kept decides - their mapped
+/// pages land in the process's working set, so a partly cached file would still take the RAM the budget was sized for.
+bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
+                        bool cache_counts = true);
 
 // FNV-1a 64.  Per layer, so a corrupt or short read names WHICH layer rather than just failing a whole-file
 // comparison - the same reason the Phase 1 tools report the first differing element.

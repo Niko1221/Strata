@@ -485,7 +485,8 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     return st;
 }
 
-bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why) {
+bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
+                        bool cache_counts) {
     const char* env = std::getenv("STRATA_UNBUFFERED_LOAD");
     if (env != nullptr && env[0] != '\0') {
         why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
@@ -539,9 +540,9 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
                   fast, n, (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
     why = msg;
-    return !cached && !keepable;
+    return (!cached || !cache_counts) && !keepable;
 #else
-    (void) files; (void) arena_bytes;
+    (void) files; (void) arena_bytes; (void) cache_counts;
     why = "buffered (not Windows)";
     return false;
 #endif
