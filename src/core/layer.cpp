@@ -584,11 +584,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.kv_q4 = g_kv_q4;
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
     // mtp.cpp). Streamed mode is refused outright; generate.cpp validates it too, this is the backstop.
-    if (g_kv_hybrid && ring_cells <= 0) {
-        if (p.mode == 1) {
-            std::fprintf(stderr, "strata: hybrid K8V4 KV does not support --kv-resident streaming\n");
-            return 0;
-        }
+    if (g_kv_hybrid && ring_cells <= 0) {   // streamed (mode 1) too: the movers know the K8V4 page (kKvHybrid)
         st.kv_hybrid = true;
         st.kv_int8 = false;
         st.kv_q4 = false;
@@ -670,7 +666,11 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         }
         g_kv_host_bytes += bytes;
         Cursor hc{d};
-        if (st.kv_q4) {
+        if (st.kv_hybrid) {
+            st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
+            st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+            st.host.v_q4 = hc.take<uint8_t>(hrows * q4_row);
+        } else if (st.kv_q4) {
             st.host.k_q4 = hc.take<uint8_t>(hrows * q4_row);
             st.host.v_q4 = hc.take<uint8_t>(hrows * q4_row);
         } else if (st.kv_int8) {
@@ -931,8 +931,9 @@ if (st.kv_hybrid) {
     // output - a mix of rotated values - is rotated back after attention. Each append/gather call folds the
     // unused half's lanes onto the used pool (a bit-identical duplicate write), so no kernel variants exist.
     strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
-    kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, st.step, b.kcur, b.kcur, s, stream, nullptr);   // mode 0: no host mirror
-    strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream, nullptr);
+    const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_pools(st.host), hv = strata::kernels::kv_hybrid_v_pools(st.host);
+    kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, st.step, b.kcur, b.kcur, s, stream, st.kv_mode != 0 ? &hk : nullptr);   // mode 0: no host mirror
+    strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream, st.kv_mode != 0 ? &hv : nullptr);
 } else {
 if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
     strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);

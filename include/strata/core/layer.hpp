@@ -298,10 +298,7 @@ bool qsa_kv_hybrid();
 inline int qsa_kv_format(const QsaState& st) {
     // A hybrid K8V4 state is mode 0 only and never reaches the block movers; refuse rather than let it
     // fall through to kKvF16 - a wrong layout silently applied is worse than a hard stop (PR review).
-    if (st.kv_hybrid) {
-        std::fprintf(stderr, "strata: qsa_kv_format: a hybrid K8V4 state must never reach the block movers\n");
-        std::exit(1);   // the kernels' own "unsupported geometry" convention (kv_q8.cu, qsa_decode_attn.cu)
-    }
+    if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: the block movers take its three arrays
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

@@ -41,9 +41,24 @@ struct KvHostPools {
     bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr; }
 };
 
+/// K8V4 under streaming: the hybrid appends pass K (INT8) twice and V (Q4_0) twice, so their host/stage pools are
+/// aliased the same way - the K call's "V" arrays are the K arrays, the V call's "K" array is the V array (a
+/// bit-identical duplicate write, as in VRAM).  Empty pools (no copy) stay empty.
+inline KvHostPools kv_hybrid_k_pools(const KvHostPools& h) {
+    KvHostPools a;
+    a.k_q = a.v_q = h.k_q;
+    a.k_scale = a.v_scale = h.k_scale;
+    return a;
+}
+inline KvHostPools kv_hybrid_v_pools(const KvHostPools& h) {
+    KvHostPools a;
+    a.k_q4 = a.v_q4 = h.v_q4;
+    return a;
+}
+
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0.
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2 };
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };   // kKvHybrid: K8V4 (k_q, k_scale, v_q4)
 
 /// The residency map of a streamed layer, all device memory at fixed addresses (the graphs bake them in).
 struct KvStreamMap {

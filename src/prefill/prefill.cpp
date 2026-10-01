@@ -579,7 +579,11 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
     own.owned = o_borrowed.owned;
     Alloc& o = stage_own() ? own : o_borrowed;
     const size_t rows = (size_t) q0.n_pages * s.n_head_kv * s.page_size;
-    if (q0.kv_q4) {
+    if (q0.kv_hybrid) {   // K8V4: INT8 K codes + scales, Q4_0 V (kKvHybrid)
+        st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
+        st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_int8) {
@@ -2060,11 +2064,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const strata::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
                     if (st.kv_hybrid) {   // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
                         strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        // streamed: the host copy and the staging pool too, aliased as the appends pass K and V twice
+                        const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_pools(st.host),
+                                                           hv = strata::kernels::kv_hybrid_v_pools(st.host),
+                                                           sk = strata::kernels::kv_hybrid_k_pools(m.stage),
+                                                           sv = strata::kernels::kv_hybrid_v_pools(m.stage);
                         kv_append(m.Kc, m.Kc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
-                                  st.k_q, st.k_q, st.k_scale, st.k_scale, m.cs, nullptr,   // mode 0: no host mirror
-                                  staged ? &m.stage : nullptr);
+                                  st.k_q, st.k_q, st.k_scale, st.k_scale, m.cs, staged ? &hk : nullptr,
+                                  staged ? &sk : nullptr);
                         strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
-                                                      nullptr, staged ? &m.stage : nullptr);
+                                                      staged ? &hv : nullptr, staged ? &sv : nullptr);
                     } else {
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);

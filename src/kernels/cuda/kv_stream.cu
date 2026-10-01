@@ -38,6 +38,13 @@ Runs runs_of(const QsaAttnPools& slots, const KvHostPools& host, int fmt, const 
         r.src[0] = (const uint8_t*) host.k_q4; r.dst[0] = (uint8_t*) slots.k_q4; r.len[0] = bytes;
         r.src[1] = (const uint8_t*) host.v_q4; r.dst[1] = (uint8_t*) slots.v_q4; r.len[1] = bytes;
         r.n = 2;
+    } else if (fmt == kKvHybrid) {   // K8V4: INT8 K codes + their fp16 scales, rotated Q4_0 V
+        r.src[0] = (const uint8_t*) host.k_q;     r.dst[0] = (uint8_t*) slots.k_q;     r.len[0] = rows * (int) s.head_dim;
+        r.src[1] = (const uint8_t*) host.k_scale; r.dst[1] = (uint8_t*) slots.k_scale;
+        r.len[1] = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
+        r.src[2] = (const uint8_t*) host.v_q4;    r.dst[2] = (uint8_t*) slots.v_q4;
+        r.len[2] = rows * (int) kv_q4_bytes_per_head((int) s.head_dim);
+        r.n = 3;
     } else if (fmt == kKvInt8) {
         const int codes = rows * (int) s.head_dim, scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
         r.src[0] = (const uint8_t*) host.k_q;     r.dst[0] = (uint8_t*) slots.k_q;     r.len[0] = codes;
@@ -192,6 +199,9 @@ __global__ void ring_kernel(int32_t* table, long long n_blocks, long long n_slot
 uint64_t kv_block_bytes(const QsaShapes& s, int fmt) {
     const uint64_t rows = (uint64_t) (s.n_head_kv * s.page_size);
     if (fmt == kKvQ4) return rows * kv_q4_bytes_per_head((int) s.head_dim) * 2;
+    if (fmt == kKvHybrid)
+        return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 +
+               rows * kv_q4_bytes_per_head((int) s.head_dim);
     return fmt == kKvInt8 ? rows * (uint64_t) s.head_dim * 2 + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 * 2
                 : rows * (uint64_t) s.head_dim * 2 * 2;
 }
