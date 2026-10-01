@@ -648,7 +648,8 @@ private:
 /// layout's type and dimensions, and inside the file.  `native` is the --native shard (see set_gguf).
 bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::ExpertLayout& lay, std::string& err);
 /// Fills `dst` (lay.total bytes, the experts.bin layout) from the GGUF files, one role at a time.
+/// `unbuffered`: each chunk read past the file cache (Windows).
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads);
+                            int threads, bool unbuffered = false);
 
 }  // namespace strata::core
