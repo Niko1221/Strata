@@ -1550,9 +1550,14 @@ int main(int argc, char** argv) {
     // ... and nothing runs on a CPU without AVX2: every CPU expert kernel is AVX2 at least (the AVX-512 ones are
     // chosen above it), and so is ggml-cpu in the release build, which the native pack's layout load initializes
     // next.  Refused here, by name, rather than an illegal instruction in the first expert.
-    if (!strata::kernels::cpu::cpu_avx2_ok()) {
-        std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX2 with FMA and F16C, which every CPU "
-                             "expert kernel needs; Strata runs on Intel Haswell (2013), AMD Zen (2017) or newer\n",
+    // A CPU with AVX but no AVX2 is also admissible. The multi-token kernels that do need AVX2 are now
+    // gated on cpu_avx2_ok() (see native_expert.cpp) and fall through to ggml-cpu's vec_dot, which the
+    // build compiles for whatever baseline it selected - so the floor is the AVX1 rung, and the message
+    // below names it instead of naming a floor the dispatch no longer has.
+    if (!strata::kernels::cpu::cpu_avx1_ok()) {
+        std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX (256-bit float) with SSSE3 and "
+                             "SSE4.1, which every CPU expert kernel needs; Strata runs on Intel Sandy Bridge (2011), "
+                             "AMD Bulldozer (2011) or newer\n",
                      strata::kernels::cpu::cpu_name().c_str());
         return 2;
     }
