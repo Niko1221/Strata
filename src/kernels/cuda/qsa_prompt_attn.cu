@@ -23,8 +23,9 @@ constexpr int CH = D1_CH;         // cells per chunk
 constexpr int THREADS = 128;      // 4 warps: scores by cell (8 each), p.v by dimension (64 each = one int8 scale group)
 constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free fragment loads)
 
-// The MMA and cp.async below need sm_80. Builds for older cards (the experimental sm_75 one) compile them to a trap;
-// qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs there.
+// The MMA below needs sm_75 or newer (Turing runs it as two k=8 steps); cp.async needs sm_80. Builds for pre-sm_75
+// cards compile the MMA to a trap; qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs
+// there.  Turing compiles cp_async16 to a trap as well and takes the v1 kernel instead of launch_i8.
 #if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the old kernel (below)
 #define STRATA_PA_SM80 0
 #elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
@@ -33,9 +34,21 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 #define STRATA_PA_SM80 0
 #endif
 
+// m16n8k16 with f16 inputs needs sm_80.  Turing (sm_75) has m16n8k8 with the SAME A/B/C register mapping, so the
+// k=16 step is two k=8 steps on the fragments as they are already laid out: a[0]/a[1] are rows gid/gid+8 at k columns
+// 2*tig..2*tig+1 (b[0]'s k rows), a[2]/a[3] the same rows at k columns 2*tig+8..2*tig+9 (b[1]'s k rows).  The
+// products then add into the same FP32 C registers in the order hi-part-0, hi-part-1, which is the order the k16
+// instruction accumulates in as well - but the sum now rounds twice, so the two paths do not agree bit for bit.
 __device__ __forceinline__ void mma16816(float* c, const uint32_t* a, const uint32_t* b) {
-#if !STRATA_PA_SM80
-    __trap();
+#if !STRATA_PA_SM80 && (defined(__HIPCC__) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 750)
+    __trap();   // AMD and pre-Turing builds: no mma.sync (the host keeps the old kernel there)
+#elif !STRATA_PA_SM80
+    asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(b[0]));
+    asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[2]), "r"(a[3]), "r"(b[1]));
 #else
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
@@ -677,7 +690,10 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
-    {   // sm_80 or newer (the MMA and cp.async above); an older card keeps the old kernel
+    bool turing = false;   // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
+    {   // sm_75 or newer: the MMA above compiles for both.  sm_80+ runs the cp.async kernel (launch_i8); Turing has
+        // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  An older card
+        // keeps the old kernel.
         static int cc_major[64] = {};
         int dev = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
@@ -689,7 +705,8 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             }
             cc_major[dev] = major;
         }
-        if (cc_major[dev] < 8) return false;
+        if (cc_major[dev] < 7) return false;
+        turing = cc_major[dev] < 8;
     }
 #if defined(__HIPCC__)
     return false;   // the tensor-core kernel is compiled out on AMD (its major version is not a CUDA sm)
@@ -705,9 +722,10 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     if (pools.k_q != nullptr) {
         if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
         // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
-        // for how far the model amplifies an FP32-level change
+        // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
+        // exist before sm_80.
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
-        if (v1) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;

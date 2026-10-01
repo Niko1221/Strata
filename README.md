@@ -42,6 +42,9 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
 (about 5-10 minutes; on the PC above it made the Coder 7% faster).
 
+Measured Strata on your own PC? See [Community benchmark results](docs/COMMUNITY_BENCHMARKS.md)
+for a report template and how to share your results in a pull request.
+
 **Two or three NVIDIA cards?** Just run `START-HERE.bat`: it lists your cards, says which ones Strata can use, and
 asks whether to share the model across them (recommended when two can). An install made on one card asks once at
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
@@ -84,9 +87,10 @@ one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./se
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
 It needs an explicit packing conversion and is not an installer menu option.
 
-An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental):
+An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental; the
+RX 7800 XT / 7700 XT and RX 9060 XT were validated by their owners):
 `./setup.sh --backend hip`, chosen by itself on a PC with no NVIDIA card Strata can use. It installs ROCm without sudo
-and compiles the engine (one GPU, no images yet). Details: [AMD HIP](docs/AMD_HIP.md).
+and compiles the engine (no images yet; several cards with `--gpus`). Details: [AMD HIP](docs/AMD_HIP.md).
 
 ## Install
 
@@ -178,91 +182,18 @@ the same way - nothing big is downloaded again.
 **Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute per
 30,000 tokens); after that it keeps the conversation and reads only what is new, so follow-ups start in seconds.
 
-## Codex CLI
+### Where things are stored
 
-Strata exposes native `POST /v1/responses`, with JSON responses and SSE streaming. It shares
-inference with the other endpoints and implements its own Responses input items, output items,
-and lifecycle events. Codex executes shell, patch, and other client tools and sends their results
-back in the next request.
-
-Add a provider to `~/.codex/config.toml` (use your server's port and the model name from `/v1/models`):
-
-```toml
-model_provider = "strata"
-model = "qwen3.8-flash-next"
-web_search = "disabled"
-model_reasoning_effort = "low"
-model_reasoning_summary = "none"
-# Set this to your server's actual context size:
-model_context_window = 32768
-model_auto_compact_token_limit = 24000
-
-[model_providers.strata]
-name = "Strata"
-base_url = "http://127.0.0.1:8080/v1"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
-# If Strata has an API key, uncomment and set this environment variable:
-# env_key = "STRATA_API_KEY"
-```
-
-This follows the [Codex provider configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
-A custom provider uses client-managed history and local compaction. Unknown model names can use
-Codex's fallback tool inventory, which may omit its custom `apply_patch` tool. The server supports
-custom patch tools when the client offers them; tool availability is controlled by Codex's model metadata.
-
-If Codex reports an unsupported `web_search` tool, launch it with
-`codex -c 'web_search="disabled"'`. For a persistent fix, put `web_search = "disabled"`
-at the top level of your Codex configuration, before the first `[table]`, and restart
-the Codex session. A setting inside `[model_providers.strata]` does not disable search.
-Codex enables cached web search by default, and Strata does not supply that hosted service.
-
-If the rendered Codex prompt exceeds the server's context, first start a fresh session and
-disable unused apps and MCP servers. App/MCP tool definitions also consume prompt tokens.
-For a lean 32K session, use:
-
-```sh
-codex --disable apps --disable multi_agent -c 'web_search="disabled"' \
-  -c model_context_window=32768 -c model_auto_compact_token_limit=24000
-```
-
-The Codex context setting does not increase Strata's engine context. To accept a prompt above
-32K, change `--max-context` in the Strata JSON config's `args` to a larger supported size
-(for example, `65536`), restart Strata, and match Codex's `model_context_window` to it.
-A larger engine context uses more KV-cache memory. Compaction can reduce conversation history,
-but cannot remove the fixed instructions and tool definitions needed for every turn.
-Responses reports context overflow with the machine-readable code `context_length_exceeded`.
-
-Supported inputs include instructions, text messages, images when vision is enabled, plaintext
-reasoning, function/custom calls and results, and namespaced tools. `max_output_tokens` limits the
-whole generation, including thinking. Token exhaustion returns an incomplete response; an unfinished
-tool call is never marked complete. Schemas, `strict`, tool-choice requirements, and custom grammars
-guide the prompt, but the engine does not enforce JSON schemas or grammars during decoding. Invalid
-tool selection or cardinality fails the response. Native thinking uses `reasoning_text`, with no
-fabricated summary or encrypted content.
-
-Requests default to `store: false` and must resend history. Storage, `previous_response_id`,
-background execution, `/v1/responses/compact`, hosted tools, encrypted-only reasoning replay,
-automatic truncation, and guaranteed structured output are unsupported. An
-`include: ["reasoning.encrypted_content"]` hint is accepted for Codex compatibility, but does not
-produce encrypted state. Server-side Strata MCP execution is not enabled on this endpoint.
-
-Run the protocol tests and the installed-CLI smoke test without model weights:
-
-```sh
-python -m unittest serve.test_responses -v
-python -m tools.codex_responses_smoke
-```
-
-The smoke test uses a scripted local server and temporary workspaces. It checks text completion,
-shell execution, custom patch execution, and tool-result history replay. After restarting the server with the updated code, check real-model tool-following separately:
-
-```sh
-python -m tools.responses_live_smoke --url http://127.0.0.1:8080/v1
-```
-
-This sends small text and function-call requests and replays a tool result, without executing tools.
+- **Your chats: only in your browser.** The Chat tab keeps the conversation, its settings and the API key you typed
+  in the browser's local storage (`strata.*` keys) - not on the server and not in the Strata folder. Pictures are not
+  kept, only their names. Another browser or a private window starts empty; clearing the site's data deletes them.
+- **How the model starts:** `strata-<model>.json` in the Strata folder (context, GPUs, host, API key, ...), written
+  by setup; next to it `run-<model>.bat` / `.sh`, the log `strata-<model>.log` and, when you use "Use for other
+  apps too", `strata-<model>.shared-settings.json`.
+- **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
+  wherever `--data-dir` put them.
+- **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
+  Linux ([details](docs/DETAILS.md)).
 
 ## Something went wrong?
 

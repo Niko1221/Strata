@@ -138,7 +138,9 @@ struct Stager {
     // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
     // DMAs of the unpinned experts' blobs
     int kRing = 16;
-    struct Job { const uint8_t* src; size_t bytes; };
+    // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
+    // role slices; a pointer to it would not live as long as the queue)
+    struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t l = 0, e = 0; };
     std::vector<uint8_t*> buf;
     std::vector<char> pinned;
     std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
@@ -205,7 +207,12 @@ struct Stager {
                     while (issued.load(std::memory_order_acquire) <= j - kRing) std::this_thread::yield();
                     cudaEventSynchronize(dma_done[b]);
                 }
-                std::memcpy(buf[b], jobs[(size_t) j].src, jobs[(size_t) j].bytes);
+                const Job& jb = jobs[(size_t) j];
+                if (jb.from == nullptr) std::memcpy(buf[b], jb.src, jb.bytes);
+                else if (!jb.from->copy_blob(jb.l, jb.e, buf[b])) {
+                    std::fprintf(stderr, "prefill: the expert source could not copy expert %d of layer %d\n", jb.e, jb.l);
+                    std::abort();
+                }
                 ready[(size_t) j].store(1, std::memory_order_release);
                 active.fetch_sub(1, std::memory_order_acq_rel);
             }
@@ -372,7 +379,15 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 }  // namespace
 
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() {
+Prefill::~Prefill() { release(); }
+
+void Prefill::reset() {
+    release();
+    impl_.reset(new Impl);
+    stats_ = PrefillStats{};
+}
+
+void Prefill::release() {
     if (!impl_) return;
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
@@ -489,8 +504,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             return false;
         }
     if (m.tok_dev == nullptr) {
-        if (cudaMalloc((void**) &m.tok_dev, (size_t) chunk * sizeof(int32_t)) != cudaSuccess) {
-            err = "prefill: the token id buffer";
+        if (const cudaError_t e = cudaMalloc((void**) &m.tok_dev, (size_t) chunk * sizeof(int32_t)); e != cudaSuccess) {
+            err = std::string("prefill: the token id buffer (") + cudaGetErrorString(e) + ")";
             return false;
         }
         m.owned.push_back(m.tok_dev);
@@ -994,6 +1009,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
+        core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
@@ -1095,12 +1111,18 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 seq_start[(size_t) l] = seq.size();
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                    const uint8_t* b = m.src->blob(l, e);
-                    if (!b) { err = "prefill: expert source has no blob"; return false; }
                     int job = -1;
-                    if (!m.src->pinned(l, e)) {
+                    const uint8_t* b = nullptr;
+                    if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
                         job = (int) js.size();
-                        js.push_back({b, (size_t) lay0.blob_bytes(l)});
+                        js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
+                    } else {
+                        b = m.src->blob(l, e);
+                        if (!b) { err = "prefill: expert source has no blob"; return false; }
+                        if (!m.src->pinned(l, e)) {
+                            job = (int) js.size();
+                            js.push_back({b, (size_t) lay0.blob_bytes(l)});
+                        }
                     }
                     seq.push_back({(int32_t) l, e, b, job});
                 }
@@ -1198,6 +1220,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         bool normed = false;   // F-2: the previous half's write already normed R for this half (grs, xn16)
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
+            core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
             // ---- the PLE block at layer 1, token by token (its conv reads the previous tokens' rows)
             if (l == 1 && ple_on && ple_batch) {
@@ -1585,9 +1608,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             const int32_t e = order[j];
                             if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                             if (m.src->pinned(l, e)) continue;
+                            job_of[j] = (int) js.size();
+                            if (m.src->transient(l, e)) {   // CS-T: copied by the source
+                                js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
+                                continue;
+                            }
                             const uint8_t* b = m.src->blob(l, e);
                             if (!b) { err = "prefill: expert source has no blob"; return false; }
-                            job_of[j] = (int) js.size();
                             js.push_back({b, (size_t) lay.blob_bytes(l)});
                         }
                         m.stager->start(std::move(js));
@@ -1600,9 +1627,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         const int sl = stage_next;
                         stage_next = (stage_next + 1) % STAGE;
                         const auto th = Clock::now();
-                        const uint8_t* b = m.src->blob(l, e);
-                        if (!b) { err = "prefill: expert source has no blob"; return false; }
-                        if (m.src->pinned(l, e)) {
+                        const bool pinned = m.src->pinned(l, e);   // pinned: never transient
+                        const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
+                        if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
+                        if (pinned) {
                             // DMA straight from the page-locked arena: the copy stream only waits for the slot
                             if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[sl], 0);
                             cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
@@ -1784,6 +1812,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             stats_.experts_dma += iss_dma;
         }
         stats_.tokens += T;
+        core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {
             // the rows to the host buffer the next stage read two chunks ago (it has finished: waited below)

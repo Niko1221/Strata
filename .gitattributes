@@ -4,3 +4,6 @@ bench/prompts/** -text
 # launchers keep their platform line endings wherever the repository is cloned
 *.sh text eol=lf
 *.bat text eol=crlf
+
+# copies of real packs' native_experts.txt, parsed byte for byte by tests/core/expert_layout_test.cpp
+tests/data/native_experts/** -text

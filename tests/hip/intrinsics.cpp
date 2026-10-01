@@ -50,6 +50,29 @@ __global__ void intrinsic_probe(int* integer_results, float* float_shuffle, doub
     }
 }
 
+// The byte-lane intrinsics over many operands: __byte_perm with selector bits it ignores (bit 3 of each nibble and
+// the upper half), since the i-quant table lookups pass data-dependent selectors; the packed subtracts and compare
+// on every sign and overflow combination (the compare's second operand keeps two lanes of the first).
+constexpr int kPermCases = 1024;
+constexpr int kPermResults = 4;
+__global__ void byte_perm_probe(const uint32_t* inputs, uint32_t* results) {
+    const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= kPermCases) return;
+    const uint32_t x = inputs[3 * i], y = inputs[3 * i + 1], s = inputs[3 * i + 2];
+    results[kPermResults * i + 0] = __byte_perm(x, y, s);
+    results[kPermResults * i + 1] = static_cast<uint32_t>(__vsub4(static_cast<int>(x), static_cast<int>(y)));
+    results[kPermResults * i + 2] = static_cast<uint32_t>(__vsubss4(static_cast<int>(x), static_cast<int>(y)));
+    results[kPermResults * i + 3] =
+        static_cast<uint32_t>(__vcmpne4(static_cast<int>(x), static_cast<int>(x ^ (s & 0xff00ff00u))));
+}
+
+uint32_t byte_perm_reference(uint32_t x, uint32_t y, uint32_t s) {
+    const uint64_t pair = (static_cast<uint64_t>(y) << 32) | x;
+    uint32_t out = 0;
+    for (int i = 0; i < 4; ++i) out |= static_cast<uint32_t>((pair >> (8 * ((s >> (4 * i)) & 7u))) & 0xffu) << (8 * i);
+    return out;
+}
+
 int signed_byte(uint32_t word, int lane) {
     const unsigned value = (word >> (lane * 8)) & 0xffu;
     return value < 0x80u ? static_cast<int>(value) : static_cast<int>(value) - 0x100;
@@ -153,6 +176,32 @@ int main() {
         ok = ok && double_shuffle[lane] == static_cast<double>(lane ^ 1) + 0.25;
     }
 
+    uint32_t perm_inputs[kPermCases * 3]{};
+    uint32_t state = 0x9e3779b9u;
+    for (uint32_t& v : perm_inputs) {
+        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        v = state;
+    }
+    uint32_t* device_perm_inputs = nullptr;
+    uint32_t* device_perm_results = nullptr;
+    CHECK(hipMalloc(reinterpret_cast<void**>(&device_perm_inputs), sizeof(perm_inputs)));
+    CHECK(hipMalloc(reinterpret_cast<void**>(&device_perm_results), kPermCases * kPermResults * sizeof(uint32_t)));
+    CHECK(hipMemcpy(device_perm_inputs, perm_inputs, sizeof(perm_inputs), hipMemcpyHostToDevice));
+    hipLaunchKernelGGL(byte_perm_probe, dim3(kPermCases / 256), dim3(256), 0, 0, device_perm_inputs, device_perm_results);
+    CHECK(hipDeviceSynchronize());
+    uint32_t perm_results[kPermCases * kPermResults]{};
+    CHECK(hipMemcpy(perm_results, device_perm_results, sizeof(perm_results), hipMemcpyDeviceToHost));
+    for (int i = 0; i < kPermCases; ++i) {
+        const uint32_t x = perm_inputs[3 * i], y = perm_inputs[3 * i + 1], s = perm_inputs[3 * i + 2];
+        const uint32_t* r = perm_results + kPermResults * i;
+        ok = ok && r[0] == byte_perm_reference(x, y, s);
+        ok = ok && r[1] == byte_sub_reference(x, y);
+        ok = ok && r[2] == signed_saturating_sub_reference(x, y);
+        ok = ok && r[3] == not_equal_reference(x, x ^ (s & 0xff00ff00u));
+    }
+    CHECK(hipFree(device_perm_results));
+    CHECK(hipFree(device_perm_inputs));
+
     CHECK(hipFree(device_ballot));
     CHECK(hipFree(device_dot_inputs));
     CHECK(hipFree(device_double_shuffle));
@@ -162,6 +211,6 @@ int main() {
         std::fprintf(stderr, "HIP intrinsic parity failed (ballot 0x%08x)\n", ballot);
         return 1;
     }
-    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, packed integer boundaries, wave32 shuffles, ballot and sleep");
+    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, byte permute, packed integer boundaries, wave32 shuffles, ballot and sleep");
     return 0;
 }
