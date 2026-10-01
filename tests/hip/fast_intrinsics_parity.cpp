@@ -29,7 +29,7 @@ int main() {
     for (size_t i = 0; i < count; ++i) {
         input[i].a = i < exhaustive ? static_cast<uint32_t>(i >> 8) * 0x01010101u : random();
         input[i].b = i < exhaustive ? static_cast<uint32_t>(i & 255u) * 0x01010101u : random();
-        input[i].selector = static_cast<uint32_t>(i) & 0x7777u;
+        input[i].selector = static_cast<uint32_t>(i);
     }
     std::vector<uint32_t> output(count * 4 + guard, sentinel);
     Input* device_input = nullptr;
