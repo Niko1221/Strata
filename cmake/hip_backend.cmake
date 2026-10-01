@@ -71,7 +71,7 @@ file(GLOB_RECURSE _strata_hip_sources CONFIGURE_DEPENDS
 if(_strata_hip_sources)
   set_source_files_properties(${_strata_hip_sources} PROPERTIES LANGUAGE HIP)
 endif()
-foreach(_source IN ITEMS tests/hip/intrinsics.cpp tests/hip/native_qsa_score.cpp)
+foreach(_source IN ITEMS tests/hip/intrinsics.cpp tests/hip/native_qsa_score.cpp tests/hip/fast_intrinsics_parity.cpp)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
     set_source_files_properties("${_source}" PROPERTIES LANGUAGE HIP)
   endif()
