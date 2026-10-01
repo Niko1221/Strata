@@ -455,6 +455,43 @@ class ClientShapes(unittest.TestCase):
         for part in ("Be brief.", "Now use digits.", "Also this.", "1+1?"):
             self.assertIn(part, text)
 
+    def test_no_user_turn_is_a_400(self):
+        # #365: the template's own refusal (Qwen's "No user query found in messages." when no turn is a user's query)
+        # answers 400, not a dropped connection
+        with tempfile.TemporaryDirectory() as d:
+            tpl = Path(d) / "chat_template.jinja"
+            tpl.write_text("{% if messages[-1].role != 'user' %}{{ raise_exception('No user query found in messages.') }}"
+                           "{% endif %}{{ messages[-1].content }}", encoding="utf-8")
+            template, self.svc.template = self.svc.template, ChatTemplate(tpl)
+            try:
+                status, b = self.post("/v1/chat/completions", {
+                    "model": "x", "max_tokens": 20, "messages": [{"role": "system", "content": "Only a system."}]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("No user query found", b["error"]["message"])
+            finally:
+                self.svc.template = template
+        status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 20,
+                                                       "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_vision_temp_image_removed_when_the_pipe_fails(self):
+        # #352: the temporary image goes even when the encoder's pipe raises
+        from serve.server import Vision
+
+        class Gone:
+            def write(self, _):
+                raise BrokenPipeError("the encoder is gone")
+
+        v = Vision.__new__(Vision)
+        v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.proc = mock.Mock(stdin=Gone())
+        with mock.patch.object(Vision, "load", return_value=b""), mock.patch.object(Vision, "normalize",
+                                                                                   return_value=b"png"):
+            with self.assertRaises(BrokenPipeError):
+                v.encode("x")
+        self.assertEqual(list(v.dir.iterdir()), [])
+        v.dir.rmdir()
+
     def test_leading_system_unchanged(self):
         from serve.frontend import anthropic_to_messages, openai_to_messages
         msgs, _, _ = openai_to_messages({"messages": [{"role": "developer", "content": "D"}, {"role": "user", "content": "u"}]})
@@ -502,6 +539,18 @@ class GpuChoice(unittest.TestCase):
         plain = child_env({})                     # no choice: the environment as it was (existing installs)
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
+
+    def test_vision_device(self):
+        # #408: the image encoder on its own card; the engine's environment stays as it was
+        from serve.server import child_env, vision_env
+        cfg = {"gpu": [0, 1], "vision": {"exe": "v", "cuda_device": 2}}
+        env = child_env(cfg)
+        venv = vision_env(cfg, env)
+        self.assertEqual(venv["CUDA_VISIBLE_DEVICES"], "2")
+        self.assertEqual(venv["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
+        plain = {"gpu": [0, 1], "vision": {"exe": "v"}}
+        self.assertIs(vision_env(plain, env), env)          # no cuda_device: the engine's environment, unchanged
 
 
 class RecordingPrompt(MockEngine):

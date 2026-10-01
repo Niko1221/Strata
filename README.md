@@ -164,7 +164,8 @@ the same way - nothing big is downloaded again.
    or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
    A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
    keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
-   see a cap. LOW_RAM runs on one card.
+   see a cap. LOW_RAM runs on one card unless `GPUS` names several (then the experts the cards do not hold are
+   read through the OS file cache, which can fill the RAM during long prompts).
    The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
    to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
    healthy once the model is loaded, and `GET /v1/status` says what it is running.

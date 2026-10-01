@@ -46,8 +46,10 @@ class OneGpuWhy(unittest.TestCase):
         need = arena + setup.LOW_RAM_HEADROOM_GB
         self.assertIn(f"{arena:.0f} + {setup.LOW_RAM_HEADROOM_GB} = {need:.0f} GB", text)
         self.assertIn("this PC has 46 GB", text)
-        self.assertIn("layer split", text)                            # why one GPU
-        self.assertIn("--low-ram off", text)                          # and the way to keep them all
+        self.assertIn("layer split", text)                            # why one GPU is recommended
+        self.assertIn("--gpus 0,1", text)                             # #364 #384: and the way to use them all
+        self.assertIn("OS file cache", text)
+        self.assertNotIn("--low-ram off", text)                       # (that pages the experts: not the way)
 
     def test_an_explicit_choice_says_so(self):
         text = "\n".join(setup.low_ram_one_gpu_why("Q2_0", 64, "resident"))

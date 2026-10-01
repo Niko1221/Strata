@@ -22,7 +22,8 @@ START-HERE.bat --setup --family unsloth --model UD-Q4_K_XL
 
 What setup does differently for this model:
 
-- It needs 48 GB of RAM or more and engine 0.1.32 or newer (checked before anything is downloaded), and an NVIDIA
+- It needs 48 GB of RAM or more (with less it asks, default no; `--model UD-Q4_K_XL --yes` installs it anyway) and
+  engine 0.1.32 or newer (checked before anything is downloaded), and an NVIDIA
   GPU. One GPU only: with `--gpus` it uses the first one and says so. No images (the vision encoder is not wired to
   this file yet) and no experimental speed projection (not tested with it).
 - It downloads the four shards below from the pinned revision `38bb39e` (resumable, like the other models), then
@@ -30,7 +31,8 @@ What setup does differently for this model:
   in the file's finish mark. A file with the wrong hash is deleted, so the next run downloads it again.
 - It packs with `--compat-bf16` and never writes `experts.bin` (`--low-ram` does not apply).
 - The RAM budget is the PC's RAM less 24 GB: `--resident-budget-gib 40` on 64 GB, at most all 71 GiB of experts on
-  96 GB or more. From a 64K context up, where the KV cache moves to RAM, its size comes out of the budget.
+  96 GB or more. From a 64K context up, where the KV cache moves to RAM, its size comes out of the budget. Setup's
+  `--resident-budget-gib N` sets another one (a bigger one is kept, with a note on what it risks).
 - It recommends an 8K context on a GPU under 14 GB (every GB of KV cache is a GB less of cached experts).
 
 ## The files
@@ -130,7 +132,7 @@ budget take first.
 
 **Choosing the RAM budget N:** your RAM minus 20-24 GB (the OS, the engine itself, the 126 MB router copy, and room for
 the OS file cache that serves the rest). On 64 GB, 40. The engine clamps a budget larger than the RAM it finds free
-(minus 4 GB) and says so. Everything above N comes from the SSD for every token, so N is the setting that matters
+(minus 4 GB and a 256 MiB margin) and says so; before #403's fix such a clamped budget could then fail the start. Everything above N comes from the SSD for every token, so N is the setting that matters
 most; a bigger budget was faster in every measurement (24 / 32 / 40 GiB). When the driver page-locks the whole budget
 (24 GiB did on this PC, 32 and 40 did not), the GPU also computes a share of the misses over PCIe, as in the resident
 low-RAM mode; `STRATA_RESIDENT_PIN=0` keeps the budget locked only (the CPU then computes every miss).

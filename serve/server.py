@@ -585,10 +585,12 @@ class Vision:
                 return self.cache[key]
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
-            self.proc.stdin.write(f"ENC {img} {out}\n")
-            self.proc.stdin.flush()
-            line = self.proc.stdout.readline().strip()
-            img.unlink(missing_ok=True)
+            try:
+                self.proc.stdin.write(f"ENC {img} {out}\n")
+                self.proc.stdin.flush()
+                line = self.proc.stdout.readline().strip()
+            finally:                                                   # #352: also when the encoder's pipe is gone
+                img.unlink(missing_ok=True)
             if not line.startswith("OK"):
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
@@ -644,6 +646,22 @@ def child_env(cfg: dict) -> dict:
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+    return env
+
+
+def vision_env(cfg: dict, env: dict) -> dict:
+    """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
+    (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
+    keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
+    dev = (cfg.get("vision") or {}).get("cuda_device")
+    if dev is None:
+        return env
+    env = dict(env)
+    if cfg.get("backend") == "hip":
+        env["HIP_VISIBLE_DEVICES"] = str(dev)
+    else:
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        env["CUDA_VISIBLE_DEVICES"] = str(dev)
     return env
 
 
@@ -2412,7 +2430,8 @@ def main() -> int:
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
-            vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None, env=env)
+            vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
+                            env=vision_env(cfg, env))
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:

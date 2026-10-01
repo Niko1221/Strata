@@ -43,7 +43,8 @@ now on; the answer is kept.
 **Not supported** (setup says so and names the cards that can be used instead):
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
-  own prompt buffers);
+  own prompt buffers) - unless you name it with `--gpus`: then setup says the risk and asks (`--yes` with the named
+  cards goes ahead);
 - Intel GPUs, and a mix of NVIDIA and AMD cards. (AMD cards share a model among themselves: `./setup.sh --backend
   hip --gpus 1,0`, see [AMD_HIP.md](AMD_HIP.md).)
 

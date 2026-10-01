@@ -835,9 +835,11 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             if (need1 <= limit &&
                 cudaFuncSetAttribute(gr_down_v3_kernel<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, need1) == cudaSuccess)
                 split = 1;
-            else if (need2 <= limit &&
-                     cudaFuncSetAttribute(gr_down_v3_kernel<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, need2) == cudaSuccess)
-                split = 2;
+            else if (need2 <= limit)
+                // #375 (kenh0u): the S = 2 split (a 64 KB opt-in card: Turing) disagrees with itself in gr_parity
+                // (graph replay vs direct call) - such a card keeps the default read until that split is fixed
+                std::fprintf(stderr, "strata: STRATA_GR_V3=1 needs the two-half split on this card, which fails its "
+                                     "checks (#375): the default read is used\n");
             cudaGetLastError();   // drop any error the attempts left behind
             split3[dev3] = split;
         }

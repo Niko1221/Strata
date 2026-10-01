@@ -27,7 +27,13 @@ answers, no questions), --setup (install another model / change settings instead
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
-engine), --check (only check this PC).
+engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's experts in RAM), --kv-streaming
+on|off|auto.
+
+Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
+than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
+what it risks.  With --yes, an explicit flag (--model, --gpus, ...) is the consent to a risk setup would otherwise
+stop at; --yes alone is not.
 """
 from __future__ import annotations
 
@@ -87,7 +93,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 32)                # v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 33)                # v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 
@@ -209,7 +215,8 @@ def ask(question, choices, default, yes):
         try:
             a = input(f"{question} [{default}]: ").strip()
         except EOFError:
-            return default
+            fail("input ended before a setup answer was received",
+                 "run setup in a terminal, or pass --yes to accept the recommended answers")
         if not a:
             return default
         if a.lower() in [c.lower() for c in choices]:
@@ -450,13 +457,23 @@ def parse_gpus(text, found) -> list:
     return sel
 
 
-def check_gpus(sel, found, what="") -> None:
-    """Stops with a plain message when a chosen card is missing or cannot be used, and says what can."""
+def check_gpus(sel, found, what="", yes=False, named=False) -> None:
+    """Stops with a plain message when a chosen card is missing or cannot be used, and says what can.  named: the user
+    named these cards (--gpus 0,1, or a config that has them): a card that is only short of VRAM for sharing the model
+    is then a risk to confirm, not a stop (the owner's rule; --yes with the named cards is the consent)."""
     together = len(sel) > 1
     for i in sel:
         g = next((x for x in found if x["index"] == i), None)
         p = "not found on this PC" if g is None else gpu_problem(g, together)
         if p is None:
+            continue
+        if named and g is not None and gpu_problem(g) is None:     # it runs Strata; only its VRAM is small
+            confirm_risk(f"GPU {i} ({g['name']}) has {g['vram_gb']:.0f} GB of VRAM: a card sharing the model needs "
+                         f"{SPLIT_MIN_VRAM_GB} GB or more (it holds the dense weights of its layers and its own prompt "
+                         "buffers), so the model may not start, or run slower than without it", True, yes,
+                         f"GPU {i} ({g['name']}) {what}is not used together with other GPUs: {p}",
+                         "leave it out of --gpus, or answer y to use it anyway", "  Use it anyway?")
+            warn(f"GPU {i} ({g['name']}) is used together with the others, as you chose")
             continue
         say()
         gpu_table(found)
@@ -513,7 +530,7 @@ def choose_gpus(a, found) -> list:
     together recommended), else the supported card with the most VRAM.  Returns their numbers, the main one first."""
     if a.gpus:
         sel = parse_gpus(a.gpus, found)
-        check_gpus(sel, found)
+        check_gpus(sel, found, yes=a.yes, named=str(a.gpus).strip().lower() != "all")
         return sel
     if a.gpu is not None:
         check_gpus([a.gpu], found)
@@ -541,6 +558,22 @@ def choose_gpus(a, found) -> list:
     return [g["index"] for g in pick]
 
 
+def split_mmap(cfg: dict) -> bool:
+    """#364 #384: the low-RAM mode's resident variant (--resident-experts) has no layer split yet.  A config with it
+    that runs on several GPUs reads the experts the GPUs do not hold through the OS file cache instead
+    (--mmap-experts: the placement those reports measured 1.3-1.6x faster than one GPU), said plainly - the engine
+    used to refuse the pair.  True when the config changed."""
+    a = cfg.get("args", [])
+    if "--resident-experts" not in a:
+        return False
+    a[a.index("--resident-experts")] = "--mmap-experts"
+    warn("the low-RAM mode's resident variant (--resident-experts) has no layer split yet: on several GPUs the experts "
+         "the GPUs do not hold are read through the OS file cache (--mmap-experts) instead, and RAM can fill up to 0 "
+         "free during long prompts. One GPU keeps them in RAM (steady RAM use): START-HERE --setup, or --gpu N for a "
+         "start")
+    return True
+
+
 def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """Starting a model set up for one card on a PC with two or more that can share it: asked once (the answer is
     saved in its config)."""
@@ -552,17 +585,24 @@ def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
         return cfg
     pair = can[:2]
     cfg["gpus_asked"] = True
+    # #364 #384: the resident low-RAM variant stays on one card unless the user says otherwise (its RAM use is steady)
+    resident = "--resident-experts" in cfg.get("args", [])
     say()
     say("  This PC has " + " and ".join(gpu_name(g) for g in pair) + ": Strata can share the model across both.")
     say("  Together they hold about twice the model's experts and read prompts about 20% faster (docs/MULTI_GPU.md).")
+    if resident:
+        say("  This model runs in the low-RAM mode with its experts kept in RAM, on one GPU (recommended: steady RAM")
+        say("  use). On both, the experts the GPUs do not hold are read through the OS file cache instead: faster in")
+        say("  two reports (#364, #384), but RAM can fill up to 0 free during long prompts.")
     missing = [g for g in pair if not engine_runs_on(g)]
     if missing:
         say("  The installed engine has no code for " + ", ".join(g["name"] for g in missing) + ": to use them "
             "together, run START-HERE.bat --setup --gpus " + ",".join(str(g["index"]) for g in pair))
     elif ask("  Use both from now on? (you can change it later: START-HERE.bat --gpu N for one card)",
-             ["y", "n"], "y", yes) == "y":
+             ["y", "n"], "n" if resident else "y", yes) == "y":
         cfg["gpu"] = [g["index"] for g in pair]
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
+        split_mmap(cfg)
         ok("from now on this model runs on " + " + ".join(gpu_name(g) for g in pair))
     else:
         ok("staying on one GPU (START-HERE.bat --gpus " + ",".join(str(g["index"]) for g in pair) + " switches)")
@@ -787,6 +827,20 @@ def resident_budget_gib(model, ram, kv_ram_gb=0.0) -> int:
     RAM; at most all of them, at least 8.  64 GB: 40, the measured setting (docs/UNSLOTH_Q4.md)."""
     gib = round(ram) - UNSLOTH_RAM_LEFT_GB - math.ceil(kv_ram_gb)
     return max(8, min(gib, int(MODELS[model]["arena_gb"] / 1.073741824)))
+
+
+def budget_choice(model, ram, asked) -> float:
+    """S4: UD-Q4_K_XL's RAM budget: --resident-budget-gib N as given, else the recommendation (resident_budget_gib).
+    More than the recommendation is kept, with what it risks (the owner's rule: setup recommends, it never forces)."""
+    rec = resident_budget_gib(model, ram)
+    if asked is None:
+        return rec
+    if asked > rec:
+        warn(f"a {asked:g} GiB RAM budget is more than setup recommends for this PC ({rec} GiB: the RAM less "
+             f"{UNSLOTH_RAM_LEFT_GB} GB for the OS, the engine and the file cache that reads the other experts). Kept "
+             "as you chose: the engine clamps it to the RAM it finds free at start (less 4 GB), and the file cache "
+             "gets less room - it may be slower, or run the PC out of RAM under load")
+    return int(asked) if asked == int(asked) else asked
 
 
 def check_shards(shards):
@@ -1685,8 +1739,9 @@ def low_ram_fits(model, ram, vram_gb) -> bool:
     return ram - 6 + max(0.0, vram_gb - 5) >= arena
 
 
-def low_ram_one_gpu_why(model, ram, choice) -> list[str]:
-    """#250: why the low-RAM mode leaves the other GPUs out, with the RAM math that turned it on."""
+def low_ram_one_gpu_why(model, ram, choice, sel=None) -> list[str]:
+    """#250: why the low-RAM mode recommends one GPU, with the RAM math that turned it on; #364 #384: and how to use
+    all of them (sel: the cards, for the --gpus example)."""
     arena, need = MODELS[model]["arena_gb"], MODELS[model]["arena_gb"] + LOW_RAM_HEADROOM_GB
     if choice == "auto":
         why = [f"Why: {model}'s experts are {arena:.0f} GB and must fit in RAM with ~{LOW_RAM_HEADROOM_GB} GB beside "
@@ -1697,26 +1752,93 @@ def low_ram_one_gpu_why(model, ram, choice) -> list[str]:
     else:
         why = [f"Why: you chose the low-RAM mode (--low-ram {choice}); without it {model} needs {arena:.0f} + "
                f"{LOW_RAM_HEADROOM_GB} = {need:.0f} GB of RAM, this PC has {ram:.0f} GB."]
-    return why + ["That mode runs on one GPU: the engine does not split its layers across GPUs in it (it refuses "
-                  "--resident-experts with a layer split).",
-                  f"To use all the GPUs: {need:.0f} GB of RAM or more, a smaller size, or --low-ram off (the experts "
-                  "then stay in RAM and the OS pages part of them to disk: much slower)."]
+    return why + ["Its resident variant (the experts the GPU does not hold copied into RAM once: steady RAM use) runs "
+                  "on one GPU: the engine has no layer split for it yet.",
+                  f"To use all the GPUs: --gpus {','.join(str(i) for i in sel) if sel else '0,1'} - the experts the "
+                  "GPUs do not hold are then read through the OS file cache: faster in two reports (1.3-1.6x, #364 "
+                  f"#384), but RAM can fill up to 0 free during long prompts. Or {need:.0f} GB of RAM or more, or a "
+                  "smaller size."]
 
 
-def confirm_paging(model, ram, choice, yes):
+def low_ram_together(a, model, ram, gpu, chosen) -> bool:
+    """#364 #384: the low-RAM mode with several GPUs chosen.  One GPU is recommended: the resident variant keeps the
+    experts the GPU does not hold in RAM (steady RAM use) and has no layer split.  All the GPUs together read those
+    experts through the OS file cache instead (--mmap-experts) - 1.3-1.6x faster in those reports, but RAM can fill
+    up to 0 free during long prompts.  An explicit --gpus (or an earlier install's cards) is kept; otherwise asked,
+    one GPU by default (--yes: one GPU, as before).  True: all of them."""
+    sel = [g["index"] for g in chosen]
+    names = " + ".join(gpu_name(g) for g in chosen)
+    if a.gpus:
+        warn(f"the low-RAM mode on {names}, as you chose (--gpus): the experts the GPUs do not hold are read through "
+             "the OS file cache (the resident variant has no layer split yet), and RAM can fill up to 0 free during "
+             "long prompts")
+        say(f"       One GPU keeps them in RAM (steady RAM use, recommended): --gpu {gpu['index']}")
+        if a.low_ram == "resident":
+            warn("--low-ram resident has no layer split yet: the experts are read through the OS file cache instead")
+        return True
+    if a.low_ram != "resident" and not a.yes:
+        say()
+        for line in low_ram_one_gpu_why(model, ram, a.low_ram, sel):
+            say("  " + line)
+        say(f"  1) {gpu_name(gpu)} only: the experts it does not hold kept in RAM where they fit   (recommended: "
+            "steady RAM use)")
+        say(f"  2) {names} together: the experts the GPUs do not hold read through the OS file cache - faster")
+        say("     in two reports (1.3-1.6x, #364 #384), but RAM can fill up to 0 free during long prompts")
+        if ask("Low-RAM mode: which GPUs?", ["1", "2"], "1", a.yes) == "2":
+            ok(f"the low-RAM mode on {names}: the experts read through the OS file cache, as you chose")
+            return True
+        warn("the low-RAM mode: using " + gpu_name(gpu) + " only")
+        return False
+    warn("the low-RAM mode: using " + gpu_name(gpu) + " only (recommended)")
+    for line in low_ram_one_gpu_why(model, ram, a.low_ram, sel):
+        say("       " + line)
+    return False
+
+
+def confirm_risk(msg, explicit, yes, stop, hint=None, question="  Go on anyway?", default="n") -> None:
+    """The owner's rule: setup recommends, it never forces.  A choice setup expects to fail or run badly is said
+    plainly (msg), then asked (default n; `default` keeps an older question's own default), or with --yes taken as
+    consent when it was asked for explicitly (a flag such as --model or --gpus): --yes alone keeps the stop
+    (stop, hint).  Returns when it goes on; the caller says what it does."""
+    warn(msg)
+    if yes and explicit:
+        return
+    if ask(question, ["y", "n"], default, yes) != "y":
+        fail(stop, hint)
+
+
+def confirm_paging(model, ram, choice, yes, explicit_model=False):
     """The model's experts do not fit this PC's RAM and the low-RAM mode is off.  #125: a warning and a question, not
     a stop - the user may accept paging.  Asked "no" by default, so an unattended --yes install stops here, unless
-    the low-RAM mode was turned off explicitly (--low-ram off, #250): that is the choice already made."""
+    the low-RAM mode was turned off explicitly (--low-ram off, #250) or the size was (--model): that is the choice
+    already made."""
     need_gb, arena = MODELS[model]["ram_gb"], MODELS[model]["arena_gb"]
-    warn(f"{model} needs about {need_gb} GB of RAM and this PC has {ram:.0f} GB: its experts alone are "
-         f"{arena:.0f} GB and must stay in RAM, so Windows/Linux will page part of them from disk. Expect it "
-         "to be much slower, and it may not start at all.")
-    say("       A smaller size (Q2_0 or IQ2_XS) fits; more RAM fixes it.")
-    explicit = choice == "off"
-    if ask("  Install it anyway?", ["y", "n"], "y" if explicit else "n", yes) != "y":
-        fail(f"{model} needs about {need_gb} GB of RAM; this PC has {ram:.0f} GB",
-             "choose Q2_0 or IQ2_XS, or add RAM" + ("" if explicit else "; or --low-ram off --yes to install it anyway"))
-    warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose" + (" (--low-ram off)" if explicit else ""))
+    off = choice == "off"
+    confirm_risk(f"{model} needs about {need_gb} GB of RAM and this PC has {ram:.0f} GB: its experts alone are "
+                 f"{arena:.0f} GB and must stay in RAM, so Windows/Linux will page part of them from disk. Expect it "
+                 "to be much slower, and it may not start at all.\n       A smaller size (Q2_0 or IQ2_XS) fits; more "
+                 "RAM fixes it.", off or explicit_model, yes,
+                 f"{model} needs about {need_gb} GB of RAM; this PC has {ram:.0f} GB",
+                 "choose Q2_0 or IQ2_XS, or add RAM" + ("" if off else f"; or --model {model} --yes (or --low-ram off "
+                                                                        "--yes) to install it anyway"),
+                 "  Install it anyway?", "y" if off else "n")
+    warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose" + (" (--low-ram off)" if off else
+                                                                          " (--model)" if explicit_model else ""))
+
+
+def ctx_ram_need(model, ctx, low_ram=False):
+    """#406: the RAM (GB) setup estimates for a long context with IQ3_XXS / IQ3_S: their experts + the context's
+    8-bit KV cache + 24 GB of room for everything else (the 0.1.29 arithmetic, counted).  None where the context does
+    not count against RAM by this rule: the other sizes, and the low-RAM mode (its KV cache stays in VRAM)."""
+    if model not in ("IQ3_XXS", "IQ3_S") or low_ram:
+        return None
+    return MODELS[model]["arena_gb"] + ctx * 13 * 1056 / 1e9 + 24
+
+
+def ram_ctx(model, ram, low_ram=False) -> int:
+    """#406: the longest context the RAM rule recommends: 128K, or longer where the estimate fits this PC's RAM.  It
+    is part of the recommended default (the smaller of it and the GPU's rule); a longer choice is kept, with a note."""
+    return max(c for c in CONTEXTS if c <= 131072 or (ctx_ram_need(model, c, low_ram) or 0) <= ram)
 
 
 def settings_path() -> Path:
@@ -2076,7 +2198,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     if cfg.get("backend") == "hip":
         pass
     elif isinstance(gpu, list):                        # --gpus: saved, this model runs on these cards from now on
-        check_gpus(gpu, found)
+        check_gpus(gpu, found, yes=yes, named=True)
         cfg["gpu"], cfg["gpus_asked"] = gpu, True
         cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
         cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
@@ -2087,10 +2209,12 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     else:
         cfg = offer_together(cfg_path, cfg, yes)
     use = gpu if gpu is not None else cfg.get("gpu")
+    if isinstance(use, list) and split_mmap(cfg):     # #364 #384: a resident low-RAM config on several GPUs
+        cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     if cfg.get("backend") == "hip":
         pass
     elif isinstance(use, list):
-        check_gpus(use, found, "(chosen for this model) ")
+        check_gpus(use, found, "(chosen for this model) ", yes=True, named=True)
         byid = {g["index"]: g for g in found}
         cfg = ensure_engine_for([byid[i] for i in use], cfg_path, cfg, yes)
         ok("GPUs: " + " + ".join(gpu_name(byid[i]) for i in use) + f" together (layers split {cfg.get('layer_split') or 'auto'})")
@@ -2302,13 +2426,21 @@ def main() -> int:
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
                          "this mode the experts the GPU does not hold are copied into RAM once when they fit (resident), "
                          "else read through the OS file cache (mmap); resident / mmap force one of the two")
+    ap.add_argument("--resident-budget-gib", type=float, metavar="N",
+                    help="UD-Q4_K_XL: the GiB of its experts kept in RAM (default: the RAM less 24 GB, 40 on 64 GB; "
+                         "more is kept as you choose, with a note)")
+    ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
+                    help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
+                         "experts fit on the GPU); auto: when the RAM has room for it")
     ap.add_argument("--backend", choices=["cuda", "hip"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 "
                          "on Windows and Linux (experimental; chosen by itself when the PC has no NVIDIA card "
                          "Strata can use)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
-    if a.gpu is not None:                              # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
+    if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
+        ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
+    if a.gpu is not None:                             # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
         if "," in a.gpu:
             a.gpus, a.gpu = a.gpus or a.gpu, None
         elif a.gpu.strip().isdigit():
@@ -2459,10 +2591,16 @@ def main() -> int:
     low_ok = low_ram_fits("IQ1_M", ram, gpu["vram_gb"]) and a.low_ram != "off"   # the smallest model, mapped
     if ram < need - 4 and not a.check and not low_ok:
         # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
-        # bigger GPU does not lower this
-        fail(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
-             "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a copy "
-             "of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model)")
+        # bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can take (--model
+        # with --yes, or y)
+        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB: Strata keeps all of "
+                     "the model's experts in RAM (23-50 GB, whatever the GPU), so the OS will page them from disk. "
+                     "Expect it to be very slow, and it may not start at all.", bool(a.model), a.yes,
+                     f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
+                     "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a "
+                     "copy of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model); --model "
+                     "NAME --yes installs one anyway")
+        warn(f"going on with {ram:.0f} GB of RAM, as you chose")
     ok(f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
        + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
     pf = page_file_gb()
@@ -2526,31 +2664,37 @@ def main() -> int:
         warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
              "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
         if ram < MODELS[model]["ram_gb"]:
-            fail(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB",
-                 "choose one of the 2-3-bit models")
-        budget = resident_budget_gib(model, ram)
-        ok(f"RAM budget: {budget} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
+            confirm_risk(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB: "
+                         f"its RAM budget would be {resident_budget_gib(model, ram)} GiB, so nearly every expert is "
+                         "read from the SSD while it answers (very slow), and it may run out of RAM",
+                         bool(a.model), a.yes, f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC "
+                         f"has {ram:.0f} GB", f"choose one of the 2-3-bit models, or --model {model} --yes to "
+                         "install it anyway", "  Install it anyway?")
+            warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
+        budget = budget_choice(model, ram, a.resident_budget_gib)
+        ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
         if a.low_ram not in ("auto", "off"):
             warn(f"--low-ram {a.low_ram} does not apply to {model}: it always reads part of its experts from the files")
         if multi:
             warn(f"{model} runs on one GPU: using " + gpu_name(gpu) + " only")
             multi, sel, chosen = [], [gpu["index"]], [gpu]
+    elif a.resident_budget_gib is not None:
+        warn(f"--resident-budget-gib is for UD-Q4_K_XL: {model} keeps all of its experts in RAM or in the low-RAM mode")
     low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
                                   (a.low_ram == "auto" and low_ram_needed(model, ram)))
-    if low_ram and multi:
-        warn("the low-RAM mode runs on one GPU: using " + gpu_name(gpu) + " only")
-        for line in low_ram_one_gpu_why(model, ram, a.low_ram):
-            say("       " + line)
+    if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
         multi, sel, chosen = [], [gpu["index"]], [gpu]
-    # (the low-RAM mode's variant is decided once the context is known, below)
+    # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one)
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
-        confirm_paging(model, ram, a.low_ram, a.yes)
+        confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
         rec_ctx = 8192 if small < 14 else 32768
+    # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
+    rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
     if a.context:
         ctx = a.context
     else:
@@ -2558,20 +2702,22 @@ def main() -> int:
         say("  Context length = how much text the model can see at once (your chat, files, tool output).")
         say("  Longer needs more VRAM for it, so fewer experts fit on the GPU:")
         for i, c in enumerate(CONTEXTS, 1):
+            need_c = ctx_ram_need(model, c, low_ram)
             note = ("   (recommended for your GPU)" if c == rec_ctx else "") + \
-                   ("   (experimental: setup adds rope scaling)" if c > 262144 else "")
+                   ("   (experimental: setup adds rope scaling)" if c > 262144 else "") + \
+                   (f"   (needs ~{need_c:.0f} GB RAM, this PC has {ram:.0f}: may run out of memory)"
+                    if c > 131072 and need_c is not None and need_c > ram else "")
             say(f"  {i}) {c // 1024}K tokens{note}")
         ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, len(CONTEXTS) + 1)],
                                str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
-    # the RAM limit comes FIRST: the rope config must cover the context the engine will actually serve -
-    # a reduced 384K can land back inside the trained 262144, and then nothing needs scaling (§4).  Counted,
-    # not a fixed 90 GB (the 0.1.29 arithmetic): arena + the context's KV + 24 GB of room for everything else.
-    asked_ctx = ctx
-    need_gb = MODELS[model].get("arena_gb", 0) + ctx * 13 * 1056 / 1e9 + 24
-    if model in ("IQ3_XXS", "IQ3_S") and ram < need_gb and ctx > 131072:
-        warn(f"{model} with a {ctx // 1024}K context needs about {need_gb:.0f} GB of RAM "
-             f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest): using 128K")
-        ctx = 131072
+    # #406 #364: a context past the RAM rule (an explicit --context, a pick in the list, or the earlier install's) is
+    # kept, with what it risks.  It used to become 128K: users ran 256K fine where setup's estimate said no.
+    need_gb = ctx_ram_need(model, ctx, low_ram)
+    if need_gb is not None and ram < need_gb and ctx > 131072:
+        warn(f"{ctx // 1024}K with {model} needs ~{need_gb:.0f} GB of RAM by setup's estimate "
+             f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest); this PC has "
+             f"{ram:.0f}. Kept as you chose: it may be slower or run out of RAM under load. {rec_ctx // 1024}K is the "
+             "recommended size.")
     scaling = a.rope_scaling
     if ctx > 262144 and scaling is None and not a.yes:
         # the interactive path: one question, yarn preselected (llama.cpp's extension method, recall-tested
@@ -2590,11 +2736,6 @@ def main() -> int:
         origin = ("final context / trained 262144; override with --rope-scale" if a.rope_scale is None
                   else "as requested")
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
-    elif asked_ctx > 262144:
-        ok(f"the RAM limit brings the context to {ctx // 1024}K, inside the trained 262,144: no rope scaling")
-    if scaling is not None and asked_ctx > 262144 and ctx <= 262144:
-        warn(f"the RAM limit reduced the context to {ctx // 1024}K, inside the trained 262,144; keeping your "
-             f"explicit rope scaling ({scaling}) anyway - drop --rope-scaling for the completely stock model")
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
     kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
@@ -2633,7 +2774,17 @@ def main() -> int:
         share = low_ram_gpu_share(model, vram, ctx, kv)
         rest = arena - low_ram_gpu_gb(model, vram, ctx, kv)
         resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, kv))
-        if resident:
+        if multi:      # #364 #384: every chosen card's share (the image encoder on the main one), the mapped variant
+            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv) +
+                       sum(low_ram_gpu_gb(model, x["vram_gb"], ctx, kv) for x in chosen[1:]))
+            share, resident = held / arena, False
+            ok(f"low-RAM mode on {len(chosen)} GPUs: {model}'s experts ({arena:.0f} GB) are read from the model folder "
+               f"through the OS file cache instead of a copy in RAM ({ram:.0f} GB); the GPUs hold ~{100 * share:.0f}% "
+               "of them")
+            if share < 0.6:
+                warn("most of the experts are read from the SSD while it answers: expect it to be much slower than "
+                     "with enough RAM (a faster SSD and a smaller size help)")
+        elif resident:
             ok(f"low-RAM mode: the GPU holds ~{100 * share:.0f}% of {model}'s experts ({arena:.0f} GB) and the other "
                f"~{rest:.0f} GB stay in RAM ({ram:.0f} GB), read once from a copy in the model folder")
         else:
@@ -2814,19 +2965,37 @@ def main() -> int:
     # Hybrid K8V4 never streams its KV (mode 0 only, layer.hpp), so it is excluded from the WHOLE streaming
     # decision rather than one threshold at a time - a future tier added to this chain cannot reintroduce the
     # combination the engine refuses (PR review).
+    # --kv-streaming on|off overrides the RAM test (the owner's rule); k8v4 and WSL stay off - they cannot stream.
+    stream_fits = ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1
     if kv == "k8v4":
         if ctx >= 65536:
             ok("KV streaming off: not supported with --kv k8v4; the KV cache stays in VRAM")
+        if a.kv_streaming == "on":
+            warn("--kv-streaming on: the engine has no KV streaming with --kv k8v4 (it refuses the pair): off")
     elif is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
-    elif ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
+        if a.kv_streaming == "on":
+            warn("--kv-streaming on: WSL cannot stream the KV cache (its RAM copy must be pinned, and the driver pins "
+                 "only about 1 GB there): off")
+    elif ctx >= 65536 and a.kv_streaming == "off":
+        ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
+    elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
-        if budget is not None:                         # its RAM comes out of the experts' budget
+        if not stream_fits:
+            warn(f"KV streaming needs ~{kv_ram_gb:.1f} GB of RAM beside the ~{MODELS[model]['ram_gb']} GB {model} "
+                 f"uses; this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
+                 "under load")
+        if budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget
             budget = resident_budget_gib(model, ram, kv_ram_gb)
             ok(f"RAM budget: {budget} GiB (less the KV cache's RAM)")
+        elif budget is not None and budget > resident_budget_gib(model, ram, kv_ram_gb):
+            warn(f"the KV cache's {kv_ram_gb:.1f} GB of RAM come on top of your {budget:g} GiB RAM budget (setup "
+                 f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb)} GiB); kept as you chose")
+    elif a.kv_streaming == "on":
+        warn("--kv-streaming on: a context under 64K is not streamed (the attention's window holds all of it): off")
     if budget is not None:     # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N GiB kept in RAM
-        args += ["--resident-budget-gib", str(budget)]
+        args += ["--resident-budget-gib", f"{budget:g}"]
     if vision != "none":
         args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
     if esp is not None:

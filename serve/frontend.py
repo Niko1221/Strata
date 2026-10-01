@@ -25,12 +25,17 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 # ------------------------------------------------------------------------------------------------ template
+class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
+    """The template refused the request's messages (e.g. "No user query found in messages."): a ValueError, so the
+    client gets a 400 with the template's message instead of a dropped connection (#365)."""
+
+
 class ChatTemplate:
     """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template."""
 
     def __init__(self, path: str | Path):
         def raise_exception(message):
-            raise jinja2.exceptions.TemplateError(message)
+            raise TemplateRequestError(message)
 
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)

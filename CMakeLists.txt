@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.32 LANGUAGES CXX)
+project(strata VERSION 0.1.33 LANGUAGES CXX)
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
@@ -362,6 +362,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(native_dense_ple_key_test PRIVATE strata_engine)
     add_test(NAME native_dense_ple_key_test COMMAND native_dense_ple_key_test)
     set_tests_properties(native_dense_ple_key_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    # #369: per-layer admission on a sized (native pack) cache starts each layer in its own range
+    add_executable(expert_cache_per_layer_test tests/core/expert_cache_per_layer_test.cpp)
+    target_link_libraries(expert_cache_per_layer_test PRIVATE strata_engine)
+    add_test(NAME expert_cache_per_layer_test COMMAND expert_cache_per_layer_test)
+    set_tests_properties(expert_cache_per_layer_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
   endif()
   if(STRATA_BUILD_CONVERSATION_TESTS)
     add_executable(conversation_snapshot_test src/core/conversation_snapshot_test.cpp)

@@ -139,7 +139,7 @@ class Main(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1):
+    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": "local"}))
@@ -178,7 +178,8 @@ class Main(unittest.TestCase):
             mock.patch.object(setup, "saved_calibration", lambda cfg: None),
             mock.patch.object(setup, "start", mock.Mock(side_effect=AssertionError("started"))),
             mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),
-            mock.patch.object(sys, "argv", ["setup.py", "--family", "unsloth", "--model", M, "--yes", "--no-start",
+            mock.patch.object(sys, "argv", ["setup.py", "--family", "unsloth", *(["--model", M] if model else []),
+                                            "--yes", "--no-start",
                                             "--models-dir", str(self.t / "models"), *argv]),
             mock.patch("builtins.input", mock.Mock(side_effect=AssertionError("asked"))),
         ]
@@ -238,10 +239,44 @@ class Main(unittest.TestCase):
         self.assertIsNone(cfg)
 
     def test_too_little_ram(self):
-        code, out, cfg = self.main(["--context", "8192"], ram=31.9)
+        code, out, cfg = self.main(["--context", "8192"], ram=31.9, model=False)   # --yes alone: still a stop
         self.assertEqual(code, 1)
         self.assertIn("needs 48 GB of RAM or more", out)
+        self.assertIn("--model UD-Q4_K_XL --yes", out)                             # the way to insist
         self.assertEqual(self.downloads, [])
+
+    def test_too_little_ram_with_an_explicit_model_installs(self):
+        """S6 (the owner's rule): --model with --yes is the consent; the risk is said."""
+        code, out, cfg = self.main(["--context", "8192"], ram=31.9)
+        self.assertEqual(code, 0, out)
+        self.assertIn("needs 48 GB of RAM or more; this PC has 32 GB", out)
+        self.assertIn("installing UD-Q4_K_XL with 32 GB of RAM, as you chose", out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "8")
+
+    def test_budget_flag(self):
+        """S4: --resident-budget-gib N is kept; more than the recommendation says what it risks."""
+        code, out, cfg = self.main(["--context", "8192", "--resident-budget-gib", "48"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "48")
+        self.assertIn("more than setup recommends for this PC (40 GiB", out)
+        self.assertIn("Kept as you chose", out)
+        code, out, cfg = self.main(["--context", "8192", "--resident-budget-gib", "32.5"])
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "32.5")
+        self.assertNotIn("more than setup recommends", out)
+
+    def test_budget_flag_with_kv_streaming_is_kept(self):
+        code, out, cfg = self.main(["--context", "131072", "--resident-budget-gib", "40"])
+        self.assertEqual(code, 0, out)
+        args = cfg["args"]
+        self.assertIn("--kv-resident", args)
+        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")      # not 38: the user's number
+        self.assertIn("come on top of your 40 GiB RAM budget", out)
+
+    def test_budget_flag_needs_a_positive_number(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, out, cfg = self.main(["--context", "8192", "--resident-budget-gib", "0"])
+        self.assertEqual(code, 2)                                                   # argparse: N > 0
+        self.assertIsNone(cfg)
 
     def test_one_gpu_and_no_images(self):
         code, out, cfg = self.main(["--context", "8192", "--gpus", "0,1", "--vision", "yes", "--low-ram", "on"],
