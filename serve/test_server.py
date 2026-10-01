@@ -252,6 +252,115 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class UnfinishedToolCall(unittest.TestCase):
+    """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
+    finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
+    CALL = ("</think>\n\n<tool_call>\n<function=write>\n<parameter=path>\nnotes.txt\n</parameter>\n"
+            "<parameter=content>\n")
+    CUT = CALL + "first half of the fi"                            # the model's turn ends here
+    WHOLE = CALL + "all of it\n</parameter>\n</function>\n</tool_call>"
+    PROPS = {"path": {"type": "string"}, "content": {"type": "string"}}
+
+    def test_parser(self):
+        from serve.frontend import OutputParser
+        schema = [{"name": "write", "parameters": {"properties": self.PROPS}}]
+        for text, content in ((self.CUT, None), (self.WHOLE, "all of it"),
+                              (self.WHOLE[:-len("</tool_call>")], "all of it")):   # only </tool_call> missing: whole
+            for step in (1, 7, 10_000):
+                with self.subTest(end=text[-12:], step=step):
+                    p = OutputParser(thinking=True, tools=schema, stream_tools=True)
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish()
+                    streamed = "".join(e.text for e in evs if e.kind == "tool_args")
+                    calls = [e for e in evs if e.kind == "tool_call"]
+                    if content is None:
+                        self.assertEqual((calls, streamed), ([], '{"path":"notes.txt","content":"first half of the fi'))
+                    else:
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(json.loads(streamed), {"path": "notes.txt", "content": content})
+
+    def answers(self, script, max_tokens=500):
+        """(finish reason, the call's arguments) from OpenAI and Anthropic, whole and streamed, for the model's `script`."""
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        tools = {"openai": [{"type": "function", "function": {"name": "write", "parameters": {
+                     "type": "object", "properties": self.PROPS}}}],
+                 "anthropic": [{"name": "write", "input_schema": {"type": "object", "properties": self.PROPS}}]}
+        out = {}
+        try:
+            for api, path in (("openai", "/v1/chat/completions"), ("anthropic", "/v1/messages")):
+                for stream in (False, True):
+                    body = {"model": "x", "max_tokens": max_tokens, "stream": stream, "tools": tools[api],
+                            "messages": [{"role": "user", "content": "save my notes"}]}
+                    req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={
+                        "Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        raw = r.read().decode()
+                    if stream:
+                        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+                        if api == "openai":
+                            out[api, stream] = (evs[-1]["choices"][0]["finish_reason"], "".join(
+                                (tc.get("function") or {}).get("arguments") or "" for e in evs
+                                for tc in e["choices"][0]["delta"].get("tool_calls") or []))
+                        else:
+                            out[api, stream] = (evs[-2]["delta"]["stop_reason"], "".join(
+                                e["delta"]["partial_json"] for e in evs if e["type"] == "content_block_delta"
+                                and e["delta"]["type"] == "input_json_delta"))
+                    elif api == "openai":
+                        c = json.loads(raw)["choices"][0]
+                        out[api, stream] = (c["finish_reason"], [tc["function"]["arguments"]
+                                                                 for tc in c["message"].get("tool_calls") or []])
+                    else:
+                        m = json.loads(raw)
+                        out[api, stream] = (m["stop_reason"], [b["input"] for b in m["content"] if b["type"] == "tool_use"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        return out
+
+    def test_a_cut_call(self):
+        cut = '{"path":"notes.txt","content":"first half of the fi'
+        self.assertEqual(self.answers(self.CUT), {
+            ("openai", False): ("stop", []), ("openai", True): ("stop", cut),    # whole answers leave the cut
+            ("anthropic", False): ("end_turn", []),                      # call out: it has no arguments to give
+            ("anthropic", True): ("end_turn", cut)})
+
+    def test_a_call_cut_at_the_token_limit(self):
+        """The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
+        out in both APIs."""
+        a = self.answers(self.CUT + "rest of the file, never reached" * 40, max_tokens=len(self.CUT))
+        self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
+        self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+
+    def test_collect_keeps_calls_whose_arguments_parse(self):
+        from serve.server import openai_collect
+
+        def chunk(delta, finish=None):
+            return {"id": "c", "created": 1, "model": "m", "usage": {},
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        whole = {"index": 0, "id": "a", "type": "function", "function": {"name": "f", "arguments": '{"x": 1}'}}
+        cut = {"index": 1, "id": "b", "type": "function", "function": {"name": "g", "arguments": '{"y": "ha'}}
+        for finish, want in (("stop", ["a"]), ("length", ["a"]), ("tool_calls", ["a", "b"])):
+            with self.subTest(finish=finish):
+                msg = openai_collect([chunk({"tool_calls": [whole]}), chunk({"tool_calls": [cut]}),
+                                      chunk({}, finish)])["choices"][0]["message"]
+                self.assertEqual([c["id"] for c in msg["tool_calls"]], want)
+        msg = openai_collect([chunk({"tool_calls": [cut]}), chunk({}, "stop")])["choices"][0]["message"]
+        self.assertNotIn("tool_calls", msg)
+
+    def test_a_whole_call(self):
+        whole = {"path": "notes.txt", "content": "all of it"}
+        a = self.answers(self.WHOLE)
+        self.assertEqual((a["openai", False][0], [json.loads(x) for x in a["openai", False][1]]), ("tool_calls", [whole]))
+        self.assertEqual((a["openai", True][0], json.loads(a["openai", True][1])), ("tool_calls", whole))
+        self.assertEqual(a["anthropic", False], ("tool_use", [whole]))
+        self.assertEqual((a["anthropic", True][0], json.loads(a["anthropic", True][1])), ("tool_use", whole))
+
+
 class ClientShapes(unittest.TestCase):
     """What real clients send: Claude Code posts /v1/messages?beta=true (issue #55) and puts hook context into the
     conversation as a mid-conversation system message (issue #56); some OpenAI clients send a late developer message."""
@@ -1069,6 +1178,207 @@ class SharingTheGpu(unittest.TestCase):
     def test_off_by_default(self):
         self.assertEqual((self.svc.idle_unload_s, self.svc.min_free_vram_mib, self.svc.before_load), (0, 0, None))
         self.assertEqual(self.req("/health")[1]["loaded"], True)
+
+
+class ThinkingEngine(MockEngine):
+    """Thinks THOUGHT, then answers; a prompt that already ends its thinking (the budget's wrap-up) gets the answer
+    at once, the way the model continues after </think>.  Records every prompt it is given."""
+    THOUGHT = "Let me think step by step about two plus two. " * 4          # 184 reasoning tokens (one per byte)
+    ANSWER = "The answer is 4."
+
+    def __init__(self, tok):
+        super().__init__(tok, "x", max_context=CTX)
+        self.prompts = []
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        done = self.tok.decode(ids).endswith("</think>\n\n")
+        text = self.ANSWER if done else self.THOUGHT + "</think>\n\n" + self.ANSWER
+        for t in (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+            if cancel.is_set():
+                return
+            yield t
+
+
+class ThinkingBudget(unittest.TestCase):
+    """#123: reasoning_budget_tokens (opt-in): at the budget the thinking is wrapped up and the model answers,
+    continuing from the prompt plus what it generated plus the wrap-up (a prefix the engine already holds)."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.engine = ThinkingEngine(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers={
+            "Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode()
+                return r.status, (json.loads(raw) if not body.get("stream") else raw)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def openai(self, **extra):
+        return self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "2+2?"}],
+                                                  "max_tokens": 400, **extra})
+
+    def test_off_by_default(self):
+        code, b = self.openai()
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertEqual((msg["reasoning_content"], msg["content"]), (ThinkingEngine.THOUGHT, ThinkingEngine.ANSWER))
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_the_budget_wraps_up_the_thinking(self):
+        from serve.server import REASONING_WRAP_UP
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        self.assertEqual(msg["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap)
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)   # a prefix + more
+        self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
+        self.assertEqual(b["usage"]["prompt_tokens"], len(first))
+
+    def test_anthropic_stream(self):
+        from serve.server import REASONING_WRAP_UP
+        code, raw = self.post("/v1/messages", {"model": "m", "max_tokens": 400, "stream": True,
+                                               "reasoning_budget_tokens": 30,
+                                               "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(code, 200)
+        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        thinking = "".join(e["delta"].get("thinking", "") for e in evs if e["type"] == "content_block_delta")
+        text = "".join(e["delta"].get("text", "") for e in evs if e["type"] == "content_block_delta")
+        self.assertEqual(thinking, ThinkingEngine.THOUGHT[:30] + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual(text, ThinkingEngine.ANSWER)
+        self.assertEqual(evs[-2]["delta"]["stop_reason"], "end_turn")
+
+    def test_a_budget_the_thinking_stays_under(self):
+        code, b = self.openai(reasoning_budget_tokens=10_000)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_the_config_default_and_a_request_that_turns_it_off(self):
+        self.svc.reasoning_budget_tokens = 20
+        code, b = self.openai()
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
+        code, b = self.openai(reasoning_budget_tokens=0)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), 3)
+
+    def test_without_thinking_there_is_nothing_to_limit(self):
+        self.engine.THOUGHT = ""
+        code, b = self.openai(reasoning_budget_tokens=5, reasoning_effort="none")
+        self.assertEqual(code, 200, b)
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_no_room_left_to_answer(self):
+        code, b = self.openai(reasoning_budget_tokens=20, max_tokens=40)    # 20 thought + the wrap-up > 40
+        self.assertEqual(b["choices"][0]["finish_reason"], "length")
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20])
+
+    def test_a_bad_value_is_a_400(self):
+        for bad in ("lots", 2.5, True, [1]):
+            with self.subTest(value=bad):
+                code, b = self.openai(reasoning_budget_tokens=bad)
+                self.assertEqual(code, 400)
+                self.assertIn("reasoning_budget_tokens", b["error"]["message"])
+        self.assertEqual(self.engine.prompts, [])
+
+
+class StatusHandover(unittest.TestCase):
+    """#266: a stream aborted mid-way and the next request, which was waiting for the fifo.  The aborted request's
+    status/history block ran after the fifo was released, so the waiting request could start in that gap: the old
+    request then recorded the NEW request's status as its own, set busy=False and popped `tail`, and the new request
+    crashed in _note (KeyError 'tail').  The fifo below lets the waiting request run to its first token as soon as
+    it is released, before the releasing thread goes on - the worst case of that gap, every time."""
+
+    def test_abort_then_the_next_request(self):
+        tok = ByteTokenizer()
+        second_running = threading.Event()
+
+        class Engine(MockEngine):
+            calls = 0
+
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                Engine.calls += 1
+                me = Engine.calls
+                for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+                    if me == 2 and i == 2:
+                        second_running.set()        # the second request has its status and two tokens noted
+                    yield t
+
+        class SlowRelease:
+            """A Lock whose release waits (briefly) until the thread it let in has started generating."""
+
+            def __init__(self):
+                self.lock, self.armed = threading.Lock(), False
+
+            def acquire(self, blocking=True):
+                return self.lock.acquire(blocking)
+
+            def __enter__(self):
+                self.lock.acquire()
+
+            def __exit__(self, *exc):
+                self.lock.release()
+                if self.armed:
+                    self.armed = False
+                    second_running.wait(5)
+
+            def release(self):
+                self.lock.release()
+
+        svc = Service(Engine(tok, "</think>\n\n" + "y" * 40, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.fifo = SlowRelease()
+        ids = tok.encode("hi")
+        first = svc.run(ids, True, None, 30, {}, threading.Event())
+        for _ in range(5):
+            next(first)                                 # mid-answer
+        out, errors = [], []
+
+        def second():
+            try:
+                out.extend(svc.run(ids, True, None, 20, {}, threading.Event()))
+            except Exception as e:                      # noqa: BLE001 - the crash this test is about
+                errors.append(e)
+
+        waiter = threading.Thread(target=second)
+        waiter.start()
+        deadline = time.time() + 5
+        while svc.status.get("queued") != 1 and time.time() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(svc.status.get("queued"), 1, "the second request never queued")
+        svc.fifo.armed = True
+        first.close()                                   # the client went away: GeneratorExit in the first request
+        waiter.join(10)
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(out[-1][0], "done")
+        self.assertEqual(out[-1][1]["completion_tokens"], 20)
+        rows = list(svc.history)
+        self.assertEqual([r["finish"] for r in rows], ["disconnect", "length"])
+        self.assertTrue(0 < rows[0]["output_tokens"] < 30, rows)     # where the first one stopped, not the second's
+        self.assertEqual(rows[1]["output_tokens"], 20)
+        self.assertEqual(svc.totals["requests"], 2)
+        self.assertEqual(svc.totals["output_tokens"], rows[0]["output_tokens"] + 20)
+        self.assertFalse(svc.status["busy"])
+        self.assertNotIn("tail", svc.status)
 
 if __name__ == "__main__":
     unittest.main()

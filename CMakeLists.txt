@@ -7,7 +7,7 @@
 # CUDA builds require compute capability 7.0 or newer.  Optional kernels with newer ISA requirements are
 # selected below so a binary never contains instructions its target GPU cannot execute.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.30 LANGUAGES CXX)
+project(strata VERSION 0.1.31 LANGUAGES CXX)
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
@@ -67,6 +67,7 @@ if(STRATA_ENABLE_CUDA)
   # `enable_language(CUDA)` gives the .cu compile rules but NOT the imported targets, so `CUDA::cudart` has to
   # be brought in explicitly for the host-side tests that call cudaMalloc themselves.
   find_package(CUDAToolkit REQUIRED)
+  option(STRATA_EXPERIMENTAL_SM60 "community build for GPUs below compute capability 7.5: Pascal sm_60, Volta sm_70 (#236)" OFF)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 70 CACHE STRING "CUDA architectures" FORCE)
   endif()
@@ -80,12 +81,18 @@ if(STRATA_ENABLE_CUDA)
     # STRATA_EXPERIMENTAL_SM60: a Pascal (sm_60, GP100-class) build.  It sits below every architecture
     # these kernels were written for, so two intrinsics are replaced for it - `__dp4a` (6.1+) and
     # `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp, which is bit-exact for the first and
-    # merely a shorter pause for the second.  RTX 20/30/40/50 cards must use the release engine instead.
+    # merely a shorter pause for the second.  It needs a CUDA 12.x toolkit: CUDA 13 dropped sm_60 and
+    # sm_70 (nvcc fails CMake's compiler test with "compute_70").  RTX 20/30/40/50 cards must use the
+    # release engine instead.
     if(_base LESS 70 AND NOT STRATA_EXPERIMENTAL_SM60)
       message(FATAL_ERROR
         "Strata needs an NVIDIA GPU of compute capability 7.0 or newer (Volta / RTX 20 / 30 / 40 / 50 series), but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal build is "
         "-DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
+    endif()
+    if(_base LESS 60)
+      message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES '${CMAKE_CUDA_ARCHITECTURES}': even the experimental build "
+                          "needs compute capability 6.0 (sm_60) or newer")
     endif()
     # #220 / #224: RTX 50 engines built with CUDA 12.8 crashed in the prompt path on Linux (13.0 and newer did not)
     if(_base GREATER_EQUAL 120 AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
@@ -146,6 +153,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_reader_test src/artifact/gguf_reader_test.cpp)
   target_link_libraries(gguf_reader_test PRIVATE strata_artifact)
   add_test(NAME gguf_reader_test COMMAND gguf_reader_test)
+  # a split model's shards and their joint view: missing shard, split keys, duplicates, truncation (synthetic)
+  add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
+  target_link_libraries(gguf_split_test PRIVATE strata_artifact)
+  add_test(NAME gguf_split_test COMMAND gguf_split_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -164,6 +175,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
+    # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
+    target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
+  endif()
   # The selected runtime is PUBLIC because graph.cpp is a HOST translation unit that calls cudaGraphLaunch and
   # cudaEventQuery: the .cu sources get cudart through the CUDA language rules, a .cpp does not, and the
   # linker error ("unresolved external symbol cudaGraphInstantiate") names the function rather than the cause.
@@ -319,6 +334,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)
     set_tests_properties(file_expert_source_test PROPERTIES TIMEOUT 60)
   endif()
+  if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
+    # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
+    # synthetic GGUF shards at the real expert dimensions
+    add_executable(expert_layout_test tests/core/expert_layout_test.cpp)
+    target_link_libraries(expert_layout_test PRIVATE strata_engine)
+    add_test(NAME expert_layout_test COMMAND expert_layout_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
+    set_tests_properties(expert_layout_test PROPERTIES TIMEOUT 60)
+  endif()
   if(STRATA_BUILD_CONVERSATION_TESTS)
     add_executable(conversation_snapshot_test src/core/conversation_snapshot_test.cpp)
     target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
@@ -429,6 +452,49 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(iq_parity src/kernels/iq_parity.cpp)
   target_include_directories(iq_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(iq_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  # TODO 24: the i-quant fixtures are generated, not shipped.  tools/iq_fixture.py needs python3 + numpy
+  # and the repository's vendored gguf-py (no pip installs); it writes deterministic fixtures into the
+  # BUILD directory (the source tree is not touched).  The CTest fixture makes generation-to-test order
+  # explicit even under parallel execution; a fixture-generation failure fails iq_parity with it.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  # the generator needs an interpreter WITH numpy: probe the configured one, the setup's .venv, and the
+  # system python3; -DIQ_FIXTURE_PYTHON=... overrides the search outright.
+  set(_iq_python "")
+  set(_iq_candidates "")
+  if(IQ_FIXTURE_PYTHON)
+    list(APPEND _iq_candidates ${IQ_FIXTURE_PYTHON})
+  else()
+    if(Python3_Interpreter_FOUND)
+      list(APPEND _iq_candidates ${Python3_EXECUTABLE})
+    endif()
+    list(APPEND _iq_candidates "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python"
+                                "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe"
+                                /usr/bin/python3
+                                python3)
+  endif()
+  foreach(_cand IN LISTS _iq_candidates)
+    if(_cand STREQUAL "")
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "import numpy" OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE _iq_probe)
+    if(_iq_probe EQUAL 0)
+      set(_iq_python "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(NOT _iq_python STREQUAL "")
+    add_test(NAME iq_parity_fixtures
+             COMMAND ${_iq_python} ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_fixture.py
+                     --out ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    # exit 3: numpy or the vendored gguf-py is missing (a trimmed third_party) - a skip, not a failure
+    set_tests_properties(iq_parity_fixtures PROPERTIES FIXTURES_SETUP iq_fixture_data SKIP_RETURN_CODE 3)
+    add_test(NAME iq_parity COMMAND iq_parity ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    set_tests_properties(iq_parity PROPERTIES FIXTURES_REQUIRED iq_fixture_data SKIP_RETURN_CODE 3)
+  else()
+    message(STATUS "STRATA tests: no python3 with numpy was found (the configured interpreter and .venv "
+                   "were probed) - the iq_parity fixtures and its test are not registered; the fixtures "
+                   "need python3 with numpy and the repository's vendored gguf-py")
+  endif()
   if(STRATA_ENABLE_CUDA)
     # native_mmvq's multi_exact contract, bitwise: a T-column call against T single-column calls on the same Q8_1
     # bytes, with the flag off as the negative control (synthetic, GPU, no model; the control assumes 32-lane warps)
@@ -437,6 +503,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(mmvq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME mmvq_multi_parity COMMAND mmvq_multi_parity)
   endif()
+  # the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
+  # (GPU, synthetic, no model; --bench adds old/new timings)
+  add_executable(iq_multi_parity src/kernels/iq_multi_parity.cpp)
+  target_include_directories(iq_multi_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(iq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
   add_executable(shared_expert_parity src/kernels/shared_expert_parity.cpp)
   target_include_directories(shared_expert_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -555,6 +627,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(cvec_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(cvec_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME cvec_parity COMMAND cvec_parity)
+
+  # The rewritten per-hit and grouped expert kernels vs the previous ones, bitwise (GPU, synthetic, no model).
+  # `--bench` adds previous/new timings on engine-like shapes.
+  add_executable(s2_expert_grouped_parity src/kernels/s2_expert_grouped_parity.cpp)
+  target_include_directories(s2_expert_grouped_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(s2_expert_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME s2_expert_grouped_parity COMMAND s2_expert_grouped_parity --selftest)
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp")
@@ -720,15 +799,17 @@ if(STRATA_NATIVE_EXPERTS)
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp)
+                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp)
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
   if(MSVC)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
   else()
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   endif()
   target_link_libraries(strata_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_NATIVE_EXPERTS=1)
@@ -801,6 +882,19 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
+    if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+      # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
+      # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float
+      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0)
+        string(REPLACE "/" "_" _name "${_pair}")
+        add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
+        set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
+      endforeach()
+      add_test(NAME native_expert_parity_q5_1_min COMMAND native_expert_parity --q5_1-min)
+      # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run
+      add_test(NAME native_expert_parity_refuses_q6_K COMMAND native_expert_parity --synthetic q6_K/q8_0)
+      set_tests_properties(native_expert_parity_refuses_q6_K PROPERTIES WILL_FAIL TRUE)
+    endif()
   endif()
 endif()
 

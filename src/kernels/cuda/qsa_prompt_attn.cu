@@ -33,7 +33,8 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 #define STRATA_PA_SM80 0
 #endif
 
-// One m16n8k16 (k = 16 halves) or, on Volta/Turing, two m16n8k8 (k = 8 halves): the k8 A fragment pair {a0,a1} is
+// One m16n8k16 (k = 16 halves) needs sm_80.  Turing (sm_75) has m16n8k8 with the SAME A/B/C register mapping, so
+// the k=16 step is two k=8 steps on the fragments as they are already laid out: the k8 A fragment pair {a0,a1} is
 // the k16 fragment's {a0,a1} (rows gid/gid+8, the low 8 k halves) and {a2,a3} its high half, and the k8 B fragment
 // is one of the k16 pair's two registers - the same C accumulator, so the substitution is exact.  The FP32
 // addition tree inside one instruction sums 8 halves at a time instead of 16: FP32-level accuracy, not bitwise.

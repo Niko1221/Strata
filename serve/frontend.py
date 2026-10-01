@@ -527,12 +527,13 @@ class OutputParser:
                 self.state, self.lead = "content", True
 
     def finish(self) -> list[Event]:
-        """End of generation: flush whatever is held (an unterminated tool call is returned as content)."""
+        """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
+        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211)."""
         out = []
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            out += self._close_scan()
-            out.append(Event("tool_call", call=self.scall))
+            if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
+                out.append(Event("tool_call", call=self.scall))
             self.buf = ""
             self._reset_scan()
             return out

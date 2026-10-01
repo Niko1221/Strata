@@ -52,6 +52,11 @@ public:
     Prefill(const Prefill&) = delete;
     Prefill& operator=(const Prefill&) = delete;
 
+    /// Frees every buffer, stream and event `init` made (as the destructor does) and starts over empty, so `init` can
+    /// run again - with a smaller chunk when the first one did not fit.  The stage range (`set_stage`) and the
+    /// callbacks stay.  The device `init` ran on must be current.
+    void reset();
+
     /// `host_res`: the static residency table (n_layers x n_expert, slot or -1) or null; `cache` its slots.
     /// `borrow`/`borrow_bytes`: device memory to carve every buffer from (the top slots of the expert cache,
     /// lent for the prompt and refilled after it); null = allocate normally.
@@ -110,6 +115,7 @@ private:
     Prefill* next_ = nullptr;
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
+    void release();                          // the destructor's cleanup (also `reset`'s)
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PrefillStats stats_;
