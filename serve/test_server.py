@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -1536,7 +1537,154 @@ class StatusHandover(unittest.TestCase):
         self.assertNotIn("tail", svc.status)
 
 
-FAKE_STRATA = '''import pathlib, sys, time
+class BeatingEngine(MockEngine):
+    """A long prompt read as StrataEngine yields it - `beats` heartbeats (None), `beat_s` apart, one per prompt chunk -
+    then the scripted answer.  Each request's record: the heartbeats and tokens it gave, and when it was closed."""
+
+    def __init__(self, *a, beats=0, beat_s=0.0, **kw):
+        super().__init__(*a, **kw)
+        self.beats, self.beat_s, self.calls = beats, beat_s, []
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        rec = {"beats": 0, "tokens": 0, "ended": threading.Event()}
+        self.calls.append(rec)
+        try:
+            for _ in range(self.beats):
+                time.sleep(self.beat_s)
+                rec["beats"] += 1
+                yield None
+            for t in super().generate(ids, max_new, sampling, cancel, embeddings):
+                rec["tokens"] += 1
+                yield t
+        finally:
+            rec["ended"].set()
+
+
+class ClientDisconnect(unittest.TestCase):
+    """#430: a non-streaming request whose client hangs up stops (it used to run to max_tokens, the next request
+    waiting behind it); #431: a stream that hangs up during the prompt read stops at the next heartbeat, not the one
+    after it (the first write to a closed socket succeeds)."""
+
+    PATHS = ("/v1/chat/completions", "/v1/messages")
+
+    def start(self, **engine):
+        tok = ByteTokenizer()
+        self.engine = BeatingEngine(tok, ANSWER, max_context=CTX, **engine)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def send(self, path, max_tokens, stream=False):
+        body = json.dumps({"model": "m", "max_tokens": max_tokens, "stream": stream,
+                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        s = socket.create_connection(self.httpd.server_address, timeout=30)
+        s.sendall(f"POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                  f"anthropic-version: 2023-06-01\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+        return s
+
+    def follow_up(self, path):
+        """The next request (a short prompt): answered at once, not after the abandoned one's max_tokens."""
+        t0, beats = time.time(), self.engine.beats
+        self.engine.beats = 0
+        try:
+            s = self.send(path, 5)
+            s.settimeout(10)
+            raw = b""
+            while chunk := s.recv(65536):
+                raw += chunk
+            s.close()
+        finally:
+            self.engine.beats = beats
+        self.assertTrue(raw.startswith(b"HTTP/1.0 200"), raw[:200])
+        self.assertLess(time.time() - t0, 5)
+
+    def wait_ended(self, rec):
+        self.assertTrue(rec["ended"].wait(5), "the engine still runs for a client that is gone")
+
+    def test_non_streaming_hang_up_while_generating(self):
+        self.start(delay_s=0.02)                         # 2,000 tokens: 40 s to max_tokens
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                n = len(self.engine.calls)
+                s = self.send(path, 2000)
+                time.sleep(0.5)
+                s.close()
+                deadline = time.time() + 5
+                while len(self.engine.calls) == n and time.time() < deadline:
+                    time.sleep(0.01)
+                rec = self.engine.calls[n]
+                self.wait_ended(rec)
+                self.assertLess(rec["tokens"], 200)     # ~25 before the hang-up, at most a second's more
+                self.follow_up(path)
+                self.assertEqual(self.svc.history[-2]["finish"], "disconnect")
+
+    def test_non_streaming_hang_up_while_reading_the_prompt(self):
+        self.start(beats=40, beat_s=0.3)                 # 12 s of prompt read
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                n = len(self.engine.calls)
+                s = self.send(path, 2000)
+                time.sleep(0.45)                         # after the first heartbeat
+                s.close()
+                deadline = time.time() + 5
+                while len(self.engine.calls) == n and time.time() < deadline:
+                    time.sleep(0.01)
+                rec = self.engine.calls[n]
+                self.wait_ended(rec)
+                self.assertEqual(rec["tokens"], 0)
+                self.assertLessEqual(rec["beats"], 3)    # 2: the next heartbeat finds it gone (1 slack for a slow CI)
+                self.follow_up(path)
+                self.assertEqual(self.svc.history[-2]["finish"], "disconnect")
+
+    def test_stream_hang_up_while_reading_the_prompt(self):
+        self.start(beats=40, beat_s=0.5)
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                n = len(self.engine.calls)
+                s = self.send(path, 2000, stream=True)
+                raw = b""
+                while b"\n\n" not in raw.partition(b"\r\n\r\n")[2]:      # the headers and the first event
+                    raw += s.recv(65536)
+                s.close()                                # read all that came: a clean close (FIN), as curl -m does
+                deadline = time.time() + 5
+                while len(self.engine.calls) == n and time.time() < deadline:
+                    time.sleep(0.01)
+                rec = self.engine.calls[n]
+                self.wait_ended(rec)
+                self.assertEqual((rec["beats"], rec["tokens"]), (1, 0))   # not 2: a write alone needs a second one
+                self.follow_up(path)
+                self.assertEqual(self.svc.history[-2]["finish"], "disconnect")
+
+    def test_a_client_that_waits_gets_its_answer(self):
+        # a slow answer (several checks of the socket) and bytes the client sends meanwhile (a pipelined next
+        # request): MSG_PEEK sees them, and they are not a hang-up
+        self.start(beats=3, beat_s=0.3, delay_s=0.005)
+        for path in self.PATHS:
+            for extra in (b"", b"GET /health HTTP/1.0\r\n\r\n"):
+                with self.subTest(path=path, extra=extra):
+                    s = self.send(path, 300)
+                    if extra:
+                        time.sleep(0.5)
+                        s.sendall(extra)
+                    raw = b""
+                    while chunk := s.recv(65536):
+                        raw += chunk
+                    s.close()
+                    head, _, body = raw.partition(b"\r\n\r\n")
+                    self.assertTrue(head.startswith(b"HTTP/1.0 200"), head)
+                    out = json.loads(body)
+                    if path == self.PATHS[0]:
+                        self.assertEqual(out["choices"][0]["finish_reason"], "length")
+                        self.assertEqual(out["usage"]["completion_tokens"], 300)
+                    else:
+                        self.assertEqual(out["stop_reason"], "max_tokens")
+                        self.assertEqual(out["usage"]["output_tokens"], 300)
+                    self.assertEqual(self.svc.history[-1]["finish"], "length")
+                    self.assertEqual(self.engine.calls[-1]["tokens"], 300)
+
+
+FAKE_STRATA ='''import pathlib, sys, time
 gate = pathlib.Path(sys.argv[sys.argv.index("--gate") + 1])
 print("INFO engine=0.0.0", flush=True)
 while not gate.exists():                     # the test says when the engine is "ready"

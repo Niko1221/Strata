@@ -31,7 +31,9 @@ import json
 import os
 import queue
 import re
+import select
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -113,6 +115,11 @@ class ModelBusy(RuntimeError):
 class EngineStuck(RuntimeError):
     """The engine process did not end after QUIT, terminate and kill: the server keeps it (and says so) rather than
     reporting its GPU and RAM as given back."""
+
+
+class ClientGone(ConnectionAbortedError):
+    """The HTTP client closed its connection while its request ran (#430): an OSError, so the handlers' disconnect
+    path takes it, and a ConnectionError, so Server.handle_error prints no stack trace for it."""
 
 
 class GpuBusy(RuntimeError):
@@ -2070,6 +2077,37 @@ def make_handler(svc: Service):
             finally:
                 items.close()
 
+        def _client_gone(self) -> bool:
+            """#430: the client has closed its end - its socket reads as EOF.  MSG_PEEK leaves what it finds where
+            it is (a next request already sent counts as alive); select first, so the peek never blocks."""
+            try:
+                if not select.select([self.connection], [], [], 0)[0]:
+                    return False                         # nothing to read: still there
+                return self.connection.recv(1, socket.MSG_PEEK) == b""
+            except ConnectionError:                      # reset: how Windows often reports a client that is gone
+                return True
+            except (OSError, ValueError):                # anything else (an fd select can't take): assume it is
+                return False                             # there - a write still finds out
+
+        def _watched(self, items, cancel):
+            """#430: a non-streaming answer writes nothing until it is done, so a client that hung up was only found
+            at the end - after max_tokens, with the next request waiting behind it.  Check the socket on every
+            heartbeat (one per prompt chunk, or 10 s of quiet) and at most once a second between tokens; a stream
+            gains too, since a write to a closed socket only fails the second time (#431).  A client that is gone:
+            cancel, close the request (Service.run: STOP, finish "disconnect") and raise ClientGone."""
+            checked = time.monotonic()
+            try:
+                for item in items:
+                    now = time.monotonic()
+                    if item is None or now - checked >= 1.0:
+                        checked = now
+                        if self._client_gone():
+                            cancel.set()
+                            raise ClientGone("the client disconnected")
+                    yield item
+            finally:
+                items.close()
+
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
@@ -2096,7 +2134,7 @@ def make_handler(svc: Service):
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
-            chunks = self._capture(chunks, "openai")
+            chunks = self._watched(self._capture(chunks, "openai"), cancel)
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
             self._sse()
@@ -2143,7 +2181,7 @@ def make_handler(svc: Service):
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel)
-            events = self._capture(events, "anthropic")
+            events = self._watched(self._capture(events, "anthropic"), cancel)
             if not req.get("stream"):
                 return self._json(200, anthropic_collect(events))
             self._sse()
