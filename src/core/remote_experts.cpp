@@ -66,7 +66,7 @@ RemoteExperts::~RemoteExperts() { close(); }
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count) {
+    if (device < 0 || device >= count) {
         err = "CUDA" + std::to_string(device) + " experts: CUDA device is not visible";
         return false;
     }
@@ -75,7 +75,11 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     // before the device's context exists, so first thing; STRATA_REMOTE_SPIN=0 keeps the driver's default.
 #if !defined(STRATA_USE_HIP)
     const char* spin = std::getenv("STRATA_REMOTE_SPIN");
-    if (!(spin && spin[0] == '0')) cudaInitDevice(device, cudaDeviceScheduleSpin | cudaDeviceMapHost, 0);
+    // CUDA0 also runs a stage - the model itself - so a tier there takes only the mapped-host flag.  Spinning
+    // is for a secondary card sitting on the pool's critical path, not for the card the whole run is built on.
+    const unsigned flags = (device > 0 && !(spin && spin[0] == '0'))
+                               ? (cudaDeviceScheduleSpin | cudaDeviceMapHost) : cudaDeviceMapHost;
+    cudaInitDevice(device, flags, 0);
     cudaGetLastError();
 #endif
     // HIP has no cudaInitDevice equivalent; retain its default scheduling policy.
@@ -117,16 +121,59 @@ void RemoteExperts::close() {
     layers_present_.clear();
 }
 
+void select_remote_pairs(const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
+                         const std::vector<uint8_t>& claimed, int64_t layers, int64_t experts, int64_t slots,
+                         int64_t byte_budget, std::vector<std::pair<int32_t, int32_t>>& selected,
+                         std::vector<int64_t>& sizes, uint64_t& needed) {
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const bool native = lay.native;
+    std::vector<uint8_t> picked(claimed.size(), 0);
+    selected.clear();
+    sizes.clear();
+    needed = 0;
+    if (slots > 0) selected.reserve((size_t) slots);
+    for (const auto& pair : ranked) {
+        if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
+        const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
+        if (primary.slot_of(pair.first, pair.second) >= 0 || claimed[index] || picked[index]) continue;
+        const int64_t blob = native ? (int64_t) lay.blob_bytes(pair.first) : (int64_t) lay.max_blob;
+        const int64_t cost = native ? (blob + 255) / 256 * 256 : blob;
+        // SKIP, do not stop: blob sizes differ per layer, so a hot blob too big for what is left must not hide
+        // the colder pairs behind it that still fit.  (Only reachable with a budget - `slots` mode has no cost
+        // to exceed, and its old `break`-at-slots behaviour is preserved exactly.)
+        if (byte_budget > 0 && (int64_t) needed + cost > byte_budget) continue;
+        picked[index] = 1;
+        selected.push_back(pair);
+        if (native) sizes.push_back(blob);
+        needed += (uint64_t) cost;
+        if (slots > 0 && (int64_t) selected.size() >= slots) break;
+    }
+}
+
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>>& ranked,
                          const ExpertCache& primary, ExpertSource& source,
                          std::vector<uint8_t>& claimed, std::string& err) {
+    return open_tier(device, slots, 0, layers, experts, ranked, primary, source, claimed, err);
+}
+
+bool RemoteExperts::open_budgeted(int device, int64_t byte_budget, int64_t layers, int64_t experts,
+                                  const std::vector<std::pair<int32_t, int32_t>>& ranked,
+                                  const ExpertCache& primary, ExpertSource& source,
+                                  std::vector<uint8_t>& claimed, std::string& err) {
+    return open_tier(device, 0, byte_budget, layers, experts, ranked, primary, source, claimed, err);
+}
+
+bool RemoteExperts::open_tier(int device, int64_t slots, int64_t byte_budget, int64_t layers, int64_t experts,
+                              const std::vector<std::pair<int32_t, int32_t>>& ranked,
+                              const ExpertCache& primary, ExpertSource& source,
+                              std::vector<uint8_t>& claimed, std::string& err) {
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count || slots <= 0 || ranked.empty() ||
+    if (device < 0 || device >= count || (slots <= 0 && byte_budget <= 0) || ranked.empty() ||
         layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts) {
-        err = "CUDA" + std::to_string(device) + " experts: need the device, ranked experts and positive slot count";
+        err = "CUDA" + std::to_string(device) + " experts: need the device, ranked experts and a positive size";
         return false;
     }
     DeviceScope scope(device);
@@ -135,31 +182,18 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     n_expert_ = experts;
     const auto& lay = strata::kernels::cpu::expert_layout();
     std::vector<std::pair<int32_t, int32_t>> selected;
-    selected.reserve((size_t) slots);
-    std::vector<uint8_t> picked(claimed.size(), 0);
-    for (const auto& pair : ranked) {
-        if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
-        const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
-        if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
-            selected.push_back(pair);
-            picked[index] = 1;
-            if ((int) selected.size() >= slots) break;
-        }
-    }
-    if (selected.empty()) { err = "CUDA" + std::to_string(device) + " experts: no unclaimed experts remain"; close(); return false; }
     std::vector<int64_t> sizes;
-    if (lay.native) {
-        sizes.reserve(selected.size());
-        for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
-    }
+    uint64_t needed = 0;
+    select_remote_pairs(ranked, primary, claimed, layers, experts, slots, byte_budget, selected, sizes, needed);
+    if (selected.empty()) { err = "CUDA" + std::to_string(device) + " experts: no unclaimed experts remain"; close(); return false; }
     size_t free_bytes = 0, total_bytes = 0;
     if (!check(cudaMemGetInfo(&free_bytes, &total_bytes), "free memory", err, device)) { close(); return false; }
-    uint64_t needed = 0;
-    for (const auto& pair : selected)
-        needed += lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
     if (needed + (512ull << 20) > free_bytes) {
-        err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
+        err = "CUDA" + std::to_string(device) + " experts: " +
+              (byte_budget > 0
+                   ? "the leftover VRAM leaves less than 512 MiB of headroom"
+                   : "leave less than 512 MiB free; reduce --expert-cache-device, or --vram-reserve-mib");
         close(); return false;
     }
     const bool cache_ok = lay.native ? cache_.open_sized(sizes, layers, experts, err)
@@ -185,10 +219,19 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     const size_t scratch = std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
         strata::kernels::native_expert_scratch_bytes(CAP, FF));
+    // A tier on CUDA0 can find MAPPED host allocation refused - WDDM's pinned budget is largely spent by the
+    // weights by the time it opens - so it falls back to plain portable pinned memory.  That costs one copy per
+    // layer instead of a zero-copy read (zero_copy_ then stays false) and still runs, where failing would cost
+    // the whole spill tier.
+    auto host_alloc = [&](void** p, size_t bytes, const char* what) -> bool {
+        if (cudaHostAlloc(p, bytes, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess) return true;
+        cudaGetLastError();
+        return check(cudaHostAlloc(p, bytes, cudaHostAllocPortable), what, err, device);
+    };
     const bool allocated =
         check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device) &&
-        check(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
-        check(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device) &&
+        host_alloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), "input staging") &&
+        host_alloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), "result staging") &&
         check(cudaHostAlloc(&h_meta_, sizeof(RemoteMeta), cudaHostAllocPortable), "metadata staging", err, device) &&
         check(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err, device) &&
         check(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err, device) &&

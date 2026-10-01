@@ -347,6 +347,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)
     set_tests_properties(file_expert_source_test PROPERTIES TIMEOUT 60)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/remote_budget_test.cpp")
+    # The helper tiers' pair selection (the spill tier a layer split opens on every card).  No GPU: the walk is
+    # pure arithmetic, and CUDA_VISIBLE_DEVICES=-1 keeps a stray context from being created for the link alone.
+    add_executable(remote_budget_test tests/core/remote_budget_test.cpp)
+    target_link_libraries(remote_budget_test PRIVATE strata_engine)
+    add_test(NAME remote_budget_test COMMAND remote_budget_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
+    set_tests_properties(remote_budget_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 60)
+  endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
     # synthetic GGUF shards at the real expert dimensions

@@ -279,6 +279,10 @@ struct Options {
     int expert_cache = 0;
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
+    /// A layer split spills every card's leftover VRAM into a helper expert tier by default; this is the kill
+    /// switch (`--no-remote-auto`, or `STRATA_REMOTE_AUTO=0`).  It exists because the spill is automatic and
+    /// therefore changes VRAM behaviour for every existing split user - one flag reverts it without a rebuild.
+    bool no_remote_auto = false;
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
     /// The default policy hands out slots in arrival order from one counter shared by all 48 layers, so the
@@ -529,6 +533,11 @@ void usage() {
                  "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
+                 "  --no-remote-auto     with --layer-split, do NOT give each card's leftover VRAM to a helper\n"
+                 "                       expert tier.  A stage's cache can only hold ITS OWN layers' pairs, so a\n"
+                 "                       placement that gives a card few layers leaves its VRAM idle; by default\n"
+                 "                       that room now holds the globally hottest pairs no stage cache can hold,\n"
+                 "                       and every stage's misses can hit it.  Also STRATA_REMOTE_AUTO=0.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1082,6 +1091,7 @@ int main(int argc, char** argv) {
         else if (a == "--expert-cache-device3") o.expert_cache_remote[2] = std::atoi(next("--expert-cache-device3"));
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
+        else if (a == "--no-remote-auto") o.no_remote_auto = true;
         else if (a == "--vram-reserve-mib") o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib"));
         else if (a == "--prefill") {
             const std::string v = next("--prefill");
@@ -1290,6 +1300,16 @@ int main(int argc, char** argv) {
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
+    // ---- THE HELPER TIERS, opened much later, once every cache has been sized and filled.  A tier's cache lives
+    // in `remote_experts[i]`; this is its device and how it was sized.  Two kinds, never mixed: the CLI's
+    // `--expert-cache-deviceN` (a fixed expert count) and, with a layer split, one automatic spill tier per card
+    // sized from that card's leftover VRAM.
+    struct HelperTier {
+        int dev = 0;
+        int slots = 0;       ///< > 0: the CLI's fixed count
+        int64_t budget = -1; ///< > 0: the automatic tier's byte budget
+    };
+    std::vector<HelperTier> helper_tiers;
     if (multi_gpu) {
         if (o.expert_profile.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
@@ -1593,6 +1613,29 @@ int main(int argc, char** argv) {
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
     const char* early_env = std::getenv("STRATA_EARLY_REMOTE_CONTEXTS");
     const bool early_remote = early_env && early_env[0] == '1';
+    // Whether a split will spill each card's leftover VRAM into a helper tier.  Only the parts that are already
+    // settled here (the profile's contents and the cache sizes are not), so the later, exact predicate narrows
+    // this one; preparing device 0 for a tier that then does not open costs nothing but the flags.
+    const char* auto_env = std::getenv("STRATA_REMOTE_AUTO");
+    const bool auto_spill_wanted = !o.no_remote_auto && !(auto_env && auto_env[0] == '0') &&
+                                   multi_gpu && !o.layer_split.empty() && o.expert_cache_remote[0] <= 0;
+    // The automatic spill tier (below) can land on CUDA0 too, so device 0's context has to be prepared HERE as
+    // well: `cudaInitDevice` sets a device's flags exactly once, when its primary context is created, and fails
+    // with cudaErrorSetOnActiveProcess afterwards.  This is the last window where nothing on device 0 exists -
+    // the PCIe probe and the weight arena both come later.  Failing here is not fatal: device 0 simply drops out
+    // of the candidate set and the other cards still spill.
+    bool spill_dev0_ok = false;
+    if (auto_spill_wanted) {
+        double free_gib = 0;
+        if (strata::core::RemoteExperts::preflight(0, free_gib, err)) {
+            spill_dev0_ok = true;
+            std::fprintf(stderr, "strata generate: CUDA0 context ready for a spill tier, %.2f GiB free\n", free_gib);
+        } else {
+            std::fprintf(stderr, "strata generate: CUDA0 cannot host a spill tier (%s); the other GPUs still will\n",
+                         err.c_str());
+            err.clear();
+        }
+    }
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && (r == 0 || early_remote)) {
         // Keep CUDA1's proven startup order: initialise its context before
         // allocating GPU0 weights or mapping the large host expert arena.
@@ -2118,9 +2161,11 @@ int main(int argc, char** argv) {
     //     for the ~0.1% of the mass it pushes out of its cache);
     //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
     //     reserve, the prompt path's buffers and, on a later GPU, 1 GiB for its windows and the drafter) is used;
-    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
-    //     99.53/99.34/99.15%, measured 99.5/99.4/99.0%).
-    // Up to 3 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    //     the routed mass a cache holds follows the COVERAGE CURVE below, not the (r+1)^-1.2 this used to use.
+    // Up to 4 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    // A FOUR-WAY PLACEMENT USED TO BE THE PROPORTIONAL GUESS AND NOTHING ELSE.  That formula reads only
+    // `layer_ms`, so on four GPUs the free VRAM a placement leaves for expert caches - the whole point of
+    // the search - never entered it.  It does now; see the ns == 4 branch below.
     // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher).
     // THE PROMPT PATH'S BUFFERS ARE BORROWED FROM THE CACHE, NOT WITHHELD BESIDE IT.  With borrowing the cache
     // is sized first and at full size, and the prompt path is laid out in the tail of it (`Prefill::relayout`),
@@ -2139,6 +2184,7 @@ int main(int argc, char** argv) {
     // the windows and - only on the stage that carries them - the drafter and the head.
     const int64_t kWindowMib = 96;       // the verify windows; 75 MiB measured, rounded up
     const int64_t kDrafterMib = 1000;    // the MTP drafter (839 MiB) + the head, on the last stage only
+    const int64_t kHelperMinMib = 256;   // below this a spill tier costs more in PCIe round trips than it saves
     auto stage_room = [&](int dev, bool later, bool drafter) -> int64_t {
         const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
@@ -2168,9 +2214,40 @@ int main(int argc, char** argv) {
                          (double) cap[(size_t) i] / 1073741824.0);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        std::vector<double> mass(profile.size());
+        // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.
+        //
+        // `mass[r]` used to be (r+1)^-1.2, fitted to the 5080+3090 sweep.  That fit is still right ON THE RIG IT
+        // WAS FITTED TO - at 20,000 pairs held it predicts 99.35% of the routed mass and that rig measured 99.4%.
+        // It is wrong on THIS model, badly: it claims the top 5,805 pairs hold 94.9% of the mass, and the 4-way
+        // rig measures 69.2% (four boots, 14.9M decode lookups).  No exponent reconciles them, because the curve
+        // is a property of the MODEL'S ROUTING, not a universal constant - and the profile file carries only a
+        // RANKING, with no counts, so it cannot be read off the data either.  (tools/make_profile.py has the
+        // frequencies, and drops them; see the note there.)
+        //
+        // What the two rigs do agree on is that the hit rate follows the HELD COUNT and almost nothing else: two
+        // different splits - K=10,19,34 and K=2,3,27 with helper tiers - held 14,541 and 14,384 pairs and measured
+        // 92.2% and 89.8%.  So the curve is taken over the held FRACTION f, as H(f) = 1 - (1 - f)^b, and each
+        // rank's mass is that curve's increment, which makes any prefix of N pairs sum to exactly H(N/total)
+        // while a cache holding colder-than-prefix pairs still scores below it.
+        //
+        // b = 3 IS CHOSEN TO LEAVE THE PREVIOUSLY VALIDATED REGIME WHERE IT WAS.  At 20,000 held (f = 0.8138) it
+        // gives 99.35%, against the old fit's 99.35% and that rig's measured 99.4% - the 2-GPU placement is
+        // untouched.  At this rig's f = 0.59 it gives 93.2% against 92.2% measured.  Below f ~ 0.5 the two curves
+        // diverge, and that is the whole point: it is exactly the regime where the old one was wrong, and where
+        // it told the search that stranding a card's VRAM costs almost nothing.  With this curve the 4-way rig's
+        // K=2,3,27 - which strands ~20 GiB and holds 5,805 pairs - is charged for the misses it really takes.
+        //
+        // THE CURVE IS A FIT TO ONE MODEL'S TRAFFIC.  STRATA_SPLIT_COVER_B overrides b for a model whose routing
+        // is sharper or flatter, and STRATA_SPLIT_MISS_MS still scales the miss cost it feeds.
+        const size_t n_ranked = profile.size();
+        const double cover_b = std::getenv("STRATA_SPLIT_COVER_B") ? std::atof(std::getenv("STRATA_SPLIT_COVER_B")) : 3.0;
+        std::vector<double> mass(n_ranked);
         double total_mass = 0;
-        for (size_t r = 0; r < profile.size(); ++r) total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
+        for (size_t r = 0; r < n_ranked; ++r) {
+            const double hi = std::pow(1.0 - (double) r / (double) n_ranked, cover_b);
+            const double lo = std::pow(1.0 - (double) (r + 1) / (double) n_ranked, cover_b);
+            total_mass += (mass[r] = hi - lo);
+        }
         auto cost = [&](int64_t l) -> int64_t {
             return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
         };
@@ -2213,20 +2290,18 @@ int main(int argc, char** argv) {
         };
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0;
+        int64_t best_held = 0, tried = 0;
         auto consider = [&]() {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
+            ++tried;
             if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
         };
         const int64_t L = g.n_layers;
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-        } else {
+        // share the layers in proportion to speed: the fallback beyond four GPUs, and the only placement a
+        // model too small to hold four stages has (see the ns == 4 branch).
+        auto proportional = [&]() {
             double total = 0;
             for (const double c : layer_ms) total += 1.0 / c;
             double acc = 0;
@@ -2236,13 +2311,84 @@ int main(int argc, char** argv) {
                                                     i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
             }
             consider();
+        };
+        if (ns == 2) {
+            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
+        } else if (ns == 3) {
+            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
+        } else if (ns == 4) {
+            // ---- EVERY FOUR-WAY PLACEMENT IS TRIED.  This branch used to share the layers in proportion to
+            // speed and score that ONE candidate, and that formula reads only `layer_ms` - never `capr`.  So
+            // on a four-GPU rig free VRAM and cache capacity did not influence the placement AT ALL, and the
+            // card with the most room left could be handed the fewest layers: on this 3060/3060/5060/5060 box
+            // CUDA1 ended up with 1,841 MiB no cache could use while CUDA2 ran 15 layers it could only hold a
+            // third of.  All C(L-3,3) placements - 15,180 at 48 layers - are now scored.
+            //
+            // A STAGE'S FILL DEPENDS ONLY ON ITS OWN RANGE AND ITS OWN FREE VRAM.  `predict` hands each ranked
+            // pair to the one stage that owns its layer and each stage stops at its first pair that does not
+            // fit, so the four fills are independent and a placement's held mass is a SUM over its four
+            // ranges.  That is what makes this affordable: each distinct range is walked once and memoised,
+            // 1,121 walks instead of 15,180 - measured at 14 ms against 740 ms, for the same answer.
+            // `le` runs to L inclusive, so a row is L+1 wide - keying on a stride of L would put the last
+            // stage's [lb, L) one past the end of the vector.
+            const size_t stride = (size_t) L + 1;
+            std::vector<double> held_mass_at((size_t) ns * (size_t) L * stride, -1.0);
+            std::vector<int64_t> held_at(held_mass_at.size(), 0);
+            auto range_hold = [&](int i, int64_t lb, int64_t le) -> size_t {
+                const size_t key = ((size_t) i * (size_t) L + (size_t) lb) * stride + (size_t) le;
+                if (held_mass_at[key] < 0.0) {
+                    // one stage's own carve, exactly as `predict` prices it - including CUDA0's router keep
+                    const int64_t room = cap[(size_t) i] -
+                        (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+                        (int64_t) (i == 0 ? cuda0_bytes(lb, le) : weight_bytes(lb, le));
+                    double hm = 0;
+                    int64_t used = 0, cnt = 0;
+                    for (size_t r = 0; r < profile.size(); ++r) {
+                        const int64_t l = profile[r].first;
+                        if (l < lb || l >= le) continue;
+                        if (used + cost(l) > room) break;   // the fill stops exactly where predict's does
+                        used += cost(l);
+                        hm += mass[r];
+                        ++cnt;
+                    }
+                    held_mass_at[key] = hm;
+                    held_at[key] = cnt;
+                }
+                return key;
+            };
+            const double denom = std::max(total_mass, 1e-9);
+            for (int64_t k1 = 2; k1 + 2 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 + 1 < L; ++k2)
+                    for (int64_t k3 = k2 + 1; k3 < L; ++k3) {
+                        const size_t a = range_hold(0, 0, k1), b = range_hold(1, k1, k2);
+                        const size_t c = range_hold(2, k2, k3), d = range_hold(3, k3, L);
+                        const double hm = held_mass_at[a] + held_mass_at[b] + held_mass_at[c] + held_mass_at[d];
+                        const double ms = miss_ms * (1.0 - hm / denom) +
+                                          (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
+                                          (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
+                        ++tried;
+                        if (ms < best_ms) {
+                            best = {k1, k2, k3};
+                            best_ms = ms;
+                            best_mass = hm / denom;
+                            best_held = held_at[a] + held_at[b] + held_at[c] + held_at[d];
+                        }
+                    }
+            // Four stages into fewer than five layers: nothing was enumerated, so keep the old guess rather
+            // than leave `best` empty - an empty split would leave every stage's lb/le unset.
+            if (best.empty()) proportional();
+        } else {
+            // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
+            // 163,185 at five).  Nothing on this rig reaches it.
+            proportional();
         }
         split_at = best;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
         std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
-                     (long long) best_held, profile.size(), 100.0 * best_mass);
+                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
+                     ks.c_str(), best_ms, (long long) best_held, profile.size(), 100.0 * best_mass, (long long) tried);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
@@ -2256,6 +2402,9 @@ int main(int argc, char** argv) {
         while (st < (int) split_at.size() && l >= split_at[(size_t) st]) ++st;
         return st;
     };
+    // THE GLOBAL RANK, kept before the split hands CUDA0 its own share.  The spill tiers fill from THIS list:
+    // "hottest" has to mean hottest across the whole model, and by the line below `profile` is CUDA0's slice.
+    const std::vector<std::pair<int32_t, int32_t>> full_profile = profile;
     if (multi_gpu) {
         std::vector<std::pair<int32_t, int32_t>> mine;
         for (const auto& pr : profile) {
@@ -2856,24 +3005,42 @@ int main(int argc, char** argv) {
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
 
-    std::array<strata::core::RemoteExperts, 3> remote_experts;
+    // ---- THE HELPER TIERS.  `--expert-cache-deviceN` names up to three explicitly.  A layer split ALSO gives
+    // every card it already uses - CUDA0 included - an automatic tier filled with the VRAM no cache claimed.
+    // The reason is structural: a stage's expert cache can only hold ITS OWN layers' pairs (`GpuStage::profile`
+    // is filled from that stage's range alone, so `slot_of` never returns a foreign layer's slot), which means a
+    // placement that hands a card few layers leaves that card's VRAM with nothing to do.  On the 4-way IQ3_S rig
+    // that stranded ~20 GiB - CUDA0 at 3144 of 12288 MiB, CUDA1 at 1739 - while both 8 GB cards were packed.
+    // A tier takes the GLOBALLY hottest pairs no stage cache can hold, so that room serves every stage's misses.
+    std::array<strata::core::RemoteExperts, strata::core::kRemoteMax> remote_experts;
+    const bool cli_remote = o.expert_cache_remote[0] > 0;
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
-    if (o.expert_cache_remote[0] > 0) {
+    // The CLI's tiers and the automatic ones are never mixed: naming a device explicitly is a statement about
+    // where the helper VRAM should go, and spilling on top of it would take room the user did not offer.
+    // (`multi_gpu` already excludes `--split-device 0`, the bit-exact replay mode.)
+    const bool auto_spill = !cli_remote && auto_spill_wanted && !profile.empty() &&
+                            o.expert_cache > 0 && !o.no_pool && !split_at.empty();
+    if (cli_remote || auto_spill) {
         if (o.expert_cache <= 0 || profile.empty() || o.no_pool) {
             std::fprintf(stderr, "strata generate: remote experts need --expert-profile, "
                                  "a CUDA0 expert cache and the expert pool\n");
             return 2;
         }
-        std::vector<std::pair<int32_t, int32_t>> ranked = profile;
-        if (!stages.empty()) {   // a layer split: CUDA0's share of the profile, then the later stages' pairs no cache holds
+        // What the tiers fill from.  The explicit tiers keep their own ranking - CUDA0's share of the profile,
+        // then the later stages' pairs no cache holds.  The spill tiers use the GLOBAL rank captured before the
+        // split handed CUDA0 its slice: "hottest" has to mean hottest across the model.
+        std::vector<std::pair<int32_t, int32_t>> ranked = auto_spill ? full_profile : profile;
+        if (!auto_spill && !stages.empty()) {
             for (auto& st : stages)
                 for (const auto& pr : st->profile)
                     if (st->cache.slot_of(pr.first, pr.second) < 0) ranked.push_back(pr);
         }
-        if (multi_remote) {
-            // The shipped frequency profile names only 8000 of 24576 experts. Once exhausted,
-            // fill remaining VRAM from unranked pairs in expert-then-layer order: this spreads
-            // the tail across all layers instead of concentrating it on layer zero.
+        if (auto_spill || multi_remote) {
+            // A shipped frequency profile can name only part of the table (the one this rig uses names all
+            // 24576). Once it is exhausted, fill remaining VRAM from unranked pairs in expert-then-layer order:
+            // this spreads the tail across all layers instead of concentrating it on layer zero.  The count is
+            // taken BEFORE the fill: in the spill path `profile` is CUDA0's slice, not the list being extended.
+            const size_t ranked_before = ranked.size();
             std::vector<uint8_t> seen((size_t) g.n_layers * (size_t) g.n_expert, 0);
             for (const auto& pair : ranked)
                 if (pair.first >= 0 && pair.first < g.n_layers && pair.second >= 0 && pair.second < g.n_expert)
@@ -2882,66 +3049,161 @@ int main(int argc, char** argv) {
                 for (int64_t l = 0; l < g.n_layers; ++l)
                     if (!seen[(size_t) l * (size_t) g.n_expert + (size_t) e])
                         ranked.emplace_back((int32_t) l, (int32_t) e);
-            std::fprintf(stderr, "strata generate: remote ranking: %zu profiled pairs, "
-                                 "%zu other pairs to fill CUDA1..3\n", profile.size(), ranked.size() - profile.size());
+            if (ranked.size() > ranked_before)
+                std::fprintf(stderr, "strata generate: remote ranking: %zu profiled pairs, "
+                                     "%zu other pairs to fill the helper tiers\n", ranked_before,
+                             ranked.size() - ranked_before);
         }
         std::array<std::vector<std::pair<int32_t, int32_t>>, 3> by_device;
-        if (multi_remote) {
-            // Either stripe experts for parallel GPU work, or give each layer one
-            // secondary GPU to reduce switches and transfers over shared USB4.
-            std::vector<uint8_t> assigned((size_t) g.n_layers * (size_t) g.n_expert, 0);
-            const int devices = 1 + (o.expert_cache_remote[1] > 0) + (o.expert_cache_remote[2] > 0);
-            int next = 0;
-            for (const auto& pair : ranked) {
-                if (pair.first < 0 || pair.first >= g.n_layers || pair.second < 0 || pair.second >= g.n_expert ||
-                    xcache.slot_of(pair.first, pair.second) >= 0) continue;
-                const size_t index = (size_t) pair.first * (size_t) g.n_expert + (size_t) pair.second;
-                if (assigned[index]) continue;
-                int target = -1;
-                if (o.expert_cache_remote_placement == "layer") {
-                    target = pair.first % devices;
-                    // Other layers' owners may still have room: keep scanning ranks.
-                    if (by_device[(size_t) target].size() >=
-                        (size_t) o.expert_cache_remote[(size_t) target]) continue;
-                } else {
-                    for (int i = 0; i < devices; ++i) {
-                        const int r = (next + i) % devices;
-                        if (by_device[(size_t) r].size() < (size_t) o.expert_cache_remote[(size_t) r]) {
-                            target = r;
-                            break;
+        if (!auto_spill) {
+            if (multi_remote) {
+                // Either stripe experts for parallel GPU work, or give each layer one
+                // secondary GPU to reduce switches and transfers over shared USB4.
+                std::vector<uint8_t> assigned((size_t) g.n_layers * (size_t) g.n_expert, 0);
+                const int devices = 1 + (o.expert_cache_remote[1] > 0) + (o.expert_cache_remote[2] > 0);
+                int next = 0;
+                for (const auto& pair : ranked) {
+                    if (pair.first < 0 || pair.first >= g.n_layers || pair.second < 0 || pair.second >= g.n_expert ||
+                        xcache.slot_of(pair.first, pair.second) >= 0) continue;
+                    const size_t index = (size_t) pair.first * (size_t) g.n_expert + (size_t) pair.second;
+                    if (assigned[index]) continue;
+                    int target = -1;
+                    if (o.expert_cache_remote_placement == "layer") {
+                        target = pair.first % devices;
+                        // Other layers' owners may still have room: keep scanning ranks.
+                        if (by_device[(size_t) target].size() >=
+                            (size_t) o.expert_cache_remote[(size_t) target]) continue;
+                    } else {
+                        for (int i = 0; i < devices; ++i) {
+                            const int r = (next + i) % devices;
+                            if (by_device[(size_t) r].size() < (size_t) o.expert_cache_remote[(size_t) r]) {
+                                target = r;
+                                break;
+                            }
                         }
+                        if (target < 0) break;
                     }
-                    if (target < 0) break;
+                    assigned[index] = 1;
+                    by_device[(size_t) target].push_back(pair);
+                    next = (target + 1) % devices;
                 }
-                assigned[index] = 1;
-                by_device[(size_t) target].push_back(pair);
-                next = (target + 1) % devices;
+                std::fprintf(stderr, "strata generate: remote ranks %s across %d CUDA devices\n",
+                             o.expert_cache_remote_placement == "layer" ? "grouped by layer" : "striped", devices);
+            } else {
+                by_device[0] = std::move(ranked);
             }
-            std::fprintf(stderr, "strata generate: remote ranks %s across %d CUDA devices\n",
-                         o.expert_cache_remote_placement == "layer" ? "grouped by layer" : "striped", devices);
-        } else {
-            by_device[0] = std::move(ranked);
         }
+
+        // ---- WHAT THE TIERS ARE, AND HOW BIG.  Nothing here consults a model of free VRAM: the weights, the
+        // sessions, the drafter and every expert cache are already allocated, so `cudaMemGetInfo` reports what is
+        // really left.  The spare room is whatever survives the session-wide reserve, this card's verify window
+        // (`ver.init` allocates it later, in the serve block), the bind buffers on the one card that carries the
+        // drafter, the prompt path's own buffers when it does not borrow from the cache, and `open`'s 512 MiB.
+        struct Planned {
+            HelperTier tier;
+            const std::vector<std::pair<int32_t, int32_t>>* ranked = nullptr;
+        };
+        std::vector<Planned> planned;
+        if (auto_spill) {
+            const int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
+                                         ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
+            const int drafter_dev = stages.empty() ? 0 : stages.back()->dev;
+            std::vector<int> candidates{0};
+            for (const int d : split_devs)
+                if (std::find(candidates.begin(), candidates.end(), d) == candidates.end()) candidates.push_back(d);
+            for (const int dev : candidates) {
+                if (dev == 0 && !spill_dev0_ok) continue;
+                const strata::core::OnDevice on(dev);
+                size_t fb = 0, tb = 0;
+                if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) { cudaGetLastError(); continue; }
+                int64_t reserve = ((int64_t) o.vram_reserve_mib + (pf_borrow ? 0 : split_pf_mib) + kWindowMib) << 20;
+                if (dev == drafter_dev) reserve += mtp_bind;
+                reserve += (512ll << 20);
+                const int64_t budget = (int64_t) fb - reserve;
+                if (budget < ((int64_t) kHelperMinMib << 20)) {
+                    // Report the LEFT OVER, not the free: the tier is sized by `fb - reserve`, so a card with
+                    // 0.78 GiB free and a 1.3 GiB reserve has nothing to give and the raw number would mislead.
+                    std::fprintf(stderr, "strata generate: CUDA%d: %.2f GiB free, %.2f GiB left after the "
+                                         "%.2f GiB reserve; under the %lld MiB a spill tier needs, so no tier "
+                                         "there\n", dev, (double) fb / 1073741824.0,
+                                 (double) budget / 1073741824.0, (double) reserve / 1073741824.0,
+                                 (long long) kHelperMinMib);
+                    continue;
+                }
+                planned.push_back({HelperTier{dev, 0, budget}, &ranked});
+            }
+            // THE FASTEST CARD GETS THE HOTTEST RANKS.  The tiers are disjoint and draw from the same ranked
+            // list, so their ORDER changes only whose PCIe round trip serves the hot pairs, not how many are
+            // held - this is a latency choice, not a capacity one.
+            std::vector<std::pair<double, size_t>> speed;
+            for (size_t t = 0; t < planned.size(); ++t) {
+                const int dev = planned[t].tier.dev;
+                int sms = 0, khz = 0;
+                cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+                if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
+                cudaGetLastError();
+                speed.emplace_back((double) sms * (double) khz, t);
+            }
+            std::stable_sort(speed.begin(), speed.end(),
+                             [](const std::pair<double, size_t>& a, const std::pair<double, size_t>& b) {
+                                 return a.first > b.first;
+                             });
+            std::vector<Planned> ordered;
+            ordered.reserve(planned.size());
+            for (const auto& s : speed) ordered.push_back(planned[s.second]);
+            planned.swap(ordered);
+            std::string order;
+            for (const auto& pl : planned) order += (order.empty() ? "" : ",") + std::to_string(pl.tier.dev);
+            std::fprintf(stderr, "strata generate: spill tiers (fastest first): CUDA%s\n",
+                         order.empty() ? "-" : order.c_str());
+        } else {
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+                planned.push_back({HelperTier{remote_dev[r], o.expert_cache_remote[(size_t) r], -1},
+                                   &by_device[(size_t) r]});
+        }
+
         std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
         for (auto& st : stages)   // a layer split: what a stage's cache holds is no helper's
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     claimed[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
-        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
-            if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
-                     g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err)) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
+        // ONE shared `claimed`, and the tiers opened in order: each takes the hottest pairs the ones before it
+        // left behind, which keeps the tiers disjoint from each other, from every stage's cache, and from CUDA0's
+        // `xcache` (which `open` skips through its `primary` argument).  A spill tier that cannot open is dropped
+        // with a warning - it is an optimization and must not take the engine down.  An explicit one still fails.
+        for (const Planned& pl : planned) {
+            const HelperTier& ht = pl.tier;
+            if (helper_tiers.size() >= remote_experts.size()) break;
+            strata::core::RemoteExperts& tier = remote_experts[helper_tiers.size()];
+            const bool ok = ht.budget > 0
+                ? tier.open_budgeted(ht.dev, ht.budget, g.n_layers, g.n_expert, *pl.ranked, xcache, *srcp, claimed, err)
+                : tier.open(ht.dev, ht.slots, g.n_layers, g.n_expert, *pl.ranked, xcache, *srcp, claimed, err);
+            if (!ok) {
+                if (ht.budget <= 0) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                std::fprintf(stderr, "strata generate: CUDA%d: no spill tier: %s\n", ht.dev, err.c_str());
+                err.clear();
+                continue;
             }
-            std::fprintf(stderr, "strata generate: CUDA%d: %lld additional experts, %.2f GiB; "
-                                 "results return through pinned host rows\n", remote_dev[r],
-                         (long long) remote_experts[(size_t) r].resident(), remote_experts[(size_t) r].gib());
+            helper_tiers.push_back(ht);   // index in helper_tiers == index in remote_experts
+            // How the activations cross is MEASURED (`RemoteExperts::zero_copy`), not predicted: a tier on a card
+            // that already runs a stage can still get the mapped path, and on this rig does.  The copy fallback
+            // costs two PCIe round trips per layer and would otherwise be invisible in the log.
+            const char* xfer = tier.zero_copy() ? "mapped host pages" : "copied through pinned host rows";
+            if (ht.budget > 0)
+                std::fprintf(stderr, "strata generate: CUDA%d: %lld experts spilled into %.2f GiB of leftover VRAM "
+                                     "(budget %.2f GiB); results return through %s\n",
+                             ht.dev, (long long) tier.resident(), tier.gib(), (double) ht.budget / 1073741824.0,
+                             xfer);
+            else
+                std::fprintf(stderr, "strata generate: CUDA%d: %lld additional experts, %.2f GiB; "
+                                     "results return through %s\n",
+                             ht.dev, (long long) tier.resident(), tier.gib(), xfer);
         }
     }
 
     Drive drive;
-    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
-        drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+    for (size_t t = 0; t < helper_tiers.size() && drive.d.remote_count < strata::core::kRemoteMax; ++t)
+        drive.d.remote[drive.d.remote_count++] = &remote_experts[t];
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
     drive.d.pool = &pool;
@@ -4431,19 +4693,19 @@ int main(int argc, char** argv) {
                 slots_all += (int64_t) st->cache.slots();
                 mib_all += (int64_t) (st->cache.bytes() >> 20);
             }
-            for (int r = 0; r < 3; ++r)
-                if (o.expert_cache_remote[(size_t) r] > 0) {
-                    slots_all += remote_experts[(size_t) r].resident();
-                    mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
-                }
+            for (size_t t = 0; t < helper_tiers.size(); ++t) {
+                slots_all += remote_experts[t].resident();
+                mib_all += (int64_t) (remote_experts[t].gib() * 1024.0);
+            }
             // ---- THE MONITOR'S PER-GPU CARDS.  Seven comma-separated lists in SINGLE tokens, because the server's
             // INFO parser splits the line on whitespace (serve/server.py) and would otherwise keep only the first
             // number.  Built from the same accessors as the totals above, so the cards sum to `expert_slots` and
-            // `expert_cache_mib`.  A remote-expert GPU runs no stage, so it has an expert cache but no layer range,
-            // no session and no prompt buffers - `gpu_layers` is "-" for it.  Deliberately no VRAM figure here: the
-            // engine knows only its own allocations, and NVML already reports each card's used/free/total.  The one
-            // exception is `gpu_draft_mib`, the MTP head, which only the engine knows - and which no totals line
-            // above accounts for, so it is reported per card and nowhere else.
+            // `expert_cache_mib`.  A helper tier used to run only on a GPU no stage ran on, so it always had its
+            // own cell with `gpu_layers` "-"; now a card can run a stage AND host a spill tier, and its rank
+            // belongs on that card's own cell - a second cell for the same device would print it twice.
+            // Deliberately no VRAM figure here: the engine knows only its own allocations, and NVML already
+            // reports each card's used/free/total.  The one exception is `gpu_draft_mib`, the MTP head, which
+            // only the engine knows - and which no totals line above accounts for.
             std::string g_dev, g_lay, g_kv, g_buf, g_ex, g_exm, g_draft;
             {
                 struct GpuCell {
@@ -4467,10 +4729,15 @@ int main(int argc, char** argv) {
                                       bufs ? (int64_t) (strata::prefill::Prefill::bytes_needed(g, st.ss, o.prefill_chunk) >> 20) : 0,
                                       (int64_t) st.cache.slots(), (int64_t) (st.cache.bytes() >> 20)});
                 }
-                for (int r = 0; r < 3; ++r)
-                    if (o.expert_cache_remote[(size_t) r] > 0)
-                        gcells.push_back({remote_dev[r], -1, -1, 0, 0, remote_experts[(size_t) r].resident(),
-                                          (int64_t) (remote_experts[(size_t) r].gib() * 1024.0)});
+                for (size_t t = 0; t < helper_tiers.size(); ++t) {
+                    const int dev = helper_tiers[t].dev;
+                    const int64_t ex = remote_experts[t].resident();
+                    const int64_t exm = (int64_t) (remote_experts[t].gib() * 1024.0);
+                    const auto at = std::find_if(gcells.begin(), gcells.end(),
+                                                 [dev](const GpuCell& c) { return c.dev == dev; });
+                    if (at != gcells.end()) { at->experts += ex; at->expert_mib += exm; }
+                    else gcells.push_back({dev, -1, -1, 0, 0, ex, exm});
+                }
                 // ascending by device, so the list lines up with the config's own GPU order in the browser
                 std::sort(gcells.begin(), gcells.end(),
                           [](const GpuCell& a, const GpuCell& b) { return a.dev < b.dev; });
@@ -4730,20 +4997,20 @@ int main(int argc, char** argv) {
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
-            std::array<int64_t, 3> remote_before{};
-            std::array<int64_t, 3> launches_before{};
-            std::array<uint64_t, 3> compact_before{}, full_before{};
+            std::array<int64_t, strata::core::kRemoteMax> remote_before{};
+            std::array<int64_t, strata::core::kRemoteMax> launches_before{};
+            std::array<uint64_t, strata::core::kRemoteMax> compact_before{}, full_before{};
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
-            std::array<double, 3> begin_before{}, wait_before{};
-            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            std::array<double, strata::core::kRemoteMax> begin_before{}, wait_before{};
+            for (size_t t = 0; t < helper_tiers.size() && t < remote_before.size(); ++t)
             {
-                remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
-                launches_before[(size_t) r] = remote_experts[(size_t) r].launched_layers();
-                compact_before[(size_t) r] = remote_experts[(size_t) r].returned_bytes();
-                full_before[(size_t) r] = remote_experts[(size_t) r].full_row_bytes();
-                begin_before[(size_t) r] = remote_experts[(size_t) r].ms_begin();
-                wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
+                remote_before[t] = remote_experts[t].computed();
+                launches_before[t] = remote_experts[t].launched_layers();
+                compact_before[t] = remote_experts[t].returned_bytes();
+                full_before[t] = remote_experts[t].full_row_bytes();
+                begin_before[t] = remote_experts[t].ms_begin();
+                wait_before[t] = remote_experts[t].ms_wait();
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
@@ -5465,16 +5732,16 @@ int main(int argc, char** argv) {
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);
-            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            for (size_t t = 0; t < helper_tiers.size() && t < remote_before.size(); ++t)
                 std::fprintf(stderr, "strata serve: CUDA%d: %lld expert entries, %lld active layer launches, %.1f MiB returned "
                                      "(%.1f MiB with full rows) in this request; host %.0f ms staging+launching, %.0f ms "
-                                     "waiting for it in this request\n", r + 1,
-                             (long long) (remote_experts[(size_t) r].computed() - remote_before[(size_t) r]),
-                             (long long) (remote_experts[(size_t) r].launched_layers() - launches_before[(size_t) r]),
-                             (double) (remote_experts[(size_t) r].returned_bytes() - compact_before[(size_t) r]) / 1048576.0,
-                             (double) (remote_experts[(size_t) r].full_row_bytes() - full_before[(size_t) r]) / 1048576.0,
-                             remote_experts[(size_t) r].ms_begin() - begin_before[(size_t) r],
-                             remote_experts[(size_t) r].ms_wait() - wait_before[(size_t) r]);
+                                     "waiting for it in this request\n", helper_tiers[t].dev,
+                             (long long) (remote_experts[t].computed() - remote_before[t]),
+                             (long long) (remote_experts[t].launched_layers() - launches_before[t]),
+                             (double) (remote_experts[t].returned_bytes() - compact_before[t]) / 1048576.0,
+                             (double) (remote_experts[t].full_row_bytes() - full_before[t]) / 1048576.0,
+                             remote_experts[t].ms_begin() - begin_before[t],
+                             remote_experts[t].ms_wait() - wait_before[t]);
         }
         return 0;
     }
@@ -6244,9 +6511,9 @@ int main(int argc, char** argv) {
                         "  pool phases", wp / per, dr / per, rp / per);
         }
         std::printf("%-24s %lld blobs read\n", "  expert blobs", (long long) srcp->reads());
-        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+        for (size_t t = 0; t < helper_tiers.size(); ++t)
             std::printf("  CUDA%d experts           %lld routed entries computed\n",
-                        r + 1, (long long) remote_experts[(size_t) r].computed());
+                        helper_tiers[t].dev, (long long) remote_experts[t].computed());
         // ---- **R4's DISPATCH MEASUREMENT: h, ON THE ENGINE'S OWN ROUTING.**  No offline trace, no corpus
         // question, no k-fold - these are the ids the router actually produced on this run.  Reported as
         // hits/lookups so it can be read directly as the h the cache would deliver, and alongside `refused`
