@@ -77,21 +77,25 @@ different position in the round: `eb_sp` 38.06 tok/s / 27.4 GB/s in round 1, 18.
 round 2 — because two 40 GiB page-locked allocations ran in between and are not evictable. Any
 comparison that mixes mapped and budgeted arms in one round is measuring the order, not the mode.
 
-**4. `STRATA_IQ_PREFETCH` (the AVX-2 row prefetch) wants a bigger distance on the mapped path.**
-Warm, ms/round at equal round counts:
+**4. The prefetch distance is not a lever; `--kv-resident` is.** An earlier pass of this work
+reported 2048 B as ~9% behind 8-24 KB on the mapped path. **That comparison was confounded**: the
+2048 B arm also ran with the default `--kv-resident 32768`, while the others used 20480, and
+kv-resident is worth ~15% on this model (fewer KV slots in VRAM means fewer expert slots, which means
+more experts read by the CPU pool). Re-run with kv-resident held constant, three models, three
+interleaved rounds with the order rotated, compared as total time for 300 tokens:
 
-| distance | ms/round (114 rounds) | tok/s |
-|---|---:|---:|
-| 2048 (default) | 73.4–73.9 | 35.3–35.5 |
-| 8192 | 67.30 | 38.9–39.1 |
-| 16384 | 67.55 | 39.0 |
-| 24576 | 67.33 | 39.1 |
-| 65536 | — | −0.6% over 16384 |
+| model (expert path) | prefetch off | 2048 (the default) | 8192 |
+|---|---:|---:|---:|
+| IQ3_S (arena) | 5885 ms | 5980 | 5859 |
+| IQ3_XXS (arena) | 5472 | **5449** | 5503 |
+| IQ4_XS (mapped) | 7617 | **7525** | 7748 |
 
-The default is tuned for ~1 KB rows on the arena path; an IQ4_XS row is 1360 B and on the mapped
-path the prefetch also anticipates the page fault of the mapped page, so 8–24 KB is a plateau and
-2048 B sits ~9% under it. On the arena path (IQ3_S) 16384 is not harmful either: 51.53/51.56 vs
-50.56/51.26 with the default.
+Spread 0-3% with no ordering: turning the row prefetch off entirely costs nothing, and on the mapped
+path the current default is the best of the three. What does move the numbers is the row-read rate:
+the slow runs are the ones at 21-22 GB/s instead of 25-29, i.e. the page cache partially evicted, and
+that lands on a different arm every round. The row sizes involved are 656 B (IQ2_S), 784 B (IQ3_XXS)
+and 1088 B (IQ4_XS), so 2048 B is 2-3 rows - but at these read rates the hardware prefetcher is
+already covering the walk, and an explicit hint in front of it buys nothing.
 
 **5. Lookahead routing prefetch: no measurable effect at this size.** `--resident-budget-gib 40`
 with and without `STRATA_LOOKAHEAD=0`: 26.74/25.94 vs 26.25/26.00 tok/s. With 42 MB per round of
@@ -122,8 +126,10 @@ is walking each expert row once per verify window instead of once per token.
 - The arena-vs-mapped ranking in the source comment is measured at 34 GB of experts on 63 GB, where
   the unpinned arena still wins. At 61 GiB on 64 GB it loses, and the load cost per start (~30 s)
   becomes visible. The second data point is worth putting next to the first.
-- The prefetch default (2048 B) is right for the arena path and ~9% low for the mapped one; a
-  distance that follows the row size (or 8192) would suit both.
+- Nothing to change in the prefetch default: with `--kv-resident` held constant, off / 2048 / 8192
+  land within 0-3% on three models and both expert paths. What is worth a line in the docs is
+  `--kv-resident`: 20480 instead of the 32768 default is worth ~15% on a model whose experts do not
+  fit in RAM, because it leaves room for more expert slots.
 - A warning when a page-locked budget is large enough to push out the file cache the same model is
   reading from would save the next person a confusing benchmark.
 
