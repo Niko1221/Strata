@@ -403,12 +403,14 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
-            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp)
+            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0 always, INT8 with STRATA_KV_ROT=1
                 fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
                 fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+            }
+            if (st_.kv_q4)
                 kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                   vcur_ + t * NKV * HD, s, cs, &st_.host);
-            } else if (st_.kv_int8)
+            else if (st_.kv_int8)
                 kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
                                   kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
             else
