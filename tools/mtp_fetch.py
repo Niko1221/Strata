@@ -14,12 +14,14 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import struct
 import sys
 import time
 import urllib.request
 
-REPO = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/"
+# the checkpoint at a fixed commit (#214): the MTP tensors a checkout was tested with
+REPO = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/"
 DTYPE_BYTES = {"BF16": 2, "F16": 2, "F32": 4, "F8_E4M3": 1, "I64": 8, "I32": 4}
 
 
@@ -80,7 +82,15 @@ def inventory(out):
 
 def fetch(out, only):
     inv_path = os.path.join(out, "mtp-inventory.json")
-    rows = json.load(open(inv_path))["tensors"] if os.path.exists(inv_path) else inventory(out)
+    inv = {}
+    if os.path.exists(inv_path):
+        with open(inv_path, encoding="utf-8") as f:
+            inv = json.load(f)
+    if inv.get("repo") == REPO:
+        rows = inv["tensors"]
+    else:                                              # none yet, or read at another commit: so were its tensors
+        shutil.rmtree(os.path.join(out, "tensors"), ignore_errors=True)
+        rows = inventory(out)
     tdir = os.path.join(out, "tensors")
     os.makedirs(tdir, exist_ok=True)
     manifest = []

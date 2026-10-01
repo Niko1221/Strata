@@ -12,9 +12,9 @@ What the first run does (each step is skipped when it is already done):
 
   1. checks your PC: NVIDIA GPU and driver, RAM, CPU, free disk space
   2. asks the questions
-  3. installs the Python packages it needs into .venv (numpy, jinja2, ..., and NVIDIA's CUDA libraries)
-  4. gets the Strata engine: a ready-made build for RTX 20/30/40/50 cards (no compiler needed); if none fits your PC,
-     it installs the build tools (asks first) and compiles the engine for your GPU
+  3. installs the Python packages it needs into .venv (the versions in requirements.txt, and NVIDIA's CUDA libraries)
+  4. gets the Strata engine: this version's ready-made build for RTX 20/30/40/50 cards (no compiler needed); if none
+     fits your PC, it installs the build tools (asks first) and compiles the engine for your GPU
   5. downloads the model from Hugging Face (resumable), and the vision encoder if you want images
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
@@ -49,20 +49,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
-HF = "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/"
 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.zip"
 
-# The ready-made engine: <PREBUILT_URL><asset>, a zip with strata(.exe), strata-vision(.exe) and BUILD.json, built
-# by tools/make_release.py.  Set this to the GitHub release download folder when publishing, e.g.
-# "https://github.com/<you>/Strata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
-PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+# The ready-made engine: a zip with strata(.exe), strata-vision(.exe) and BUILD.json, built by tools/make_release.py
+# and attached to each GitHub release.  Setup takes it from the release this checkout is (#214):
+# <RELEASES>download/v<CMakeLists.txt's version>/, and from the newest release (<RELEASES>latest/download/) only when
+# that one has none for this system.  Set RELEASES to "https://github.com/<you>/Strata/releases/" when publishing your
+# own, or pass --prebuilt / set STRATA_PREBUILT_URL (a URL folder or a local folder, taken as given).
+RELEASES = "https://github.com/Niko1221/Strata/releases/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
 MIN_ENGINE = (0, 1, 30)                # v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
-PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
+# the Python packages at exact versions (#214); the Dockerfile installs the same file
+REQUIREMENTS = ROOT / "requirements.txt"
 
 MODELS = {
     # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
@@ -87,27 +89,28 @@ MODELS = {
 # the trained range are out of spec.
 CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
+# Every Hugging Face URL names a commit (#214): a checkout downloads the files it was tested with.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
              "about": "the original model",
-             "hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/{q}/",
+             "hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/{q}/",
              "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "tag": "",
-             "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+             "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/",
              "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next"},
     "swift": {"title": "Swift 1.5", "by": "UkisAI's fine-tune of Qwen3.8-Flash-Next",
               "about": "thinks much shorter (-63% thinking tokens, 1.8x sooner answers by its authors' numbers)",
-              "hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+              "hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/b22d729eae29b5796f76fb70f91aef549b9fc52c/",
               "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "tag": "swift-",
-              "mmproj_hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
+              "mmproj_hf": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/b22d729eae29b5796f76fb70f91aef549b9fc52c/",
               "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", "name": "swift-1.5",
               "license": "Swift Open License 1.0: https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"},
     # ISTA-DASLab's expert-pruned release: half of each layer's experts removed, chosen for code, agentic tool use and
     # vision; its shard 2 (the n-gram table) and vision encoder are the original's files, shared with it
     "coder": {"title": "Qwen3.8-Flash-Next Coder", "by": "ISTA-DASLab's coding version",
               "about": "half the experts (code, tools, images kept): needs ~32 GB of RAM, faster; weaker outside coding",
-              "hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/main/{q}/",
+              "hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/5348543e0147355ac9cbcb031184a3546350988e/{q}/",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "tag": "coder-",
-              "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/main/",
+              "mmproj_hf": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/5348543e0147355ac9cbcb031184a3546350988e/",
               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-coder",
               "profile": "expert-profile-coder.bin"},
 }
@@ -684,15 +687,18 @@ def get_llama_cpp():
 
 
 def pip_install(packages, what):
-    """pip install into .venv, skipped when the same list was installed before."""
+    """pip install into .venv, skipped when the same list was installed before.  packages: requirements, or a
+    requirements file (installed with -r; its lines are compared, so a changed pin installs again)."""
     stamp = Path(sys.prefix) / ".strata-pip.json"
     have = json.loads(stamp.read_text()) if stamp.exists() else []
-    need = [p for p in packages if p not in have]
+    lines = packages.read_text(encoding="utf-8").splitlines() if isinstance(packages, Path) else packages
+    need = [p for p in lines if p.strip() and not p.startswith("#") and p not in have]
     if not need:
         ok(f"{what} already installed")
         return
     say(f"  Installing {what} ...")
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *need])
+    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+         *(["-r", packages] if isinstance(packages, Path) else need)])
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
     ok(f"{what} installed")
 
@@ -914,23 +920,37 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
             return eng
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
         info.unlink()
-    if not url_base:
+    if url_base == "":                                 # --prebuilt "": no ready-made engine
         return None
     z = ROOT / "engine" / PREBUILT_ASSET
-    base = url_base if url_base.endswith(("/", "\\")) else url_base + "/"
-    if base.startswith(("http://", "https://")):
+    # --prebuilt as given; by default the release this checkout is (#214), and the newest release only when that one
+    # has no engine for this system (not published yet, or a version of your own)
+    bases = [url_base] if url_base is not None else \
+        [f"{RELEASES}download/v{source_version()}/", f"{RELEASES}latest/download/"]
+    base = ""
+    for i, base in enumerate(b if b.endswith(("/", "\\")) else b + "/" for b in bases):
+        if not base.startswith(("http://", "https://")):
+            break
         try:                                           # not published (yet), or no internet: compile instead
             req = urllib.request.Request(base + PREBUILT_ASSET, method="HEAD", headers={"User-Agent": "strata-setup"})
             urllib.request.urlopen(req, timeout=60).close()
+            break
         except OSError as e:
+            if i + 1 < len(bases) and getattr(e, "code", None) == 404:
+                say(f"  The v{source_version()} release has no ready-made engine for this system: trying the newest release")
+                continue
             warn(f"no ready-made engine at {base} ({e})" + ("" if updating else ": compiling instead"))
             return None
     say("  Downloading the ready-made Strata engine ...")
     download(base + PREBUILT_ASSET, z, "Strata engine")
     tmp = ROOT / "engine" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+    try:
+        with zipfile.ZipFile(z) as f:
+            f.extractall(tmp)
+    finally:                                           # never kept: its .done mark would make a later run reuse it,
+        z.unlink(missing_ok=True)                      # whichever release that run picks
+        z.with_name(z.name + ".done").unlink(missing_ok=True)
     meta = json.loads((tmp / "BUILD.json").read_text())
     if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit()) < MIN_ENGINE:
         need = ".".join(map(str, MIN_ENGINE))
@@ -956,8 +976,6 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
             shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
         p.replace(dst)
     shutil.rmtree(tmp, ignore_errors=True)
-    z.unlink(missing_ok=True)
-    z.with_name(z.name + ".done").unlink(missing_ok=True)
     if not (eng / EXE).exists():
         fail("the ready-made engine archive has no " + EXE)
     if not WIN:
@@ -1753,8 +1771,9 @@ def main() -> int:
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
-    ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
-                    help="where the ready-made engine is (a URL folder or a local folder)")
+    ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL"),
+                    help="where the ready-made engine is (a URL folder or a local folder); default: this version's "
+                         "GitHub release, or the newest release when that one has none")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
@@ -2109,7 +2128,7 @@ def main() -> int:
 
     # ---- 3. python packages
     step(3, "Python packages")
-    pip_install(PY_PACKAGES, "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
+    pip_install(REQUIREMENTS, "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
 
     # ---- 4. the engine
     step(4, "the Strata engine")

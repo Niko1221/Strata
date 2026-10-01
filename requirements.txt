@@ -1,0 +1,21 @@
+# The Python packages setup.py installs into .venv (and the Dockerfile into the image), at exact versions (#214), so a
+# checkout installs what it was tested with. Each is the newest release for its Python when 0.1.30 came out (numpy 2.5
+# needs Python 3.12, numpy 2.4 needs 3.11), listed with the packages it depends on.
+numpy==2.2.6; python_version < "3.11"
+numpy==2.4.6; python_version == "3.11"
+numpy==2.5.3; python_version >= "3.12"
+jinja2==3.1.6
+markupsafe==3.0.3
+regex==2026.9.29
+pyyaml==6.0.3
+tqdm==4.70.1
+colorama==0.4.6; sys_platform == "win32"
+requests==2.34.2
+urllib3==2.8.0
+idna==3.20
+charset-normalizer==3.5.2
+certifi==2026.7.22
+cmake==4.4.3
+ninja==1.13.2
+pillow==12.3.0
+psutil==7.2.2
