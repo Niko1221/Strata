@@ -97,6 +97,10 @@ that lands on a different arm every round. The row sizes involved are 656 B (IQ2
 and 1088 B (IQ4_XS), so 2048 B is 2-3 rows - but at these read rates the hardware prefetcher is
 already covering the walk, and an explicit hint in front of it buys nothing.
 
+One limit on this: all three models were measured **warm** (25-29 GB/s over the rows, i.e. served by
+the page cache). A run that reads 1.3 GB per round from the NVMe at 2.4 GB/s is a different machine
+state, and there a hint in front of the fault may pay; not tested.
+
 **5. Lookahead routing prefetch: no measurable effect at this size.** `--resident-budget-gib 40`
 with and without `STRATA_LOOKAHEAD=0`: 26.74/25.94 vs 26.25/26.00 tok/s. With 42 MB per round of
 file reads there is almost nothing left to warm.
