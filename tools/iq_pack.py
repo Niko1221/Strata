@@ -34,7 +34,7 @@ takes (so are the other F32 tensors the engine reads as BF16, when exact); anyth
 
 For ordinary quants, --compat-bf16 dequantizes the small projections that the engine reads as BF16, using
 round-to-nearest-even. This introduces BF16 rounding; it does not reconstruct the original full-precision
-weights. Experts, native attention projections, token embeddings, a Q2_0/Q8_0 PLE key and the disk-backed PLE
+weights. Experts, native attention projections, token embeddings, a supported native PLE key and the disk-backed PLE
 table stay unchanged.
 """
 from __future__ import annotations
@@ -84,9 +84,9 @@ FORM = {
     "ple_norm_query.weight": "F32", "ssm_a": "F32", "ssm_conv1d.weight": "F32", "ssm_dt.bias": "F32",
     "ssm_norm.weight": "F32",
 }
-# PLE key encodings left in the GGUF for the engine's native PLE key (Q2_0; Q8_0 in UD-Q4_K_XL).  Other quantized
-# keys take the BF16 path (--compat-bf16), as before.
-NATIVE_PLE_KEY = {"Q2_0", "Q8_0"}
+# Match NativeDense's PLE key formats: keep supported quantized keys in the GGUF.
+# Other quantized keys take the packed BF16 path (--compat-bf16).
+NATIVE_PLE_KEY = {"Q2_0", "Q8_0", "IQ3_XXS", "IQ4_XS"}
 KIND = {"BF16": "4", "F16": "5", "F32": "2"}
 
 
