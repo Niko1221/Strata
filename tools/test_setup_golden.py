@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import types
@@ -55,7 +56,9 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return v.replace(str(t), "<T>").replace("\\", "/").replace(setup.EXE, "<EXE>")
+        v = v.replace(str(t), "<T>").replace("\\", "/")
+        # the engine's file name as a whole path part: on Linux EXE is "strata", which is also in strata-<tag>.log
+        return re.sub(rf"(?<![^/]){re.escape(setup.EXE)}(?![^/])", "<EXE>", v)
     return v
 
 
