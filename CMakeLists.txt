@@ -254,6 +254,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
   endif()
+  # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
+  # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
+  # 262144-cell capacity (the top-k dispatch follows the capacity) and exits non-zero on a failed gate
+  if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_HIP)
+    add_executable(qsa_select_bench src/kernels/qsa_select_bench.cpp)
+    set_source_files_properties(src/kernels/qsa_select_bench.cpp PROPERTIES LANGUAGE HIP)
+    target_link_libraries(qsa_select_bench PRIVATE strata_kernels strata_hip_runtime)
+    add_test(NAME qsa_select_bench COMMAND qsa_select_bench 32768 256 3 262144)
+  endif()
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/ggml)
   target_include_directories(strata_kernels PRIVATE third_party/ggml)
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
