@@ -166,6 +166,7 @@ the same way - nothing big is downloaded again.
 - **Chat in the terminal:** `.venv\Scripts\python chat.py`
 - **Your apps and coding agents:** add it as an "OpenAI-compatible" provider with base URL
   **`http://127.0.0.1:8080/v1`**, any API key and any model name. Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages`.
+- **Codex CLI:** use the native `/v1/responses` endpoint; see [Codex setup](#codex-cli).
 - **Thinking:** the model thinks before it answers. Choose **off, low, medium or high** - in the chat page menu, with
   `/think low` in `chat.py`, or with your app's "reasoning effort" setting. Off is fastest; high is best for hard questions.
 - **Pictures:** in the chat page click **Picture**; in `chat.py` type `/image <path>`; in apps just attach them.
@@ -176,6 +177,92 @@ the same way - nothing big is downloaded again.
 
 **Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute per
 30,000 tokens); after that it keeps the conversation and reads only what is new, so follow-ups start in seconds.
+
+## Codex CLI
+
+Strata exposes native `POST /v1/responses`, with JSON responses and SSE streaming. It shares
+inference with the other endpoints and implements its own Responses input items, output items,
+and lifecycle events. Codex executes shell, patch, and other client tools and sends their results
+back in the next request.
+
+Add a provider to `~/.codex/config.toml` (use your server's port and the model name from `/v1/models`):
+
+```toml
+model_provider = "strata"
+model = "qwen3.8-flash-next"
+web_search = "disabled"
+model_reasoning_effort = "low"
+model_reasoning_summary = "none"
+# Set this to your server's actual context size:
+model_context_window = 32768
+model_auto_compact_token_limit = 24000
+
+[model_providers.strata]
+name = "Strata"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+# If Strata has an API key, uncomment and set this environment variable:
+# env_key = "STRATA_API_KEY"
+```
+
+This follows the [Codex provider configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
+A custom provider uses client-managed history and local compaction. Unknown model names can use
+Codex's fallback tool inventory, which may omit its custom `apply_patch` tool. The server supports
+custom patch tools when the client offers them; tool availability is controlled by Codex's model metadata.
+
+If Codex reports an unsupported `web_search` tool, launch it with
+`codex -c 'web_search="disabled"'`. For a persistent fix, put `web_search = "disabled"`
+at the top level of your Codex configuration, before the first `[table]`, and restart
+the Codex session. A setting inside `[model_providers.strata]` does not disable search.
+Codex enables cached web search by default, and Strata does not supply that hosted service.
+
+If the rendered Codex prompt exceeds the server's context, first start a fresh session and
+disable unused apps and MCP servers. App/MCP tool definitions also consume prompt tokens.
+For a lean 32K session, use:
+
+```sh
+codex --disable apps --disable multi_agent -c 'web_search="disabled"' \
+  -c model_context_window=32768 -c model_auto_compact_token_limit=24000
+```
+
+The Codex context setting does not increase Strata's engine context. To accept a prompt above
+32K, change `--max-context` in the Strata JSON config's `args` to a larger supported size
+(for example, `65536`), restart Strata, and match Codex's `model_context_window` to it.
+A larger engine context uses more KV-cache memory. Compaction can reduce conversation history,
+but cannot remove the fixed instructions and tool definitions needed for every turn.
+Responses reports context overflow with the machine-readable code `context_length_exceeded`.
+
+Supported inputs include instructions, text messages, images when vision is enabled, plaintext
+reasoning, function/custom calls and results, and namespaced tools. `max_output_tokens` limits the
+whole generation, including thinking. Token exhaustion returns an incomplete response; an unfinished
+tool call is never marked complete. Schemas, `strict`, tool-choice requirements, and custom grammars
+guide the prompt, but the engine does not enforce JSON schemas or grammars during decoding. Invalid
+tool selection or cardinality fails the response. Native thinking uses `reasoning_text`, with no
+fabricated summary or encrypted content.
+
+Requests default to `store: false` and must resend history. Storage, `previous_response_id`,
+background execution, `/v1/responses/compact`, hosted tools, encrypted-only reasoning replay,
+automatic truncation, and guaranteed structured output are unsupported. An
+`include: ["reasoning.encrypted_content"]` hint is accepted for Codex compatibility, but does not
+produce encrypted state. Server-side Strata MCP execution is not enabled on this endpoint.
+
+Run the protocol tests and the installed-CLI smoke test without model weights:
+
+```sh
+python -m unittest serve.test_responses -v
+python -m tools.codex_responses_smoke
+```
+
+The smoke test uses a scripted local server and temporary workspaces. It checks text completion,
+shell execution, custom patch execution, and tool-result history replay. After restarting the server with the updated code, check real-model tool-following separately:
+
+```sh
+python -m tools.responses_live_smoke --url http://127.0.0.1:8080/v1
+```
+
+This sends small text and function-call requests and replays a tool result, without executing tools.
 
 ## Something went wrong?
 

@@ -3,7 +3,8 @@
     python -m serve.server --engine mock --port 8095            (a scripted engine, for clients and tests)
     python -m serve.server --engine strata --config strata.json --port 8080   (the real engine, resident)
 
-Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
+Endpoints: POST /v1/responses (native Responses, stream and non-stream),
+POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
 non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
@@ -50,6 +51,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.responses import Accumulator, ResponsesError, events as responses_events, normalize as responses_request
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -95,6 +97,10 @@ class MockEngine:
 
 class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
+
+
+class ContextLengthExceeded(ValueError):
+    """The rendered prompt and requested generation do not fit the engine's actual context."""
 
 
 class GpuBusy(RuntimeError):
@@ -873,7 +879,7 @@ class Service:
             "cache_max_tokens": ctx,
             "context": {"native": ctx, "max_positions": ctx},
             "concurrency": {"serving": 1, "requested": 1},       # one request at a time; more wait their turn
-            "dialects": ["/v1/chat/completions", "/v1/messages"],
+            "dialects": ["/v1/chat/completions", "/v1/responses", "/v1/messages"],
             "vision": {"enabled": images, "available": images, "error": None},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -929,12 +935,12 @@ class Service:
         room = self.engine.max_context - CTX_SLACK - len(ids)
         if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
             if room < 1:
-                raise ValueError(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                raise ContextLengthExceeded(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
                                  f"({self.engine.max_context}); requests are never truncated")
             max_new = room
         elif max_new > room:
             if not self.fit_max_tokens:
-                raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                raise ContextLengthExceeded(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
                                  f"({self.engine.max_context}); requests are never truncated")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
@@ -1545,14 +1551,18 @@ def make_handler(svc: Service):
                 return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-                if path in ("/v1/chat/completions", "/v1/messages"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     svc.load()                               # unloaded: load first (or 503 while the GPU is busy)
                 if path == "/v1/chat/completions":
                     self._openai(req)
+                elif path == "/v1/responses":
+                    self._responses(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
+            except ResponsesError as e:
+                self._json(e.http_status, e.body())
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             except GpuBusy as e:
@@ -1617,6 +1627,57 @@ def make_handler(svc: Service):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
+
+        def _responses(self, body):
+            req = responses_request(body, svc.shared)
+            try:
+                ids, thinking, max_new = svc.prepare(req.messages, req.tools, req.kwargs, req.max_new)
+            except ContextLengthExceeded as e:
+                raise ResponsesError(str(e), "input", "context_length_exceeded") from e
+            _debug_req("responses", req.body, req.messages, req.tools, max_new, thinking, len(ids))
+            cancel = threading.Event()
+            acc = Accumulator(req, svc.model, len(ids))
+            stream = responses_events(acc, svc.run(ids, thinking, req.tools, max_new, req.body, cancel))
+            embeddings = getattr(svc.embeddings, "path", None)
+
+            def close():
+                try:
+                    stream.close()
+                finally:
+                    # A disconnect before the first engine event never enters Service.run's cleanup.
+                    if embeddings:
+                        Path(embeddings).unlink(missing_ok=True)
+
+            if not req.body["stream"]:
+                try:
+                    for _ in stream:
+                        pass
+                    self._json(200, acc.response)
+                finally:
+                    close()
+                return
+
+            def write(event):
+                if event is None:
+                    self.wfile.write(b": keep-alive\n\n")
+                else:
+                    self.wfile.write(("event: " + event["type"] + "\ndata: " +
+                                      json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                self._sse()
+                for event in stream:
+                    write(event)
+            except OSError:
+                cancel.set()
+            except (ValueError, EngineDied, GpuBusy) as e:
+                try:
+                    write(acc.fail(e))
+                except OSError:
+                    cancel.set()
+            finally:
+                close()
 
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
@@ -1964,7 +2025,7 @@ def main() -> int:
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
-    print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
+    print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Responses: /v1/responses, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
     print(f"       open http://{here}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
