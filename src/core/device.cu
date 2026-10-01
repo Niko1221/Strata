@@ -1,5 +1,6 @@
 // src/core/device.cu - P2.S1: the CUDA side of the runtime core.
 #include "strata/core/device.hpp"
+#include "strata/core/emulate.hpp"
 
 #include <cuda_runtime.h>
 
@@ -192,6 +193,66 @@ DeviceInfo device_info(int ordinal) {
     }
 #endif
     return d;
+}
+
+namespace {
+
+DeviceCaps caps_from(const int ordinal, const cudaDeviceProp& p) {
+    DeviceCaps c;
+    c.ordinal = ordinal;
+    c.name = p.name;
+    // the effective cc, so a test run answers as the emulated card would (emulate.hpp)
+    c.cc_major = strata::cc_major_of(p.major);
+    c.cc_minor = strata::cc_minor_of(p.minor);
+    c.multi_processor_count = p.multiProcessorCount;
+    size_t free_b = 0, total_b = 0;
+    check(cudaSetDevice(ordinal), "cudaSetDevice");
+    check(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+    c.total_bytes = total_b;
+    c.free_bytes = free_b;
+    c.shared_mem_default = (int) p.sharedMemPerBlock;
+    c.shared_mem_optin = strata::smem_optin_of((int) p.sharedMemPerBlockOptin);
+    const int cc = c.cc_major * 10 + c.cc_minor;
+    c.dp4a = cc >= 61;
+    c.mma_int8 = cc >= 75;
+    c.mma_tf32 = cc >= 80;
+    c.cp_async = cc >= 80;
+    check(cudaDriverGetVersion(&c.driver_version), "cudaDriverGetVersion");
+    check(cudaRuntimeGetVersion(&c.runtime_version), "cudaRuntimeGetVersion");
+#if defined(STRATA_USE_HIP)
+    c.arch = base_arch(p.gcnArchName);
+#endif
+    return c;
+}
+
+}  // namespace
+
+std::vector<DeviceCaps> device_caps() {
+    int count = 0;
+    check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
+    std::vector<DeviceCaps> out;
+    out.reserve((size_t) count);
+    for (int ordinal = 0; ordinal < count; ++ordinal) {
+        cudaDeviceProp p{};
+        check(cudaGetDeviceProperties(&p, ordinal), "cudaGetDeviceProperties");
+        out.push_back(caps_from(ordinal, p));
+    }
+    return out;
+}
+
+std::vector<uint8_t> peer_access_matrix() {
+    int count = 0;
+    check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
+    std::vector<uint8_t> m((size_t) count * count, 0);
+    for (int a = 0; a < count; ++a) {
+        for (int b = 0; b < count; ++b) {
+            if (a == b) continue;
+            int can = 0;
+            check(cudaDeviceCanAccessPeer(&can, a, b), "cudaDeviceCanAccessPeer");
+            m[(size_t) a * count + b] = can ? 1 : 0;
+        }
+    }
+    return m;
 }
 
 DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)

@@ -53,6 +53,36 @@ bool device_summary(int ordinal, std::string& name, std::string& detail);
 // this is the matching check at run time (a binary can be carried to a different machine).
 DeviceInfo device_info(int ordinal = 0);
 
+// Fase 2 (hetero multi-GPU): what each VISIBLE device can do, recorded once per ordinal rather than asked
+// repeatedly.  The kernel paths already make their own per-device queries through static per-device caches;
+// the role decisions that follow (main-device / draft-device) need the same facts in one record: the compute
+// capability the kernel selectors use (STRATA_EMULATE_CC is honoured, so a test rig answers as the emulated
+// card would), the shared-memory ceiling the smem opt-in call sites must respect, and the peer-access matrix -
+// queried, never enabled, because peer access stays optional by design (docs/MULTI_GPU.md).
+struct DeviceCaps {
+    int ordinal = -1;
+    std::string name;
+    int cc_major = 0, cc_minor = 0;    // effective cc; STRATA_EMULATE_CC answers as the emulated card would
+    int multi_processor_count = 0;
+    uint64_t total_bytes = 0, free_bytes = 0;
+    int shared_mem_default = 0, shared_mem_optin = 0;
+    bool dp4a = false;                 // cc 6.1+: the packed int8 dot-product instruction
+    bool mma_int8 = false;             // cc 7.5+: int8 mma
+    bool mma_tf32 = false;             // cc 8.0+: TF32 mma
+    bool cp_async = false;             // cc 8.0+
+    int driver_version = 0, runtime_version = 0;
+    std::string arch;                  // HIP: gcn arch name; empty on CUDA
+};
+
+// Every visible device, in ordinal order.  Throws only when the count query itself fails; there is no global
+// minimum here - gating per capability is up to the caller (device_info keeps the release-build floor).
+std::vector<DeviceCaps> device_caps();
+
+// device_caps().size() squared entries; entry [i * n + j] is 1 when device i can peer-access device j.  Read
+// with cudaDeviceCanAccessPeer only - nothing gets enabled by a query (enabling is a later, explicit decision).
+// A topology without peer support (PCIe root bridges) simply reports 0 everywhere.
+std::vector<uint8_t> peer_access_matrix();
+
 /// "" when this build has device code for the current device, else CUDA's error: a build for other GPUs would
 /// otherwise fail at its first kernel launch, with nothing that names the cause.
 std::string device_code_error();
