@@ -42,11 +42,15 @@ void ck(cublasStatus_t s, const char* what) {
     }
 }
 
-// gfx1201 hipBLAS returns success and the correct BF16/FP16 product for some
-// shapes (hc up once T>=96, the router), then leaves hipErrorInvalidValue set.
-// The multiply has finished; the next kernel check would otherwise exit.
+// On gfx1201 under Windows, hipBLAS returns success and the correct BF16/FP16 product for some
+// shapes (hc up once T>=96, the router), then leaves hipErrorInvalidValue set. The multiply has
+// finished; the next kernel check would otherwise exit.
+//
+// Deliberately _WIN32-only. The sticky error is a property of that stack, and swallowing a stale
+// hipErrorInvalidValue after every GEMM on Linux would hide a real error there, so the Linux build
+// keeps reporting it as it always has.
 void absorb_hipblas_sticky(const char* what) {
-#if defined(__HIPCC__)
+#if defined(__HIPCC__) && defined(_WIN32)
     const hipError_t sticky = hipGetLastError();
     if (sticky == hipSuccess || sticky == hipErrorInvalidValue) return;
     std::fprintf(stderr, "prefill gemm: %s left %s\n", what, hipGetErrorString(sticky));

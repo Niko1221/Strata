@@ -1,9 +1,16 @@
-# Experimental AMD HIP backend (gfx1100, gfx1201)
+# Experimental AMD HIP backend (gfx1100, gfx1200, gfx1201)
 
-This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
-RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)).
-It is opt-in; the NVIDIA installer and CUDA build remain the default. Other AMD
-architectures, wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
+A source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
+RX 9060 / 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1200 / gfx1201; see
+[RDNA4](#rdna4-gfx1201)), on Linux or Windows. It is opt-in; the NVIDIA installer
+and CUDA build remain the default. Other AMD architectures, wave64, and mixed
+AMD/NVIDIA execution are outside this contribution.
+
+The kernels are the same on both platforms: `include/strata/hip_compat` maps the
+CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, and `cmake/hip_backend.cmake`
+compiles the `.cu` sources as HIP. Windows additionally needs ROCm's own clang as
+the host compiler (CMake refuses to mix MSVC host flags with Clang HIP) and the
+CUDA shim force-included with `/FI`; see [Windows](#windows).
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
 RDNA3/RDNA4's signed integer dot instruction for quantized kernels, and supplies
@@ -38,6 +45,44 @@ On Linux with an RX 7900 XT / XTX or an RX 9070 / 9070 XT / Radeon AI PRO R9700 
 - **Limits for now:** one GPU, no images, no calibration. The Monitor shows no GPU statistics.
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
+
+## Windows
+
+On Windows with one of the supported cards and the amdgpu driver:
+
+```
+START-HERE.bat --backend hip
+```
+
+- **Detection:** setup finds the card through the display-class registry (PCI device id, then the driver
+  name), so no ROCm install is needed to be seen. Integrated Radeon GPUs are listed as not supported.
+  On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
+- **ROCm:** an installed ROCm 10 tree is used when present, preferring the `rocm-sdk` root over the HIP
+  SDK when `ROCM_PATH` is unset. Otherwise ROCm is installed into `.venv` from AMD's TheRock wheels
+  (`STRATA_ROCM_VERSION` / `STRATA_ROCM_INDEX_WIN` override them) and `rocm-sdk init` populates it —
+  **without that init step the tree stays empty and setup will reinstall ROCm on every run.**
+- **Engine:** compiled on your PC for the card's architecture (10-20 minutes, once; again after a
+  `git pull` that changes it, or when you pick a card of another architecture). This needs
+  **Visual Studio Build Tools with the C++ workload** and Git. CMake refuses to mix MSVC host flags with
+  Clang HIP, so ROCm's `clang++` compiles the host code too and the CUDA shim is force-included with
+  `/FI`. `STRATA_BUILD_TESTS=OFF` and no images.
+- **GPU selection:** `HIP_VISIBLE_DEVICES` counts the devices the HIP runtime enumerates, which is not
+  the order display-class enumeration reports. With an integrated GPU present the iGPU takes ordinal 0
+  and the discrete card takes 1. setup resolves the ordinal with `strata-device --list-devices` and
+  records it as `hip_ordinal` in the engine config, so a PC with an iGPU does not hand the engine the
+  wrong card. `strata-device --list-devices` prints that numbering if you want to check it.
+- **Known:** on gfx1201 hipBLAS can return success and still leave `hipErrorInvalidValue` set; the
+  engine clears it after a successful GEMM. This is deliberately Windows-only — the Linux build keeps
+  reporting a stale error as before.
+- **hipBLASLt tuning table:** only a table for this card's arch AND the installed hipBLASLt version is
+  used; otherwise plain hipBLAS (slower prompts, same answers). None ships for gfx1200/gfx1201 yet.
+- **Limits for now:** one GPU, no images, no calibration. The Monitor shows no GPU statistics.
+
+Measured on an RX 9070 XT (gfx1201, 16 GB) with ROCm 10.2.0: Coder IQ1_M at 32K context loads
+(23.42 GiB in RAM, 5,047 expert slots / 9.59 GiB VRAM) and decodes at 29 tok/s — see
+[bench/results/2026-09-30-rx9070xt-windows](../bench/results/2026-09-30-rx9070xt-windows/README.md).
+`strata-device --selftest` is the model-free smoke test (arena alignment, the NaN poison path, and
+over-allocation refused).
 
 ## Build
 
@@ -168,6 +213,39 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** gfx1200 (RX 9060 XT; a community report is #176), images, long contexts beyond 16K,
   answer-quality benchmarks.
+
+### Windows: mapped host memory is not addressable by the GPU
+
+On Windows, `hipHostGetDevicePointer` returns **the host pointer itself**, not a device-side alias
+into that allocation. `tests/hip/mapped_alias` prints both addresses and checks whether they differ;
+on this stack they are equal:
+
+```
+  host  0000000304000000
+  alias 0000000304000000
+  -> THE HOST POINTER: there is no device mapping for this allocation
+```
+
+Two consequences, both handled in the tree rather than papered over:
+
+- **`src/core/native_head.cpp` keeps the token embedding in device memory on Windows.** A non-null
+  alias is not evidence of a usable mapping, so the mapped-alias path is only taken when the pointer
+  is genuinely distinct; otherwise the table is copied into VRAM. It is read-only from the GPU and
+  322 MiB there costs far less than the PCIe traffic the alias would imply.
+- **`tests/hip/handoff` fails on gfx1201/Windows** with "separate copy/ring timeout". It performs a
+  `hipMemcpyAsync(..., hipMemcpyDeviceToDevice)` into that alias and waits for a doorbell the copy
+  should have published; with a host address in the destination there is no such publication. This
+  is a property of the Windows stack, not of the handoff code - the same test passes on Linux - and
+  it is **not fixed here**: the copy engine path that `handoff` exercises is not used by the running
+  engine on Windows, where the expert arena arrives through `cudaHostRegister`ed pinned memory
+  instead. Fixing it properly means giving the handoff a real device-side buffer on Windows, which
+  is a change to the production path and is left to whoever owns it.
+
+`ctest` on Windows, RX 9070 XT, ROCm 10.2.0: **42 of 46 pass, 1 skipped, 4 failed** - `hip_handoff`
+(as above) plus `ple_parity`, `expert_parity` and `pool_test`, which all read
+`pack/full/experts.bin`, a model fixture this checkout does not carry (the same three are the
+documented Linux exclusions for the same reason). `hip_prefill_hipblaslt_gemm` skips: no gfx1201
+hipBLASLt table ships.
 
 ## Tuning table
 

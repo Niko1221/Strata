@@ -384,6 +384,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME hip_handoff COMMAND hip_handoff)
       list(APPEND _strata_hip_tests hip_handoff)
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/mapped_alias.cpp")
+      # Reports whether a hipHostGetDevicePointer alias is host-visible. It always exits 0: on
+      # Windows the answer is "it is not", and that is the diagnosis for hip_handoff's timeout,
+      # not a failure of this test.
+      add_executable(hip_mapped_alias tests/hip/mapped_alias.cpp)
+      target_link_libraries(hip_mapped_alias PRIVATE strata_kernels strata_hip_runtime)
+      add_test(NAME hip_mapped_alias COMMAND hip_mapped_alias)
+      list(APPEND _strata_hip_tests hip_mapped_alias)
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/native_qsa_score.cpp")
       add_executable(hip_native_qsa_score tests/hip/native_qsa_score.cpp)
       target_link_libraries(hip_native_qsa_score PRIVATE strata_kernels strata_hip_runtime)
