@@ -732,3 +732,17 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
+
+### API request monitor
+
+Open `/api-monitor` to inspect API traffic without opening a chat. It shows the model state, safe
+load/unload controls, active/queued requests, original request bodies, output, separate reasoning and
+non-stream response bodies. Total wall-clock includes FIFO waits and automatic loading; load, queue,
+first-token, prompt/output tokens and engine decode timing are shown separately.
+
+`GET /api/requests` returns compact summaries; `GET /api/requests?id=<id>` returns one retained request.
+Both use the existing API-key check. The monitor retains the newest **100 requests in memory** until restart,
+with **262,144 characters per input/output/reasoning/response field** and visible truncation flags. The actual API
+responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
+Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
+The page uses relative URLs and works through the existing host binding or a reverse proxy.
