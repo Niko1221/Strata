@@ -119,8 +119,24 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16
         }
     };
     old_run();
-    new_run();
-    ck(cudaDeviceSynchronize(), "run");
+    {   // a device without the tensor-core kernel (HIP other than gfx12): the old kernel is what runs - not a failure
+        const bool took = k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr);
+        ck(cudaDeviceSynchronize(), "run");
+        if (!took) {
+            cudaEvent_t b0, b1;
+            cudaEventCreate(&b0);
+            cudaEventCreate(&b1);
+            float ms = 0;
+            cudaEventRecord(b0);
+            for (int r = 0; r < reps; ++r) old_run();
+            cudaEventRecord(b1);
+            ck(cudaEventSynchronize(b1), "time");
+            cudaEventElapsedTime(&ms, b0, b1);
+            std::printf("SKIP %s ctx %lld, %lld queries: tensor-core kernel not available on this device; old kernel %.3f ms per chunk\n",
+                        fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, ms / reps);
+            return 0;
+        }
+    }
     std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
