@@ -117,6 +117,26 @@ void validate(const QsaShapes& s, const char* who) {
 __device__ __forceinline__ float h2f(uint16_t bits) { return f32_from_f16(bits); }
 
 // ================= 1. kv_append =================
+// The per-cell append, shared by the single-step and batch kernels so the store/convert arithmetic cannot
+// drift: write the K and V rows of one cell to the VRAM page (if resident) and the host copy (if any).
+__device__ __forceinline__ void kv_append_f16_cell(uint16_t* k_pool, uint16_t* v_pool, const int32_t* table,
+                                                   long long pos, const float* kc, const float* vc, int kv_heads,
+                                                   int head_dim, int page_size, int i, KvHostPools host) {
+    const int h = i / head_dim, d = i - h * head_dim;
+    // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page.
+    // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident.
+    const long long page = (long long) table[pos / page_size];
+    if (page >= 0) {
+        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
+        k_pool[row * head_dim + d] = f16_from_f32(kc[i]);
+        v_pool[row * head_dim + d] = f16_from_f32(vc[i]);
+    }
+    if (host.k_pool != nullptr) {
+        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
+        host.k_pool[row * head_dim + d] = f16_from_f32(kc[i]);
+        host.v_pool[row * head_dim + d] = f16_from_f32(vc[i]);
+    }
+}
 
 __global__ void kv_append_kernel(uint16_t* __restrict__ k_pool, uint16_t* __restrict__ v_pool,
                                  const int32_t* __restrict__ table, const int32_t* __restrict__ step,
@@ -125,20 +145,26 @@ __global__ void kv_append_kernel(uint16_t* __restrict__ k_pool, uint16_t* __rest
     const long long pos = (long long) __ldg(step + kStepPos);
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= kv_heads * head_dim) return;
-    const int h = i / head_dim, d = i - h * head_dim;
-    // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page.
-    // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident.
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) {
-        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
-        k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
-        v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
-    }
-    if (host.k_pool != nullptr) {
-        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
-        host.k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
-        host.v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
-    }
+    kv_append_f16_cell(k_pool, v_pool, table, pos, kcur, vcur, kv_heads, head_dim, page_size, i, host);
+}
+
+// The verify window's batch: grid.y = the token within the window.  Every cell's position comes from its own
+// step record (kStepPos) and the K/V rows are the token's contiguous run, so the launch is capturable.  The
+// cells' writes are pairwise disjoint - bitwise identical to n_steps kv_append_step calls with those records.
+__global__ void kv_append_batch_kernel(uint16_t* __restrict__ k_pool, uint16_t* __restrict__ v_pool,
+                                       const int32_t* __restrict__ table, const int32_t* __restrict__ steps,
+                                       const float* __restrict__ kcur, const float* __restrict__ vcur,
+                                       int kv_heads, int head_dim, int page_size, int n_steps,
+                                       KvHostPools host) {
+    const int t = blockIdx.y;
+    if (t >= n_steps) return;
+    const int32_t* step = steps + (size_t) t * kStepCount;
+    const size_t stride = (size_t) kv_heads * head_dim;
+    const long long pos = (long long) __ldg(step + kStepPos);
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (int) stride) return;
+    kv_append_f16_cell(k_pool, v_pool, table, pos, kcur + (size_t) t * stride, vcur + (size_t) t * stride,
+                       kv_heads, head_dim, page_size, i, host);
 }
 
 // ================= 2. indexer_key_append =================
@@ -602,6 +628,23 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
         host ? *host : KvHostPools{});
     check_launch("kv_append");
     if (stream == nullptr) check_sync("kv_append");
+}
+
+void kv_append_batch(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* steps,
+                     const float* kcur, const float* vcur, int64_t n_steps, const QsaShapes& s, void* stream,
+                     const KvHostPools* host) {
+    validate(s, "kv_append_batch");
+    if (steps == nullptr) fail("kv_append_batch: steps is null");
+    if (n_steps < 1) return;
+    // The grid x is the head x dim count per token, y the token: the launch is capturable because every cell's
+    // position comes from its own step record, and `n_steps` is the same for every replay of a given T.
+    const long long n = s.n_head_kv * s.head_dim;
+    const dim3 grid((unsigned) grid_for(n, THREADS), (unsigned) n_steps);
+    kv_append_batch_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(
+        k_pool, v_pool, page_table, steps, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
+        (int) n_steps, host ? *host : KvHostPools{});
+    check_launch("kv_append_batch");
+    if (stream == nullptr) check_sync("kv_append_batch");
 }
 
 void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, const QsaShapes& s,

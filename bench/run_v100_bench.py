@@ -148,6 +148,7 @@ def main() -> int:
     ap.add_argument("--model-gguf", required=True, help="Qwen3.8-Flash-Next GGUF (shard 1) for local token counting")
     ap.add_argument("--out", type=Path, default=ROOT / "bench" / "results" / "2026-09-28-v100-fastpath")
     ap.add_argument("--only", help="comma-separated labels to run (default: all published rows)")
+    ap.add_argument("--targets", help="comma-separated prompt token counts; replaces the published targets")
     ap.add_argument("--seed", type=int, help="seed a local random.Random so the same command line sends the "
                                              "identical prompt sequence (for A/B pairing)")
     ap.add_argument("--repeats", type=positive_int, help="run the selected rows this many times, each repeat "
@@ -174,7 +175,10 @@ def main() -> int:
     if args.spec_min_p is not None:
         tune["spec_min_p"] = args.spec_min_p
 
-    targets = [t for t in TARGETS if not args.only or t[0] in args.only.split(",")]
+    targets = TARGETS
+    if args.targets:
+        targets = [(f"{positive_int(value)}", positive_int(value)) for value in args.targets.split(",")]
+    targets = [t for t in targets if not args.only or t[0] in args.only.split(",")]
     if not targets:
         raise SystemExit(f"--only matched nothing; labels are {sorted({t[0] for t in TARGETS})}")
 

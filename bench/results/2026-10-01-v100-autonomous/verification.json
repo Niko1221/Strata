@@ -1,0 +1,64 @@
+{
+  "cuda_architecture": 70,
+  "kernel_checks": {
+    "command": "ctest --test-dir build-perf -R '^(kv_(q8|q4|stream|hybrid)_parity|gr_parity|qsa_parity)$' --output-on-failure",
+    "passed": ["kv_q8_parity", "kv_q4_parity", "kv_stream_parity", "kv_hybrid_parity", "gr_parity", "qsa_parity"],
+    "failed": 0
+  },
+  "captured_gr_smoke": {
+    "reference": "Unmodified HEAD GR CUDA source, linked with the same driver support",
+    "tokens": [1, 2, 3, 4, 5, 6, 7, 8],
+    "fixture": "Seed 99, 2560 embedding dimensions, four streams, rank 320, BF16-rounded weights",
+    "gpu0_reference_microseconds": [61.9, 71.3, 79.3, 87.8, 97.7, 105.7, 115.2, 124.9],
+    "gpu0_candidate_microseconds": [42.2, 50.0, 56.3, 78.6, 85.6, 90.2, 94.7, 116.2],
+    "gpu1_reference_microseconds": [60.5, 69.8, 77.6, 86.4, 95.8, 104.0, 113.6, 123.1],
+    "gpu1_candidate_microseconds": [40.6, 48.5, 54.2, 74.0, 83.9, 88.1, 93.2, 113.8],
+    "cross_runtime_compared_bytes": 3360768,
+    "bitwise_differences": 0,
+    "scalar_reference_and_captured_replay": "All eight window sizes matched on both V100 GPUs",
+    "no_inject_no_apply": "Four-token case matched on both GPUs",
+    "scope": "Synthetic captured-kernel fixture. Only sm_70 uses the fused down path, for all supported window sizes of one to eight tokens; not an end-to-end throughput claim"
+  },
+  "live_ring_resume": {
+    "main_context_capacity": 262144,
+    "draft_attention_window": 32768,
+    "main_kv": "int8, fully resident",
+    "first_prompt_tokens": 53508,
+    "first_reused_tokens": 0,
+    "first_output_tokens": 256,
+    "immediate_extension_prompt_tokens": 53518,
+    "extension_reused_tokens": 49152,
+    "extension_output_tokens": 128,
+    "scope": "Completed generation after draft-ring wrap and a direct prefix-chain checkpoint resume beyond ring capacity; no bitwise completion assertion"
+  },
+  "greedy_completion_controls": {
+    "temperature": 0,
+    "seed": 123,
+    "findings": "Logic output matched. Code and story outputs changed in PCIe-enabled controls. A fresh original-versus-original restart also changed story output. Paired unchanged/current verify consumers with unchanged GR and zero PCIe misses matched all three completions byte for byte. Full generated-text determinism with PCIe-enabled experts is not established."
+  },
+  "zero_pcie_verify_controls": {
+    "pcie_fraction": 0,
+    "adaptive_swaps": 0,
+    "draft_ring": false,
+    "layer_split": 16,
+    "gr": "Unmodified HEAD GR in both linked runtimes",
+    "comparison": "Unmodified HEAD verify consumer versus retained batch-append consumer",
+    "matched_completion_hashes": {
+      "logic": "f67249add69eebc5836ff43f952d215635a513c6ddb0ac003dc3199813534378",
+      "code": "e7a24f69d7a5f1d4aa58053714bcab435da78177a37c4c38c7d070f504230b6e",
+      "story": "07316e87fdeb3b024e372f7144a2cfddcedb618491f5a8a448a23d5678b410c9"
+    },
+    "output_tokens": [128, 128, 127],
+    "scope": "Three live greedy controls, with no prompt reuse. This removes PCIe misses; it does not prove deterministic placement or timing in the PCIe-enabled path."
+  },
+  "final_build_verification": {
+    "kernel_parity_tests_passed": 6,
+    "gr_compute_sanitizer_memcheck_errors": 0,
+    "gr_compute_sanitizer_synccheck_errors": 0,
+    "final_ring_resume_repeated": true,
+    "final_matrix_requests": 12,
+    "all_final_requests_reused_zero_tokens": true,
+    "all_final_requests_output_tokens": 256,
+    "pcie_control_caveat": "PCIe-enabled comparison startups had different GPU1 expert-cache capacities (5762 versus 5963 slots); those comparisons did not fix expert placement."
+  }
+}

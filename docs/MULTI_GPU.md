@@ -97,6 +97,14 @@ into the card that owns the layer.
   - control vectors and the experimental speed projection: each card holds the vector's tables, switched on and
     off per request on all of them;
   - KV streaming (`--kv-resident`): each card streams the KV of its own session;
+  - the MTP draft layer's own K/V: when a window is set and is smaller than the context (`--mtp-window`;
+    default 32,768 cells; a window of 0, or at least the context, keeps the draft layer's K/V fully in VRAM),
+    the draft layer's K/V is a ring of that window over its own pinned host copy, independent of
+    `--kv-resident`. The host copy holds the WHOLE context in RAM (it is the basis for refilling the ring on a
+    resume; no part of it is reduced). If the host copy cannot be pinned, the draft layer's K/V stays fully in
+    VRAM. With the ring the draft attends only the last window's cells - a longer window holds more of the
+    context at the cost of more VRAM only; the pinned host copy always holds the whole context, whatever the
+    window;
   - mid-prompt checkpoints (`--prompt-cache-every`): each card saves its part of a checkpoint when it has read that
     chunk;
   - the older helper-GPU caches (`--expert-cache-remote`, docs/SECOND_GPU.md): they take the visible GPUs no stage
@@ -125,6 +133,22 @@ its share: the hand-off is one per window (a few hundred KB through pinned RAM).
 each card reads its own layers of a chunk while the previous card reads the next chunk - but decode is the sum
 of the stages, not the longer one.  With two equal cards each card is busy about half the time during decode
 (measured on a pair of V100 16 GB: one card at 100% util while the other idles, alternating per window).
+
+Inside a window, each layer's hyper-connection read and its K/V append run as a small fixed set of launches,
+whatever the window's size:
+
+- **Hyper-connection read (the hc-read halves).** The read computes the norm, the low-rank down projection and
+  the up projection once per layer half.  On a Volta card (sm_70) a group of up to 8 tokens (a group is
+  the window, or its half under `--spec-split`) is read in two kernels: the down launch runs the original
+  scalar down body once per token. Each block handles one token and one group of 8 projection rows.
+  The block recomputes its token's norm with the unchanged 8-warp mapping. There is no separate norm launch and
+  the normalized input never round-trips through global memory; the up kernel follows.  Every token's
+  outputs are bit-identical to the scalar kernel's.  Every other architecture keeps the original
+  three-launch read.
+- **K/V append.** Each verify group uses one append launch for Q8, Q4 or FP16 KV. Hybrid KV uses one
+  launch for K8 and one for V4. Each token reads its own position record and writes a separate cell.
+  The append also writes the host copy when one exists. The quantization arithmetic is the same as
+  the single-token append. Page boundaries and rejected-tail overwrite have parity checks.
 
 The host thread that drives the windows is pinned to its own core and spins while it waits for the GPU
 (`SessionLoopScratch`, `Verifier::run`); on that rig the wait is 11.3 ms of every 33.6 ms window, against 0.7 ms
@@ -155,6 +179,66 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   stages and each card is busy about half the time.  The windows drove the host thread's pinned core to a full
   spin while the GPU ran, and the speed did not change when that work could have spread across cores - the
   card-side flag waits on the host (waitA + waitB + waitCPU) total ~1.3 ms of every 33.6 ms window.
+- **The hc read on the pair** (captured-event fixture: seed 99, bf16 weights, native 2560/4/320, window
+  sizes 1 to 8): per-call GPU microseconds, original vs fused two-kernel read on each card:
+
+  | T | old GPU0 | new GPU0 | old GPU1 | new GPU1 |
+  |---|---------:|---------:|---------:|---------:|
+  | 1 | 61.9     | 42.2     | 60.5     | 40.6     |
+  | 2 | 71.3     | 50.0     | 69.8     | 48.5     |
+  | 3 | 79.3     | 56.3     | 77.6     | 54.2     |
+  | 4 | 87.8     | 78.6     | 86.4     | 74.0     |
+  | 5 | 97.7     | 85.6     | 95.8     | 83.9     |
+  | 6 | 105.7    | 90.2     | 104.0    | 88.1     |
+  | 7 | 115.2    | 94.7     | 113.6    | 93.2     |
+  | 8 | 124.9    | 116.2    | 123.1    | 113.8    |
+
+  The old and new full output dumps of the eight windows are byte-identical (3,360,768 bytes in all);
+  scalar parity, capture replay and no-inject checks all pass, and the six selected kernel ctests
+  (kv q8/q4/stream/hybrid parity, gr parity, qsa parity) pass on the final build.  A captured-event
+  fixture measures kernel latency, not throughput - it is not proof of a runtime gain.
+
+### V100 runtime comparison
+
+The final comparison uses two V100 PCIe 16 GB cards. GPU0 has a Gen3 x2 link.
+GPU1 has a Gen3 x16 link. The model is Qwen3.8-Flash-Next Q2_0. The layer split
+is 20/28. Main KV is int8 with a 262,144-token capacity. Vision stays enabled.
+Prefill chunk size and expert placement use their automatic settings.
+
+Each prompt size has three fresh requests and 256 output tokens per request.
+No request reuses prompt tokens. Seed 1001 controls the prompt generator, not
+the model sampler. The server uses greedy sampling. The table shows medians
+in tokens per second against the installed runtime before these changes.
+
+| Prompt target | Prefill before | Prefill after | Decode before | Decode after | Decode change |
+|---|---:|---:|---:|---:|---:|
+| 4K | 441.8 | 442.6 | 61.0 | 64.4 | +5.6% |
+| 8K | 619.7 | 621.0 | 58.7 | 68.0 | +15.8% |
+| 16K | 818.9 | 820.3 | 56.6 | 66.4 | +17.3% |
+| 32K | 974.4 | 977.1 | 58.6 | 66.8 | +14.0% |
+
+The goal of a 20% gain in both paths at all four sizes was not met. Prefill
+throughput is approximately unchanged. A 14/34 split with a 12,288-token
+prefill chunk raised short-prompt prefill to 650.4/778.4 tokens per second,
+but reduced 32K prefill to 839.9. The installed configuration keeps the
+original split and automatic chunk size. No rejected tuning flag is enabled.
+
+The final build passed six kernel parity tests. GR memory and synchronization
+checks reported zero errors. A live request passed the draft ring boundary
+with 53,508 prompt tokens and 256 output tokens. Its direct prefix extension
+restored a 49,152-token checkpoint and produced 128 output tokens. Main KV
+stayed in VRAM for both requests.
+
+Kernel byte parity does not establish identical generated text for all
+placements. A fixed no-PCIe-miss control matched all three completion hashes.
+Other controls changed expert-cache capacity and could change CPU/GPU
+arithmetic. An original-versus-original restart also changed one completion.
+
+Raw matrices, comparison data and verification details are in
+`bench/results/2026-10-01-v100-autonomous/`. To repeat the four-size matrix,
+use `bench/run_v100_bench.py --model qwen --targets 4096,8192,16384,32768
+--seed 1001 --repeats 3 --max-tokens 256` with the model GGUF and output
+directory options for the local installation.
 
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.

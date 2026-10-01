@@ -80,6 +80,14 @@ void append(const Pools& pl, const int32_t* table, const int32_t* step, const fl
     else k::kv_append_step(pl.p.k_pool, pl.p.v_pool, table, step, kc, vc, s, nullptr, host);
 }
 
+void append_batch(const Pools& pl, const int32_t* table, const int32_t* steps, const float* kc, const float* vc,
+                  int64_t n, const k::QsaShapes& s, int fmt, const k::KvHostPools* host) {
+    if (fmt == k::kKvQ4) k::kv_append_q4_batch(pl.p.k_q4, pl.p.v_q4, table, steps, kc, vc, n, s, nullptr, host);
+    else if (fmt == k::kKvInt8)
+        k::kv_append_q8_batch(pl.p.k_q, pl.p.v_q, pl.p.k_scale, pl.p.v_scale, table, steps, kc, vc, n, s, nullptr, host);
+    else k::kv_append_batch(pl.p.k_pool, pl.p.v_pool, table, steps, kc, vc, n, s, nullptr, host);
+}
+
 // A selection like qsa_block_topk's: ascending cells, whole blocks, the tail block's cells, and one partial block.
 std::vector<int32_t> selection(int64_t n_kv, int64_t width, std::mt19937& rng) {
     std::vector<int32_t> ids;
@@ -221,6 +229,98 @@ bool run(int fmt) {
         std::printf("  %s ring restore: %s\n", name, ok ? "identical" : "DIFFERS");
         if (!ok) ++bad;
     }
+
+        // 5. the verify window's batch vs the repeated step calls, host mirror included: the streamed writer
+        // keeps rewriting the host copy, and a rejected draft's tail must not survive in either copy.
+        {
+            const int PAGES = 16;
+            const int64_t CELLS = (int64_t) PAGES * s.page_size, Tmax = 8;
+            const int64_t H6 = s.n_head_kv, D6 = s.head_dim;
+            const int P = (int) s.page_size;
+            const int pos_table[Tmax] = {0, P - 1, P, P + 1, 2 * P - 1, 3 * P, (int) CELLS / 2, (int) CELLS - (int) Tmax};
+            Pools pa, pb, pha, phb;
+            pa.alloc(PAGES, s, fmt, false); pb.alloc(PAGES, s, fmt, false);
+            pha.alloc(PAGES, s, fmt, true); phb.alloc(PAGES, s, fmt, true);
+            int32_t* it = dalloc<int32_t>(PAGES);
+            {
+                std::vector<int32_t> iv(PAGES);
+                for (int i = 0; i < PAGES; ++i) iv[i] = i;
+                ck(cudaMemcpy(it, iv.data(), PAGES * 4, cudaMemcpyHostToDevice), "ident2");
+            }
+            int32_t* sts = dalloc<int32_t>((size_t) Tmax * k::kStepCount);
+            float* kc2 = dalloc<float>((size_t) Tmax * H6 * D6);
+            float* vc2 = dalloc<float>((size_t) Tmax * H6 * D6);
+            const size_t rows = (size_t) PAGES * H6 * P;
+            auto zero = [&](const k::KvHostPools& p2) {
+                if (fmt == k::kKvQ4) {
+                    const size_t bb = rows * k::kv_q4_bytes_per_head((int) D6);
+                    ck(cudaMemset(p2.k_q4, 0, bb), "zero"); ck(cudaMemset(p2.v_q4, 0, bb), "zero");
+                } else if (fmt == k::kKvInt8) {
+                    ck(cudaMemset(p2.k_q, 0, rows * (size_t) D6), "zero");
+                    ck(cudaMemset(p2.v_q, 0, rows * (size_t) D6), "zero");
+                    ck(cudaMemset(p2.k_scale, 0, rows * 4 * 2), "zero");
+                    ck(cudaMemset(p2.v_scale, 0, rows * 4 * 2), "zero");
+                } else {
+                    ck(cudaMemset(p2.k_pool, 0, rows * (size_t) D6 * 2), "zero");
+                    ck(cudaMemset(p2.v_pool, 0, rows * (size_t) D6 * 2), "zero");
+                }
+            };
+            auto cmp = [&](const char* what, const k::KvHostPools& A, const k::KvHostPools& B) -> long {
+                long bad = 0;
+                struct Slot { const void* a; const void* b; size_t bytes; };
+                std::vector<Slot> sl;
+                if (fmt == k::kKvQ4) {
+                    const size_t bb = rows * k::kv_q4_bytes_per_head((int) D6);
+                    sl.push_back({A.k_q4, B.k_q4, bb}); sl.push_back({A.v_q4, B.v_q4, bb});
+                } else if (fmt == k::kKvInt8) {
+                    const size_t gb = rows * (D6 / k::KV_Q8_GROUP);
+                    sl.push_back({A.k_q, B.k_q, rows * (size_t) D6}); sl.push_back({A.v_q, B.v_q, rows * (size_t) D6});
+                    sl.push_back({A.k_scale, B.k_scale, gb * 2}); sl.push_back({A.v_scale, B.v_scale, gb * 2});
+                } else {
+                    sl.push_back({A.k_pool, B.k_pool, rows * (size_t) D6 * 2});
+                    sl.push_back({A.v_pool, B.v_pool, rows * (size_t) D6 * 2});
+                }
+                std::vector<uint8_t> x, y;
+                for (const Slot& s2 : sl) {
+                    x.resize(s2.bytes); y.resize(s2.bytes);
+                    ck(cudaMemcpy(x.data(), s2.a, s2.bytes, cudaMemcpyDeviceToHost), "cmp");
+                    ck(cudaMemcpy(y.data(), s2.b, s2.bytes, cudaMemcpyDeviceToHost), "cmp");
+                    for (size_t i = 0; i < s2.bytes; ++i) bad += x[i] != y[i];
+                }
+                if (bad) std::fprintf(stderr, "  %s batch-vs-step %s: %ld bytes differ\n", name, what, bad);
+                return bad;
+            };
+            auto stage = [&](int T, int pos0, bool reset = true) {
+                for (int t = 0; t < T; ++t) {
+                    std::vector<float> kv2((size_t) H6 * D6), vv2((size_t) H6 * D6);
+                    for (auto& x : kv2) x = nd(rng);
+                    for (auto& x : vv2) x = nd(rng);
+                    ck(cudaMemcpy(kc2 + (size_t) t * H6 * D6, kv2.data(), (size_t) H6 * D6 * 4, cudaMemcpyHostToDevice), "kc2");
+                    ck(cudaMemcpy(vc2 + (size_t) t * H6 * D6, vv2.data(), (size_t) H6 * D6 * 4, cudaMemcpyHostToDevice), "vc2");
+                    const int32_t st[k::kStepCount] = {pos0 + t, pos0 + t + 1, 0, 0};
+                    ck(cudaMemcpy(sts + (size_t) t * k::kStepCount, st, sizeof st, cudaMemcpyHostToDevice), "st2");
+                }
+                if (reset) { zero(pa.p); zero(pb.p); zero(pha.p); zero(phb.p); }
+                for (int t = 0; t < T; ++t) {
+                    append(pa, it, sts + (size_t) t * k::kStepCount, kc2 + (size_t) t * H6 * D6,
+                           vc2 + (size_t) t * H6 * D6, s, fmt, &pha.p);
+                }
+                append_batch(pb, it, sts, kc2, vc2, T, s, fmt, &phb.p);
+                ck(cudaDeviceSynchronize(), "batch2");
+            };
+            long cd = 0;
+            for (int t = 0; t < (int) Tmax; ++t) {
+                stage(t + 1, pos_table[t]);
+                cd += cmp("device pools", pa.p, pb.p);
+                cd += cmp("host mirrors", pha.p, phb.p);
+            }
+            stage(5, P - 1);
+            stage(4, P, false);
+            cd += cmp("rejected-tail rewrite device", pa.p, pb.p);
+            cd += cmp("rejected-tail rewrite host", pha.p, phb.p);
+            std::printf("  %s batch-vs-step: %s\n", name, cd ? "DIFFERS" : "identical");
+            if (cd) ++bad;
+        }
     return bad == 0;
 }
 }  // namespace

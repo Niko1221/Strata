@@ -366,4 +366,13 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
                     const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                     const KvHostPools* host = nullptr);
 
+/// The verify window's batch: `n_steps` CONSECUTIVE window tokens in ONE launch.  `steps` is the FIRST of the
+/// group's step records (stride kStepCount); every cell's position comes from ITS OWN record's kStepPos, so a
+/// captured graph replays it for any window (only pointers are baked, never a position).  K/V are the group's
+/// contiguous [t][kv_head][head_dim] rows.  Bitwise identical to `n_steps` `kv_append_step` calls with the same
+/// records.
+void kv_append_batch(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* steps,
+                     const float* kcur, const float* vcur, int64_t n_steps, const QsaShapes& s, void* stream,
+                     const KvHostPools* host = nullptr);
+
 }  // namespace strata::kernels

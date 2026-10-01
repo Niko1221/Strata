@@ -40,10 +40,14 @@ __device__ __forceinline__ float dot8(const uint4 w, const float* x) {
     return acc;
 }
 
-__global__ void __launch_bounds__(THREADS) gr_down_kernel(FusedGrArgs a) {
-    __shared__ __align__(16) float xn[D];
-    __shared__ float part[WARPS][HC];
-    __shared__ float s_rs[HC];
+// `gr_down_kernel`'s body, shared with the batched small-window kernel below.  Step 1 normalises the block's
+// token with the original 8-warp mapping (thread t owns the float4s at t*4 + THREADS*4*q; each thread
+// accumulates its per-stream sums of squares, warp_sum xors the warp, then `part` crosses the warps), step 2
+// dots the block's w_down rows (or the inject rows) against xn with one warp per row and lane-chunk order
+// lane + 32*j.  `box` is blockIdx.x; the batched kernel runs one instance per token on grid.y, sharing nothing
+// across tokens, so every token's arithmetic stays bitwise the scalar kernel's.
+__device__ __forceinline__ void gr_down_body(const FusedGrArgs& a, int box, float* xn, float (*part)[HC],
+                                             float* s_rs) {
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     float gw[HC];
 #pragma unroll
@@ -74,14 +78,14 @@ __global__ void __launch_bounds__(THREADS) gr_down_kernel(FusedGrArgs a) {
         float s = 0.0f;
         for (int w = 0; w < WARPS; ++w) s += part[w][t];
         s_rs[t] = rsqrtf(s / (float) N + a.eps);
-        if (blockIdx.x == 0) a.rs[t] = s_rs[t];
+        if (box == 0) a.rs[t] = s_rs[t];
     }
     __syncthreads();
     for (int i = t; i < D; i += THREADS) xn[i] *= s_rs[i / N];
     __syncthreads();
     // 2. one warp per output row: 10240 bf16 = 1280 chunks of 8, 40 per lane.
-    const bool inject_block = blockIdx.x == DOWN_BLOCKS;
-    const int row = inject_block ? warp : blockIdx.x * WARPS + warp;
+    const bool inject_block = box == DOWN_BLOCKS;
+    const int row = inject_block ? warp : box * WARPS + warp;
     if (inject_block && (a.w_inject == nullptr || warp >= HC)) return;
     const uint16_t* wrow = (inject_block ? a.w_inject : a.w_down) + (size_t) row * D;
     const uint4* w4 = reinterpret_cast<const uint4*>(wrow);
@@ -96,6 +100,13 @@ __global__ void __launch_bounds__(THREADS) gr_down_kernel(FusedGrArgs a) {
         const float x = acc / (float) HC;
         a.lo[row] = x / (1.0f + __expf(-x));
     }
+}
+
+__global__ void __launch_bounds__(THREADS) gr_down_kernel(FusedGrArgs a) {
+    __shared__ __align__(16) float xn[D];
+    __shared__ float part[WARPS][HC];
+    __shared__ float s_rs[HC];
+    gr_down_body(a, blockIdx.x, xn, part, s_rs);
 }
 
 __global__ void __launch_bounds__(THREADS) gr_up_kernel(FusedGrArgs a) {
@@ -178,6 +189,18 @@ __global__ void __launch_bounds__(THREADS) gr_norm_multi_kernel(GrMulti m) {
     __syncthreads();
     for (int i = t; i < D; i += THREADS) xn[i] *= s_rs[i / N];
 }
+// `gr_down_kernel` for a window of tokens, one block per (row-block, token) on grid.y: every block recomputes
+// its token's norm with the unchanged 8-warp mapping in the same launch that dots the rows, so the window has
+// the scalar path's two-kernel shape - no separate norm launch, and xn stays in shared instead of
+// round-tripping through global memory.  Blocks share nothing across tokens, so each token's arithmetic is
+// bitwise `gr_down_kernel`'s (and therefore `fused_gr_read`'s).
+__global__ void __launch_bounds__(THREADS) gr_down_multi2_kernel(GrMulti m) {
+    __shared__ __align__(16) float xn[D];
+    __shared__ float part[WARPS][HC];
+    __shared__ float s_rs[HC];
+    gr_down_body(m.a[blockIdx.y], blockIdx.x, xn, part, s_rs);
+}
+
 
 // Step 2 of `gr_down_kernel` for T tokens.  One warp per row (so each lane accumulates the same chunks in the
 // same order as the single-token kernel); per tile the lane's weight chunks are loaded BEFORE the activation
@@ -190,14 +213,19 @@ __global__ void __launch_bounds__(THREADS) gr_norm_multi_kernel(GrMulti m) {
 // which fits all eight tokens in one 40 KiB launch and stages 160 chunks of 8 (5 per lane, half the registers held
 // for the weight prefetch); smaller tiles raise how many blocks share an SM (the 41-block grid), e.g. three blocks
 // of four tokens instead of one on sm_75.
-template <int TILEV>
-__global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
-    constexpr int TQ = TILEV / 8 / 32;      // uint4 weight chunks per lane per tile
+// DOWN_WARPS rows per block (default 8).  Each warp still owns one full row with the same lane-chunk order, so
+// the results are bitwise identical for any value; sm_70 windows use `gr_down_multi2_kernel` instead (see the
+// launcher), which fuses the norm into the down launch.
+template <int TILEV, int DOWN_WARPS = WARPS>
+__global__ void __launch_bounds__(DOWN_WARPS * 32) gr_down_multi_kernel(GrMulti m) {
+    constexpr int NTHREADS = DOWN_WARPS * 32;   // one row per warp; DOWN_WARPS rows per block
+    constexpr int NBLK = LR / DOWN_WARPS;       // full row-blocks; block NBLK is the inject rows
+    constexpr int TQ = TILEV / 8 / 32;          // uint4 weight chunks per lane per tile
     extern __shared__ __align__(16) float tile[];   // [T][TILEV]
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int T = m.T;
-    const bool inject_block = blockIdx.x == DOWN_BLOCKS;
-    const int row = inject_block ? warp : blockIdx.x * WARPS + warp;
+    const bool inject_block = blockIdx.x == NBLK;
+    const int row = inject_block ? warp : blockIdx.x * DOWN_WARPS + warp;
     const bool active = !(inject_block && (m.a[0].w_inject == nullptr || warp >= HC));
     const uint16_t* wrow = (inject_block ? m.a[0].w_inject : m.a[0].w_down) + (size_t) (active ? row : 0) * D;
     const uint4* w4 = reinterpret_cast<const uint4*>(wrow);
@@ -213,7 +241,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_multi_kernel(GrMulti m) {
         __syncthreads();                                   // the previous tile is consumed
         const float4* src4 = reinterpret_cast<const float4*>(m.xn);
         float4* tile4 = reinterpret_cast<float4*>(tile);
-        for (int i = t; i < T * (TILEV / 4); i += THREADS) {
+        for (int i = t; i < T * (TILEV / 4); i += NTHREADS) {
             const int k = i / (TILEV / 4), off = i - k * (TILEV / 4);
             tile4[i] = src4[((size_t) k * D + base) / 4 + off];
         }
@@ -551,13 +579,12 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         }
         return;
     }
-    gr_norm_multi_kernel<<<n_tok, THREADS, 0, st>>>(m);
-    if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
-    // the shared-memory opt-in is a per-DEVICE setting: once per device, not once per process (a layer split
-    // runs this kernel on two cards)
+    // ---- per-device capabilities, cached once per device (attr[dev] guards the first call on each device; the
+    // attribute queries are host-side and free afterwards)
     static bool attr[64] = {};
     static int chunk[64] = {};   // tokens the down kernel may carry in one launch on this card
-    static int tile[64] = {};    // the down kernel's TILEV on this card (1280 on sm_75, 2560 elsewhere; see above)
+    static int tile[64] = {};    // the down kernel's TILEV on this card (1280 on sm_75, 2560 elsewhere; see below)
+    static bool sm70[64] = {};   // the batched two-kernel small-window path below: sm_70 (V100) only
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev >= 0 && dev < 64 && !attr[dev]) {
@@ -571,21 +598,23 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         // the up kernel below still sees every token of the batch in one launch.
 #if defined(__HIPCC__)
         const bool small_tile = true;   // all eight tokens fit gfx1100's 64 KiB LDS at this tile
+        const bool is_sm70 = false;     // the batched small-window path was only measured on V100
 #else
         int cc_maj = 0, cc_min = 0;
         cudaDeviceGetAttribute(&cc_maj, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&cc_min, cudaDevAttrComputeCapabilityMinor, dev);
         const bool small_tile = cc_maj * 10 + cc_min == 75;
+        const bool is_sm70 = cc_maj * 10 + cc_min == 70;
 #endif
         const int tv = small_tile ? 1280 : 2560;
         tile[dev] = tv;
+        sm70[dev] = is_sm70;
         int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
-        if (small_tile) {
+        if (small_tile)
             cudaFuncSetAttribute(gr_down_multi_kernel<1280>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-        } else {
+        else
             cudaFuncSetAttribute(gr_down_multi_kernel<2560>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-        }
         cudaGetLastError();      // drop any error the attempt left behind
         // The opt-in is a promise a pre-Volta card does not keep: an sm_60 answers 65536 and accepts the
         // cudaFuncSetAttribute for 61440 B, then fails the LAUNCH with "invalid argument".  What such a card
@@ -605,25 +634,32 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     }
     const int tv = (dev >= 0 && dev < 64 && tile[dev]) ? tile[dev] : 2560;
     const int chunk_tok = (dev >= 0 && dev < 64 && chunk[dev]) ? chunk[dev] : kFusedGrMaxT;
-    if (chunk_tok >= n_tok) {
-        const size_t smem = (size_t) n_tok * tv * sizeof(float);
-        if (tv == 1280) {
-            gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
-        } else {
-            gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
-        }
+    // Windows of up to kFusedGrMaxT (= 8) tokens on sm_70 (the measured V100) keep the scalar path's
+    // two-kernel shape on one launch: `gr_down_multi2_kernel` batches the ORIGINAL `gr_down_kernel` over
+    // tokens on grid.y (one block per row-block and token, each recomputing its token's norm with the
+    // unchanged 8-warp mapping), so there is no separate norm launch and xn never round-trips through global
+    // memory.  Every token's outputs are bitwise `fused_gr_read`'s.  Every other CUDA and HIP architecture
+    // keeps the split norm kernel below (the same per-token arithmetic in three launches).
+    if (n_tok <= kFusedGrMaxT && dev >= 0 && dev < 64 && sm70[dev]) {
+        if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
+        gr_down_multi2_kernel<<<dim3(DOWN_BLOCKS + 1, n_tok), THREADS, 0, st>>>(m);
     } else {
-        for (int c0 = 0; c0 < n_tok; c0 += chunk_tok) {
-            const int ct = n_tok - c0 < chunk_tok ? n_tok - c0 : chunk_tok;
-            GrMulti c{};
-            c.xn = xn_scratch + (size_t) c0 * D;
-            c.T = ct;
-            for (int k = 0; k < ct; ++k) c.a[k] = a[c0 + k];
-            const size_t smem = (size_t) ct * tv * sizeof(float);
-            if (tv == 1280) {
-                gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-            } else {
-                gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+        gr_norm_multi_kernel<<<n_tok, THREADS, 0, st>>>(m);
+        if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
+        if (chunk_tok >= n_tok) {
+            const size_t smem = (size_t) n_tok * tv * sizeof(float);
+            if (tv == 1280) gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
+            else gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(m);
+        } else {
+            for (int c0 = 0; c0 < n_tok; c0 += chunk_tok) {
+                const int ct = n_tok - c0 < chunk_tok ? n_tok - c0 : chunk_tok;
+                GrMulti c{};
+                c.xn = xn_scratch + (size_t) c0 * D;
+                c.T = ct;
+                for (int k = 0; k < ct; ++k) c.a[k] = a[c0 + k];
+                const size_t smem = (size_t) ct * tv * sizeof(float);
+                if (tv == 1280) gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+                else gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
             }
         }
     }

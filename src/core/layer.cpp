@@ -495,18 +495,23 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
-    if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
+    if (ring_cells < 0) return p;   // a forced fully resident state
     // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
     static const bool main_off = std::getenv("STRATA_KV_MAIN_OFF") != nullptr;
-    if (ring_cells > 0 ? ring_off : main_off) return p;
+    // The MTP drafter's windowed ring is INDEPENDENT of the main layers' residency (--kv-resident): its
+    // attention reads only its last `ring_cells` cells (mtp.cpp), so it always stores just those in VRAM over
+    // its own pinned host copy - even when the main KV of the same session stays fully resident.  Only the
+    // main layers (ring_cells == 0) follow g_kv_resident.
     if (ring_cells > 0) {
+        if (ring_off) return p;
         const int64_t r = (ring_cells + s.page_size - 1) / s.page_size;
         if (r < p.pages) { p.mode = 2; p.slots = r; p.pooled_rows = 2; }   // the drafter has no indexer
-    } else {
-        const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
-        if (r < p.pages) { p.mode = 1; p.slots = r; }
+        return p;
     }
+    if (g_kv_resident <= 0 || main_off) return p;
+    const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
+    if (r < p.pages) { p.mode = 1; p.slots = r; }
     return p;
 }
 uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {

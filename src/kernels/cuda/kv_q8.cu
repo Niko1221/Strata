@@ -26,22 +26,19 @@ void validate(const QsaShapes& s, const char* what) {
     }
 }
 
-// One block = one 64-value group of one KV head of K (blockIdx.z = 0) or V (1); 64 threads, one value each.
-__global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict__ v_q,
-                                    uint16_t* __restrict__ k_scale, uint16_t* __restrict__ v_scale,
-                                    const int32_t* __restrict__ table, const int32_t* __restrict__ step,
-                                    const float* __restrict__ kcur, const float* __restrict__ vcur, int kv_heads,
-                                    int head_dim, int page_size, KvHostPools host) {
-    const long long pos = (long long) __ldg(step + kStepPos);
-    const int h = blockIdx.x, g = blockIdx.y, t = threadIdx.x;
-    const bool is_v = blockIdx.z == 1;
+// The per-cell append, shared by the single-step and batch kernels so the quantization arithmetic cannot
+// drift: quantize against the stored scale, then write the VRAM page (if resident) and the host copy (if any).
+__device__ __forceinline__ void kv_append_q8_cell(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
+                                                  const int32_t* table, long long pos, const float* kc,
+                                                  const float* vc, int kv_heads, int head_dim, int page_size, int h,
+                                                  int g, int lane, bool is_v, KvHostPools host) {
     const int groups = head_dim / KV_Q8_GROUP;
-    const float x = (is_v ? vcur : kcur)[h * head_dim + g * KV_Q8_GROUP + t];
+    const float x = (is_v ? vc : kc)[h * head_dim + g * KV_Q8_GROUP + lane];
     // max |x| over the 64 values: two warps, then combine through shared memory in a fixed order
     float a = fabsf(x);
     for (int o = 16; o > 0; o >>= 1) a = fmaxf(a, __shfl_xor_sync(0xffffffffu, a, o));
     __shared__ float warp_max[2];
-    if ((t & 31) == 0) warp_max[t >> 5] = a;
+    if ((lane & 31) == 0) warp_max[lane >> 5] = a;
     __syncthreads();
     const float amax = fmaxf(warp_max[0], warp_max[1]);
     const uint16_t sbits = f16_from_f32(amax / 127.0f);
@@ -55,14 +52,44 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
     const long long page = (long long) table[pos / page_size];
     if (page >= 0) {
         const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
-        (is_v ? v_q : k_q)[row * head_dim + g * KV_Q8_GROUP + t] = (int8_t) q;
-        if (t == 0) (is_v ? v_scale : k_scale)[row * groups + g] = sbits;
+        (is_v ? v_q : k_q)[row * head_dim + g * KV_Q8_GROUP + lane] = (int8_t) q;
+        if (lane == 0) (is_v ? v_scale : k_scale)[row * groups + g] = sbits;
     }
     if (host.k_q != nullptr) {
         const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
-        (is_v ? host.v_q : host.k_q)[row * head_dim + g * KV_Q8_GROUP + t] = (int8_t) q;
-        if (t == 0) (is_v ? host.v_scale : host.k_scale)[row * groups + g] = sbits;
+        (is_v ? host.v_q : host.k_q)[row * head_dim + g * KV_Q8_GROUP + lane] = (int8_t) q;
+        if (lane == 0) (is_v ? host.v_scale : host.k_scale)[row * groups + g] = sbits;
     }
+}
+
+// One block = one 64-value group of one KV head of K (blockIdx.z = 0) or V (1); 64 threads, one value each.
+__global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict__ v_q,
+                                    uint16_t* __restrict__ k_scale, uint16_t* __restrict__ v_scale,
+                                    const int32_t* __restrict__ table, const int32_t* __restrict__ step,
+                                    const float* __restrict__ kcur, const float* __restrict__ vcur, int kv_heads,
+                                    int head_dim, int page_size, KvHostPools host) {
+    kv_append_q8_cell(k_q, v_q, k_scale, v_scale, table, (long long) __ldg(step + kStepPos), kcur, vcur, kv_heads,
+                      head_dim, page_size, blockIdx.x, blockIdx.y, threadIdx.x, blockIdx.z == 1, host);
+}
+
+// The verify window's batch: grid.x = the token within the window, grid.z = (is_v, group).  Every cell's
+// position comes from its own step record (kStepPos) and the K/V rows are the token's contiguous run, so the
+// launch is capturable.  The cells' writes are pairwise disjoint - bitwise identical to n_steps
+// kv_append_q8_step calls with those records.
+__global__ void kv_append_q8_batch_kernel(int8_t* __restrict__ k_q, int8_t* __restrict__ v_q,
+                                          uint16_t* __restrict__ k_scale, uint16_t* __restrict__ v_scale,
+                                          const int32_t* __restrict__ table,
+                                          const int32_t* __restrict__ steps,
+                                          const float* __restrict__ kcur, const float* __restrict__ vcur,
+                                          int kv_heads, int head_dim, int page_size, int n_steps,
+                                          KvHostPools host) {
+    const int t = blockIdx.x;
+    if (t >= n_steps) return;
+    const int32_t* step = steps + (size_t) t * kStepCount;
+    kv_append_q8_cell(k_q, v_q, k_scale, v_scale, table, (long long) __ldg(step + kStepPos),
+                      kcur + (size_t) t * kv_heads * head_dim, vcur + (size_t) t * kv_heads * head_dim,
+                      kv_heads, head_dim, page_size, blockIdx.y, blockIdx.z >> 1, threadIdx.x,
+                      (blockIdx.z & 1) != 0, host);
 }
 
 // One thread = 4 consecutive values of one cell and head (as the FP16 gather does with uint2).
@@ -109,6 +136,18 @@ void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_
         k_q, v_q, k_scale, v_scale, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim,
         (int) s.page_size, host ? *host : KvHostPools{});
     check("kv_append_q8 launch");
+}
+
+void kv_append_q8_batch(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
+                        const int32_t* page_table, const int32_t* steps, const float* kcur, const float* vcur,
+                        int64_t n_steps, const QsaShapes& s, void* stream, const KvHostPools* host) {
+    validate(s, "kv_append_q8_batch");
+    if (n_steps < 1) return;
+    const dim3 grid((unsigned) n_steps, (unsigned) s.n_head_kv, (unsigned) (2 * s.head_dim / KV_Q8_GROUP));
+    kv_append_q8_batch_kernel<<<grid, KV_Q8_GROUP, 0, (cudaStream_t) stream>>>(
+        k_q, v_q, k_scale, v_scale, page_table, steps, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim,
+        (int) s.page_size, (int) n_steps, host ? *host : KvHostPools{});
+    check("kv_append_q8 batch launch");
 }
 
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,

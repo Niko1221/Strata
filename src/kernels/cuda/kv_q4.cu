@@ -96,24 +96,53 @@ __device__ __forceinline__ void q4_store(uint8_t* pool, long long row, int b, in
     if (lane < 16) blk->qs[lane] = byte;
 }
 
+// The per-cell append, shared by the single-step and steps kernels so the quantize/store arithmetic cannot
+// drift: quantize the cell with q4_group, then write the VRAM page (if resident) and the host copy (if any).
+__device__ __forceinline__ void kv_append_q4_cell(uint8_t* k_q4, uint8_t* v_q4, const int32_t* table, long long pos,
+                                                  const float* kc, const float* vc, int kv_heads, int head_dim,
+                                                  int page_size, int h, int b, int lane, bool is_v,
+                                                  KvHostPools host) {
+    const float x = (is_v ? vc : kc)[h * head_dim + b * QK4_0 + lane];
+    uint8_t byte;
+    const uint16_t d = q4_group(x, lane, byte);
+    const long long page = (long long) table[pos / page_size];
+    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, lane, d, byte);
+    if (host.k_q4 != nullptr)
+        q4_store(is_v ? host.v_q4 : host.k_q4, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size), b,
+                 lane, d, byte);
+}
+
 // One block = one 32-value group of one KV head of K (blockIdx.z = 0) or V (1); 32 threads. KV streaming: the VRAM
 // page only if the block is resident (table >= 0), the host copy always (identity layout) when there is one.
 __global__ void kv_append_q4_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restrict__ v_q4,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                     const float* __restrict__ kcur, const float* __restrict__ vcur,
                                     int kv_heads, int head_dim, int page_size, KvHostPools host) {
-    const long long pos = (long long) __ldg(step + kStepPos);
-    const int h = blockIdx.x, b = blockIdx.y, t = threadIdx.x;
-    const bool is_v = blockIdx.z == 1;
-    const float x = (is_v ? vcur : kcur)[h * head_dim + b * QK4_0 + t];
-    uint8_t byte;
-    const uint16_t d = q4_group(x, t, byte);
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, byte);
-    if (host.k_q4 != nullptr)
-        q4_store(is_v ? host.v_q4 : host.k_q4, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size), b, t,
-                 d, byte);
+    kv_append_q4_cell(k_q4, v_q4, table, (long long) __ldg(step + kStepPos), kcur, vcur, kv_heads, head_dim,
+                      page_size, blockIdx.x, blockIdx.y, threadIdx.x, blockIdx.z == 1, host);
 }
+
+// The verify window's batch: grid.x = the token, grid.z = (is_v, 32-value block).  Every cell's position comes
+// from its own step record (kStepPos) and the K/V rows are the token's contiguous run, so the launch is
+// capturable.  The cells' writes are pairwise disjoint - bitwise identical to n_steps kv_append_q4_step calls
+// with those records.
+__global__ void kv_append_q4_steps_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restrict__ v_q4,
+                                          const int32_t* __restrict__ table,
+                                          const int32_t* __restrict__ steps,
+                                          const float* __restrict__ kcur, const float* __restrict__ vcur,
+                                          int kv_heads, int head_dim, int page_size, int n_steps,
+                                          KvHostPools host) {
+    const int t = blockIdx.x;
+    if (t >= n_steps) return;
+    const int32_t* step = steps + (size_t) t * kStepCount;
+    kv_append_q4_cell(k_q4, v_q4, table, (long long) __ldg(step + kStepPos),
+                      kcur + (size_t) t * kv_heads * head_dim, vcur + (size_t) t * kv_heads * head_dim,
+                      kv_heads, head_dim, page_size, blockIdx.y, blockIdx.z >> 1, threadIdx.x,
+                      (blockIdx.z & 1) != 0, host);
+}
+// (The steps-form kernel above is the verify window's batch, kv_append_q4_batch's; the pos0-form kernel below
+// is the prompt path's, kv_append_q4's - only the steps form is capturable, because its positions come from the
+// step records rather than a baked host `pos0`.)
 
 // The prompt path: grid (T, kv_heads, groups), K then V; also into the staging pool (identity layout) when given.
 __global__ void kv_append_q4_batch_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restrict__ v_q4,
@@ -199,6 +228,18 @@ void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, 
         k_q4, v_q4, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
         host ? *host : KvHostPools{});
     check("kv_append_q4 launch");
+}
+
+void kv_append_q4_batch(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* steps,
+                        const float* kcur, const float* vcur, int64_t n_steps, const QsaShapes& s, void* stream,
+                        const KvHostPools* host) {
+    if (n_steps < 1) return;
+    need_256(s, "kv_append_q4_batch");
+    const dim3 grid((unsigned) n_steps, (unsigned) s.n_head_kv, (unsigned) (2 * s.head_dim / QK4_0));
+    kv_append_q4_steps_kernel<<<grid, 32, 0, (cudaStream_t) stream>>>(
+        k_q4, v_q4, page_table, steps, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
+        (int) n_steps, host ? *host : KvHostPools{});
+    check("kv_append_q4 batch launch");
 }
 
 void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64_t pos0, int64_t T, const float* K,
