@@ -133,10 +133,18 @@ DeviceInfo device_info(int ordinal) {
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    if (d.cc_major < 7) {
+    // The fork's baseline is Volta (sm_70): the release engine requires 7.0; the STRATA_EXPERIMENTAL_SM60
+    // build (Pascal sm_60) runs on the cards it was built for instead of being refused here.
+#if defined(STRATA_EXPERIMENTAL_SM60)
+    constexpr int kMinCc = 60;
+    const char* const kNeed = "6.0 or newer (this is the experimental Pascal build)";
+#else
+    constexpr int kMinCc = 70;
+    const char* const kNeed = "7.0 or newer (Volta / RTX 20 / 30 / 40 / 50 series)";
+#endif
+    if (d.cc_major * 10 + d.cc_minor < kMinCc) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) +
-                            "; Strata requires compute capability 7.0 or newer",
+                            "." + std::to_string(d.cc_minor) + "; Strata needs compute capability " + kNeed,
                         -1);
     }
 #endif

@@ -44,8 +44,8 @@ now on; the answer is kept.
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
   own prompt buffers);
-- AMD and Intel GPUs, and a mix of NVIDIA with them. (Two AMD RDNA4 cards run the split from a hand-written
-  config; see [AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201).)
+- Intel GPUs, and a mix of NVIDIA and AMD cards. (AMD cards share a model among themselves: `./setup.sh --backend
+  hip --gpus 1,0`, see [AMD_HIP.md](AMD_HIP.md).)
 
 Or edit an existing config (`strata-*.json`), then restart:
 
@@ -53,6 +53,12 @@ Or edit an existing config (`strata-*.json`), then restart:
 "gpu": [0, 2],
 "layer_split": "auto"
 ```
+
+**Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
+(engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
+profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
+stays. On an R9700 32 GB + RX 9070 XT the R9700 holds all of the Coder's experts: with the flag 4K prompts read at
+1,776 tok/s instead of 1,244 (split) and decode runs at ~60 tok/s instead of ~51 (16K prompts ~5% slower than split).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -105,10 +111,11 @@ into the card that owns the layer.
   for them.
 - Every stage leaves room for its verify windows (~96 MiB) before its cache is sized; the draft layer and the head
   (~1 GiB) sit on the last stage only.
-- On Windows, a layer split or a remote expert cache limits arena registration to 8 GiB. The limit prevents
-  WDDM allocation failures when two CUDA contexts map the arena. Only registered layers can use direct PCIe copies.
-  On Linux, Strata first attempts to register the full arena with `cudaHostRegister`. If that fails, Strata
-  registers one layer at a time. Unregistered layers use the existing CPU and host-staging paths.
+- Under WDDM (Windows, and WSL2) only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts,
+  leaves WDDM refusing allocations); the rest streams through the pinned staging ring. A Linux driver has no such
+  limit, so there the whole arena is pinned. `STRATA_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on
+  any OS. Only registered layers can use direct PCIe copies; unregistered ones use the existing CPU and
+  host-staging paths.
 - Every card needs compute capability 7.0 (Volta or newer). The build includes code for each selected card's
   architecture; Ampere-only prompt kernels automatically use their portable fallback on Volta and Turing.
 

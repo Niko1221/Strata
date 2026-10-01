@@ -23,12 +23,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 #include <map>
 #include <set>
 #include <stdexcept>
 #include <algorithm>
+
+#include "strata/artifact/gguf_split.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -342,6 +346,8 @@ public:
     uint32_t version() const { return version_; }
     uint64_t data_start() const { return data_start_; }
     uint64_t file_size() const { return size_; }
+    uint64_t alignment() const { return alignment_; }
+    const std::string& path() const { return path_; }
 
     const TensorInfo* find(const std::string& name) const {
         for (const auto& t : tensors_)
@@ -458,6 +464,104 @@ private:
 #endif
     std::vector<TensorInfo> tensors_;
     std::map<std::string, MetaValue> meta_;
+};
+
+// Bytes of a tensor's payload from its shape and block geometry; 0 when the type is unknown, a row is not whole
+// blocks, or the count overflows.
+inline uint64_t tensor_payload_bytes(const TensorInfo& t) {
+    int be = 0, bb = 0;
+    if (t.shape.empty() || !block_geometry(t.type, be, bb) || t.shape[0] % (uint64_t) be) return 0;
+    uint64_t elements = 1;
+    for (uint64_t d : t.shape) {
+        if (d == 0 || elements > (std::numeric_limits<uint64_t>::max)() / d) return 0;
+        elements *= d;
+    }
+    const uint64_t blocks = elements / (uint64_t) be;
+    if (blocks > (std::numeric_limits<uint64_t>::max)() / (uint64_t) bb) return 0;
+    return blocks * (uint64_t) bb;
+}
+
+// The shards of one model (strata::gguf_split_paths), opened together; tensors are looked up across all of them.
+// From eddoursul/Strata 8029fa9, with the split-key validation of #255 (gopinath87607) made a property of the
+// model rather than of one loader: a split GGUF carries the model's metadata (general.architecture and the
+// qwen4exp keys) in its FIRST shard only, and the later shards just declare split.count / split.no /
+// split.tensors.count.  Unsloth's UD-Q4_K_XL is the extreme case: shard 1 holds the metadata and no tensor at
+// all, and output.weight, token_embd.weight and the PLE table live in shard 2.  So the architecture is checked
+// on `meta()` and a tensor is read from the shard that holds it.
+//
+// Refused at construction: a later shard whose split keys disagree with shard 1's (another model's shard, or a
+// shard renamed into the family), a split model whose tensor directories do not add up to split.tensors.count,
+// and a tensor name present in two shards (GGUF has no index to say which one is meant).
+class GgufModel {
+public:
+    explicit GgufModel(const std::vector<std::string>& paths) {
+        if (paths.empty()) throw std::runtime_error("GGUF: a model needs at least one shard");
+        for (const auto& p : paths) shards_.push_back(std::make_unique<GgufFile>(p));
+        validate_split();
+        for (size_t i = 0; i < shards_.size(); ++i)
+            for (const auto& t : shards_[i]->tensors()) {
+                const auto ins = index_.emplace(t.name, std::make_pair(i, &t));
+                if (!ins.second)
+                    throw std::runtime_error("GGUF: tensor " + t.name + " is in two shards (" +
+                                             shards_[ins.first->second.first]->path() + " and " +
+                                             shards_[i]->path() + ")");
+            }
+    }
+    /// Opens every shard of the model that `any_shard` belongs to (throws when one is missing).
+    static GgufModel open(const std::string& any_shard) { return GgufModel(gguf_split_paths(any_shard)); }
+
+    size_t size() const { return shards_.size(); }
+    const GgufFile& shard(size_t i) const { return *shards_[i]; }
+    /// The metadata shard: general.architecture and the model's keys.
+    const GgufFile& meta() const { return *shards_[0]; }
+    /// The tensor named `name` (its shard index in `*shard`), or nullptr.
+    const TensorInfo* find(const std::string& name, size_t* shard = nullptr) const {
+        const auto it = index_.find(name);
+        if (it == index_.end()) return nullptr;
+        if (shard) *shard = it->second.first;
+        return it->second.second;
+    }
+    /// Whether `t` (a tensor of shard `s`) has a known byte count that lies inside its file.
+    bool in_bounds(const TensorInfo& t, size_t s) const {
+        const GgufFile& g = *shards_[s];
+        const uint64_t bytes = tensor_payload_bytes(t);
+        const uint64_t payload = g.file_size() - g.data_start();
+        return bytes != 0 && t.offset <= payload && bytes <= payload - t.offset;
+    }
+
+private:
+    void validate_split() const {
+        const size_t n = shards_.size();
+        const MetaValue* count0 = shards_[0]->get("split.count");
+        if (n == 1) {
+            if (count0 && count0->u > 1)
+                throw std::runtime_error("GGUF: " + shards_[0]->path() + " is shard 1 of " + std::to_string(count0->u) +
+                                         ", but it was opened as a whole model");
+            return;
+        }
+        if (!shards_[0]->get("general.architecture"))
+            throw std::runtime_error("GGUF: " + shards_[0]->path() + " has no general.architecture; the first shard "
+                                     "of a split model carries the metadata");
+        const MetaValue* total = shards_[0]->get("split.tensors.count");
+        uint64_t tensors = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const GgufFile& g = *shards_[i];
+            const MetaValue* count = g.get("split.count");
+            const MetaValue* no = g.get("split.no");
+            const MetaValue* tc = g.get("split.tensors.count");
+            if (!count || !no || count->u != n || no->u != i || (total && (!tc || tc->u != total->u)))
+                throw std::runtime_error("GGUF: " + g.path() + " does not declare itself shard " + std::to_string(i + 1) +
+                                         " of " + std::to_string(n) + " of this model (split.count / split.no / "
+                                         "split.tensors.count)");
+            tensors += g.tensors().size();
+        }
+        if (total && tensors != total->u)
+            throw std::runtime_error("GGUF: the " + std::to_string(n) + " shards hold " + std::to_string(tensors) +
+                                     " tensors, but split.tensors.count is " + std::to_string(total->u));
+    }
+
+    std::vector<std::unique_ptr<GgufFile>> shards_;
+    std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
 // ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
