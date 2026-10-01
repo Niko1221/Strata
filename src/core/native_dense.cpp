@@ -37,13 +37,13 @@ struct Pending {
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
-                               std::set<std::string>& out, std::string& err) {
+                               std::set<std::string>& out, std::string& err, int64_t layer_lo, int64_t layer_hi) {
     try {
         for (const auto& path : shards) {
             strata::GgufFile gguf(path);
             for (const auto& tensor : gguf.tensors())
                 if (eligible(tensor, include_ple_key) && strata::kernels::native_mmvq_supported(tensor.type) &&
-                    tensor.shape.size() == 2)
+                    tensor.shape.size() == 2 && !layer_out_of_range(tensor.name, layer_lo, layer_hi))
                     out.insert(tensor.name);
         }
         return true;
@@ -63,13 +63,46 @@ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set
     return true;
 }
 
+bool NativeDense::served_layer_bytes(const std::vector<std::string>& shards, bool include_ple_key, int64_t n_layers,
+                                     std::vector<uint64_t>& per_layer, std::string& err) {
+    if (n_layers < 0) { err = "native dense: a negative layer count"; return false; }
+    per_layer.assign((size_t) n_layers, 0);
+    try {
+        for (const auto& path : shards) {
+            strata::GgufFile gguf(path);
+            for (const auto& tensor : gguf.tensors()) {
+                if (!eligible(tensor, include_ple_key) || !strata::kernels::native_mmvq_supported(tensor.type) ||
+                    tensor.shape.size() != 2)
+                    continue;
+                const int64_t l = tensor_layer(tensor.name);
+                if (l < 0) continue;
+                if (l >= n_layers) {
+                    err = "native dense: " + tensor.name + " is layer " + std::to_string(l) +
+                          ", beyond the model's " + std::to_string(n_layers) + " layers";
+                    return false;
+                }
+                if (tensor.shape[0] > (uint64_t) INT_MAX || tensor.shape[1] > (uint64_t) INT_MAX) {
+                    err = "native dense: " + tensor.name + " is wider than the kernels take";
+                    return false;
+                }
+                per_layer[(size_t) l] += strata::kernels::native_mmvq_weight_bytes(
+                    tensor.type, (int) tensor.shape[0], (int) tensor.shape[1]);
+            }
+        }
+        return true;
+    } catch (const std::exception& error) {
+        err = std::string("native dense: ") + error.what();
+        return false;
+    }
+}
+
 NativeDense::~NativeDense() {
     if (scratch_) cudaFree(scratch_);
     for (void* p : weights_) cudaFree(p);
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-                       bool include_ple_key) {
+                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {
     if (scratch_ || !weights_.empty()) { err = "native dense: already loaded"; return false; }
     if (shards.empty()) { err = "native dense: at least one GGUF shard is required"; return false; }
     try {
@@ -139,6 +172,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             }
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key)) continue;
+                // A LAYER THIS STAGE DOES NOT RUN IS NOT UPLOADED.  This is the 2 GB of the 3.4 GB hole:
+                // the projections are per-layer, so a stage that runs 9 of 48 was uploading 39 layers'
+                // worth of matrices it can never reach.  Filtered before `seen` and before the canonical
+                // lookup, so an out-of-range tensor is not an error here however the pack stored it.
+                if (layer_out_of_range(tensor.name, layer_lo, layer_hi)) continue;
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }
