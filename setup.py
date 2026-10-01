@@ -2437,8 +2437,17 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    # The runtime's model name is configured locally (the config's "model_name"): when a config for this tag
+    # already exists, keep the name it carries instead of deriving a fresh one from the family table.
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    saved_name = None
+    if cfg_path.exists():
+        try:
+            saved_name = json.loads(cfg_path.read_text(encoding="utf-8-sig")).get("model_name")
+        except (OSError, ValueError):
+            pass
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
+           "model_name": saved_name or f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
     if hip:
         cfg["backend"] = "hip"
