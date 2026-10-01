@@ -126,19 +126,20 @@ DeviceInfo device_info(int ordinal) {
     check(cudaDriverGetVersion(&d.driver_version), "cudaDriverGetVersion");
     check(cudaRuntimeGetVersion(&d.runtime_version), "cudaRuntimeGetVersion");
 
-    // The engine supports compute capability 7.5 and newer (Turing: the QSA scorer's tf32 mma has a portable
-    // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  Compiling for a
-    // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
-    // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
-    // backend checks the card against the architectures the binary was compiled for (and wave32).
+    // The engine supports compute capability 7.0 and newer (Turing: the QSA scorer's tf32 mma has a portable
+    // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  V100 (sm_70) also
+    // uses the fallbacks.  Compiling for a supported arch is enforced by CMake; RUNNING on an older card is
+    // caught here, because a binary can be carried to a machine with an older card and would otherwise silently
+    // take whatever path the driver chose.  The HIP backend checks the card against the architectures the
+    // binary was compiled for (and wave32).
 #if defined(STRATA_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    if (d.cc_major * 10 + d.cc_minor < 75) {
+    if (d.cc_major * 10 + d.cc_minor < 70) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
                             "." + std::to_string(d.cc_minor) +
-                            "; Strata needs compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series)",
+                            "; Strata needs compute capability 7.0 or newer (V100 / RTX 20 / 30 / 40 / 50 series)",
                         -1);
     }
 #endif

@@ -74,8 +74,8 @@ if(STRATA_ENABLE_CUDA)
   foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
     string(REGEX REPLACE "-.*$" "" _base "${_a}")     # 120-real / 120-virtual are still 120
     # Turing port: developed and measured on sm_120 (RTX 50); the tf32 mma in the QSA scorer has a
-    # portable fp32-FMA fallback, so RTX 20 (75), 30 (86), RTX 40 (89) and RTX 50 (120) build too.
-    # Pre-sm_75 is refused.
+    # portable fp32-FMA fallback, so V100 (70), RTX 20 (75), 30 (86), RTX 40 (89) and RTX 50 (120) build too.
+    # Pre-sm_70 is refused.
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
@@ -83,9 +83,9 @@ if(STRATA_ENABLE_CUDA)
     # these kernels were written for, so two intrinsics are replaced for it - `__dp4a` (6.1+) and
     # `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp, which is bit-exact for the first and
     # merely a shorter pause for the second.  RTX 20/30/40/50 cards must use the release engine instead.
-    if(_base LESS 75 AND NOT STRATA_EXPERIMENTAL_SM60)
+    if(_base LESS 70 AND NOT STRATA_EXPERIMENTAL_SM60)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series), but "
+        "Strata needs an NVIDIA GPU of compute capability 7.0 or newer (V100 / RTX 20 / 30 / 40 / 50 series), but "
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal build is "
         "-DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
     endif()
