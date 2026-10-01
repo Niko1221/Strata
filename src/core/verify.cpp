@@ -1057,6 +1057,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     last_pos0_ = pos0;
     for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
     ms_host += ms_since(t0);
+    if (prof_on_)   // STRATA_VERIFY_PROFILE: zero the stamps for this window, so a slot the window never reaches
+        cudaMemsetAsync(prof_, 0, (size_t) (g.n_layers * kProfPer + 4) * 8, cs_);   // reads 0, not last window's time
     VDBG("staged; launching\n");
     const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
@@ -1145,13 +1147,20 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 prof_sum_[kind][i] += (double) (x - prev);
                 prev = x;
             }
-            if (l + 1 < L) prof_sum_[kind][25] += (double) (at(l + 1, 0) - at(l, 24));
-            prof_sum_[kind][27] += (double) (at(l, 27) - at(l, 0));    // hc-read0: norm
-            prof_sum_[kind][28] += (double) (at(l, 28) - at(l, 27));   //           down
-            prof_sum_[kind][29] += (double) (at(l, 1) - at(l, 28));    //           up
-            prof_sum_[kind][1] -= (double) (at(l, 1) - at(l, 0));      // (hc-read0 shown split)
+            if (l + 1 < L) {
+                const unsigned long long x = at(l + 1, 0), p = at(l, 24);
+                if (x != 0 && x > p) prof_sum_[kind][25] += (double) (x - p);
+            }
+            const unsigned long long s0 = at(l, 0), s27 = at(l, 27), s28 = at(l, 28), h1 = at(l, 1);
+            if (s27 != 0 && s27 > s0) prof_sum_[kind][27] += (double) (s27 - s0);   // hc-read0: norm
+            if (s28 != 0 && s28 > s27) prof_sum_[kind][28] += (double) (s28 - s27); //           down
+            if (h1 != 0 && h1 > s28) prof_sum_[kind][29] += (double) (h1 - s28);    //           up
+            if (h1 != 0 && h1 > s0) prof_sum_[kind][1] -= (double) (h1 - s0);       // (hc-read0 shown split)
         }
-        prof_sum_[0][26] += (double) (at(L, 1) - at(L, 0));
+        {
+            const unsigned long long h0 = at(L, 0), h1 = at(L, 1);
+            if (h1 != 0 && h1 > h0) prof_sum_[0][26] += (double) (h1 - h0);
+        }
         ++prof_windows_;
     }
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
