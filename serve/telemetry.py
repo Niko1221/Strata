@@ -3,6 +3,7 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.
+- AMD Linux: amdgpu sysfs/hwmon, with KFD device ordering matching the HIP engine.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -16,12 +17,15 @@ import platform
 import sys
 import threading
 import time
+from pathlib import Path
 
 HISTORY = 60
 
 
 # ------------------------------------------------------------------------------------------------ NVML
 class _Nvml:
+    source = "nvml"
+
     class Util(ctypes.Structure):
         _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
@@ -103,6 +107,124 @@ class _Nvml:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ AMD Linux
+class _AmdSysfs:
+    """Read the HIP-selected GPU through amdgpu. DRM card numbers are not HIP device numbers."""
+
+    source = "amdgpu"
+
+    def __init__(self, index=0, sysfs="/sys"):
+        self.dev = self.hwmon = None
+        self.index = index
+        self.arch = None
+        if not sys.platform.startswith("linux"):
+            return
+        root = Path(sysfs)
+        nodes = root / "class/kfd/kfd/topology/nodes"
+        try:
+            devices = []
+            for node in sorted((p for p in nodes.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
+                try:
+                    props = dict(line.split(maxsplit=1) for line in (node / "properties").read_text().splitlines())
+                    ver = int(props.get("gfx_target_version", 0))
+                    if not ver or not int(props.get("simd_count", 0)):
+                        continue
+                    dev = root / f"class/drm/renderD{props['drm_render_minor']}/device"
+                    arch = f"gfx{ver // 10000}{(ver // 100) % 100:x}{ver % 100:x}"
+                    devices.append((dev, arch))
+                except (OSError, ValueError, KeyError):
+                    continue
+            if index < 0 or index >= len(devices):
+                return
+            self.dev, self.arch = devices[index]
+            if not self.dev.is_dir():
+                self.dev = None
+                return
+            self.hwmon = next((h for h in sorted((self.dev / "hwmon").glob("hwmon*"))
+                               if self._text(h / "name") == "amdgpu"), None)
+        except OSError:
+            self.dev = None
+
+    @staticmethod
+    def _text(path):
+        try:
+            return path.read_text().strip()
+        except (OSError, UnicodeError):
+            return None
+
+    @classmethod
+    def _number(cls, path):
+        try:
+            return int(cls._text(path))
+        except (ValueError, TypeError):
+            return None
+
+    def ok(self):
+        return self.dev is not None
+
+    def name(self):
+        if not self.ok():
+            return None
+        product = self._text(self.dev / "product_name")
+        if product:
+            return product
+        # HIP supplies the marketing name when the driver exposes only "ip discovery".
+        for library in ("libamdhip64.so", "/opt/rocm/lib/libamdhip64.so"):
+            try:
+                hip = ctypes.CDLL(library)
+                buf = ctypes.create_string_buffer(128)
+                if hip.hipDeviceGetName(buf, len(buf), self.index) == 0:
+                    return buf.value.decode(errors="replace")
+            except (OSError, AttributeError):
+                continue
+        return f"AMD Radeon ({self.arch})"
+
+    def _generation(self, filename):
+        speed = self._text(self.dev / filename)
+        try:
+            value = float(speed.split()[0])
+        except (ValueError, AttributeError, IndexError):
+            return None
+        return {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}.get(value)
+
+    def read(self):
+        if not self.ok():
+            return {}
+        out = {"util": self._number(self.dev / "gpu_busy_percent"),
+               "mem_used": self._number(self.dev / "mem_info_vram_used"),
+               "mem_total": self._number(self.dev / "mem_info_vram_total"),
+               "pcie_gen": self._generation("current_link_speed"),
+               "pcie_gen_max": self._generation("max_link_speed"),
+               "pcie_width": self._number(self.dev / "current_link_width")}
+        if self.hwmon:
+            temp = self._number(self.hwmon / "temp1_input")
+            power = self._number(self.hwmon / "power1_average")
+            if power is None:
+                power = self._number(self.hwmon / "power1_input")
+            limit = self._number(self.hwmon / "power1_cap")
+            out.update(temp=temp / 1000.0 if temp is not None else None,
+                       power=power / 1e6 if power is not None else None,
+                       power_limit=limit / 1e6 if limit is not None else None)
+        # Older drivers expose one second of received/sent TLP counts and maximum packet size.
+        # Newer cards may omit pcie_bw: their link is readable, but traffic must stay unknown.
+        try:
+            received, sent, packet_size = map(int, self._text(self.dev / "pcie_bw").split())
+            if min(received, sent) >= 0 and packet_size > 0:
+                out["pcie_rx_mb"] = received * packet_size / 2**20
+                out["pcie_tx_mb"] = sent * packet_size / 2**20
+        except (ValueError, AttributeError):
+            pass
+        return out
+
+
+def gpu_monitor(index=0, backend=None):
+    """Select the engine's collector, keeping HIP and NVML device numbering separate."""
+    if backend == "hip":
+        return _AmdSysfs(index)
+    gpu = _Nvml(index)
+    return gpu if gpu.ok() else _AmdSysfs(index)
+
+
 # ------------------------------------------------------------------------------------------------ CPU / RAM
 def _cpu_name():
     if os.name == "nt":
@@ -169,9 +291,9 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, gpu_backend=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
-        engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
+        engine runs on, numbered as NVML or HIP for the selected backend; `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own."""
         self.extra = extra
@@ -179,7 +301,7 @@ class Telemetry:
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
-        self.gpus = [(i, _Nvml(i)) for i in idx]
+        self.gpus = [(i, gpu_monitor(i, gpu_backend)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:
@@ -191,6 +313,7 @@ class Telemetry:
         self.static = {
             "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
             "gpu_count": len(self.gpus),
+            "gpu_telemetry": self.gpu.source if self.gpu.ok() else None,
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),

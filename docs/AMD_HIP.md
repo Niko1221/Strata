@@ -42,7 +42,15 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** no images, no calibration. The Monitor shows no GPU statistics.
+- **Images:** use `--vision gpu` for the HIP image encoder, `--vision cpu` for a CPU image
+  encoder, or `--vision none` for text only. The model continues to run with HIP in all three modes.
+  Setup downloads the matching projector and reserves VRAM for the encoder. Changing modes rebuilds only
+  the helper when the engine is already current; updates preserve the saved mode.
+- **Monitor:** Linux amdgpu sysfs/hwmon supplies GPU load, VRAM, temperature, power, and PCIe link information.
+  KFD topology maps the selected HIP device to its DRM render node, including PCs with integrated graphics.
+  Unavailable sensors remain blank. PCIe traffic is available only when the driver exposes `pcie_bw`; the
+  RX 9070 XT tested here exposes its link but no traffic counters.
+- **Limits for now:** no calibration.
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
@@ -120,8 +128,8 @@ The worker count above was used on a 16-core CPU; measure it for your CPU.
 The 4K context is a smoke-test starting point, not a model limit. The expert cache
 sizes itself automatically and leaves 1 GiB of VRAM headroom.
 
-The installer supports this backend (see "Install with setup" above). The vision helper is NVIDIA-only for now.
-Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
+The installer supports this backend (see "Install with setup" above). Setup installs one AMD card, or several
+with `--gpus` (the engine's layer split; see RDNA4 below). Image validation is recorded separately below.
 
 ## RDNA4 (gfx1201)
 
@@ -179,6 +187,32 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
+
+## Image input and Monitor validation (gfx1201)
+
+Validated on 2026-10-01 with an RX 9070 XT 16 GB, Ryzen 9 9900X, 64 GB RAM,
+Omarchy/Arch Linux, system ROCm 7.2.4, Strata 0.1.31, and the repository's pinned
+llama.cpp revision. The model was OrcaRouter Qwen3.8-Flash-Next IQ3_XXS with the
+matching BF16 image projector.
+
+- The engine and HIP image encoder compiled and ran on the native Linux GPU.
+  Red/blue image fixtures produced finite, distinct embeddings (49 tokens, width 2560).
+- Live image requests through the OpenAI and Anthropic endpoints recognized colors,
+  read `strata42`, and identified a blue circle in separate prompts. A combined OCR
+  and shape prompt returned only the OCR result. Browser attachment input also worked.
+- The compatibility packer retained the IQ3_XXS PLE key in the native GGUF, avoiding
+  the incompatible BF16 key startup error. Native PLE parity passed three graph replays.
+- Earlier validation of the image and packer changes: installer checks 47 passed;
+  server checks 98 passed, 2 Windows-only checks skipped; packer checks 23 passed;
+  focused HIP checks 7 passed, 1 skipped (no gfx1201 hipBLASLt tuning table).
+- After the Monitor change, live `/metrics` reported the RX 9070 XT rather than the
+  integrated GPU: load, VRAM, temperature, power/cap, and PCIe Gen5 x16 were populated.
+  PCIe throughput remained unavailable, as expected for this driver's missing counter.
+
+Image checks used a 32K context configuration. A later 128K configuration started
+successfully, but full-window inference and sustained image workloads were not tested.
+These checks establish basic operation on this card; they are not quality or speed
+benchmarks, and do not validate other AMD cards or image encoding across several GPUs.
 
 ## Community-validated cards
 
