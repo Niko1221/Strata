@@ -92,8 +92,7 @@ void rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a,
 // token's operations are the same whatever the group width, so a token's rows are bitwise the same alone or in a
 // verify window.  STRATA_Q2_LEGACY=1 selects the kernel above (A/B).
 template <int NT>
-inline void row_bp(const uint8_t* row, const ActQ* const* a, int npairs, float* res) {
-    __m256 acc[NT];
+inline void row_bp_acc(const uint8_t* row, const ActQ* const* a, int npairs, __m256* acc) {
     for (int t = 0; t < NT; ++t) acc[t] = _mm256_setzero_ps();
     const __m256i m3 = _mm256_set1_epi8(3);
     const __m256i ones = _mm256_set1_epi16(1);
@@ -123,19 +122,32 @@ inline void row_bp(const uint8_t* row, const ActQ* const* a, int npairs, float* 
             acc[t] = _mm256_fmadd_ps(dp, v, acc[t]);
         }
     }
-    for (int t = 0; t < NT; ++t) {
-        const __m128 h = _mm_add_ps(_mm256_castps256_ps128(acc[t]), _mm256_extractf128_ps(acc[t], 1));
-        const __m128 s = _mm_add_ps(h, _mm_movehl_ps(h, h));
-        res[t] = _mm_cvtss_f32(_mm_add_ss(s, _mm_movehdup_ps(s)));
-    }
+}
+
+// Every row is reduced with ONE tree, ((x0+x1)+(x2+x3)) + ((x4+x5)+(x6+x7)), whether alone or four at a time (the
+// hadd form below computes exactly that per row), so a row's bits do not depend on how the rows were cut into tasks.
+inline float reduce1(__m256 v) {
+    __m256 h = _mm256_hadd_ps(v, v);
+    h = _mm256_hadd_ps(h, h);
+    return _mm_cvtss_f32(_mm_add_ss(_mm256_castps256_ps128(h), _mm256_extractf128_ps(h, 1)));
+}
+inline __m128 reduce4(__m256 a0, __m256 a1, __m256 a2, __m256 a3) {
+    const __m256 h = _mm256_hadd_ps(_mm256_hadd_ps(a0, a1), _mm256_hadd_ps(a2, a3));
+    return _mm_add_ps(_mm256_castps256_ps128(h), _mm256_extractf128_ps(h, 1));
 }
 
 template <int NT>
 void rows_bp(const uint8_t* w, size_t row_bytes, int npairs, const ActQ* const* a, float* const* out, int r0, int r1) {
-    float res[NT];
-    for (int r = r0; r < r1; ++r) {
-        row_bp<NT>(w + (size_t) r * row_bytes, a, npairs, res);
-        for (int t = 0; t < NT; ++t) out[t][r] = res[t];
+    int r = r0;
+    for (; r + 4 <= r1; r += 4) {
+        __m256 acc[4][NT];
+        for (int k = 0; k < 4; ++k) row_bp_acc<NT>(w + (size_t) (r + k) * row_bytes, a, npairs, acc[k]);
+        for (int t = 0; t < NT; ++t) _mm_storeu_ps(out[t] + r, reduce4(acc[0][t], acc[1][t], acc[2][t], acc[3][t]));
+    }
+    for (; r < r1; ++r) {
+        __m256 acc[NT];
+        row_bp_acc<NT>(w + (size_t) r * row_bytes, a, npairs, acc);
+        for (int t = 0; t < NT; ++t) out[t][r] = reduce1(acc[t]);
     }
 }
 
