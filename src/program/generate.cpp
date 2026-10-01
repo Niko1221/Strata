@@ -2929,8 +2929,10 @@ int main(int argc, char** argv) {
             const uint8_t* b = srcp->blob(profile[(size_t) i].first, profile[(size_t) i].second);
             if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err,
                     (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first))) {
-                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
-                             (long long) i, err.c_str());
+                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld (layer %lld expert %lld "
+                             "slot %d slots=%lld): %s\n", (long long) i, (long long) profile[(size_t) i].first,
+                             (long long) profile[(size_t) i].second, (int) slot, (long long) xcache.slots(),
+                             err.c_str());
                 return 1;
             }
             ++prefilled;
