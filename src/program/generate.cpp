@@ -2053,6 +2053,12 @@ int main(int argc, char** argv) {
     // the windows and - only on the stage that carries them - the drafter and the head.
     const int64_t kWindowMib = 96;       // the verify windows; 75 MiB measured, rounded up
     const int64_t kDrafterMib = 1000;    // the MTP drafter (839 MiB) + the head, on the last stage only
+    // What a single-GPU run must also hold back, for the same reason: the verify windows, the R4 hit-path
+    // scratch and the penalty history are all allocated AFTER the expert cache is sized.  Measured 74.1 MiB of
+    // verify windows at n_embd 2560, plus the penalty history (0.1 MiB) and hit scratch; rounded up, and the
+    // slack covers the hit scratch, which scales with n_embd.  Without it a profile-sized cache takes the last
+    // of the VRAM and a 0.1 MiB penalty allocation then fails - the engine prints "almost ready" and exits.
+    const int64_t kPostCacheMib = 192;
     auto stage_room = [&](int dev, bool later, bool drafter) -> int64_t {
         const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
@@ -2384,7 +2390,15 @@ int main(int argc, char** argv) {
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         const int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
                                      ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind;
+        // ...and so are the verify windows, the R4 hit-path scratch and the penalty history, all allocated after
+        // the cache is sized.  The layer split already holds kWindowMib + kDrafterMib back for the same reason
+        // (stage_room above); the single-GPU path did not, so a profile-sized cache could take the last of the
+        // VRAM and a 0.1 MiB penalty buffer then failed to allocate - the engine printed "almost ready" and
+        // exited.  Measured 74.1 MiB of verify windows at n_embd 2560; kDrafterMib is not added again because
+        // mtp_bind above is this run's actual figure for the same bytes.  Rounded up, and the slack covers the
+        // hit-path scratch, which scales with n_embd.
+        const int64_t reserve =
+            (((int64_t) o.vram_reserve_mib + prefill_mib + kPostCacheMib) << 20) + mtp_bind;
         int64_t slots = ((int64_t) free_b - reserve) / (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
         o.expert_cache = (int) std::max<int64_t>(slots, 0);
@@ -2419,7 +2433,11 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
         uint64_t used = 0;
-        size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
+        // The same post-cache slack the sizing above reserved, or this second pass would hand it straight back:
+        // it caps against free VRAM minus `vram_reserve_mib` ALONE, which is how a profile-sized cache ended up
+        // with under 128 KB spare and a 0.1 MiB penalty allocation then failed.
+        const size_t keep_back = (size_t) o.vram_reserve_mib + ((size_t) kPostCacheMib << 20);
+        size_t free_room = free_b > keep_back ? free_b - keep_back : 0;
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
             const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
@@ -3630,7 +3648,16 @@ int main(int argc, char** argv) {
         std::vector<int32_t> hist_stage(kHistSlots, -1);
         const int hist_dev = last_st ? last_st->dev : -1;   // with the head: the last stage's device
         if (const strata::core::OnDevice on_h(hist_dev); cudaMalloc(&d_hist, kHistSlots * sizeof(int32_t)) != cudaSuccess) {
-            std::fprintf(stderr, "strata serve: the penalty-history allocation failed\n");
+            // Name the cause, not just the fact: the usual reason is an expert cache that took the VRAM this
+            // allocation needed, and the fix is a bigger reserve rather than a smaller model.
+            size_t free_now = 0, total_now = 0;
+            cudaMemGetInfo(&free_now, &total_now);
+            cudaGetLastError();
+            std::fprintf(stderr, "strata serve: the penalty-history allocation (%zu KiB) failed with %.1f MiB of VRAM "
+                                 "free.\n"
+                                 "  The expert cache is sized before this buffer, so a profile-sized cache can take the\n"
+                                 "  room this needs. Raise --vram-reserve-mib (currently %d) or lower --expert-cache.\n",
+                         kHistSlots * sizeof(int32_t) / 1024, (double) free_now / 1048576.0, o.vram_reserve_mib);
             return 1;
         }
         strata::core::Verifier ver;
