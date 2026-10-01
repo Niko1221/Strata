@@ -4436,8 +4436,70 @@ int main(int argc, char** argv) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
+            // ---- THE MONITOR'S PER-GPU CARDS.  Seven comma-separated lists in SINGLE tokens, because the server's
+            // INFO parser splits the line on whitespace (serve/server.py) and would otherwise keep only the first
+            // number.  Built from the same accessors as the totals above, so the cards sum to `expert_slots` and
+            // `expert_cache_mib`.  A remote-expert GPU runs no stage, so it has an expert cache but no layer range,
+            // no session and no prompt buffers - `gpu_layers` is "-" for it.  Deliberately no VRAM figure here: the
+            // engine knows only its own allocations, and NVML already reports each card's used/free/total.  The one
+            // exception is `gpu_draft_mib`, the MTP head, which only the engine knows - and which no totals line
+            // above accounts for, so it is reported per card and nowhere else.
+            std::string g_dev, g_lay, g_kv, g_buf, g_ex, g_exm, g_draft;
+            {
+                struct GpuCell {
+                    int dev = 0;
+                    int64_t lo = -1, hi = -1, kv_mib = 0, buf_mib = 0, experts = 0, expert_mib = 0;
+                };
+                // `split_at` is populated even when `--split-skip-if-fits` cleared `multi_gpu`, so it is never read
+                // without the guard - a bare `split_at[0]` would be an empty-vector read on a single-GPU run.
+                const bool split = multi_gpu && !stages.empty();
+                const int64_t c0_hi = split ? split_at[0] : g.n_layers;
+                const bool bufs = o.prefill_chunk > 0;
+                std::vector<GpuCell> gcells;
+                gcells.push_back({0, 0, c0_hi,
+                                  (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, c0_hi) >> 20),
+                                  bufs ? (int64_t) (strata::prefill::Prefill::bytes_needed(g, ss, o.prefill_chunk) >> 20) : 0,
+                                  (int64_t) xcache.slots(), (int64_t) (xcache.bytes() >> 20)});
+                for (const auto& stp : stages) {
+                    const GpuStage& st = *stp;
+                    gcells.push_back({st.dev, st.lb, st.le,
+                                      (int64_t) (strata::core::session_bytes(g, o.max_context, K, st.lb, st.le) >> 20),
+                                      bufs ? (int64_t) (strata::prefill::Prefill::bytes_needed(g, st.ss, o.prefill_chunk) >> 20) : 0,
+                                      (int64_t) st.cache.slots(), (int64_t) (st.cache.bytes() >> 20)});
+                }
+                for (int r = 0; r < 3; ++r)
+                    if (o.expert_cache_remote[(size_t) r] > 0)
+                        gcells.push_back({remote_dev[r], -1, -1, 0, 0, remote_experts[(size_t) r].resident(),
+                                          (int64_t) (remote_experts[(size_t) r].gib() * 1024.0)});
+                // ascending by device, so the list lines up with the config's own GPU order in the browser
+                std::sort(gcells.begin(), gcells.end(),
+                          [](const GpuCell& a, const GpuCell& b) { return a.dev < b.dev; });
+                // The MTP draft head is loaded before the split and bound with the last stage, so it lives on that
+                // stage's device; a run with no split keeps it on device 0.  The drafter records that itself - it
+                // does `cudaGetDevice(&device_)` in load() - and leaves -1 when it never loaded, which is exactly
+                // the "no head" case.  It belongs on that card's entry, not on the totals, so the Monitor can show
+                // which card is carrying it.  (Not the 835 MiB the log line quotes: vram_bytes() also counts the
+                // draft head that bind() adds after that line is printed.)
+                const int64_t mtp_mib = (int64_t) (mtp.vram_bytes() >> 20);
+                const int mtp_dev = mtp_mib > 0 ? mtp.device() : -1;
+                for (const GpuCell& c : gcells) {
+                    const auto add = [](std::string& s, const std::string& v) { s += (s.empty() ? "" : ",") + v; };
+                    add(g_dev, std::to_string(c.dev));
+                    // `le` is exclusive, so the last layer this stage runs is `le - 1`
+                    add(g_lay, c.lo < 0 ? std::string("-") : std::to_string(c.lo) + "-" + std::to_string(c.hi - 1));
+                    add(g_kv, std::to_string(c.kv_mib));
+                    add(g_buf, std::to_string(c.buf_mib));
+                    add(g_ex, std::to_string(c.experts));
+                    add(g_exm, std::to_string(c.expert_mib));
+                    // only the card holding the head gets a figure; the rest get the same "-" a helper tier gets
+                    // (mtp_dev is -1 with no head, and no card is ever -1)
+                    add(g_draft, c.dev == mtp_dev ? std::to_string(mtp_mib) : std::string("-"));
+                }
+            }
             std::printf("INFO context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
-                        "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
+                        "expert_slots_primary=%lld expert_cache_primary_mib=%lld "
+                        "gpu_dev=%s gpu_layers=%s gpu_kv_mib=%s gpu_buf_mib=%s gpu_experts=%s gpu_expert_mib=%s "
+                        "gpu_draft_mib=%s spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld engine=" STRATA_VERSION "\n",
@@ -4446,6 +4508,8 @@ int main(int argc, char** argv) {
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
                         (long long) slots_all, (long long) mib_all,
                         (long long) slots_primary, (long long) mib_primary,
+                        g_dev.c_str(), g_lay.c_str(), g_kv.c_str(), g_buf.c_str(), g_ex.c_str(), g_exm.c_str(),
+                        g_draft.c_str(),
                         o.spec, o.mtp_max_t,
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),

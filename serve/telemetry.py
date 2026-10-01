@@ -85,7 +85,9 @@ class _Nvml:
         m = self.Mem()
         try:
             if self.lib.nvmlDeviceGetMemoryInfo(self.dev, ctypes.byref(m)) == 0:
-                out["mem_used"], out["mem_total"] = m.used, m.total
+                # `free` is the per-GPU card's headroom; it used to be read from NVML and thrown away, so the
+                # Monitor could show a card's used/total but never what was actually left.
+                out["mem_used"], out["mem_free"], out["mem_total"] = m.used, m.free, m.total
         except (AttributeError, OSError):
             pass
         out["temp"] = self._uint("nvmlDeviceGetTemperature", ctypes.c_uint(0))          # NVML_TEMPERATURE_GPU
@@ -182,6 +184,8 @@ class Telemetry:
         self.gpus = [(i, _Nvml(i)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
+        # Each card's name is static, so ask NVML for it once here rather than once a second in sample().
+        self.names = {i: g.name() for i, g in self.gpus}
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
@@ -221,14 +225,17 @@ class Telemetry:
             if len(reads) > 1:
                 def vals(k):
                     return [r[k] for _, r in reads if r.get(k) is not None]
-                for k in ("mem_used", "mem_total", "power", "power_limit", "pcie_rx_mb", "pcie_tx_mb"):
+                for k in ("mem_used", "mem_free", "mem_total", "power", "power_limit", "pcie_rx_mb", "pcie_tx_mb"):
                     v = vals(k)
                     g[k] = sum(v) if v else None
                 u = vals("util")
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                # "gpus" feeds the Monitor's per-GPU cards: each card wants its own VRAM used/free/total, so
+                # the summed `gpu_mem_*` scalars are not enough on a split run.
+                s["gpus"] = [{"index": i, "name": self.names.get(i), "util": r.get("util"),
+                              "mem_used": r.get("mem_used"), "mem_free": r.get("mem_free"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
                              for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
