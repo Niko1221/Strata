@@ -1332,16 +1332,18 @@ int main(int argc, char** argv) {
         int n_dev = 1;
         if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
         cudaGetLastError();
+        if (o.main_device < 0) o.main_device = 0;
+        if (o.draft_device < 0) o.draft_device = 0;
         if (!o.layer_split.empty()) {
             std::fprintf(stderr, "strata generate: --main-device/--draft-device and --layer-split are mutually exclusive: a layer split already places stages on several GPUs\n");
             return 2;
         }
-        if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0) {
-            std::fprintf(stderr, "strata generate: --main-device/--draft-device and the remote expert caches (--expert-cache-deviceN) address the second GPU; pick one\n");
+        if (o.main_device != o.draft_device &&
+            (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0)) {
+            std::fprintf(stderr, "strata generate: a remote draft (--main-device %d --draft-device %d) and the remote expert caches (--expert-cache-deviceN) both address the second GPU; with both roles on one GPU the caches are fine\n",
+                         o.main_device, o.draft_device);
             return 2;
         }
-        if (o.main_device < 0) o.main_device = 0;
-        if (o.draft_device < 0) o.draft_device = 0;
         if (o.main_device >= n_dev || o.draft_device >= n_dev) {
             std::fprintf(stderr, "strata generate: --main-device %d / --draft-device %d: out of range (%d visible GPU%s)\n",
                          o.main_device, o.draft_device, n_dev, n_dev == 1 ? "" : "s");
@@ -1351,9 +1353,14 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --draft-device needs the MTP drafter (--mtp and --spec >= 2): without one there is nothing to place\n");
             return 2;
         }
-        if (o.main_device != o.draft_device)
+        if (o.main_device != o.draft_device) {
             std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (two GPUs; the drafter and its own K/V load on the draft device)\n",
                          o.main_device, o.draft_device);
+            // Fase 3 note (measured on the rig): cudaDeviceEnablePeerAccess DEADLOCKED here (two GTX 1080 Ti,
+            // driver 12.6) and a graph replay reading the other device without it faults - the cross-device
+            // handoff therefore needs the portable-mapped step before remote drafting can run; until then the
+            // drafter keeps the main path
+        }
         else
             std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (degenerate: both roles on this one GPU)\n",
                          o.main_device, o.draft_device);

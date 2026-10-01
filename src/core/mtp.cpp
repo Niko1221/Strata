@@ -249,6 +249,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             cudaFree(my_cos);
             return;
         }
+        cudaGetLastError();   // a leftover error must not fail this pair of copies
         const cudaError_t a = cudaMemcpy(my_cos, from, (size_t) rows * sizeof(float), cudaMemcpyDeviceToDevice);
         // attr's device pointer for sin_tab: read its own attributes (the K/V pools are arena-carved one after
         // another, but no layout rule is assumed)
@@ -256,10 +257,12 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (cudaPointerGetAttributes(&attr2, share.sin_tab) != cudaSuccess) { cudaGetLastError(); attr2.devicePointer = share.sin_tab; }
         const cudaError_t b = cudaMemcpy(my_sin, (float*) attr2.devicePointer, (size_t) rows * sizeof(float),
                                          cudaMemcpyDeviceToDevice);
-        cudaDeviceSynchronize();
-        if (a != cudaSuccess || b != cudaSuccess) {
+        cudaGetLastError();   // ditto before the sync
+        const cudaError_t sync_e = cudaDeviceSynchronize();
+        if (a != cudaSuccess || b != cudaSuccess || sync_e != cudaSuccess) {
             cudaGetLastError();
-            std::fprintf(stderr, "strata mtp: the RoPE tables on the draft device could not be filled; the drafter stays on the main path\n");
+            std::fprintf(stderr, "strata mtp: the RoPE tables on the draft device could not be filled (%s / %s; sync %s); the drafter stays on the main path\n",
+                         cudaGetErrorString(a), cudaGetErrorString(b), sync_e == cudaSuccess ? "ok" : cudaGetErrorString(sync_e));
             cudaFree(my_cos); cudaFree(my_sin);
             return;
         }
@@ -436,14 +439,28 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         else
             cudaGetLastError();
     }
-    if (remote_head && head_dev_ == nullptr) {
+    bool have_subset = false;
+    if (dhead_ == nullptr) {
+        if (FILE* f = std::fopen((rt_dir_ + "/draft_vocab.bin").c_str(), "rb")) {
+            std::fseek(f, 0, SEEK_END);
+            const long size = std::ftell(f);
+            std::fclose(f);
+            have_subset = size >= 4 && size % 4 == 0;
+        }
+    }
+    if (remote_head && head_dev_ == nullptr && !have_subset) {
         const uint64_t rows = (uint64_t) (head->weight_bytes() / head->row_bytes());
         if (cudaMalloc((void**) &head_dev_, head->weight_bytes()) != cudaSuccess) {
             cudaGetLastError();
             err = "mtp: the draft head's copy on the draft device does not fit";
             return false;
         }
-        cudaMemcpy(head_dev_, head->weights(), head->weight_bytes(), cudaMemcpyDeviceToDevice);
+        const cudaError_t cp = cudaMemcpy(head_dev_, head->weights(), head->weight_bytes(), cudaMemcpyDeviceToDevice);
+        if (cp != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft head's copy on the draft device failed";
+            return false;
+        }
         vram_ += head->weight_bytes();
         std::fprintf(stderr, "strata mtp: the draft head copied to the draft device (%.1f MiB)\n",
                      (double) head->weight_bytes() / 1048576.0);
@@ -479,8 +496,12 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                                (size_t) row_bytes, cudaMemcpyDeviceToHost);
                     std::memcpy(rows.data() + (size_t) i * row_bytes, staging.data(), (size_t) row_bytes);
                 }
-                cudaMemcpy(dhead_, rows.data(), rows.size(), cudaMemcpyHostToDevice);
-                cudaDeviceSynchronize();
+                if (cudaMemcpy(dhead_, rows.data(), rows.size(), cudaMemcpyHostToDevice) != cudaSuccess ||
+                    cudaDeviceSynchronize() != cudaSuccess) {
+                    cudaGetLastError();
+                    err = "mtp: the draft head's rows failed to cross to the draft device";
+                    return false;
+                }
             } else {
                 strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
                 cudaDeviceSynchronize();
