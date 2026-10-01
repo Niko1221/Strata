@@ -33,6 +33,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(STRATA_ENABLE_CUDA "Build the CUDA targets (Phase 2+)" OFF)
+# Pascal (Tesla P40 = sm_61, GP104).  It sits below every architecture these kernels were written for, so two
+# intrinsics are replaced for it - `__dp4a` (6.1+) and `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp,
+# which is bit-exact for the first and merely a shorter pause for the second.  The two places a card's RUNTIME, not
+# its compile target, decides the path are arch-gated too: the cuBLAS bf16 GEMM (src/prefill/gemm.cu, bf16 is
+# sm_80+) and the shared-memory opt-in (src/kernels/cuda/qsa.cu, opt-in above 48 KB is Volta+).  A P40 also needs
+# CUDA 12.x: CUDA 13.0 removed offline compilation for Maxwell, Pascal and Volta, so there is no Pascal target left
+# in a 13 toolkit.  RTX 20/30/40/50 cards must use the release engine instead.
+option(STRATA_EXPERIMENTAL_PASCAL "Build for Pascal / Tesla P40 (sm_61); needs CUDA 12.x" OFF)
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 if(STRATA_PREFILL_MMQ AND NOT STRATA_ENABLE_HIP)
@@ -71,23 +79,49 @@ if(STRATA_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 120 CACHE STRING "CUDA architectures" FORCE)
   endif()
+  set(_strata_has_pre_turing OFF)
+  set(_strata_has_sm120 OFF)
   foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
     string(REGEX REPLACE "-.*$" "" _base "${_a}")     # 120-real / 120-virtual are still 120
     # Turing port: developed and measured on sm_120 (RTX 50); the tf32 mma in the QSA scorer has a
     # portable fp32-FMA fallback, so RTX 20 (75), 30 (86), RTX 40 (89) and RTX 50 (120) build too.
-    # Pre-sm_75 is refused.
+    # Pre-sm_75 is refused unless STRATA_EXPERIMENTAL_PASCAL is on.
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    # STRATA_EXPERIMENTAL_SM60: a Pascal (sm_60, GP100-class) build.  It sits below every architecture
-    # these kernels were written for, so two intrinsics are replaced for it - `__dp4a` (6.1+) and
-    # `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp, which is bit-exact for the first and
-    # merely a shorter pause for the second.  RTX 20/30/40/50 cards must use the release engine instead.
-    if(_base LESS 75 AND NOT STRATA_EXPERIMENTAL_SM60)
+    if(_base LESS 75)
+      set(_strata_has_pre_turing ON)
+    endif()
+    # the supported floor, and the one build flag that lowers it to Pascal.  The opt-in covers the whole pre-sm_75
+    # band (61 and up: Pascal, Volta), because every card in it takes the same two fallbacks - the named one is the
+    # Tesla P40, which is the card this was built and measured for.
+    if(STRATA_EXPERIMENTAL_PASCAL)
+      set(_min_cc 61)
+      set(_min_card "a Tesla P40 (Pascal, sm_61)")
+    else()
+      set(_min_cc 75)
+      set(_min_card "RTX 20 / 30 / 40 / 50 series")
+    endif()
+    if(_base LESS 60)
       message(FATAL_ERROR
-        "Strata needs an NVIDIA GPU of compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series), but "
-        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal build is "
-        "-DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
+        "Compute capability ${_base} is below Pascal (6.0) and cannot run these kernels at all; the oldest card "
+        "Strata can be built for is a Tesla P40 (sm_61).")
+    endif()
+    if(_base LESS _min_cc)
+      message(FATAL_ERROR
+        "Strata needs an NVIDIA GPU of compute capability ${_min_cc} or newer (${_min_card}), but "
+        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Tesla P40 / Pascal sm_61 build is "
+        "-DSTRATA_EXPERIMENTAL_PASCAL=ON -DCMAKE_CUDA_ARCHITECTURES=61 with CUDA 12.x; upstream does not support it.)")
+    endif()
+    # CUDA 13.0 dropped offline compilation for Maxwell, Pascal and Volta, so a Pascal build has no toolkit to
+    # target in a 13.x install.  Said here rather than left to nvcc, whose error names the arch and not the cause.
+    if(_base LESS 75 AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13.0)
+      message(FATAL_ERROR
+        "sm_${_base} (Pascal, e.g. Tesla P40) needs CUDA 12.x: CUDA ${CUDAToolkit_VERSION} removed offline "
+        "compilation for Maxwell, Pascal and Volta.  Install CUDA 12.9 (the last 12.x) and reconfigure.")
+    endif()
+    if(_base GREATER_EQUAL 120)
+      set(_strata_has_sm120 ON)
     endif()
     # #220 / #224: RTX 50 engines built with CUDA 12.8 crashed in the prompt path on Linux (13.0 and newer did not)
     if(_base GREATER_EQUAL 120 AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
@@ -95,7 +129,29 @@ if(STRATA_ENABLE_CUDA)
                       "CUDA 12.8 crashed on long prompts on these cards (issues #220, #224). Use CUDA 13.0 or newer.")
     endif()
   endforeach()
+  # A Pascal target and an sm_120 target cannot share a toolkit, in BOTH directions, so one fat binary covering
+  # both is not a slower build but an impossible one: CUDA 12.x compiles the Pascal arch and crashes at runtime on
+  # sm_120 (issues #220, #224), and CUDA 13 compiles sm_120 and has no offline Pascal target left.  setup.py and the
+  # Dockerfile refuse the same pair for the same reason; this is the third door, for a cmake command typed by hand.
+  if(_strata_has_pre_turing AND _strata_has_sm120)
+    message(FATAL_ERROR
+      "CMAKE_CUDA_ARCHITECTURES '${CMAKE_CUDA_ARCHITECTURES}' mixes a pre-sm_75 (Pascal) target with sm_120 (RTX 50), "
+      "and no CUDA toolkit can build both: 12.x compiles Pascal but crashes on sm_120 (issues #220, #224), 13.x "
+      "compiles sm_120 but dropped offline compilation for Maxwell/Pascal/Volta.  Build one engine per generation.")
+  endif()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
+  # The define is what the SOURCES read, not just what configured: src/core/device.cu lowers the runtime
+  # compute-capability floor, and src/prefill/gemm.cu takes a different cuBLAS path on a card it cannot see at
+  # compile time.  It is set only when the arch list actually contains a pre-sm_75 target, so an sm_120 build that
+  # happens to pass the option still refuses a 6.1 card at startup - otherwise the engine would claim to run on a
+  # card it holds no cubin for.
+  if(STRATA_EXPERIMENTAL_PASCAL AND _strata_has_pre_turing)
+    add_compile_definitions(STRATA_EXPERIMENTAL_PASCAL=1)
+    message(STATUS "Strata: Pascal / Tesla P40 opt-in ON (CC floor 6.1, the cuBLAS bf16 GEMM becomes an fp32 one)")
+  elseif(STRATA_EXPERIMENTAL_PASCAL)
+    message(STATUS "Strata: STRATA_EXPERIMENTAL_PASCAL is on but no arch below sm_75 was requested, so the engine's "
+                   "compute-capability floor stays at 7.5")
+  endif()
   set(_strata_gpu_runtime_target CUDA::cudart)
   set(_strata_gpu_blas_target CUDA::cublas)
   set(_strata_gpu_include_directories ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

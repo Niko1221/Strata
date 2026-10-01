@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Strata: Qwen3.8-Flash-Next on NVIDIA GPUs (RTX 30/40/50, 12+ GB VRAM; two or
-# three cards can share one model, 8 GB each - docs/MULTI_GPU.md).
+# three cards can share one model, 8 GB each - docs/MULTI_GPU.md). A Tesla P40
+# (Pascal, sm_61) can be built for too, with -DSTRATA_EXPERIMENTAL_PASCAL=ON and
+# a CUDA 12.x base image - see the CUDA_IMAGE/CUDA_ARCHITECTURES notes below.
 #
 # The engine is compiled during docker build, so the first container start only
 # downloads the model (~70 GB) and starts the server. docker build has no GPU,
@@ -38,7 +40,13 @@
 # -e GPUS=0,2. A volume set up for one card switches to the pair on its first start
 # on a two-card host unless GPU or GPUS pins it. LOW_RAM=on runs on one card.
 
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
+# CUDA 13.0 is the default base image (it is what an RTX 50 needs: an engine built with 12.8 crashed on sm_120,
+# issues #220 / #224).  A Tesla P40 is Pascal (sm_61) and CUDA 13.0 REMOVED offline compilation for Maxwell,
+# Pascal and Volta, so a P40 build needs the last 12.x image instead:
+#   docker build -t strata --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 \
+#                    --build-arg CUDA_ARCHITECTURES=61 .        # Tesla P40
+ARG CUDA_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04
+FROM ${CUDA_IMAGE}
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
 # and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
@@ -54,7 +62,8 @@ WORKDIR /opt/strata
 COPY . .
 
 # RTX 20 (75), RTX 30 (86), RTX 40 (89), RTX 50 (120), plus 80 for A-series. CMakeLists
-# refuses anything below 75. BUILD_VISION=0 skips the image encoder build.
+# refuses anything below 75 unless STRATA_EXPERIMENTAL_PASCAL is on, which the build step below sets
+# automatically when 61 (or 62) is in this list - pair it with CUDA_IMAGE=nvidia/cuda:12.9.1-*.
 ARG CUDA_ARCHITECTURES=75;80;86;89;120
 ARG BUILD_VISION=1
 
@@ -77,10 +86,23 @@ nvcc, _ = setup.find_nvcc()
 arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
 
-setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
-    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
-     f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
-     f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
+# 61/62 in the arch list means a Pascal card, and Pascal needs CMake's own opt-in (the runtime CC floor and the
+# fp32 cuBLAS path both come from it).  CUDA 13 cannot compile it at all, so refuse the pair here rather than let
+# nvcc fail on a target it no longer has.
+archs = [int(a.split("-")[0]) for a in arch.split(";") if a.split("-")[0].isdigit()]
+defs = ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
+        f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+        f"-DSTRATA_GGML_DIR={llama}"]
+if any(a in setup.PASCAL_ARCHS for a in archs):
+    if max(archs) >= 120:
+        raise SystemExit("CUDA_ARCHITECTURES mixes Pascal (61/62) and RTX 50 (120); no CUDA toolkit compiles for "
+                         "both (13.0 dropped Pascal, 12.x crashed on sm_120 - issues #220/#224). Build one image "
+                         "per card generation.")
+    print("Pascal arch in CUDA_ARCHITECTURES: adding -DSTRATA_EXPERIMENTAL_PASCAL=ON "
+          "(needs a CUDA 12.x base image: CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04)")
+    defs.append("-DSTRATA_EXPERIMENTAL_PASCAL=ON")
+
+setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata", defs, None, "build-strata.bat")
 if vision != "none":
     setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
         [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON",
@@ -93,7 +115,7 @@ if vision != "none":
     shutil.copy2(setup.ROOT / "build-vision" / "bin" / setup.VEXE, eng / setup.VEXE)
 bindir = pathlib.Path(nvcc).parent
 meta = {"source": "local", "version": setup.source_version(),
-        "archs": [int(a.split("-")[0]) for a in arch.split(";") if a.split("-")[0].isdigit()], "vision": vision,
+        "archs": archs, "vision": vision,
         "cuda_dirs": [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()],
         "src": setup.source_hash(setup.ENGINE_SOURCES),
         "vision_src": setup.source_hash(setup.VISION_SOURCES) if vision != "none" else None}

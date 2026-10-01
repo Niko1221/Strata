@@ -334,15 +334,44 @@ def cc(g) -> str:
     return f"{g['arch'][:-1]}.{g['arch'][-1]}"
 
 
+# Every card the model runs on, as ints.  This is deliberately not `gpu.get("archs", [gpu["arch"]])`: Python
+# evaluates a get() default eagerly, so that expression raises KeyError on a dict that has "archs" but no
+# "arch" - which is exactly the shape build_engine and install_build_tools pass around.
+def gpu_archs(g) -> list:
+    return [int(x) for x in g.get("archs") or [g.get("arch")]]
+
+
+# Pascal (compute capability 6.1/6.2) is the one generation below RTX 20 that can be built for: the kernels need
+# two compile-time fallbacks, which the tree has (include/strata/kernels/dp4a.hpp), plus a runtime-capability
+# engine, and there is no prebuilt engine for it - so a Pascal card is always compiled here.  Nothing older
+# (Maxwell, 5.x) is: the same code would need a third fallback and has never been measured.
+#
+# A generation is NOT a card: the sm_61 band also holds a 2 GB GT 1030, which now passes the architecture check
+# and cannot hold any of the model.  That is what MIN_VRAM_GB below is for - the check that says so in a sentence,
+# instead of letting the install get 20 minutes in and fail inside the engine.
+PASCAL_ARCHS = (61, 62)
+MIN_VRAM_GB = 6                                         # below this no expert arena fits at all (low_ram_gpu_gb
+                                                         # gives a card vram_gb - 5 GB to work with, and less than
+                                                         # 5 GB is a negative budget for the dense weights)
+
+
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
-    if int(g["arch"]) < 75:
-        return (f"not supported - older than the RTX 20 series (compute capability {cc(g)}; Strata needs 7.5 or "
-                "newer)")
+    if int(g["arch"]) not in PASCAL_ARCHS and int(g["arch"]) < 75:
+        return (f"not supported - older than Pascal (compute capability {cc(g)}; Strata needs 6.1 or newer, and "
+                "7.5 or newer for anything but a Pascal card)")
+    if g["vram_gb"] < MIN_VRAM_GB:
+        return (f"not supported - only {g['vram_gb']:.0f} GB of VRAM (Strata needs {MIN_VRAM_GB} GB or more on any "
+                "card, and 12 GB to run the model well)")
     if together and g["vram_gb"] < SPLIT_MIN_VRAM_GB - 0.5:
         return (f"not supported together with other GPUs - {g['vram_gb']:.0f} GB of VRAM (a card sharing the model "
                 f"needs {SPLIT_MIN_VRAM_GB} GB or more)")
     return None
+
+
+def is_pascal(*gpus) -> bool:
+    """Whether any of these cards is Pascal, which decides the CUDA toolkit the build needs."""
+    return any(int(g["arch"]) in PASCAL_ARCHS for g in gpus if g)
 
 
 def gpu_rank(g):
@@ -400,7 +429,8 @@ def check_gpus(sel, found, what="") -> None:
         ones = " or ".join(f"--gpu {x['index']}" for x in single)
         both = "--gpus " + ",".join(str(x["index"]) for x in can) if can else ""
         hint = ((f"use these together: {both}" + (f" (or one card: {ones})" if not together else "")) if can else
-                f"use one card: {ones}" if single else "Strata needs an NVIDIA RTX 20 series or newer card")
+                f"use one card: {ones}" if single else "Strata needs an NVIDIA RTX 20 series or newer card, or a "
+                "Tesla P40 / other Pascal card (6.1 or 6.2)")
         fail(f"GPU {i}{'' if g is None else ' (' + g['name'] + ')'} {what}cannot be used: {p}", hint)
 
 
@@ -435,7 +465,8 @@ def choose_gpus(a, found) -> list:
     single = sorted([g for g in found if gpu_problem(g) is None], key=lambda x: (-round(x["vram_gb"]), x["index"]))
     if not single:
         gpu_table(found)
-        fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+)")
+        fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+), "
+             "or a Tesla P40 / other Pascal card (6.1 or 6.2)")
     can = together_ok(found)
     if not can:
         return [single[0]["index"]]
@@ -903,7 +934,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
         if meta.get("source") == "local":              # compiled here: build_engine checks its source and cards
             return None
         have = [int(a) for a in meta.get("archs", [])]
-        miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
+        miss = [x for x in gpu_archs(gpu)
                 if have and int(x) not in have and not (meta.get("ptx") and int(x) > max(have))]
         if miss:                                       # a card it has no code for (#128): compiled here instead
             warn(f"the installed engine is built for {', '.join(str(a) for a in have)}; your GPU is "
@@ -915,6 +946,11 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
         info.unlink()
     if not url_base:
+        return None
+    # No published engine carries sm_61 code (the Pascal build is an opt-in compile, CMakeLists.txt), so there is
+    # nothing to download: skip the transfer rather than pull a few hundred MB to discover that at line 959.
+    if any(x in PASCAL_ARCHS for x in gpu_archs(gpu)):
+        say("  A Pascal card needs an engine compiled for it (there is no ready-made one): compiling instead ...")
         return None
     z = ROOT / "engine" / PREBUILT_ASSET
     base = url_base if url_base.endswith(("/", "\\")) else url_base + "/"
@@ -943,7 +979,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
         shutil.rmtree(tmp, ignore_errors=True)
         return None
     archs = [int(a) for a in meta.get("archs", [])]
-    miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
+    miss = [x for x in gpu_archs(gpu)
             if int(x) not in archs and not (meta.get("ptx") and int(x) > max(archs))]
     if miss:
         warn(f"the ready-made engine is built for {', '.join(str(a) for a in archs)}; your GPU is "
@@ -1032,18 +1068,41 @@ def update_installed_engine(url_base) -> None:
     pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
 
 
+def cuda_wanted(gpu):
+    """The CUDA toolkit this build needs, as (lowest acceptable, newest acceptable).
+
+    RTX 50 (sm_120) needs 13.0: an engine built with 12.8 crashed in the prompt path on Linux (#220).  A Pascal
+    card needs 12.x and REFUSES 13.0, which is the other direction: CUDA 13.0 dropped offline compilation for
+    Maxwell, Pascal and Volta, so there is no sm_61 target left in a 13 toolkit.  A build that wants both has no
+    toolkit, and saying so beats installing one and letting nvcc fail.
+    """
+    archs = gpu_archs(gpu)
+    if any(a in PASCAL_ARCHS for a in archs):
+        if max(archs) >= 120:
+            return None                                   # Pascal and RTX 50 in one fat binary: no such toolkit
+        return (12, 0), (12, 9)
+    return ((13, 0) if max(archs) >= 120 else (12, 0)), None
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     nvcc, cuda_v = find_nvcc()
-    # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
-    need_cuda = (13, 0) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
+    want = cuda_wanted(gpu)
+    if want is None:
+        fail("this build needs both a Pascal card (6.1) and an RTX 50 card (sm_120), and no CUDA toolkit compiles "
+             "for both (13.0 dropped Pascal; 12.x crashed on sm_120, issues #220 / #224)",
+             "build one engine per card: keep the cards in separate Strata installations, or use one generation")
+    need_cuda, newest_cuda = want
+    # a toolkit this build refuses is as absent as no toolkit at all: 13.x cannot target sm_61 at all
+    too_new = newest_cuda is not None and cuda_v is not None and cuda_v > newest_cuda
     vcvars = find_vcvars() if WIN else None
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
     if not have_cc:
         missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler (build-essential)")
-    if nvcc is None or cuda_v < need_cuda:
-        missing.append("the NVIDIA CUDA Toolkit 13.0")
+    if nvcc is None or cuda_v is None or too_new or cuda_v < need_cuda:
+        missing.append(f"the NVIDIA CUDA Toolkit {need_cuda[0]}.{need_cuda[1]}"
+                       + (f" (any version up to {newest_cuda[0]}.{newest_cuda[1]})" if newest_cuda else ""))
     if not missing:
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
@@ -1062,8 +1121,8 @@ def install_build_tools(gpu, yes):
             run([*wg, "--id", "Microsoft.VisualStudio.2022.BuildTools", "--override",
                  "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"],
                 check=False)
-        if nvcc is None or cuda_v < need_cuda:
-            run([*wg, "--id", "Nvidia.CUDA", "--version", "13.0"], check=False)
+        if nvcc is None or too_new or cuda_v < need_cuda:
+            run([*wg, "--id", "Nvidia.CUDA", "--version", f"{need_cuda[0]}.{need_cuda[1]}"], check=False)
         vcvars = find_vcvars()
     else:
         apt = shutil.which("apt-get")
@@ -1073,7 +1132,7 @@ def install_build_tools(gpu, yes):
                  "PATH, in /usr/local/cuda* and in /opt/cuda*), then run it again")
         if not have_cc:
             run(["sudo", "apt-get", "install", "-y", "build-essential"])
-        if nvcc is None or cuda_v < need_cuda:
+        if nvcc is None or too_new or cuda_v < need_cuda:
             osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
             ver = osr.get("VERSION_ID", "").strip('"').replace(".", "")
             if osr.get("ID") != "ubuntu" or ver not in ("2204", "2404"):
@@ -1084,11 +1143,11 @@ def install_build_tools(gpu, yes):
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-{need_cuda[0]}-{need_cuda[1]}"])
     nvcc, cuda_v = find_nvcc()
     if (WIN and find_vcvars() is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
-    if nvcc is None or cuda_v < need_cuda:
+    if nvcc is None or cuda_v is None or (newest_cuda is not None and cuda_v > newest_cuda) or cuda_v < need_cuda:
         fail("the CUDA Toolkit did not install", "install it from https://developer.nvidia.com/cuda-downloads, then run it again")
     ok(f"build tools installed (CUDA {cuda_v[0]}.{cuda_v[1]})")
     return nvcc, find_vcvars() if WIN else None
@@ -1142,7 +1201,7 @@ def build_engine(gpu, vision, yes, llama) -> Path:
     want_vision = vision != "none"
     local = meta.get("source") == "local"
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
-    archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
+    archs = sorted(set(gpu_archs(gpu)))    # every card the model runs on
     built = {int(x) for x in meta.get("archs", [])}
     # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
     # same; the compile keeps the generations it was built for
@@ -1161,9 +1220,16 @@ def build_engine(gpu, vision, yes, llama) -> Path:
             "10-20 minutes, once) ..." if new_arch else
             "  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
-        cmake_build(ROOT, ROOT / "build", "strata",
-                    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}"], vcvars, "build-strata.bat")
+        # the Pascal opt-in is the build's own switch: CMake refuses an sm_61 target without it, and it is what
+        # lowers the engine's runtime compute-capability floor and takes the fp32 cuBLAS path (see CMakeLists.txt)
+        defs = ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
+                f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}"]
+        if any(a in PASCAL_ARCHS for a in archs):
+            defs.append("-DSTRATA_EXPERIMENTAL_PASCAL=ON")
+            say("  A Pascal card (" + ", ".join(f"sm_{a}" for a in archs if a in PASCAL_ARCHS) + "): building with "
+                "STRATA_EXPERIMENTAL_PASCAL and CUDA 12.x. This is not an upstream-supported configuration - the "
+                "prompt path runs in fp32 and it is slower than an RTX 20 of the same price.")
+        cmake_build(ROOT, ROOT / "build", "strata", defs, vcvars, "build-strata.bat")
         shutil.copy2(ROOT / "build" / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))

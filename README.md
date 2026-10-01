@@ -47,7 +47,7 @@ asks whether to share the model across them (recommended when two can). An insta
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
 card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
 pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+Every card must be an RTX 20 series or newer with 8 GB or more, or a Pascal card (6.1) with 6 GB or more - a Tesla P40 works, compiled for it, see below. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
 
 ## Which model should I pick?
 
@@ -96,6 +96,12 @@ a big GPU makes up for less RAM - the [low-RAM mode](docs/DETAILS.md)),
 install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
 App). Everything else - Python, the engine, the model - is set up for you.
 
+**A Tesla P40?** It is supported, but not by the ready-made engine: Pascal (compute capability 6.1) is below the
+7.5 floor, so setup compiles an engine for it instead of downloading one, which needs the **CUDA 12.x toolkit**
+(CUDA 13.0 removed Pascal - setup installs 12.9 for you). The prompt path runs in fp32 instead of bf16 tensor cores
+and the tensor-core attention kernels fall back, so it is several times slower than an RTX card of the same price;
+everything else, including the layer split across two P40s, works. `docs/MULTI_GPU.md` has the details.
+
 **Windows**
 
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
@@ -133,6 +139,9 @@ the same way - nothing big is downloaded again.
    `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
    The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
    set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+   For a Tesla P40, which is Pascal and which CUDA 13.0 cannot compile at all:
+   `docker build -t strata --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES=61 .`
+   (the build then adds `STRATA_EXPERIMENTAL_PASCAL` by itself).
 3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
    `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
 

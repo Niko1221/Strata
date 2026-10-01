@@ -45,6 +45,10 @@ public:
     void* stream() const { return stream_; }
 
 private:
+#if !defined(STRATA_USE_HIP)
+    void bf16_via_f32(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                      float beta);
+#endif
     void* handle_ = nullptr;
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;

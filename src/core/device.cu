@@ -99,7 +99,9 @@ DeviceInfo device_info(int ordinal) {
 #if defined(STRATA_USE_HIP)
         throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
 #else
-        throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
+        throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer, or a "
+                        "Tesla P40 in a Pascal build)",
+                        -1);
 #endif
     }
     if (ordinal < 0 || ordinal >= count) {
@@ -131,14 +133,28 @@ DeviceInfo device_info(int ordinal) {
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
     // backend checks the card against the architectures the binary was compiled for (and wave32).
+    //
+    // A Pascal build (-DSTRATA_EXPERIMENTAL_PASCAL=ON, CUDA 12.x) lowers the floor to 6.1 for the Tesla P40 and the
+    // rest of the pre-sm_75 band, which all take the same two fallbacks.  The floor is a compile-time constant of
+    // the build, not a property of the binary that can be carried anywhere: a 7.5 build still refuses a P40, so a
+    // P40 binary cannot be handed to a card nobody measured it on and report performance that was never validated.
+    // The opt-in is set by CMake only when the arch list really contains a pre-sm_75 target, so a build that was
+    // configured with the option on but no Pascal arch still refuses 6.1 rather than claiming a card it holds no
+    // cubin for.
 #if defined(STRATA_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    if (d.cc_major * 10 + d.cc_minor < 75) {
+#if defined(STRATA_EXPERIMENTAL_PASCAL)
+    constexpr int kMinCc = 61;
+    constexpr const char* kMinCard = "a Tesla P40 (compute capability 6.1)";
+#else
+    constexpr int kMinCc = 75;
+    constexpr const char* kMinCard = "compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series)";
+#endif
+    if (d.cc_major * 10 + d.cc_minor < kMinCc) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) +
-                            "; Strata needs compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series)",
+                            "." + std::to_string(d.cc_minor) + "; this Strata engine needs " + kMinCard,
                         -1);
     }
 #endif

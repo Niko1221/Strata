@@ -1,8 +1,8 @@
-// include/strata/kernels/dp4a.hpp - the two instructions the kernels use that Pascal (sm_60) does not have.
+// include/strata/kernels/dp4a.hpp - the two instructions the kernels use that an sm_61 card does not have.
 //
 // The engine is written for compute capability 7.5 and newer and refuses older cards at CMake configure time
-// (a Pascal build passes -DSTRATA_EXPERIMENTAL_SM60=ON).  A GP100-class card is compute capability 6.0, which is
-// missing exactly two things the i-quant kernels rely on:
+// (a Pascal build passes -DSTRATA_EXPERIMENTAL_PASCAL=ON with CUDA 12.x).  A Pascal card is missing exactly two
+// things the i-quant kernels rely on:
 //
 //   * `__dp4a`, a byte-wise dot product, available from 6.1 (Pascal GP10x/GV11x).  Its fallback below is
 //     llama.cpp's own (`ggml/src/ggml-cuda/common.cuh`), which is the reference for the kernels in this

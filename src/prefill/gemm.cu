@@ -1,5 +1,6 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
+#include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 
 #include <cublas_v2.h>
@@ -41,6 +42,42 @@ void ck(cublasStatus_t s, const char* what) {
         std::exit(1);
     }
 }
+
+#if !defined(__HIPCC__)
+// The device's compute capability, asked once per device.  It is a RUNTIME property, not a compile target: a
+// binary built for several archs (or a Pascal build carried to an Ampere card) has to know what it landed on.
+int device_cc_major() {
+    static int s_cc[64] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    const int slot = (dev >= 0 && dev < 64) ? dev : 0;
+    if (s_cc[slot] == 0) {
+        int major = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        s_cc[slot] = major;
+    }
+    return s_cc[slot];
+}
+
+// bf16 bits -> f32, elementwise.  `f32_from_bf16` is a shift (include/strata/kernels/bf16_bits.hpp), so this is
+// EXACT, which is the whole reason the pre-Ampere path is a plain fp32 GEMM rather than an fp16 one: bf16 has 8
+// exponent bits and fp16 has 5, so an fp16 round trip would overflow a weight above 65504 and flush one below
+// ~6e-5, silently.  The layout is untouched (both are read with leading dimension K in ELEMENTS), so this is a flat
+// copy and the cuBLAS call below keeps the same shapes.
+__global__ void bf16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = strata::kernels::f32_from_bf16(in[i]);
+}
+
+void bf16_to_f32(const uint16_t* src, float* dst, int64_t n, void* stream) {
+    if (n <= 0) return;
+    const unsigned grid = (unsigned) ((n + 255) / 256);
+    bf16_to_f32_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(src, dst, n);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "prefill gemm: bf16->f32: %s\n", cudaGetErrorString(e)); std::exit(1); }
+}
+#endif
+
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 struct HipLtCallKey {
@@ -348,12 +385,75 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         return;
     }
 #endif
+#if !defined(__HIPCC__)
+    // cuBLAS's bf16 GEMM is an Ampere (sm_80) feature and there is no flag that gives a pre-Ampere card one: it is
+    // the library, not the compiler.  Gating this on the RUNTIME card rather than on __CUDA_ARCH__ is the only
+    // correct place - a fat binary can carry several archs, and a Pascal build is expected to run on newer cards
+    // too.  HIP is deliberately left exactly as it was: RDNA3 and RDNA4 have bf16 in hardware, so it has no such
+    // gap to fill, and its blasLt path above is the one that should win.
+    if (device_cc_major() < 8) {
+        bf16_via_f32(X, W, Y, T, N, K, ldy, beta);
+        return;
+    }
+#endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx");
 }
+
+#if !defined(__HIPCC__)
+// THE PRE-AMPERE bf16 PATH.  Same product, computed in fp32: both operands are widened by an exact shift
+// (`bf16_to_f32`), and the GEMM keeps the SAME accumulator the Ampere path uses (CUBLAS_COMPUTE_32F), so this is
+// not a lower-precision answer - it is the same answer, more slowly and through more memory.
+//
+// The widening needs fp32 room for X and for a slice of W, and the scratch is sized in fp16 ELEMENTS (a 2-byte
+// unit), so it holds half as many f32 elements.  Both dimensions are therefore tiled: X is [T, K] and W is [N, K],
+// and Y is sliced with them.  T is tiled because a prompt chunk of T tokens times K is easily larger than the
+// scratch; N is tiled because one weight can be.  Each tile is an independent GEMM over the full K, so a tile
+// boundary changes nothing about the arithmetic.
+void Gemm::bf16_via_f32(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                        float beta) {
+    const int64_t cap = scratch_elems_ / 2;                  // f32 elements in the fp16-element scratch
+    const int64_t rows_total = cap / K;                      // rows of K f32 that fit at once
+    if (rows_total < 2) {
+        std::fprintf(stderr, "prefill gemm: fp32 bf16 path: scratch holds %lld f32, K=%lld needs at least 2 rows\n",
+                     (long long) cap, (long long) K);
+        std::exit(1);
+    }
+    // X first, then the largest N slice the rest of the scratch allows.  Giving T half the budget (and no more)
+    // keeps the two tile sizes from depending on each other in a way that could starve one of them.
+    int64_t t_tile = T < rows_total / 2 ? T : rows_total / 2;
+    if (t_tile < 1) t_tile = 1;
+    int64_t n_tile = rows_total - t_tile;
+    if (n_tile > N) n_tile = N;
+    if (n_tile < 1) n_tile = 1;
+
+    float* const buf = (float*) scratch_;
+    float* const wf = buf + t_tile * K;                       // W slice, behind X
+    const float alpha = 1.0f;
+    for (int64_t t0 = 0; t0 < T; t0 += t_tile) {
+        const int64_t ts = (T - t0 < t_tile) ? T - t0 : t_tile;
+        bf16_to_f32(X + t0 * K, buf, ts * K, stream_);
+        for (int64_t n0 = 0; n0 < N; n0 += n_tile) {
+            const int64_t ns = (N - n0 < n_tile) ? N - n0 : n_tile;
+            bf16_to_f32(W + n0 * K, wf, ns * K, stream_);
+            // Column-major, as the bf16 call above: m = the N slice, n = the T slice, and C's leading dimension is
+            // still ldy, so an N slice offsets C by its first ROW and a T slice by its first COLUMN.
+            //
+            // `beta` goes to EVERY tile, not just the first: a T tile is a disjoint set of rows of Y and an N tile a
+            // disjoint set of its columns, so each element is produced by exactly one tile and has not been written
+            // before.  Passing 1.0 to the later ones would add the caller's uninitialised Y into the result, which
+            // with beta = 0 is the whole of it.
+            ck(cublasSgemm((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) ns, (int) ts, (int) K, &alpha, wf,
+                           (int) K, buf, (int) K, &beta, Y + n0 + t0 * ldy, (int) ldy),
+               "cublasSgemm (pre-Ampere bf16)");
+        }
+    }
+}
+#endif
+
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                float beta) {

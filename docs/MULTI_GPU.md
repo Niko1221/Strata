@@ -18,7 +18,7 @@ Strata can use it:
 ```
   Your NVIDIA GPUs:
     GPU 0: NVIDIA GeForce RTX 5080, 16 GB VRAM - can be used
-    GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
+    GPU 1: NVIDIA GeForce GTX 750 Ti, 2 GB VRAM - not supported - older than Pascal (compute capability 5.2; Strata needs 6.1 or newer, and 7.5 or newer for anything but a Pascal card)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
   1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
@@ -41,7 +41,9 @@ now on; the answer is kept.
 ```
 
 **Not supported** (setup says so and names the cards that can be used instead):
-- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
+- a card older than Pascal (compute capability below 6.1: Maxwell and older);
+- a card with less than 6 GB of VRAM at all - no part of the model fits, whatever its compute capability (a 2 GB
+  GT 1030 is compute capability 6.1, so it passes the architecture check and is refused on size instead);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
   own prompt buffers);
 - AMD and Intel GPUs, and a mix of NVIDIA with them. (Two AMD RDNA4 cards run the split from a hand-written
@@ -97,8 +99,34 @@ into the card that owns the layer.
   capped to leave room for them.
 - On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
   allocations); the PCIe share covers those layers.
-- Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
-  Turing card runs the same kernels instead of the tensor-core prompt attention.
+- Every card needs compute capability 7.5 (RTX 20 or newer), or 6.1 for a Pascal card - see below. The pre-sm_80 QSA
+  scorer path is fp32 FMAs, so a Turing card runs the same kernels instead of the tensor-core prompt attention.
+
+## Tesla P40 (Pascal, sm_61)
+
+A P40 is compute capability 6.1, below the 7.5 floor, so it is an **opt-in** rather than a default: setup
+recognises it, but there is no ready-made engine and it compiles one instead. Two consequences are worth knowing
+before you start:
+
+- **CUDA 12.x is required, not optional.** CUDA 13.0 removed offline compilation for Maxwell, Pascal and Volta, so
+  there is no `sm_61` target in a 13 toolkit. Setup installs `cuda-toolkit-12-9` for you; `nvidia-smi` and the driver
+  are unaffected (an old driver is fine). A build that wants both a P40 and an RTX 50 in one binary is impossible -
+  use one Strata installation per generation.
+- **The prompt path is much slower.** cuBLAS's bf16 GEMM is an `sm_80` feature, so the prompt projections run as
+  fp32 on a P40: the same product in the same `CUBLAS_COMPUTE_32F` accumulator (bf16 to fp32 is an exact shift), so
+  nothing is less accurate, it is just several times the work. The tensor-core prompt attention and the tf32 QSA
+  scorer fall back to their existing fp32 paths. Decoding, the layer split and everything else are unaffected.
+
+Two P40s (24 GB each) can share a model exactly like two RTX cards: `--gpus 0,1` and the same `--layer-split auto`.
+The one thing to watch is the 48 KB shared-memory limit, which Pascal does not let a kernel opt past - the QSA
+attention kernel's shared allocation follows the 2048-cell selection budget (~8 KB), so it fits.
+
+To build it by hand instead of through setup:
+
+```
+cmake -S . -B build -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 -DSTRATA_EXPERIMENTAL_PASCAL=ON
+cmake --build build --target strata -j
+```
 
 ## Measured
 

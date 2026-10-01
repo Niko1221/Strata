@@ -202,7 +202,7 @@ You need **only an NVIDIA driver** (version 580 or newer; update it with the NVI
 
 | | |
 | --- | --- |
-| GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. |
+| GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. A **Tesla P40** (Pascal, 6.1) is supported as an opt-in compile - see [MULTI_GPU.md](MULTI_GPU.md#tesla-p40-pascal-sm_61) - and needs the CUDA 12.x toolkit. |
 | RAM | **64 GB** recommended (see the table above). |
 | CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. |
 | Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. An NVMe SSD is strongly recommended. |
@@ -215,8 +215,9 @@ elsewhere) finds them and sets itself up the same way. The place is remembered p
 start (a rename on the same drive; files on another drive are used where they are).
 Python 3.12 if you have none (for your user account, no admin), a private Python environment, NVIDIA's CUDA libraries
 (from pip, ~0.4 GB), the ready-made Strata engine for RTX 20/30/40/50, the model and the MTP draft layer. If no
-ready-made engine fits your PC, it offers to install the build tools (Visual Studio Build Tools + CUDA Toolkit on
-Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GPU (asks first; 20-40 minutes once).
+ready-made engine fits your PC (a Pascal card has none), it offers to install the build tools (Visual Studio Build
+Tools + CUDA Toolkit on Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GPU (asks
+first; 20-40 minutes once).
 
 ---
 
@@ -315,7 +316,8 @@ Terminal chat: `.venv/bin/python chat.py`.
   two for the changed files). If that compile fails, it says so and starts the engine you had.
 - **Other distributions** (Arch, Fedora, ...): install the C++ compiler and the CUDA Toolkit 13 with your package
   manager first (Arch: `sudo pacman -S base-devel cuda`); setup finds `nvcc` on PATH, in `/usr/local/cuda*` and in
-  `/opt/cuda*`, and does the rest.
+  `/opt/cuda*`, and does the rest. For a Pascal card (Tesla P40) install **CUDA 12.x** instead: 13.0 removed
+  sm_61, and setup treats a 13.x toolkit on a Pascal build as no toolkit at all.
 - **WSL** works (Ubuntu 24.04 tested), with one limit: the NVIDIA driver pins only about 1 GB of RAM there, so KV
   streaming (`--kv-resident`) is off and the KV cache stays in VRAM, and the experts are copied to the GPU from
   unpinned RAM (slower prompts than native Linux).
