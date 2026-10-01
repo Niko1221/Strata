@@ -182,8 +182,9 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 
 ## Community-validated cards
 
-Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. No hipBLASLt table
-is shipped for them (make one with [Tuning table](#tuning-table) and compare the prompt speed with and without it).
+Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
+hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
+and compare the prompt speed with and without it).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -202,6 +203,17 @@ is shipped for them (make one with [Tuning table](#tuning-table) and compare the
 
   Greedy output was the same across runs. For comparison, llama.cpp's HIP build measured 20 tok/s decode and
   450 tok/s prompt on that card.
+
+  On engine 0.1.31 setup ships that table (`tools/hip/gfx1200-hipblaslt-100202.txt`). The same binary (ctest
+  37/37, without `ple_parity` and `platform_memory_test`), prompts of repeated code blocks, prefill 2560 for
+  the short prompt and 16384 with `--kv int8 --kv-resident 65536` otherwise, two runs each - prompt speed
+  with the table vs plain hipBLAS (no table):
+
+  | prompt | with the table | plain hipBLAS | gain |
+  |---|---|---|---|
+  | 2,374 tokens | 597-599 tok/s | 396-398 tok/s | 1.50x |
+  | 65,045 tokens | 754-757 tok/s | 380 tok/s | 1.99x |
+  | 130,091 tokens (the same flags) | 719 tok/s | 363-370 tok/s | 1.98x |
 
 ## Tuning table
 
