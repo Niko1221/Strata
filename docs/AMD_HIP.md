@@ -185,6 +185,16 @@ The file's second line names the architecture and version (`STRATA_HIPBLASLT_TUN
 as `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `STRATA_HIPBLASLT_TUNING` at it. Compare the
 prompt speed with and without it before keeping it.
 
+Shipped tables:
+
+- `gfx1100-hipblaslt-100100.txt`, `gfx1100-hipblaslt-100200.txt`: RX 7900 XTX.
+- `gfx1201-hipblaslt-100500.txt`: Radeon AI PRO R9700 (gfx1201, 32 GB), calibrated with ROCm 10.2.0a20260914
+  (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
+  T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
+  when that is a system ROCm 7 or newer). The version number is the only thing the engine can check, so another
+  1.5.0 build could number its solutions differently: run `hip_prefill_hipblaslt_gemm` with `STRATA_HIPBLASLT_TUNING` pointing at the table
+  (it exits non-zero when the table does not fit) and recalibrate with `tune_hipblaslt` if it fails.
+
 ## Original backend validation (PR #94)
 
 The following is historical validation of the original backend, not a fresh
