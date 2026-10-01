@@ -43,6 +43,9 @@ class ChatTemplate:
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
+        # Parser metadata is internal; only the actual tool definition belongs in the prompt.
+        if tools:
+            tools = [{k: v for k, v in t.items() if k != "strata_raw_input"} for t in tools]
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -232,9 +235,10 @@ class ToolCall:
 
 @dataclass
 class Event:
-    kind: str                     # "reasoning" | "content" | "tool_call"
+    kind: str                     # reasoning, content, tool_start, tool_args, tool_input, tool_call
     text: str = ""
     call: ToolCall | None = None
+    complete: bool = True         # false when generation ends inside an announced tool call
 
 
 THINK_END = "</think>"
@@ -319,7 +323,8 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
             value = value[1:]
         if value.endswith("\n"):
             value = value[:-1]
-        declared = (props.get(pname) or {}).get("type")
+        schema_value = props.get(pname)
+        declared = schema_value.get("type") if isinstance(schema_value, dict) else None
         if declared == "string":
             args[pname] = value
         else:
@@ -353,6 +358,8 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.sraw_input = False
+        self.sraw_parameter = False
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -371,7 +378,8 @@ class OutputParser:
                 name = rest[a + 10:b]
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
-                self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
+                self.sdeclared = {k: v.get("type") if isinstance(v, dict) else None for k, v in props.items()}
+                self.sraw_input = bool((self.schemas.get(name) or {}).get("strata_raw_input"))
                 out.append(Event("tool_start", call=self.scall))
                 args("{")
                 self.sp += b + 1
@@ -384,6 +392,7 @@ class OutputParser:
                     if b < 0:
                         return out
                     pname = stripped[11:b]
+                    self.sraw_parameter = self.sraw_input and pname == "input"
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
@@ -411,6 +420,8 @@ class OutputParser:
                     value = rest[:end]
                     if value.endswith("\n"):
                         value = value[:-1]
+                    if self.sraw_parameter and value:
+                        out.append(Event("tool_input", value, call=self.scall))
                     args(json.dumps(value)[1:-1] + '"')
                     self.sp += end + len(PARAM_END)
                     self.ss = "between"
@@ -420,6 +431,8 @@ class OutputParser:
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
                     safe -= 1
                 if safe > 0:
+                    if self.sraw_parameter:
+                        out.append(Event("tool_input", rest[:safe], call=self.scall))
                     args(json.dumps(rest[:safe])[1:-1])
                     self.sp += safe
                 return out
@@ -532,6 +545,8 @@ class OutputParser:
         out = []
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
+            out += self._close_scan()
+            out.append(Event("tool_call", call=self.scall, complete=False))
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
                 out.append(Event("tool_call", call=self.scall))
             self.buf = ""

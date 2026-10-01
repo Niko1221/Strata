@@ -170,6 +170,7 @@ the same way - nothing big is downloaded again.
 - **Chat in the terminal:** `.venv\Scripts\python chat.py`
 - **Your apps and coding agents:** add it as an "OpenAI-compatible" provider with base URL
   **`http://127.0.0.1:8080/v1`**, any API key and any model name. Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages`.
+- **Codex CLI:** use the native `/v1/responses` endpoint; see [Codex setup](#codex-cli).
 - **Thinking:** the model thinks before it answers. Choose **off, low, medium or high** - in the chat page menu, with
   `/think low` in `chat.py`, or with your app's "reasoning effort" setting. Off is fastest; high is best for hard questions.
 - **Pictures:** in the chat page click **Picture**; in `chat.py` type `/image <path>`; in apps just attach them.
