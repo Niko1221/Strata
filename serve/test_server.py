@@ -22,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
-                          StrataEngine, engine_args, layer_split_value, prompt_progress, prompt_tokens_seen,
+                          StrataEngine, Vision, engine_args, layer_split_value, prompt_progress, prompt_tokens_seen,
                           request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
@@ -821,6 +821,141 @@ class EffortAtTheEnd(unittest.TestCase):
             self.assertIn("needs engine 0.1.39 or newer", out.getvalue())
             with self.assertRaises(ValueError):
                 effort_end_args({"effort_position": "middle"}, str(new), Tok())
+
+
+class VisionFootprint(unittest.TestCase):
+    """The Monitor's vision row. `strata-vision` reports no memory of its own - not to stdout, not to the log -
+    so the server measures what the card's free VRAM lost while it started. A wrong number is worse than none,
+    so only a plausible delta is kept (serve/server.py, Vision._start)."""
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            import io
+            self.stdout = io.StringIO("READY 1152\n")
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+    def setUp(self):
+        import serve.server as S
+        self.S = S
+        self.saved = (S._free_vram_mib, S.subprocess.Popen, S.contain)
+        S.subprocess.Popen, S.contain = self.FakeProc, lambda p: None
+        self.addCleanup(self._restore)                   # the patch outlives a restart() inside the test
+
+    def _restore(self):
+        self.S._free_vram_mib, self.S.subprocess.Popen, self.S.contain = self.saved
+
+    def start_vision(self, readings, **kw):
+        """A Vision started against scripted free-VRAM readings, with no process behind it."""
+        seq = iter(readings)
+        self.S._free_vram_mib = lambda index: next(seq)
+        return Vision({"exe": "x", "mmproj": "m", "model": "d", "gpu": True}, device=2, **kw)
+
+    def test_the_delta_is_what_the_card_lost(self):
+        v = self.start_vision([5000, 3579])                  # before, after
+        self.assertEqual(v.device, 2)                        # the card it was told about, not the engine's
+        self.assertEqual(v.mib, 1421)
+
+    def test_an_implausible_delta_is_not_reported(self):
+        for name, readings in (("nothing was taken", [5000, 5000]),
+                               ("the card gained memory", [5000, 6000]),
+                               ("more than any card", [20000, 5000]),
+                               ("too small to be an encoder", [5000, 4990]),
+                               ("NVML gave nothing", [None, 5000])):
+            with self.subTest(name):
+                self.assertIsNone(self.start_vision(readings).mib)
+
+    def test_a_bad_restart_keeps_the_last_good_reading(self):
+        # the old process's VRAM is not released the instant it is killed, so a restart can read a delta of ~0
+        v = self.start_vision([5000, 3579, 4000, 4000])
+        self.assertEqual(v.mib, 1421)
+        v.restart()
+        self.assertEqual(v.mib, 1421)
+
+
+class VisionMetrics(unittest.TestCase):
+    """What /metrics tells the Monitor about the encoder (the vision row on the per-GPU cards)."""
+
+    def svc_with(self, vision):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.vision = vision
+        return svc
+
+    def test_no_encoder(self):
+        self.assertEqual(self.svc_with(None).vision_metrics(),
+                         {"enabled": False, "running": False, "device": None, "mib": None})
+
+    def test_a_double_without_alive_still_reports(self):
+        # test_server's ImageMarkers.FakeVision has only `encode`; /metrics must not require more than a test needs
+        class Bare:
+            pass
+
+        self.assertEqual(self.svc_with(Bare()).vision_metrics(),
+                         {"enabled": True, "running": True, "device": None, "mib": None})
+
+    def test_a_stopped_encoder_holds_nothing(self):
+        class Stopped:
+            device, mib = 0, 1421
+
+            def alive(self):
+                return False
+
+        m = self.svc_with(Stopped()).vision_metrics()
+        self.assertFalse(m["running"])
+        self.assertIsNone(m["mib"])                          # it gave the VRAM back; the row goes with it
+
+    def test_a_running_encoder_reports_its_card_and_size(self):
+        class Running:
+            device, mib = 0, 1421
+
+            def alive(self):
+                return True
+
+        self.assertEqual(self.svc_with(Running()).vision_metrics(),
+                         {"enabled": True, "running": True, "device": 0, "mib": 1421})
+
+
+class GpuDraftField(unittest.TestCase):
+    """`gpu_draft_mib` is the seventh per-GPU list on the INFO line. The parser splits that line on whitespace
+    (serve/server.py), so a CSV field only survives as a single token - and a value like "-" must not be read as
+    a number."""
+
+    class FakeProc:
+        def __init__(self, lines):
+            import io
+            self.stdout = iter(lines)
+            self.stdin = io.StringIO()
+
+        def poll(self):
+            return None
+
+    def engine_with(self, info_line):
+        import serve.server as S
+        saved = S.subprocess.Popen, S.contain
+        S.subprocess.Popen = lambda *a, **k: self.FakeProc([info_line, "READY 4096 stop\n"])
+        S.contain = lambda p: None
+        self.addCleanup(lambda: (setattr(S.subprocess, "Popen", saved[0]), setattr(S, "contain", saved[1])))
+        return StrataEngine("engine/strata", ["--native", "x"])
+
+    def test_the_lists_survive_as_single_tokens(self):
+        eng = self.engine_with("INFO context=262144 gpu_dev=0,1,2,3 gpu_layers=0-29,30-47,-,- "
+                               "gpu_draft_mib=-,835,-,- spec=2 engine=0.1.31\n")
+        self.assertEqual(eng.info["gpu_dev"], "0,1,2,3")
+        self.assertEqual(eng.info["gpu_draft_mib"], "-,835,-,-")
+        self.assertEqual(eng.info["gpu_layers"], "0-29,30-47,-,-")
+        self.assertEqual(eng.info["context"], 262144)        # a plain number is still an int
+        self.assertEqual(eng.info["version"], "0.1.31")
+
+    def test_no_draft_head_stays_a_string(self):
+        # MTP off: every entry is "-", which must not become an int
+        eng = self.engine_with("INFO context=4096 gpu_dev=0 gpu_draft_mib=- engine=0.1.31\n")
+        self.assertEqual(eng.info["gpu_draft_mib"], "-")
+        self.assertEqual(eng.info["gpu_dev"], 0)             # one device: "0" is a number, as it always has been
 
 
 class StatusNeedsTheKey(unittest.TestCase):
@@ -2171,8 +2306,9 @@ class WebApp(unittest.TestCase):
         code, ctype, body = self.get("/metrics")
         self.assertEqual(code, 200)
         m = json.loads(body)
-        for key in ("engine", "live", "requests", "hardware", "hardware_static", "history"):
+        for key in ("engine", "live", "requests", "hardware", "hardware_static", "history", "vision"):
             self.assertIn(key, m)
+        self.assertEqual(m["vision"], {"enabled": False, "running": False, "device": None, "mib": None})
         self.assertEqual(m["engine"]["max_context"], CTX)
         self.assertEqual(m["live"]["state"], "idle")
         self.assertEqual(m["requests"][0]["output_tokens"], 5)
