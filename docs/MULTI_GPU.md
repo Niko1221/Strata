@@ -104,6 +104,7 @@ into the card that owns the layer.
     as it did without a split: its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`), with or without a split; a native (IQ) pack says so at
   start.
+
 - With an expert profile (the default), every stage's prompt path borrows the tail of its own expert cache for its
   chunk buffers and refills it after the prompt; outside the prompt the whole cache is expert cache again, so the
   buffers cost a stage no permanent VRAM. Without a profile, or with `--no-prefill-borrow`, each stage keeps its
@@ -119,6 +120,19 @@ into the card that owns the layer.
 - Every card needs compute capability 7.0 (Volta or newer). The build includes code for each selected card's
   architecture; Ampere-only prompt kernels automatically use their portable fallback on Volta and Turing.
 
+**Decode runs the stages one after another.**  A verify window finishes on one card before the next card starts
+its share: the hand-off is one per window (a few hundred KB through pinned RAM).  Prompts gain from the split -
+each card reads its own layers of a chunk while the previous card reads the next chunk - but decode is the sum
+of the stages, not the longer one.  With two equal cards each card is busy about half the time during decode
+(measured on a pair of V100 16 GB: one card at 100% util while the other idles, alternating per window).
+
+The host thread that drives the windows is pinned to its own core and spins while it waits for the GPU
+(`SessionLoopScratch`, `Verifier::run`); on that rig the wait is 11.3 ms of every 33.6 ms window, against 0.7 ms
+of per-layer host work and ~1.3 ms of card-side flag waits.  The pinned core is by design and is not the decode
+limit: the GPU is the critical path, and moving the loop's work onto more cores changed no throughput (see the
+measured section).  The open limit is pipelining a window's positions across the hand-off - the next card starts
+position t while the previous card still runs position t+1 - which would make decode the longer stage instead of
+the sum.
 ## Measured
 
 The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
@@ -134,6 +148,13 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - **Decode is on par with the faster card alone**, and ahead on code. Once both caches hold nearly every routed
   expert, the per-layer GPU time decides.
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
+- **Two equal cards** (a V100 16 GB pair, Qwen3.8-Flash-Next Q2_0, 4K prompts, `--layer-split 20`): decode at
+  55-58 tok/s against 19-22 tok/s on one card alone - the split nearly triples decode here because a second
+  cache cuts the missed expert mass the CPU pool computes (hit rate 0.93-0.98 vs 0.73).  The stages still run
+  one after the other, so two equal cards do not double decode: the per-window time is the sum of the two
+  stages and each card is busy about half the time.  The windows drove the host thread's pinned core to a full
+  spin while the GPU ran, and the speed did not change when that work could have spread across cores - the
+  card-side flag waits on the host (waitA + waitB + waitCPU) total ~1.3 ms of every 33.6 ms window.
 
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.
