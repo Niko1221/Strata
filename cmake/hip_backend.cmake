@@ -11,7 +11,7 @@ endif()
 # report ran it (#311), the maintainers have not.
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1102 gfx1030)
+set(_strata_hip_unvalidated gfx1151 gfx1102 gfx1030)
 set(STRATA_HIP_ARCH_LIST "")
 foreach(_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
   string(REGEX REPLACE ":.*$" "" _base "${_arch}")      # gfx1100:xnack- -> gfx1100

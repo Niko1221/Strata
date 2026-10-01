@@ -24,7 +24,9 @@ the kernel's amdgpu driver (no ROCm install needed):
 ```
 
 - **Detection:** setup finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not
-  supported. On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
+  supported. An experimental manual-only `gfx1151` source build and its limits are documented in
+  [AMD_STRIX_HALO.md](AMD_STRIX_HALO.md); this does not enable integrated GPUs in setup.
+  On a PC without an NVIDIA card Strata can use, `--backend hip` is chosen automatically.
 - **ROCm:** a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS is used when present. Otherwise
   (or when it is older than 7.0) ROCm is installed into `.venv` from AMD's TheRock wheels (~10 GB, no sudo), pinned
   to the version this backend was tested with, from the card family's index: `gfx110X-dgpu` for gfx1100 / gfx1101,
