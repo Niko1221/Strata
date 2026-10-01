@@ -38,18 +38,23 @@ place**, and the spread between the best and the worst way to run the same file 
 
 ## What each number came from
 
-**1. The pinned arena never pins, on this class of machine.** The comment in the source says the
-arena is 1.79–3.7× better than the mapped mode. Here it starts with:
+**1. The arena does not pin, and at this size that flips the ranking.** The comment in
+`generate.cpp` measures the arena at *1.79x better than the warm mmap and 3.7x better than the cold
+one*, on a **34 GB `experts.bin` on a 63 GB machine**, and it already states that the arena is not
+pinned there (`cudaHostRegister` on 31.64 GiB fails with "out of memory" - "you cannot pin 34 of
+63 GB"). The same failure here, at a larger size:
 
 ```
 expert arena: SetProcessWorkingSetSizeEx(14814 MiB) failed (error 1450); cudaHostRegister of the
-whole arena FAILED (out of memory); 37 slices pinned (46 GiB)
+whole arena FAILED (out of memory); 37 slices pinne[d]
 ```
 
-and large pages are refused too (error 1450, for both the 61 GiB and the 50.3 GB arena). The arena
-still runs — 33.85 tok/s — but it pays 30 s to load 60.94 GiB at ~2 GiB/s on every start, and it
-loses to a warm mapped run. The same `cudaHostRegister` **succeeds** for the IQ3_S arena (46.84 GiB),
-which is why the arena is the right answer for that model and the wrong one one quantization step up.
+(the line is cut at 165 columns by the harness, so the tail is not recorded). Large pages are refused
+too, error 1450, for both the 61 GiB and the 50.3 GB arena. What changes at 60.94 GiB is the
+consequence: the arena still runs - 33.85 tok/s - but it pays ~30 s to load 60.94 GiB at ~2 GiB/s on
+**every** start, and it now **loses** to a warm mapped run (37.5-39.0). `cudaHostRegister` does
+**succeed** for the IQ3_S arena (`cudaHostRegister PORTABLE ok` on 50,295,996,416 B), which is why
+the arena is the right answer one quantization step down and the wrong one one step up.
 
 **2. The RAM budget costs ~30% against plain mmap, and the two costs are visible in the log.**
 `eb_sp` (mmap over `experts.bin`) 38.06 tok/s vs `eb_rb40sp` 27.45:
@@ -114,8 +119,9 @@ is walking each expert row once per verify window instead of once per token.
 
 ## What I would do with this
 
-- The arena-vs-mapped claim in the source comment is machine-dependent: when the arena does not fit
-  in RAM the pinning fails and the mapped mode wins. Worth saying next to it.
+- The arena-vs-mapped ranking in the source comment is measured at 34 GB of experts on 63 GB, where
+  the unpinned arena still wins. At 61 GiB on 64 GB it loses, and the load cost per start (~30 s)
+  becomes visible. The second data point is worth putting next to the first.
 - The prefetch default (2048 B) is right for the arena path and ~9% low for the mapped one; a
   distance that follows the row size (or 8192) would suit both.
 - A warning when a page-locked budget is large enough to push out the file cache the same model is
