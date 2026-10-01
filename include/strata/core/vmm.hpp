@@ -44,6 +44,9 @@ public:
 private:
     bool map_one(int64_t i, VmmChunk h);
     bool set_access(int64_t lo, int64_t hi);
+    /// Readable and writable [lo, hi) (all newly mapped); when that fails they are unmapped and freed again, so no
+    /// chunk counts as mapped without access.
+    bool commit_run(int64_t lo, int64_t hi);
     unsigned long long base_ = 0;
     std::vector<VmmChunk> h_;   // per chunk: its physical chunk, 0 = unmapped
 };
@@ -54,7 +57,7 @@ template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take
     int64_t run = -1;   // access is set once per run of newly mapped chunks (it costs as much as the map)
     for (int64_t i = lo; i < hi; ++i) {
         if (mapped(i)) {
-            if (run >= 0 && !set_access(run, i)) return false;
+            if (run >= 0 && !commit_run(run, i)) return false;
             run = -1;
             continue;
         }
@@ -62,12 +65,12 @@ template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take
         if (h == 0) h = vmm_chunk_new();
         if (h == 0 || !map_one(i, h)) {
             if (h != 0) vmm_chunk_free(h);
-            if (run >= 0) set_access(run, i);
+            if (run >= 0) commit_run(run, i);
             return false;
         }
         if (run < 0) run = i;
     }
-    return run < 0 || set_access(run, hi);
+    return run < 0 || commit_run(run, hi);
 }
 
 }  // namespace strata::core
