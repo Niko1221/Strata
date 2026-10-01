@@ -240,6 +240,20 @@ std::vector<DeviceCaps> device_caps() {
     return out;
 }
 
+int device_cc_major(int ordinal) {
+    static int cc_major[64] = {};
+    if (ordinal < 0 || ordinal >= 64) return -1;
+    if (cc_major[ordinal] == 0) {
+        int major = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, ordinal) != cudaSuccess) {
+            cudaGetLastError();
+            return -1;
+        }
+        cc_major[ordinal] = strata::cc_major_of(major);
+    }
+    return cc_major[ordinal];
+}
+
 std::vector<uint8_t> peer_access_matrix() {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");

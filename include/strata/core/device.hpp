@@ -83,6 +83,14 @@ std::vector<DeviceCaps> device_caps();
 // A topology without peer support (PCIe root bridges) simply reports 0 everywhere.
 std::vector<uint8_t> peer_access_matrix();
 
+// Fase 2 (hetero multi-GPU): the single source of truth the kernel-selection sites ask instead of keeping
+// their own device-query + static-cache copies.  The effective cc major of device `ordinal`, queried once per
+// ordinal (STRATA_EMULATE_CC honoured); -1 when the query fails, and the caller keeps its existing fall-back
+// behaviour (the callers get the driver error read for them: this clears it).  Thread safety: the sites today
+// fill their caches from whichever thread runs generation, and a plain static array re-filled with the same
+// number stays as safe as it was there.
+int device_cc_major(int ordinal);
+
 /// "" when this build has device code for the current device, else CUDA's error: a build for other GPUs would
 /// otherwise fail at its first kernel launch, with nothing that names the cause.
 std::string device_code_error();
