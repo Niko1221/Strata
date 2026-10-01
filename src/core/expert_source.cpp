@@ -2115,13 +2115,104 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
 // [gate rows | up rows | down rows] - the layout tools/iq_pack.py would have written to experts.bin.  Each role
 // is read from its own file (native_experts.txt v4: a shard boundary can fall inside a layer; per role as in
 // #255, gopinath87607).  The caller checks the spans first (check_experts_gguf).
+// `unbuffered` (Windows, experts_unbuffered): each chunk's 4 KiB-aligned window is read with FILE_FLAG_NO_BUFFERING into
+// an aligned buffer and scattered into the blobs - no copy through the file cache when the drive is read anyway.
 LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads) {
+                            int threads, bool unbuffered = false) {
     LoadStats st;
     st.layers = (uint64_t) lay.n_layers;
     const auto t0 = std::chrono::steady_clock::now();
     std::atomic<int64_t> next{0};
     std::atomic<bool> bad{false};
+#if defined(_WIN32)
+    if (unbuffered) {
+        uint64_t max_chunk = 0;
+        for (int64_t l = 0; l < lay.n_layers; ++l) {
+            const auto& fm = lay.fmt[(size_t) l];
+            max_chunk = std::max<uint64_t>(max_chunk, std::max<uint64_t>(fm.up_off, lay.bytes[(size_t) l] - fm.down_off) * 16);
+        }
+        std::mutex err_mu;
+        std::string err;
+        auto worker = [&]() {
+            constexpr uint64_t kSector = 4096;
+            const uint64_t cap = (max_chunk + 2 * kSector + kSector - 1) / kSector * kSector;
+            uint8_t* buf = (uint8_t*) VirtualAlloc(nullptr, (size_t) cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            HANDLE h = INVALID_HANDLE_VALUE;
+            std::string open_name;
+            auto fail = [&](const std::string& what) {
+                std::lock_guard<std::mutex> g(err_mu);
+                if (err.empty()) err = what;
+                bad = true;
+            };
+            if (buf == nullptr) fail("cannot allocate a read buffer");
+            for (;;) {
+                const int64_t l = next.fetch_add(1);
+                if (l >= lay.n_layers || bad) break;
+                const auto& fm = lay.fmt[(size_t) l];
+                const uint64_t blob = lay.bytes[(size_t) l];
+                const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
+                const uint64_t at[3] = {0, fm.up_off, fm.down_off};
+                for (int r = 0; r < 3 && !bad; ++r) {
+                    // the handle is kept while consecutive roles share a file (every layer of a v3 pack)
+                    const std::string name = expert_gguf_file(gguf, lay, l, r);
+                    if (name != open_name) {
+                        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+                        const int wide = MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, nullptr, 0);
+                        std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
+                        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, w.data(), wide);
+                        h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+                        if (h == INVALID_HANDLE_VALUE) {
+                            fail("cannot open " + name + " (error " + std::to_string((unsigned long long) GetLastError()) + ")");
+                            break;
+                        }
+                        open_name = name;
+                    }
+                    const uint64_t src = lay.gguf_off[(size_t) (3 * l + r)];
+                    const uint64_t total = per[r] * (uint64_t) lay.n_expert;
+                    const uint64_t chunk = per[r] * 16;           // 16 experts per read
+                    for (uint64_t done = 0; done < total; done += chunk) {
+                        const uint64_t n = std::min<uint64_t>(chunk, total - done);
+                        const uint64_t a0 = (src + done) / kSector * kSector;
+                        const uint64_t a1 = (src + done + n + kSector - 1) / kSector * kSector;
+                        OVERLAPPED ov{};
+                        ov.Offset = (DWORD) a0;
+                        ov.OffsetHigh = (DWORD) (a0 >> 32);
+                        DWORD got = 0;
+                        // the window may run past the end of the file: only the tensor's own bytes have to arrive
+                        if (!ReadFile(h, buf, (DWORD) (a1 - a0), &got, &ov) || (uint64_t) got < src + done - a0 + n) {
+                            fail("short unbuffered read of layer " + std::to_string(l) + " in " + name + " (error " +
+                                 std::to_string((unsigned long long) GetLastError()) + ")");
+                            break;
+                        }
+                        const uint8_t* q = buf + (src + done - a0);
+                        for (uint64_t k = 0; k < n / per[r]; ++k) {
+                            const uint64_t e = done / per[r] + k;
+                            std::memcpy(dst + lay.blob_offset(l, (int64_t) e) + at[r], q + k * per[r], (size_t) per[r]);
+                        }
+                    }
+                }
+            }
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            if (buf != nullptr) VirtualFree(buf, 0, MEM_RELEASE);
+        };
+        std::vector<std::thread> pool;
+        for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+        worker();
+        for (auto& t : pool) t.join();
+        if (bad) {
+            st.seconds = -1.0;
+            st.ok = false;
+            st.error = err.empty() ? "unreadable shard while reading the experts from the GGUF" : err;
+            return st;
+        }
+        st.bytes = lay.total;
+        st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        return st;
+    }
+#else
+    (void) unbuffered;
+#endif
     auto worker = [&]() {
         // #230: `fread` on a `FILE*`, as load_experts_ranges (#89): MSVC's `std::ifstream::read` splits a request
         // into 4095-byte freads, which took this path to 0.02 GiB/s on a Windows install without experts.bin.
@@ -2245,8 +2336,31 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
               (why.empty() ? std::string{} : ": " + why);
         return false;
     }
-    const LoadStats st = from_gguf ? load_experts_gguf(gguf_, a->data(), lay, threads)
-                                   : load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
+    // #285: unbuffered when the drive is read anyway and the file cache could not keep the experts for the next
+    // start either (a 64 GB PC); otherwise the buffered readers, which a warm restart serves from the cache
+    std::vector<std::string> files;
+    if (from_gguf) {
+        for (int64_t l = 0; l < n_layers; ++l)
+            for (int r = 0; r < 3; ++r) {
+                const std::string f = expert_gguf_file(gguf_, lay, l, r);
+                if (std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+            }
+    } else {
+        files.push_back(path);
+    }
+    std::string why;
+    const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
+    const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
+    LoadStats st;
+    if (from_gguf) {
+        st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered);
+    } else {
+        if (unbuffered) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20);
+        if (!unbuffered || (!st.ok && st.error.empty()))   // unaligned ranges: the buffered reader
+            st = load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20);
+    }
+    std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
+                 why.c_str());
     if (!st.ok) {
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);

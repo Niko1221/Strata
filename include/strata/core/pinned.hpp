@@ -104,6 +104,19 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
 
+/// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
+/// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =
+/// false with an empty `error` when they are not (or off Windows), and the caller falls back to load_experts_ranges.
+LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
+
+/// Whether the expert files are better read unbuffered (Windows; false elsewhere): a timed probe of random 64 KiB
+/// reads says they are not in the OS file cache (a cached read takes ~10 us, the drive ~80), and the RAM left
+/// beside the arena (`arena_bytes`) could not keep them cached for the next start either - so a warm restart after
+/// an idle unload never gets slower, and only a start that reads the drive anyway skips the cache's copy.
+/// STRATA_UNBUFFERED_LOAD=1 / 0 forces it. `why` says what decided.
+bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why);
+
 // FNV-1a 64.  Per layer, so a corrupt or short read names WHICH layer rather than just failing a whole-file
 // comparison - the same reason the Phase 1 tools report the first differing element.
 uint64_t fnv1a64(const uint8_t* p, uint64_t n, uint64_t seed = 1469598103934665603ull);
