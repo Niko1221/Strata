@@ -130,7 +130,11 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
                       int r0, int r1) {
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
+#if defined(__x86_64__) || defined(_M_X64)
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
+#else
+    static const bool iq4nl_mt = false;   // the multi-token kernel is AVX-2 (portable.cpp has none)
+#endif
     static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
     if (kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size

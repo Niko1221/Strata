@@ -48,7 +48,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <immintrin.h>
+#include "strata/platform/cpu_relax.hpp"
 
 namespace strata::core {
 namespace {
@@ -142,7 +142,7 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_})
         if (p != nullptr) *(volatile uint32_t*) p = UINT32_MAX;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    _mm_sfence();
+    strata_store_fence();
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     for (cudaStream_t s : {cs_, copy_}) {
@@ -1080,7 +1080,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         uint32_t spins = 0;
         progress_at("verify window: waiting for the GPU to reach layer", l);
         while (*seq < want) {
-            _mm_pause();
+            strata_cpu_pause();
             if ((++spins & 1023u) != 0) continue;
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
@@ -1110,7 +1110,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         VDBG("layer %lld served\n", (long long) l);
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        _mm_sfence();
+        strata_store_fence();
         if (*(volatile uint32_t*) h_flagA_ != want) {        // the pool did not publish a plan: an empty one
             sink_.counts[0] = 0;
             sink_.counts[1] = 0;
@@ -1260,7 +1260,7 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
 
 void Verifier::publish_plan(void* ctx) {
     Verifier* v = (Verifier*) ctx;
-    _mm_sfence();
+    strata_store_fence();
     *(volatile uint32_t*) v->h_flagA_ = v->cur_layer_ + 1;
 }
 
