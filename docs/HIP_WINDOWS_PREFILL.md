@@ -55,5 +55,15 @@ production private stager with synthetic 64 KiB payloads: 1, 15, 16, 17, 31, 32,
 repeated finish and repeated generations. It checks DMA readback byte for byte,
 fence counts and HIP fence errors. No model fixture is required.
 
+The stager fixture also checks empty generations between nonempty generations:
+jobs, fence counts and submission state must reset even when there is no DMA.
+
+`hip_prefill_copy_groups` shares the production planner and event operations.
+It checks an independent maximal-group oracle and actual copy/compute streams
+with direct, pinned-staged and forced-pageable sources, different host/GPU ring
+depths, repeated wraps/generations and unrouted entries. A gated terminal `used`
+event checks that reuse waits on the last slot and that `copied` is recorded
+before publication. Payload readback is byte-exact. Both fixtures are in CTest.
+
 These settings have not been validated on other AMD GPUs, Linux HIP or CUDA.
 They do not change kernels, quantization, routing, cache policy or MTP.

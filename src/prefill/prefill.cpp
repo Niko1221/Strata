@@ -26,6 +26,7 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/prefill/kernels.hpp"
 #include "stager.hpp"
+#include "copy_groups.hpp"
 
 #include <cuda_runtime.h>
 
@@ -1036,12 +1037,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             std::atomic<bool>* stop;
             std::thread* t;
             ~IssuerJoin() { if (t->joinable()) { stop->store(true); t->join(); } }
-        } issuer_join{&a_stop, &issuer};
+        };
         const bool threaded_issue = stream_all && issuer_on;
         // The terminal copied/used event covers earlier operations on the same
         // ordered stream. Publish only after recording copied. A group cannot
         // cross either ring wrap or mix direct, pinned staging and pageable sources.
-        std::vector<size_t> completion_end;
         int completion_batch = 1;
         int stage_completion_batch = 1;
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
@@ -1050,39 +1050,21 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         if (threaded_issue) if (const char* v = std::getenv("STRATA_HIP_STAGE_COPY_BATCH"))
             stage_completion_batch = std::clamp(std::atoi(v), 1, std::min(m.ring, m.stager->kRing));
 #endif
-        if (completion_batch > 1 || stage_completion_batch > 1) {
-            completion_end.resize(seq.size());
-            for (size_t begin = 0; begin < seq.size();) {
-                size_t end = begin + 1;
-                if (seq[begin].job < 0) {
-                    const size_t limit = std::min({seq.size(),begin+(size_t)completion_batch,
-                        begin+(size_t)m.ring-begin%(size_t)m.ring});
-                    while (end < limit && seq[end].job < 0) ++end;
-                } else if (stage_completion_batch > 1 && m.stager->pinned[seq[begin].job%m.stager->kRing]) {
-                    // Host DMA ownership fences remain independent. Stop before
-                    // either ring wraps so an entire group can be prepared without
-                    // requiring a source buffer owned by this same group's DMA.
-                    const size_t limit = std::min({seq.size(),begin+(size_t)stage_completion_batch,
-                        begin+(size_t)m.ring-begin%(size_t)m.ring,
-                        begin+(size_t)m.stager->kRing-(size_t)seq[begin].job%(size_t)m.stager->kRing});
-                    while (end < limit && seq[end].job == seq[begin].job+(int)(end-begin) &&
-                           m.stager->pinned[seq[end].job%m.stager->kRing]) ++end;
-                }
-                for (size_t i = begin; i < end; ++i) completion_end[i] = end;
-                begin = end;
-            }
-        }
+        const detail::CopyGroups copy_groups(seq, m.stager->pinned, m.ring, m.stager->kRing,
+                                              completion_batch, stage_completion_batch);
         uint64_t copy_slot_waits = 0, copy_completion_events = 0;
         uint64_t direct_copied = 0, staged_copied = 0, direct_waits = 0, staged_waits = 0;
         uint64_t iss_bytes = 0, iss_dma_bytes = 0;
+        // On early return, join before destroying the planner or any captured
+        // bookkeeping; the chunk guard finishes host staging after this join.
+        IssuerJoin issuer_join{&a_stop, &issuer};
         if (threaded_issue) {
             issuer = std::thread([&] {
                 const core::OnDevice od(m.device);
                 for (size_t idx = 0; idx < seq.size(); ++idx) {
-                    const size_t end = completion_end.empty() ? idx + 1 : completion_end[idx];
-                    const bool first = idx == 0 || completion_end.empty() || completion_end[idx - 1] != end;
+                    const auto step = copy_groups.at(idx);
                     // Wait until every prior use in this group has been recorded.
-                    while (end > a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
+                    while (!step.fits(a_consumed.load(std::memory_order_acquire), m.ring)) {
                         if (a_stop.load(std::memory_order_acquire)) return;
                         std::this_thread::yield();
                     }
@@ -1090,9 +1072,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
-                    const int last_sl = (int) ((end - 1) % (size_t) m.ring);
-                    if (first && m.stage_live[last_sl]) {
-                        cudaStreamWaitEvent(m.copy, m.used[last_sl], 0);
+                    if (step.first && m.stage_live[step.last_slot]) {
+                        copy_groups.wait_reuse(step, true, m.used, m.copy);
                         ++copy_slot_waits;
                         (en.job < 0 ? direct_waits : staged_waits)++;
                     }
@@ -1105,8 +1086,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
                         m.stager->issued_one(en.job, m.copy);
                     }
-                    if (idx + 1 == end) {
-                        cudaEventRecord(m.copied[last_sl], m.copy);
+                    copy_groups.publish(step, m.copied, m.copy, a_issued);
+                    if (step.terminal) {
                         ++copy_completion_events;
                         (en.job < 0 ? direct_copied : staged_copied)++;
                     }
@@ -1114,7 +1095,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     iss_ms += ms_since(th);
                     ++iss_streamed;
                     iss_bytes += bytes;
-                    if (idx + 1 == end) a_issued.store(end, std::memory_order_release);
                 }
             });
         } else if (stream_all) {
@@ -1655,9 +1635,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                 const int sl = (int) (k % (size_t) m.ring);
                                 pt.mark(kPfWaitCopy, cs);
                                 wait_issued(k);
-                                const int complete_sl = completion_end.empty() ? sl :
-                                    (int) ((completion_end[k] - 1) % (size_t) m.ring);
-                                cudaStreamWaitEvent(m.cs, m.copied[complete_sl], 0);
+                                copy_groups.wait_copy(k, m.copied, m.cs);
                                 if (!compute(j, m.stage_dev[sl], sl)) return false;
                                 consumed = ++k;
                                 give_back(consumed);
