@@ -2765,7 +2765,16 @@ int main(int argc, char** argv) {
         const strata::core::OnDevice on(st.dev);
         std::vector<int64_t> sized;
         int64_t used = 0;
+        // STRATA_STAGE_CACHE_SLOTS=S pins every stage's cache to S slots instead of sizing it from free VRAM.
+        // A test hook in the same spirit as STRATA_TEST_CACHE_FAIL below, and it exists for one reason: the
+        // weight carve FREES VRAM, so an A/B against STRATA_WEIGHT_SLICE=0 would otherwise change the slot
+        // counts as well - and then a token difference says nothing about the weights.  Pinned, the cache
+        // holds the same pairs in both arms and the arena layout is the only variable left.
+        const int64_t pin_slots = std::getenv("STRATA_STAGE_CACHE_SLOTS")
+                                      ? (int64_t) std::atoll(std::getenv("STRATA_STAGE_CACHE_SLOTS"))
+                                      : -1;
         for (const auto& pr : st.profile) {
+            if (pin_slots >= 0 && (int64_t) sized.size() >= pin_slots) break;
             const int64_t b = native_pack ? ((int64_t) lay.blob_bytes(pr.first) + 255) / 256 * 256 : (int64_t) lay.max_blob;
             if (used + b > room) break;
             used += b;
