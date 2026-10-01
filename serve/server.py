@@ -165,7 +165,7 @@ class StrataEngine:
     """
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
-                 env: dict | None = None):
+                 env: dict | None = None, keep: tuple[int, dict] | None = None):
         self.spawn = (exe, list(args), cwd, log, env)   # to start it again after it died (issue #27)
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
@@ -178,17 +178,26 @@ class StrataEngine:
         self.proc = subprocess.Popen([exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         contain(self.proc)                               # ends with the server, however it ends (Windows)
-        self.max_context = 0
+        # #344: the context and the INFO facts describe the MODEL, not the process being started, so a restart
+        # (restart() -> __init__ below) keeps what the engine that is being replaced reported.  Without this the
+        # field is 0 for the whole one-to-two-minute load and every endpoint that reads it - /v1/status, /v1/models,
+        # /props, /health, /slots, /metrics - tells a client the model has no context at all.  The new engine's
+        # READY and INFO lines replace both as soon as they arrive.
+        self.max_context, kept_info = keep if keep else (0, {})
         self.unloaded = False            # stopped on purpose (idle unload, POST /unload), not crashed
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
-        self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
+        self.info = dict(kept_info)      # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
-        try:                             # a ready-made engine's BUILD.json says its version
-            self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
-        except (OSError, ValueError):
-            self.info["version"] = None
+        if "version" not in self.info:   # a ready-made engine's BUILD.json says its version.  A restart re-runs
+            try:                         # the same engine, so it already knows it and must not report none for
+                self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
+            except (OSError, ValueError):  # the whole load (/v1/status's "engine", #344)
+                self.info["version"] = None
+        # `ready` is what this process actually reported, as opposed to a context kept across a restart: a
+        # process that exits before READY is still a failure to start, whatever the previous engine said.
+        ready = 0
         for line in self.proc.stdout:
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
@@ -196,11 +205,11 @@ class StrataEngine:
                     self.info[k] = int(v) if v.lstrip("-").isdigit() else v
             if line.startswith("READY"):
                 f = line.split()
-                self.max_context = int(f[1])
+                ready = self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
                 break
         loading.set()
-        if self.max_context <= 0:
+        if ready <= 0:
             raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
@@ -273,10 +282,9 @@ class StrataEngine:
             self.proc.kill()
         except OSError:
             pass
-        info = dict(self.info)
-        self.ended = False
-        self.__init__(*self.spawn)
-        self.info = {**info, **self.info}
+        keep = (self.max_context, dict(self.info))     # #344: what the outgoing engine reported, until the new
+        self.ended = False                             # one's READY line replaces it
+        self.__init__(*self.spawn, keep=keep)
 
     def _parse_done(self, line):
         f = line.split()

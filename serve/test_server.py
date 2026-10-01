@@ -14,6 +14,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
@@ -562,6 +563,105 @@ class EngineDeath(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class FakeEngineProcess:
+    """The little of a subprocess.Popen that StrataEngine uses: its stdout, and a poll() that says it is running."""
+
+    def __init__(self, lines):
+        self.stdout, self.stdin, self.returncode = lines, None, None
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        pass
+
+
+class EngineRestartKeepsItsContext(unittest.TestCase):
+    """#344: the context and the INFO facts describe the model, not the process being started, so a restart keeps
+    them.  `restart()` re-runs `__init__`, which used to zero `max_context` and empty `info`, and for the whole
+    one-to-two-minute load /v1/status, /v1/models, /props, /health, /slots and /metrics all reported a context of
+    0 - a client that sizes its prompt from `cache_max_tokens` would refuse to send anything.  /v1/status has no
+    field that says the engine is loading, so 0 there was indistinguishable from a model with no context."""
+
+    CTX = 131072
+
+    @staticmethod
+    def lines(ctx, gate=None):
+        """An engine's stdout: its INFO facts, then its READY line.  With a gate, the READY line waits for it -
+        the new process is up and the server is still waiting for it to be ready."""
+        yield "INFO engine=0.1.31 kv=int8\n"
+        if gate is not None:
+            entered, release = gate
+            entered.set()
+            release.wait(30)
+        yield "READY %d\n" % ctx
+        while True:                     # the line pump keeps reading after READY
+            time.sleep(3600)
+
+    def engine(self, *scripts):
+        """A real StrataEngine whose processes replay `scripts` instead of being spawned (contain() finds no
+        _handle on the fake and is a no-op, as it is off Windows)."""
+        procs = iter(scripts)
+        patcher = mock.patch("serve.server.subprocess.Popen", lambda cmd, **kw: FakeEngineProcess(next(procs)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return StrataEngine("strata", ["--native", "shard1"])
+
+    def reported(self, svc, base):
+        """Every endpoint that reports the context, read over HTTP as a client would."""
+        def get(path):
+            with urllib.request.urlopen(base + path, timeout=20) as r:
+                return json.loads(r.read())
+        return {"max_context": svc.engine.max_context,
+                "/v1/status": get("/v1/status")["cache_max_tokens"],
+                "/v1/models": get("/v1/models")["data"][0]["meta"]["n_ctx"],
+                "/props": get("/props")["default_generation_settings"]["n_ctx"],
+                "/health": get("/health")["max_context"],
+                "/slots": get("/slots")[0]["n_ctx"],
+                "/metrics": get("/metrics")["engine"]["max_context"]}
+
+    def test_the_endpoints_keep_reporting_the_context_while_the_engine_starts(self):
+        entered, release = threading.Event(), threading.Event()
+        eng = self.engine(self.lines(self.CTX), self.lines(self.CTX, (entered, release)))
+        self.addCleanup(release.set)
+        svc = Service(eng, ByteTokenizer(), ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            up = self.reported(svc, base)
+            self.assertEqual(up, dict.fromkeys(up, self.CTX), "the engine up")
+            t = threading.Thread(target=eng.restart)
+            t.start()
+            self.assertTrue(entered.wait(10), "the engine never started again")
+            try:
+                loading = self.reported(svc, base)
+                self.assertEqual(loading, dict.fromkeys(loading, self.CTX),
+                                 "the context while the engine is starting (it used to be 0 everywhere)")
+                self.assertEqual(svc.v1_status()["engine"], "0.1.31", "and so was the engine's own version")
+            finally:
+                release.set()
+            t.join(30)
+            self.assertEqual(self.reported(svc, base), up, "and after its READY line")
+        finally:
+            release.set()
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_restart_whose_engine_dies_before_ready_still_fails(self):
+        """The kept context is what the previous engine said, not a sign this one started: a process that exits
+        before READY is still a failure to start, and `__init__` must still raise."""
+        died = iter(["INFO engine=0.1.31 kv=int8\n"])       # stdout closes: no READY line
+        eng = self.engine(self.lines(self.CTX), died)
+        with self.assertRaises(RuntimeError) as cm:
+            eng.restart()
+        self.assertIn("exited before it was ready", str(cm.exception))
+
+    def test_a_new_engine_with_a_different_context_replaces_the_kept_one(self):
+        eng = self.engine(self.lines(self.CTX), self.lines(4096))
+        eng.restart()
+        self.assertEqual(eng.max_context, 4096)
 
 
 class LiveRate(unittest.TestCase):
