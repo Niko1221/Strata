@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>The Sermon on the Mount — a Voxel Diorama</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0a0e16;overflow:hidden;}
+  canvas{display:block;}
+  #vig{position:fixed;inset:0;pointer-events:none;
+       background:radial-gradient(ellipse at 50% 40%,transparent 42%,rgba(5,7,12,.78) 100%);}
+  #hud{position:fixed;left:24px;bottom:22px;width:min(430px,62vw);pointer-events:none;
+       font-family:Georgia,'Times New Roman',serif;color:#f2e3be;text-shadow:0 0 14px rgba(0,0,0,.85);}
+  #hud h1{font-size:19px;letter-spacing:.05em;margin:0 0 5px;font-weight:600;}
+  #hud p{font-size:12.5px;line-height:1.55;opacity:.88;margin:0;}
+  #loading{position:fixed;top:18px;right:22px;font-family:Georgia,serif;font-size:12px;
+       color:#e8d6ae;opacity:.75;pointer-events:none;}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
+</head>
+<body>
+<div id="vig"></div>
+<div id="hud">
+  <h1>The Sermon on the Mount</h1>
+  <p>Upon the mountain of the great stone arches, Moses stands and speaks the Word of the Reins
+     to the community of Adum; the sun rises behind, and the sea runs to the ships.
+     <em>&nbsp;· drag to look · wheel to zoom</em></p>
+</div>
+<div id="loading">carving the stone&hellip;</div>
+<script>
+/* ==========================================================================
+   THE SERMON ON THE MOUNT — single-file voxel diorama (three.js)
+   ---------------------------------------------------------------------
+   Composition follows the classical telling: a high mountain whose face is
+   cut into a colonnade of great arches; the community in white and tawny
+   robes gathered on the plaza below; Moses aloft on the high stone with
+   staff raised; the sea and the harbour ships at the fore; the sun rising.
+   ========================================================================== */
+
+/* ---------- deterministic rng ---------- */
+let _seed = 0x51ed2707;
+function rnd(){ _seed ^= _seed<<13; _seed ^= (_seed>>>17)|0; _seed ^= _seed<<5; _seed&=0xffffffff; return (_seed>>>0)/4294967296; }
+
+/* ---------- voxel store ---------- */
+const VOX = new Map();
+const K = (x,y,z)=> (x+512) + (y+256)*1024 + (z+512)*1048576;
+function decode(k){ return [ (k%1024)-512, (((k/1024)|0)%512)-256, ((k/1048576)|0)-512 ]; }
+
+function put(x,y,z,c){ const k=K(x,y,z); if(VOX.has(k)){ if(typeof c==='object') VOX.set(k,c); return; } VOX.set(k,c); }
+function force(x,y,z,c){ VOX.set(K(x,y,z),c); }
+function at(x,y,z){ return VOX.get(K(x,y,z)); }
+function col(c){ return (typeof c==='object')? c.c : c; }
+function nz(x,y,z){ let n=(x*73856093 ^ y*19349663 ^ z*83492791)>>>0; n=(n^(n>>>13))*1274126177>>>0; n^=n>>>16; return (n>>>0)/4294967296; }
+function shade(c,f){
+  const k=col(c);
+  let r=(k>>16)&255, g=(k>>8)&255, b=k&255;
+  r=Math.min(255,Math.max(0,(r*f)|0)); g=Math.min(255,Math.max(0,(g*f)|0)); b=Math.min(255,Math.max(0,(b*f)|0));
+  return (r<<16)|(g<<8)|b;
+}
+function putN(x,y,z,c){ put(x,y,z, shade(c, 0.88+0.18*nz(x,y,z))); }
+function setN(x,y,z,c){ force(x,y,z, shade(c, 0.90+0.16*nz(x,y,z))); }
+
+function box(x0,y0,z0,x1,y1,z1,c){
+  for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++)
+  for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++)
+  for(let z=Math.min(z0,z1);z<=Math.max(z0,z1);z++) put(x,y,z,c);
+}
+function boxN(x0,y0,z0,x1,y1,z1,c){
+  for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++)
+  for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++)
+  for(let z=Math.min(z0,z1);z<=Math.max(z0,z1);z++) putN(x,y,z,c);
+}
+function shell(x0,y0,z0,x1,y1,z1,c){
+  const a=Math.min(x0,x1),b=Math.max(x0,x1),d=Math.min(y0,y1),e=Math.max(y0,y1),f=Math.min(z0,z1),g=Math.max(z0,z1);
+  for(let x=a;x<=b;x++)for(let y=d;y<=e;y++)for(let z=f;z<=g;z++)
+    if(x===a||x===b||y===d||y===e||z===f||z===g) putN(x,y,z,c);
+}
+function cyl(cx,cz,r,y0,y1,c){
+  const r2=r*r;
+  for(let y=y0;y<=y1;y++)
+  for(let x=cx-r;x<=cx+r;x++) for(let z=cz-r;z<=cz+r;z++){
+    const d=(x-cx)*(x-cx)+(z-cz)*(z-cz);
+    if(d<=r2) putN(x,y,z,c);
+  }
+}
+function sphere(cx,cy,cz,r,c){
+  const r2=r*r;
+  for(let x=-r;x<=r;x++)for(let y=-r;y<=r;y++)for(let z=-r;z<=r;z++)
+    if(x*x+y*y+z*z<=r2) putN(cx+x,cy+y,cz+z,c);
+}
+function glow(x,y,z,hex){ force(x,y,z,{c:hex,em:hex}); }
+function glowBox(x0,y0,z0,x1,y1,z1,hex){
+  for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++)
+  for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++)
+  for(let z=Math.min(z0,z1);z<=Math.max(z0,z1);z++) glow(x,y,z,hex);
+}
+function carve(x0,y0,z0,x1,y1,z1){
+  for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++)
+  for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++)
+  for(let z=Math.min(z0,z1);z<=Math.max(z0,z1);z++) VOX.delete(K(x,y,z));
+}
+function groundTop(x,z){ for(let y=48;y>=-6;y--) if(at(x,y,z)!==undefined) return y; return null; }
+
+/* ---------- palette ---------- */
+const STONE_D=0x8a8476, STONE_M=0xa79e8b, STONE_L=0xc4b9a6, STONE_W=0xdcd1bb;
+const MARBLE=0xe9e1cf, MARBLE2=0xd7cdb6;
+const ROCK=0x6d6962, ROCK2=0x7c756a, ROCK3=0x585450;
+const EARTH=0x8b7a5e, EARTH2=0x9e8b6c, GRASS=0x7d8a55;
+const CYPRESS=0x2e4530, CYPRESS2=0x3b5537, PALM=0x4c6b3c, TRUNK=0x6b553c;
+const WOOD=0x6b4a2e, WOOD2=0x8b6440, ROPE=0xc7b189;
+const ROBE_W=0xefe8db, ROBE_C=0xd7c8a7, ROBE_S=0xc8a15a, ROBE_R=0xaf4a3c, ROBE_B=0x6c7c9b, ROBE_G=0x7d8a6a;
+const SKIN=0xcfa483, GOLD=0xf0c860, SAFFRON=0xffc257, WHITE=0xf7f2e6;
+const SEA_D=0x1c4a63, SEA_M=0x2b6d8a, SEA_L=0x4fa0b8;
+
+/* ==========================================================================
+   1. THE MOUNTAIN  (surface columns only — interiors are never seen)
+   ========================================================================== */
+function column(x,z,top,deep){
+  for(let y=top;y>top-deep;y--){
+    let c;
+    if(y===top)          c = (top>16)? ROCK2 : EARTH2;
+    else if(y===top-1)   c = (top>16)? ROCK  : EARTH;
+    else                 c = ((x+y*3+z)%13===0)? ROCK3 : ROCK;
+    putN(x,y,z,c);
+  }
+}
+function mountain(){
+  for(let x=-66;x<=66;x++){
+    for(let z=24;z<=98;z++){
+      const back=Math.max(0,(z-24)/34);
+      let h = 7 + back*17 + 5.5*Math.sin(x*0.055) + 3.5*Math.cos(z*0.085);
+      h += 4.5*Math.sin(x*0.121+z*0.067) + 2.2*Math.cos(x*0.31-z*0.19);
+      column(x,z,Math.round(h),4);
+    }
+  }
+  /* the high shoulder at the right, where Moses speaks */
+  for(let x=28;x<=58;x++) for(let z=20;z<=52;z++){
+    const d=Math.hypot(x-43,(z-35)*1.12);
+    let h=Math.round(27 - d*0.60 + 2.4*Math.sin(x*0.21) + 1.6*Math.cos(z*0.27));
+    if(h>29) h=29;
+    if(h<8) continue;
+    for(let y=h;y>h-4;y--) putN(x,y,z, (y===h)?STONE_M:((x+y+z)%9===0?ROCK2:ROCK));
+  }
+  /* the left crag */
+  for(let x=-64;x<=-38;x++) for(let z=20;z<=48;z++){
+    const d=Math.hypot(x+52,(z-32)*1.2);
+    const h=Math.round(21-d*0.55+2*Math.sin(x*0.29));
+    if(h<6) continue;
+    for(let y=h;y>h-4;y--) putN(x,y,z, (y===h)?ROCK2:ROCK);
+  }
+  /* foothills descending to the harbour */
+  for(let x=-60;x<=60;x++) for(let z=16;z<=24;z++){
+    const h=Math.round(6+ (z-16)*0.9 + 2*Math.sin(x*0.17));
+    column(x,z,h,4);
+  }
+}
+mountain();
+
+/* ==========================================================================
+   2. THE PLAZA AND THE STAIR
+   ========================================================================== */
+function terrace(){
+  box(-34,-1,-24, 34,0,23, STONE_D);
+  boxN(-34,1,-24, 34,1,23, STONE_M);
+  for(let x=-33;x<=33;x++) for(let z=-23;z<=22;z++){
+    const r=Math.hypot(x*0.92,z-1);
+    if(Math.abs(r-8.5)<0.7||Math.abs(r-14.5)<0.7||Math.abs(r-20.5)<0.7) setN(x,1,z,MARBLE2);
+    if(Math.abs(r-4.2)<0.7) setN(x,1,z,ROBE_S);
+    if((x&7)===0 && (z&7)===0) setN(x,1,z,STONE_W);
+  }
+  /* three flights of steps down to the quay */
+  for(let s=0;s<6;s++) boxN(-11,1-s,-25-s*2, 11,1-s,-24-s*2, (s&1)?STONE_L:STONE_M);
+  /* cheek walls of the stair */
+  for(let s=0;s<6;s++){ boxN(-13,1-s,-25-s*2, -12,2-s,-24-s*2, STONE_W); boxN(12,1-s,-25-s*2, 13,2-s,-24-s*2, STONE_W); }
+}
+terrace();
+
+/* ==========================================================================
+   3. THE COLONNADE OF GREAT ARCHES  (monolithic facade, openings carved)
+   ========================================================================== */
+const ARCHES=[[-26,5,18],[-13,5,18],[0,6,21],[13,5,18],[26,5,18]]; /* cx, radius, springline */
+function facade(){
+  boxN(-34,2,10, 34,36,14, STONE_L);
+  ARCHES.forEach(function(a){
+    const cx=a[0], r=a[1], sy=a[2];
+    /* the opening */
+    carve(cx-r, 2, 9, cx+r, sy, 15);
+    for(let x=-r;x<=r;x++){
+      const dy=Math.round(Math.sqrt(r*r-x*x));
+      carve(cx+x, sy+1, 9, cx+x, sy+dy, 15);
+    }
+    /* voussoir ring — a lighter arc of dressed stone above each arch */
+    for(let x=-r-1;x<=r+1;x++){
+      const dy=Math.round(Math.sqrt((r+1)*(r+1)-x*x));
+      if(dy>=0) setN(cx+x, sy+dy+1, 11, MARBLE), setN(cx+x, sy+dy+1, 13, MARBLE);
+    }
+    /* keystone */
+    boxN(cx-1, sy+r+1, 9, cx+1, sy+r+3, 15, MARBLE2);
+    /* engaged pilasters flanking the opening */
+    for(let y=2;y<=sy+2;y++){
+      const t=(y%10===0)?MARBLE2:MARBLE;
+      setN(cx-r-2,y,9,t); setN(cx-r-2,y,10,t);
+      setN(cx+r+2,y,9,t); setN(cx+r+2,y,10,t);
+    }
+    /* pedestals + capitals */
+    boxN(cx-r-3, 2, 8, cx-r-1, 4, 11, MARBLE2);
+    boxN(cx+r+1, 2, 8, cx+r+3, 4, 11, MARBLE2);
+    boxN(cx-r-3, sy+3, 8, cx-r-1, sy+5, 11, MARBLE2);
+    boxN(cx+r+1, sy+3, 8, cx+r+3, sy+5, 11, MARBLE2);
+  });
+  /* string course + cornice + balustrade across the whole facade */
+  boxN(-35,12,9, 35,13,15, MARBLE2);
+  boxN(-36,36,8, 36,38,16, MARBLE);
+  boxN(-37,39,7, 37,40,17, shade(MARBLE,1.04));
+  for(let x=-36;x<=36;x+=2) boxN(x,41,12, x,43,12, STONE_W);
+  /* the back wall of the sanctuary hall, with a great oculus */
+  shell(-33,2,19, 33,34,22, STONE_D);
+  for(let x=-4;x<=4;x++) for(let y=-4;y<=4;y++) if(x*x+y*y<=16) force(x,27+y,20,{c:0x35485c,em:0x7fa2c0});
+  /* carved niche panels between the arches */
+  ARCHES.forEach(function(a,i){
+    if(i>=ARCHES.length-1) return;
+    const x=Math.round((a[0]+ARCHES[i+1][0])/2);
+    boxN(x-2,16,9, x+2,26,9, shade(STONE_W,1.02));
+    boxN(x-1,17,8, x+1,25,8, shade(STONE_W,0.9));
+    figure(x,17,8,{robe:ROBE_C,trim:ROBE_S,h:5,arm:1});
+  });
+}
+
+/* the sanctum hollowed in the rock behind the middle arch */
+function sanctum(){
+  boxN(-9,2,15, 9,2,19, MARBLE2);
+  boxN(-9,3,15, -8,24,19, STONE_M);
+  boxN(8,3,15, 9,24,19, STONE_M);
+  boxN(-3,3,15, 3,4,17, MARBLE);
+  boxN(-2,5,15, 2,9,17, MARBLE2);
+  glowBox(-1,10,16, 1,11,16, 0xffd27a);
+  glow(0,12,16, 0xffe6a8);
+  /* columns of the hall */
+  [-6,6].forEach(function(x){ cyl(x,17,1,3,23, MARBLE2); });
+  /* Torah-stone tablets on the walls */
+  for(let y=14;y<=20;y++){ setN(-7,y,15,ROBE_S); setN(7,y,15,ROBE_S); }
+}
+
+/* ==========================================================================
+   4. THE HIGH STONE AND CANOPY OF MOSES
+   ========================================================================== */
+function highPlatform(){
+  const px=43, pz=35;
+  boxN(px-7,29,pz-7, px+7,29,pz+7, STONE_W);
+  boxN(px-6,30,pz-6, px+6,30,pz+6, MARBLE2);
+  [[-6,-6],[6,-6],[-6,6],[6,6]].forEach(function(o){
+    cyl(px+o[0],pz+o[1],1,31,41,MARBLE);
+    boxN(px+o[0]-2,42,pz+o[1]-2, px+o[0]+2,43,pz+o[1]+2, MARBLE2);
+  });
+  boxN(px-8,44,pz-8, px+8,45,pz+8, MARBLE2);
+  boxN(px-7,46,pz-7, px+7,46,pz+7, shade(MARBLE,1.03));
+  for(let x=px-6;x<=px+6;x+=3){ putN(x,47,pz-6,GOLD); putN(x,47,pz+6,GOLD); }
+  /* a processional stair climbing the shoulder */
+  for(let s=0;s<12;s++) boxN(px-3,18+s,pz-10-s, px+3,18+s,pz-10-s, STONE_L);
+  /* the orators' bench and a brazier on the platform */
+  boxN(px-5,31,pz+3, px-2,32,pz+5, MARBLE);
+  cyl(px+5,pz+5,1,31,32,STONE_D); glowBox(px+4,33,pz+4, px+6,34,pz+6, 0xff9a3c);
+}
+
+/* ---------- figures ---------- */
+function figure(x,y,z,o){
+  const opt=Object.assign({robe:ROBE_W,trim:ROBE_C,skin:SKIN,h:5,hat:0,crown:0,staff:0,arm:0,glow:0,veil:0},o);
+  const h=opt.h, r=opt.robe, t=opt.trim;
+  for(let i=0;i<h-1;i++) for(let dx=0;dx<=1;dx++) for(let dz=0;dz<=1;dz++)
+    putN(x+dx,y+i,z+dz, i<2? shade(r,0.80) : ((i%3===0)? t : r));
+  putN(x,y+h,z,opt.skin); putN(x+1,y+h,z,opt.skin);
+  putN(x,y+h+1,z,opt.skin); putN(x+1,y+h+1,z,opt.skin);
+  if(opt.hat)  boxN(x-1,y+h+2,z-1, x+2,y+h+2,z+1, opt.hat);
+  if(opt.crown)boxN(x,y+h+2,z, x+1,y+h+2,z, opt.crown);
+  if(opt.veil){ putN(x,y+h+2,z,WHITE); putN(x+1,y+h+2,z,WHITE); }
+  if(opt.arm===1){ putN(x-1,y+h-2,z,shade(r,0.9)); putN(x-1,y+h-1,z,opt.skin); }
+  if(opt.arm===2){ putN(x+2,y+h-2,z,shade(r,0.9)); putN(x+2,y+h-1,z,shade(r,1.05)); putN(x+2,y+h,z,opt.skin); putN(x+2,y+h+1,z,opt.skin); }
+  if(opt.arm===3){ putN(x-1,y+h-2,z,r); putN(x-1,y+h-3,z,opt.skin); }
+  if(opt.staff){ for(let i=0;i<h+3;i++) putN(x-2,y+i,z+2, WOOD2); putN(x-2,y+h+3,z+2, GOLD); }
+  if(opt.glow){ glow(x,y+h+3,z,opt.glow); glow(x+1,y+h+3,z,opt.glow); }
+}
+
+/* ==========================================================================
+   5. THE DAVIDIAN COMMUNITY
+   ========================================================================== */
+const ROBERY=[ROBE_W,ROBE_W,ROBE_W,ROBE_C,ROBE_C,ROBE_C,ROBE_S,ROBE_B,ROBE_G,ROBE_R,WHITE];
+function pickRobe(){ return ROBERY[(rnd()*ROBERY.length)|0]; }
+
+function crowd(){
+  /* the great ring of the community on the plaza */
+  const occ=new Set();
+  let placed=0, tries=0;
+  while(placed<250 && tries<4200){
+    tries++;
+    const a=rnd()*Math.PI*2, r=4.5+Math.pow(rnd(),0.55)*20;
+    const x=Math.round(Math.cos(a)*r), z=Math.round(Math.sin(a)*r*0.86+1);
+    if(x<-32||x>32||z<-22||z>8) continue;
+    if(Math.abs(x)<12 && z<-21) continue;
+    let clear=true;
+    for(let dx=-1;dx<=2&&clear;dx++) for(let dz=-1;dz<=2&&clear;dz++) if(occ.has((x+dx+512)+(z+dz+512)*1024)) clear=false;
+    if(!clear) continue;
+    for(let dx=0;dx<=1;dx++) for(let dz=0;dz<=1;dz++) occ.add((x+dx+512)+(z+dz+512)*1024);
+    const c=pickRobe();
+    figure(x,2,z,{robe:c,trim:shade(c,0.78),h:4+((rnd()*2)|0),arm:(rnd()<0.22?2:(rnd()<0.4?1:0)),veil:(rnd()<0.3?1:0)});
+    placed++;
+  }
+  /* listeners on the mountain flanks and the slopes above the facade */
+  for(let i=0;i<70;i++){
+    const x=Math.round(-62+rnd()*124);
+    const z=Math.round(24+rnd()*40);
+    const g=groundTop(x,z);
+    if(g===null||g<8||g>26) continue;
+    if(Math.abs(x)<34 && z<30) continue;
+    figure(x,g+1,z,{robe:pickRobe(),h:4});
+  }
+  /* the stair choir ascending toward Moses */
+  for(let s=0;s<12;s+=1){
+    if(rnd()<0.72) figure(40+Math.round(rnd()*5), 19+s, 25-s, {robe:pickRobe(),h:4});
+  }
+  /* orators gathered at the foot of the high stone */
+  for(let i=0;i<16;i++){
+    const a=rnd()*Math.PI*2, r=3+rnd()*4;
+    figure(43+Math.round(Math.cos(a)*r), 31, 35+Math.round(Math.sin(a)*r), {robe:pickRobe(),h:4+((rnd()*2)|0),arm:(rnd()<0.5?2:0)});
+  }
+  /* the honour choir before the middle arch, white and gold, arms raised */
+  for(let i=0;i<15;i++){
+    const a=(i/15)*Math.PI*1.15-0.2;
+    figure(Math.round(Math.cos(a)*7.5), 2, Math.round(6+Math.sin(a)*4.5), {robe:WHITE,trim:GOLD,h:5,arm:2});
+  }
+  /* the quay crowds watching the ships */
+  for(let i=0;i<26;i++){
+    const x=Math.round(-44+rnd()*22), z=Math.round(-39+rnd()*8);
+    figure(x,1,z,{robe:pickRobe(),h:4});
+  }
+  for(let i=0;i<26;i++){
+    const x=Math.round(24+rnd()*20), z=Math.round(-39+rnd()*8);
+    figure(x,1,z,{robe:pickRobe(),h:4});
+  }
+}
+
+/* ==========================================================================
+   6. THE SEA, THE QUAY AND THE SHIPS
+   ========================================================================== */
+function sea(){
+  for(let x=-86;x<=86;x++) for(let z=-86;z<=15;z++){
+    if(Math.abs(x)<35 && z>-27) continue;
+    putN(x,-1,z, ((x+z)&3)===0 ? SEA_M : SEA_D);
+    if(((x*3+z)&13)===0) setN(x,-1,z, SEA_L);
+    putN(x,-2,z, SEA_D);
+  }
+}
+function quay(){
+  boxN(-46,-3,-40, -22,-1,-30, ROCK2);
+  boxN(-46,-1,-40, -22,0,-30, STONE_D);
+  boxN(22,-3,-40, 46,-1,-30, ROCK2);
+  boxN(22,-1,-40, 46,0,-30, STONE_D);
+  for(let x=-44;x<=-24;x+=4) putN(x,1,-39,STONE_W);
+  for(let x=24;x<=44;x+=4) putN(x,1,-39,STONE_W);
+  /* mooring rings and bollards */
+  for(let x=-42;x<=-26;x+=8){ putN(x,1,-31,GOLD); }
+  for(let x=26;x<=42;x+=8){ putN(x,1,-31,GOLD); }
+}
+function ship(cx,cy,cz,len,wid){
+  for(let i=0;i<len;i++) for(let w=-wid;w<=wid;w++) for(let d=0;d<4;d++){
+    const t=Math.min(i,len-1-i);
+    if(d>t+1) continue;
+    putN(cx+i,cy-d,cz+w, (d===0)?WOOD2:((i+w+d)%5===0?WOOD:shade(WOOD,0.9)));
+  }
+  for(let i=0;i<len;i++) for(let w=-wid;w<=wid;w++) putN(cx+i,cy,cz+w, shade(WOOD2,1.12));
+  boxN(cx+1,cy+1,cz-wid+1, cx+len-2,cy+1,cz+wid-1, WOOD2);
+  boxN(cx+2,cy+2,cz-wid+1, cx+6,cy+4,cz+wid-1, shade(WOOD,1.05));
+  boxN(cx+len-7,cy+2,cz-wid+1, cx+len-2,cy+4,cz+wid-1, shade(WOOD,0.95));
+  const masts=[cx+4, cx+((len>>1)-1), cx+len-5];
+  const mi0=2;
+  masts.forEach(function(mx,mi){
+    const mh=11+mi*3;
+    for(let y=cy+2;y<cy+2+mh;y++) putN(mx,y,cz,WOOD2);
+    putN(mx,cy+2+mh,cz,GOLD);
+    for(let w=-4;w<=4;w++) putN(mx,cy+2+mh-3,cz+w,ROPE);
+    for(let y=0;y<mh-6;y++) for(let w=-4;w<=4;w++){
+      const bell=1+Math.round(Math.abs(Math.sin(w*0.62))*1.6);
+      const c=(y%6===0)?shade(WHITE,0.84):WHITE;
+      putN(mx,cy+4+y,cz+w,c);
+      for(let b=1;b<=bell;b++) putN(mx,cy+4+y,cz+w+(w>=0?b:-b), shade(WHITE,0.93));
+    }
+    for(let w=-5;w<=5;w++){ putN(mx,cy+2+mh-5,cz+w,WOOD); putN(mx,cy+6,cz+w,WOOD); }
+  });
+  for(let w=-wid;w<=wid;w++) putN(cx-1,cy,cz+w,shade(WOOD,1.2));
+  /* a streamer at the masthead */
+  for(let y=0;y<6;y++) for(let w=0;w<3;w++) put(masts[2],cy+11+mi0-y,cz+1+w, y<2?ROBE_R:WHITE);
+}
+function boat(cx,cy,cz,len){
+  for(let i=0;i<len;i++) for(let w=-1;w<=1;w++) putN(cx+i,cy,cz+w,WOOD2);
+  for(let i=1;i<len-1;i++){ putN(cx+i,cy+1,cz-1,WOOD); putN(cx+i,cy+1,cz+1,WOOD); }
+  const mx=cx+(len>>1);
+  for(let y=2;y<6;y++) putN(mx,cy+y,cz,WOOD2);
+  for(let y=2;y<5;y++) for(let w=0;w<=2;w++) putN(mx,cy+y,cz+w,WHITE);
+  figure(cx+2,cy+2,cz,{robe:pickRobe(),h:3});
+  figure(cx+4,cy+2,cz,{robe:pickRobe(),h:3});
+}
+
+/* ==========================================================================
+   7. VEGETATION, BRAZIERS, BANNERS
+   ========================================================================== */
+function cypress(x,y,z,h){
+  for(let i=0;i<h;i++){
+    const r=(i<h*0.22)?1:(i>h*0.82)?0:((i%4<2)?1:2);
+    for(let dx=-r;dx<=r;dx++) for(let dz=-r;dz<=r;dz++)
+      if(dx*dx+dz*dz<=r*r+0.6) putN(x+dx,y+i,z+dz,(i%3===0)?CYPRESS2:CYPRESS);
+  }
+  putN(x,y+h,z,CYPRESS2);
+}
+function palm(x,y,z,h){
+  for(let i=0;i<h;i++) putN(x+(((i*7)%3))-1, y+i, z+(((i*5)%3))-1, TRUNK);
+  for(let a=0;a<8;a++){
+    const dx=Math.cos(a*Math.PI/4), dz=Math.sin(a*Math.PI/4);
+    for(let k=1;k<=4;k++) putN(x+Math.round(dx*k*0.8), y+h+1-((k*0.55)|0), z+Math.round(dz*k*0.8), (k>2)?CYPRESS2:PALM);
+  }
+}
+function groves(){
+  const spots=[[-40,1,18],[-36,1,7],[-32,1,-8],[32,1,7],[38,1,15],[44,1,-6],[-52,1,-18],[52,1,-16],[-24,1,-34],[26,1,-34],[-58,1,22],[58,1,24],[-46,1,26],[46,1,26]];
+  spots.forEach(function(s){ if(rnd()<0.6) cypress(s[0],s[1],s[2],7+((rnd()*5)|0)); else palm(s[0],s[1],s[2],8+((rnd()*4)|0)); });
+  for(let i=0;i<300;i++){
+    const x=Math.round(-62+rnd()*124), z=Math.round(20+rnd()*60);
+    const g=groundTop(x,z);
+    if(g===null||g<7||g>24) continue;
+    if(rnd()<0.5) putN(x,g+1,z,GRASS);
+    else if(rnd()<0.6) cypress(x,g+1,z,3+((rnd()*3)|0));
+    else putN(x,g+1,z,CYPRESS2);
+  }
+}
+const braziers=[];
+function placeBraziers(){
+  [-30,-16,0,16,30].forEach(function(x){
+    const z=-20;
+    cyl(x,z,1,2,4,STONE_D);
+    boxN(x-1,5,z-1, x+1,6,z+1, GOLD);
+    glowBox(x-1,7,z-1, x+1,9,z+1, 0xff9a3c);
+    braziers.push([x,8,z]);
+  });
+  for(let s=1;s<6;s+=2) [-13,13].forEach(function(x){
+    const z=-25-s*2;
+    putN(x,2-s,z,WOOD2); glow(x,3-s,z,0xffa848); braziers.push([x,3-s,z]);
+  });
+  /* torches on the facade */
+  ARCHES.forEach(function(a){
+    const x=a[0]+a[1]+3, y=10;
+    putN(x,y,9,WOOD2); glow(x,y+1,9,0xffb050); braziers.push([x,y+1,9]);
+  });
+}
+function banners(){
+  [-26,-13,13,26].forEach(function(cx,i){
+    for(let y=14;y<=26;y++){ put(cx,y,8, (i&1)?ROBE_R:ROBE_B); put(cx,y,9, shade((i&1)?ROBE_R:ROBE_B,0.8)); }
+    for(let w=-1;w<=1;w++) put(cx+w,27,8, GOLD);
+    for(let w=-1;w<=1;w++) put(cx+w,13,8, shade(GOLD,0.85));
+    put(cx,17,7,SAFFRON); put(cx,19,7,WHITE); put(cx,21,7,SAFFRON);
+  });
+}
+
+sea(); quay(); facade(); sanctum(); highPlatform(); crowd();
+ship(-66,0,-66,22,4); ship(40,0,-72,16,3);
+boat(-16,0,-58,7); boat(6,0,-52,6); boat(-32,0,-46,6); boat(22,0,-44,7);
+groves(); braziers(); banners();
+
+/* ==========================================================================
+   8. BAKE THE VOXELS
+   ========================================================================== */
+const keys=Array.from(VOX.keys());
+function isEm(v){ return v!==undefined && typeof v==='object' && v.em; }
+const solid=keys.filter(function(k){ return !isEm(VOX.get(k)); });
+const emis =keys.filter(function(k){ return  isEm(VOX.get(k)); });
+
+const scene=new THREE.Scene();
+scene.fog=new THREE.FogExp2(0x3a3b4a,0.0030);
+
+const cube=new THREE.BoxGeometry(1,1,1);
+const dummy=new THREE.Object3D();
+const tmpCol=new THREE.Color();
+
+const worldMesh=new THREE.InstancedMesh(cube, new THREE.MeshLambertMaterial({color:0xffffff}), solid.length);
+solid.forEach(function(k,i){
+  const p=decode(k);
+  dummy.position.set(p[0]+0.5,p[1]+0.5,p[2]+0.5);
+  dummy.rotation.set(0,0,0); dummy.scale.set(1,1,1); dummy.updateMatrix();
+  worldMesh.setMatrixAt(i,dummy.matrix);
+  worldMesh.setColorAt(i, tmpCol.setHex(col(VOX.get(k))));
+});
+worldMesh.instanceMatrix.needsUpdate=true;
+if(worldMesh.instanceColor) worldMesh.instanceColor.needsUpdate=true;
+worldMesh.castShadow=true; worldMesh.receiveShadow=true;
+scene.add(worldMesh);
+
+const lightMesh=new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({color:0xffffff}), Math.max(1,emis.length));
+emis.forEach(function(k,i){
+  const p=decode(k);
+  dummy.position.set(p[0]+0.5,p[1]+0.5,p[2]+0.5); dummy.scale.set(1,1,1); dummy.updateMatrix();
+  lightMesh.setMatrixAt(i,dummy.matrix);
+  lightMesh.setColorAt(i, tmpCol.setHex(VOX.get(k).em));
+});
+if(lightMesh.instanceColor) lightMesh.instanceColor.needsUpdate=true;
+scene.add(lightMesh);
+
+/* ---------- far water to the horizon ---------- */
+const farSea=new THREE.Mesh(new THREE.PlaneGeometry(1400,1400),
+  new THREE.MeshLambertMaterial({color:SEA_D}));
+farSea.rotation.x=-Math.PI/2; farSea.position.set(0,-1.6,-380);
+scene.add(farSea);
+
+/* ---------- sky dome ---------- */
+const skyMat=new THREE.ShaderMaterial({
+  side:THREE.BackSide, depthWrite:false,
+  uniforms:{uT:{value:0}},
+  vertexShader:"varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
+  fragmentShader:[
+    "varying vec3 vP; uniform float uT;",
+    "void main(){",
+    "  vec3 d=normalize(vP);",
+    "  float h=clamp(d.y*0.5+0.5,0.0,1.0);",
+    "  vec3 zen=vec3(0.13,0.20,0.38), mid=vec3(0.62,0.46,0.40), hor=vec3(1.00,0.62,0.30);",
+    "  vec3 c=mix(hor,mid,smoothstep(0.44,0.60,h));",
+    "  c=mix(c,zen,smoothstep(0.60,0.94,h));",
+    "  float s=smoothstep(0.03,0.34,max(0.0,dot(d,normalize(vec3(0.10,0.13,-1.0)))));",
+    "  c=mix(vec3(1.00,0.86,0.56),c,s);",
+    "  c+=0.12*pow(1.0-smoothstep(0.0,0.30,abs(d.y-0.015)),4.0)*vec3(1.0,0.72,0.42);",
+    "  float band=pow(1.0-smoothstep(0.0,0.16,abs(d.y-0.05)),3.0);",
+    "  c+=0.10*band*vec3(1.0,0.62,0.34);",
+    "  gl_FragColor=vec4(c,1.0);",
+    "}"
+  ].join("\n")
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(560,32,24), skyMat));
+
+/* ---------- the rising sun ---------- */
+const sunGroup=new THREE.Group();
+const sunDisc=new THREE.Mesh(new THREE.SphereGeometry(15,26,20), new THREE.MeshBasicMaterial({color:0xfff2ba}));
+sunDisc.position.set(18,16,-330);
+const sunHalo=new THREE.Mesh(new THREE.SphereGeometry(34,22,18),
+  new THREE.MeshBasicMaterial({color:0xffcc7e,transparent:true,opacity:0.30,blending:THREE.AdditiveBlending,depthWrite:false}));
+sunHalo.position.set(18,18,-345);
+sunGroup.add(sunDisc); sunGroup.add(sunHalo);
+scene.add(sunGroup);
+
+/* ---------- god rays ---------- */
+const rayGroup=new THREE.Group();
+for(let i=0;i<11;i++){
+  const g=new THREE.ConeGeometry(7+i*2.6,320,10,1,true);
+  const m=new THREE.MeshBasicMaterial({color:0xffd9a2,transparent:true,opacity:0.05,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const c=new THREE.Mesh(g,m);
+  c.position.set(18+Math.sin(i*1.29)*54, 150-i*8, -250+Math.cos(i*0.83)*46);
+  c.rotation.set(Math.PI+(i-5)*0.042, 0, (i-5)*0.055);
+  rayGroup.add(c);
+}
+scene.add(rayGroup);
+
+/* ---------- sea haze ---------- */
+const haze=new THREE.Mesh(new THREE.PlaneGeometry(900,460),
+  new THREE.MeshBasicMaterial({color:0xffb878,transparent:true,opacity:0.15,blending:THREE.AdditiveBlending,depthWrite:false}));
+haze.rotation.x=-Math.PI/2; haze.position.set(0,-1.0,-210);
+scene.add(haze);
+
+/* ---------- clouds (voxel, drifting) ---------- */
+const cloudVox=[];
+for(let c=0;c<18;c++){
+  const cx=-300+rnd()*600, cy=92+rnd()*78, cz=-340+rnd()*300;
+  const n=16+((rnd()*22)|0);
+  for(let i=0;i<n;i++){
+    const dx=(rnd()-0.5)*30, dy=(rnd()-0.5)*8, dz=(rnd()-0.5)*18;
+    const s=1+((rnd()*2)|0);
+    cloudVox.push([cx+dx,cy+dy,cz+dz,s, shade(0xf4efe4, 0.80+0.24*rnd())]);
+  }
+}
+const cloudMesh=new THREE.InstancedMesh(cube, new THREE.MeshLambertMaterial({color:0xffffff}), cloudVox.length);
+cloudVox.forEach(function(v,i){
+  dummy.position.set(v[0]+0.5,v[1]+0.5,v[2]+0.5); dummy.scale.set(v[3],v[3]*0.7,v[3]); dummy.rotation.set(0,0,0);
+  dummy.updateMatrix(); cloudMesh.setMatrixAt(i,dummy.matrix);
+  cloudMesh.setColorAt(i, tmpCol.setHex(v[4]));
+});
+cloudMesh.instanceMatrix.needsUpdate=true;
+if(cloudMesh.instanceColor) cloudMesh.instanceColor.needsUpdate=true;
+scene.add(cloudMesh);
+
+/* ---------- gulls ---------- */
+const GN=30;
+const gullMesh=new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({color:0x2a2a30}), GN);
+const gulls=[];
+for(let i=0;i<GN;i++) gulls.push({a:rnd()*6.283, r:36+rnd()*95, y:30+rnd()*44, sp:0.05+rnd()*0.11, ph:rnd()*6.283});
+
+/* ---------- sun glints on the water ---------- */
+const GN2=140;
+const glintMesh=new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({color:0xffe9b0}), GN2);
+const glints=[];
+for(let i=0;i<GN2;i++) glints.push({x:6+rnd()*30, z:-84+rnd()*98, ph:rnd()*6.283});
+scene.add(glintMesh);
+
+/* ==========================================================================
+   9. LIGHT
+   ========================================================================== */
+scene.add(new THREE.HemisphereLight(0x9db6d8, 0x3a3226, 0.55));
+
+const sun=new THREE.DirectionalLight(0xffd6a2,1.35);
+sun.position.set(22,62,-300);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.near=1; sun.shadow.camera.far=760;
+sun.shadow.camera.left=-150; sun.shadow.camera.right=150;
+sun.shadow.camera.top=150; sun.shadow.camera.bottom=-150;
+sun.shadow.bias=-0.0009;
+scene.add(sun);
+
+const rim=new THREE.DirectionalLight(0x6d8cc2,0.32); rim.position.set(-140,90,170); scene.add(rim);
+
+const fireLights=braziers.map(function(b){
+  const L=new THREE.PointLight(0xff9a44,0.95,26,2);
+  L.position.set(b[0]+0.5,b[1]+1.6,b[2]+0.5);
+  scene.add(L); return L;
+});
+const mosesLight=new THREE.PointLight(0xffd28a,1.15,40,2); mosesLight.position.set(43.5,39,35.5); scene.add(mosesLight);
+const hallLight =new THREE.PointLight(0xffc86a,0.85,34,2);  hallLight.position.set(0,13,17);        scene.add(hallLight);
+const oculusLight=new THREE.PointLight(0x8fb0d8,0.5,40,2);   oculusLight.position.set(0,27,20);      scene.add(oculusLight);
+
+/* ==========================================================================
+   10. CAMERA + LOOP
+   ========================================================================== */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+renderer.outputEncoding=THREE.sRGBEncoding;
+document.body.appendChild(renderer.domElement);
+document.getElementById('loading').style.display='none';
+
+const camera=new THREE.PerspectiveCamera(46, window.innerWidth/window.innerHeight, 1, 1500);
+const target=new THREE.Vector3(2,17,4);
+
+let yaw=-0.34, pitch=0.19, dist=176, auto=true;
+function clampPitch(p){ return Math.max(-0.04, Math.min(0.70, p)); }
+pitch=clampPitch(pitch);
+
+const body=document.body;
+let dragging=false, lastX=0, lastY=0;
+body.addEventListener('mousedown', function(e){ dragging=true; lastX=e.clientX; lastY=e.clientY; auto=false; });
+body.addEventListener('mousemove', function(e){
+  if(!dragging) return;
+  yaw+=(e.clientX-lastX)*0.006; pitch=clampPitch(pitch+(e.clientY-lastY)*0.004);
+  lastX=e.clientX; lastY=e.clientY;
+});
+body.addEventListener('mouseup', function(){ dragging=false; });
+body.addEventListener('wheel', function(e){ dist=Math.max(70,Math.min(340,dist+(e.deltaY>0?14:-14))); auto=true; });
+body.addEventListener('touchstart', function(e){ if(e.touches.length===1){ dragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; } });
+body.addEventListener('touchmove', function(e){
+  if(!dragging||e.touches.length<1) return;
+  yaw+=(e.touches[0].clientX-lastX)*0.008; pitch=clampPitch(pitch+(e.touches[0].clientY-lastY)*0.005);
+  lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+});
+body.addEventListener('touchend', function(){ dragging=false; });
+
+const t0=performance.now();
+function frame(){
+  const T=(performance.now()-t0)/1000;
+  if(auto) yaw+=0.00058;
+  const cp=Math.cos(pitch);
+  camera.position.set(target.x+dist*Math.sin(yaw)*cp, target.y+dist*Math.sin(pitch), target.z+dist*Math.cos(yaw)*cp);
+  camera.lookAt(target);
+
+  /* flames */
+  for(let i=0;i<fireLights.length;i++){
+    const L=fireLights[i];
+    L.intensity=0.70+0.32*Math.sin(T*(4.6+i*0.61)+i)+0.13*Math.sin(T*11.3+i*2.1);
+  }
+  mosesLight.intensity=1.02+0.24*Math.sin(T*1.6);
+  hallLight.intensity=0.78+0.16*Math.sin(T*2.3);
+
+  /* flicker the emissive voxels */
+  for(let i=0;i<emis.length;i++){
+    const p=decode(emis[i]);
+    const s=1+0.11*Math.sin(T*3.1+p[0]*0.43+p[1]*0.71+p[2]*0.19);
+    dummy.position.set(p[0]+0.5,p[1]+0.5,p[2]+0.5);
+    dummy.scale.set(s,s,s); dummy.rotation.set(0,0,0); dummy.updateMatrix();
+    lightMesh.setMatrixAt(i,dummy.matrix);
+  }
+  lightMesh.instanceMatrix.needsUpdate=true;
+
+  /* gulls wheel over the harbour */
+  for(let i=0;i<GN;i++){
+    const g=gulls[i];
+    g.a+=g.sp*0.02;
+    const flap=1+0.55*Math.sin(T*7.5+g.ph);
+    dummy.position.set(Math.cos(g.a)*g.r, g.y+3.2*Math.sin(g.a*2+g.ph), Math.sin(g.a)*g.r-58);
+    dummy.scale.set(flap,1/flap,1.7);
+    dummy.rotation.set(0,-g.a,0.22*Math.sin(T*6+g.ph));
+    dummy.updateMatrix(); gullMesh.setMatrixAt(i,dummy.matrix);
+  }
+  gullMesh.instanceMatrix.needsUpdate=true;
+
+  /* sun glints */
+  for(let i=0;i<GN2;i++){
+    const g=glints[i];
+    const s=0.25+0.75*Math.pow(Math.abs(Math.sin(T*1.9+g.ph)),3);
+    dummy.position.set(g.x+0.5,-0.45,g.z+0.5);
+    dummy.scale.set(s,0.35,s); dummy.rotation.set(0,0,0); dummy.updateMatrix();
+    glintMesh.setMatrixAt(i,dummy.matrix);
+  }
+  glintMesh.instanceMatrix.needsUpdate=true;
+
+  cloudMesh.position.x=44*Math.sin(T*0.011);
+  cloudMesh.position.z=14*Math.cos(T*0.009);
+  rayGroup.rotation.z=0.006*Math.sin(T*0.35);
+  sunGroup.position.y=7*Math.sin(T*0.05);
+  sun.position.y=64+9*Math.sin(T*0.05);
+  haze.position.y=-1.0+0.35*Math.sin(T*0.6);
+  skyMat.uniforms.uT=T;
+
+  renderer.render(scene,camera);
+}
+
+function onResize(){
+  const w=window.innerWidth,h=window.innerHeight;
+  renderer.setSize(w,h);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', onResize);
+
+frame();
+(function step(){ requestAnimationFrame(step); frame(); })();
+</script>
+</body>
+</html>
