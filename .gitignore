@@ -37,6 +37,7 @@ td.log
 /strata-*.json
 /strata-*.log
 /build-strata.bat
+/build-hip.bat
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/

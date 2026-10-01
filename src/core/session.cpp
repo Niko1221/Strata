@@ -913,7 +913,15 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
     (void) cudaStreamQuery(cs);                     // one flush, so WDDM submits the graph now
     static const int flush_us = [] {
         const char* e = std::getenv("STRATA_TG_FLUSH_US");
-        return e ? std::atoi(e) : 2000;   // 24 Sep: 0 flushes run as fast as 5 us ones; this only notices faults
+        if (e) return std::atoi(e);
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+        // Windows: the device write to mapped pinned memory becomes host-visible only when the driver
+        // is entered, so each spin batch polls it.  A 2 ms interval would leave the host waiting up to
+        // 2 ms PER LAYER for a ring that already happened; STRATA_TG_FLUSH_US still overrides this.
+        return 0;
+#else
+        return 2000;   // 24 Sep: 0 flushes run as fast as 5 us ones; this only notices faults
+#endif
     }();
     volatile uint32_t* const seq = s.db->h_seq;
     volatile uint32_t* const flag = s.db->h_flag;

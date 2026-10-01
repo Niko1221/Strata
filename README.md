@@ -93,18 +93,21 @@ of them in RAM and reads the rest from the SSD while it answers: 7-8.5 tokens/s 
 times slower than the sizes above, and long prompts are slow. It needs 48 GB of RAM or more, an NVMe SSD and one
 NVIDIA GPU (no images yet). Details and measurements: [UD-Q4_K_XL](docs/UNSLOTH_Q4.md).
 
-An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental; the
-RX 7800 XT / 7700 XT and RX 9060 XT were validated by their owners; the RX 6800 / 6900 series, gfx1030, is community-reported):
-`./setup.sh --backend hip`, chosen by itself on a PC with no NVIDIA card Strata can use. It installs ROCm without sudo
-and compiles the engine (no images yet; several cards with `--gpus`). Details: [AMD HIP](docs/AMD_HIP.md).
+An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700** works too (experimental; the
+RX 7800 XT / 7700 XT and RX 9060 XT were validated by their owners; the RX 6800 / 6900 series, gfx1030, is
+community-reported): `./setup.sh --backend hip` on Linux (ROCm is installed without sudo), or
+`START-HERE.bat --backend hip` on Windows (with a Windows ROCm/HIP SDK installed). Either is chosen by itself on a PC
+with no NVIDIA card Strata can use, and the engine is compiled there (images through the CPU encoder with
+`--vision cpu`; several cards with `--gpus`). Details: [AMD HIP](docs/AMD_HIP.md).
 
 ## Install
 
-**You need:** an NVIDIA RTX 20, 30, 40 or 50 card with 12 GB of VRAM or more (RTX 20 since 0.1.27), enough RAM for the size you pick (above;
+**You need:** an NVIDIA RTX 20, 30, 40 or 50 card with 12 GB of VRAM or more (RTX 20 since 0.1.27) - or one of the AMD cards above
+(experimental; see [AMD HIP](docs/AMD_HIP.md)) - enough RAM for the size you pick (above;
 a big GPU makes up for less RAM - the [low-RAM mode](docs/DETAILS.md)),
 ~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux. The only thing you
 install yourself is a current **NVIDIA driver** ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA
-App). Everything else - Python, the engine, the model - is set up for you.
+App) - for AMD on Windows, a Windows ROCm/HIP SDK. Everything else - Python, the engine, the model - is set up for you.
 
 **Windows**
 

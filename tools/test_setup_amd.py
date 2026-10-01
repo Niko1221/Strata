@@ -87,9 +87,12 @@ class GpuLists(unittest.TestCase):
     def setUp(self):
         self.say = setup.say
         setup.say = lambda *a, **k: None
+        self.win = setup.WIN
+        setup.WIN = False                         # these mock the Linux paths (KFD, /opt/rocm, TheRock wheels)
 
     def tearDown(self):
         setup.say = self.say
+        setup.WIN = self.win
 
     def test_list_in_order(self):
         self.assertEqual([g["index"] for g in setup.amd_parse_gpus("1,0", self.AMD)], [1, 0])
@@ -150,6 +153,44 @@ class GpuLists(unittest.TestCase):
             finally:
                 for k, v in saved.items():
                     setattr(setup, k, v)
+
+
+class WindowsDetection(unittest.TestCase):
+    """Windows: hipInfo.exe's own report and the driver name -> architecture map (no GPU, no SDK needed)."""
+    HIPINFO = """\
+device#                           0
+  Name:                           AMD Radeon RX 9070 XT
+  totalGlobalMem:                 15.92 GB
+  gcnArchName:                    gfx1201:sramecc+:xnack-
+  isIntegrated:                   0
+device#                           1
+  Name:                           AMD Radeon Graphics
+  totalGlobalMem:                 4.00 GB
+  gcnArchName:                    gfx1103:sramecc+:xnack-
+"""
+
+    def test_hipinfo(self):
+        cards = setup.hip_info(self.HIPINFO)
+        self.assertEqual([c["index"] for c in cards], [0, 1])
+        self.assertEqual(cards[0]["name"], "AMD Radeon RX 9070 XT")
+        self.assertEqual(cards[0]["arch"], "gfx1201")        # the ":" feature suffix is cut off
+        self.assertAlmostEqual(cards[0]["vram_gb"], 15.92)
+        self.assertEqual(cards[1]["arch"], "gfx1103")        # listed here, then refused by amd_problem
+        self.assertEqual([setup.amd_problem(c) is None for c in cards], [True, False])
+
+    def test_hipinfo_empty(self):
+        self.assertEqual(setup.hip_info(""), [])
+
+    def test_arch_from_name(self):
+        for name, arch in (("AMD Radeon RX 9070 XT", "gfx1201"), ("AMD Radeon RX 9070", "gfx1201"),
+                           ("AMD Radeon AI PRO R9700", "gfx1201"), ("AMD Radeon RX 9060 XT", "gfx1200"),
+                           ("AMD Radeon RX 7900 XTX", "gfx1100"), ("AMD Radeon RX 7800 XT", "gfx1101"),
+                           ("AMD Radeon RX 7700 XT", "gfx1101"), ("AMD Radeon RX 7600", "gfx1102"),
+                           ("AMD Radeon RX 6900 XT", "gfx1030"), ("AMD Radeon RX 6800", "gfx1030"),
+                           ("AMD Radeon RX 6700 XT", "gfx1031"), ("AMD Radeon RX 6600", "gfx1032")):
+            self.assertEqual(setup.amd_arch_from_name(name), arch, name)
+        self.assertIsNone(setup.amd_arch_from_name("AMD Radeon Graphics"))   # integrated: not placed
+        self.assertIsNone(setup.amd_arch_from_name("NVIDIA GeForce RTX 5090"))
 
 
 if __name__ == "__main__":

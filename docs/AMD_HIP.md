@@ -1,10 +1,12 @@
 # Experimental AMD HIP backend (gfx1100, gfx1101, gfx1200, gfx1201, gfx1030)
 
-This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
+This is a source build for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
 RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)). The RX 7800 XT / 7700 XT
 (gfx1101) and the RX 9060 XT (gfx1200) were validated by their owners (see [Community-validated
-cards](#community-validated-cards)); the RX 6800 / 6900 series (RDNA2, gfx1030) builds and runs too, reported by a community machine and not yet validated by the maintainers (see [RDNA2](#rdna2-gfx1030)). It is opt-in; the NVIDIA installer and CUDA build remain the default. Other AMD
-architectures, wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
+cards](#community-validated-cards)); the RX 6800 / 6900 series (RDNA2, gfx1030) builds and runs too, reported by a
+community machine and not yet validated by the maintainers (see [RDNA2](#rdna2-gfx1030)). It is opt-in; the NVIDIA
+installer and CUDA build remain the default. Other AMD architectures, wave64, and mixed AMD/NVIDIA execution are
+outside this contribution. Windows is covered by [Windows](#windows-experimental) below and only for a HIP SDK install.
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
 RDNA2/RDNA3/RDNA4's signed integer dot instruction for quantized kernels, and supplies
@@ -48,6 +50,39 @@ the kernel's amdgpu driver (no ROCm install needed):
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
+
+## Windows (experimental)
+
+On Windows the same cards work through AMD's HIP SDK instead of the kernel:
+
+```bat
+START-HERE.bat --backend hip
+```
+
+`SETUP.bat` and a plain `START-HERE.bat` reach the same place: on a PC with no NVIDIA card Strata can use, `--backend
+hip` is chosen by itself.
+
+- **Requirements:** Visual Studio 2022 (or the Build Tools) with the *Desktop development with C++* workload, so that
+  `vcvars64.bat` exists, plus a Windows ROCm/HIP SDK - the TheRock Windows distribution (`therock-dist-*`, unpacked
+  anywhere) or an AMD Windows ROCm install. Set `HIP_PATH` to its folder when it is not installed system-wide;
+  `STRATA_HIP_ROOT` overrides, and a `therock-dist-*` folder next to this one is found by itself. The pip `rocm`
+  package is accepted too, but the TheRock dist is the path this was built with.
+- **Detection:** setup reads the SDK's `bin\hipInfo.exe` - the HIP runtime's own device numbers, names, VRAM and
+  `gcnArchName` (gfx1201 here) - and falls back to the display driver's registry when no SDK is installed yet, so the
+  card shows up and the SDK can be asked for by name. Integrated Radeon GPUs are listed as not supported.
+- **Engine:** compiled by the SDK's own ROCm clang for C, C++ *and* HIP (CMake refuses Clang mixed with MSVC), for the
+  card's architecture. Setup writes `build-hip.bat`, which calls `vcvars64.bat` first (so clang finds the MSVC and
+  Windows SDK headers) and passes every `-D` path with forward slashes (a backslash is an invalid CMake escape).
+  `HIP_PATH` and `ROCM_PATH` are removed from the environment for the configure: clang would take `HIP_PATH` as
+  `--rocm-path` and then not find this layout's device bitcode.
+- **Runtime:** all HIP DLLs (`amdhip64_*.dll`, `hipblas.dll`, `libhipblaslt.dll`, `amd_comgr.dll`) live in the SDK's
+  `bin` folder; the server puts the config's `lib_dirs` on the engine's PATH. The config's `gpu` is the `hipInfo`
+  device number, which the server passes as `HIP_VISIBLE_DEVICES`.
+- **Limits:** no calibration, and the Monitor shows no GPU statistics (it reads them from Linux sysfs). Images
+  work through the CPU encoder, as on Linux: `START-HERE.bat --backend hip --vision cpu`.
+- **hipBLASLt table:** 0.1.32 ships one for gfx1201 (`tools/hip/gfx1201-hipblaslt-100500.txt`), but only for
+  hipBLASLt 1.5.0 - the SDK this was built with is 1.4.0, so setup reports no table for that pair and prompts use
+  plain hipBLAS (same answers, a little slower, which the Linux measurements say is close to optimal on this card).
 
 ## Build
 

@@ -74,6 +74,12 @@ int main(){
   const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
   // Do not query or synchronize the stream before validating the mapped payload.
   while(__atomic_load_n(copy_seq,__ATOMIC_ACQUIRE)!=(uint32_t)r){
+   // Windows/WDDM publishes a GPU write to pinned host memory only when the driver is
+   // entered, so a memory-only spin never sees it (session_loop queries per spin for the
+   // same reason).  The query does not wait: a stale payload still fails the checks below.
+   #ifdef _WIN32
+   (void)hipStreamQuery(stream);
+   #endif
    if(std::chrono::steady_clock::now()>deadline){std::fprintf(stderr,"separate copy/ring timeout\n");return 10;}
    std::this_thread::yield();
   }
@@ -106,6 +112,10 @@ int main(){
   const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
   // No driver query or stream sync may make the payload visible to this observer.
   while(__atomic_load_n(flag,__ATOMIC_ACQUIRE)!=(uint32_t)r){
+   // Same WDDM rule as the copy/ring loop above: on Windows the query is what publishes it.
+   #ifdef _WIN32
+   (void)hipStreamQuery(stream);
+   #endif
    if(std::chrono::steady_clock::now()>deadline){std::fprintf(stderr,"publish timeout\n");return 7;}
    std::this_thread::yield();
   }
