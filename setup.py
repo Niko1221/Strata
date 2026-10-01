@@ -761,6 +761,21 @@ def download(url, dst: Path, what=None):
     ok(f"{what or dst.name} downloaded")
 
 
+def downloaded_bytes(shards) -> int:
+    """The bytes of the model a resumed download does not fetch again (#425): the finished shards (a shard 2 hard-linked
+    from another size included: it takes no new space either) and the .part files download() continues with a Range
+    request.  A shard file without its mark is not counted: a whole one is marked before this, and a short one is
+    downloaded again beside it."""
+    got = 0
+    for s in shards:
+        part = s.with_name(s.name + ".part")
+        if s.exists() and done(s):
+            got += s.stat().st_size
+        elif part.exists():
+            got += part.stat().st_size
+    return got
+
+
 def whole_shard(s: Path) -> bool:
     """A shard as long as its own tensor directory says (check_shards' test, without stopping setup)."""
     sys.path.insert(0, str(ROOT / "tools"))
@@ -2670,11 +2685,14 @@ def main() -> int:
         if s.exists() and not done(s) and whole_shard(s):
             mark(s, "whole (checked against its own tensor directory)")
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
-    need = (0 if a.gguf_dir or have_model else MODELS[model]["download_gb"]) + 8 + \
+    got = 0 if a.gguf_dir or have_model else downloaded_bytes(shards)     # #425: a resumed download asks for the rest
+    need = (0 if a.gguf_dir or have_model else max(0.0, MODELS[model]["download_gb"] - got / 1e9)) + 8 + \
         (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not (model == "Q2_0" and avx512 and family == "qwen") else 0)
     if free_gb(models_dir) < need:
-        fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
+        fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB" +
+             (f" (not counting the {got / 1e9:.1f} GB of {model} already downloaded)" if got else ""),
+             "use --models-dir on a bigger drive")
 
     # ---- 3. python packages
     step(3, "Python packages")
