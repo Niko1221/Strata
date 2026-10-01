@@ -600,6 +600,24 @@ a peak). Raw samples: `logs-2gpu/sec-*.csv`.
   isolated from warm page cache left over from the single-GPU runs earlier
   the same day; treat it as UNCERTAIN, not a confirmed two-GPU RAM cost.
 
+### 256K prompt on two GPUs
+
+Added the same evening: UD-Q4_K_XL, the two RTX PRO 4500, `--max-context 266240`
+([configs-2gpu/strata-2gpu-ud-q4_k_xl-256k.json](configs-2gpu/strata-2gpu-ud-q4_k_xl-256k.json)),
+a 255,988-token prompt (`prompts/long256k.txt` in the bench harness: a second pass over the same
+source corpus, since one pass tops out near 201K tokens), 1 warm-up + 2 measured runs, greedy,
+512-token output cap. Raw runs: [runs-2gpu/strata-0131-2gpu-ud-q4_k_xl/long256k/](runs-2gpu/strata-0131-2gpu-ud-q4_k_xl/long256k/);
+engine log [logs-2gpu/strata-2gpu-ud-q4_k_xl-256k.log](logs-2gpu/strata-2gpu-ud-q4_k_xl-256k.log).
+
+| Prompt | Prompt tokens (server) | Runs | Prefill tok/s | Decode tok/s | TTFT s |
+|---|---:|---:|---|---|---|
+| long256k | 256,011 | 2 | 4,883.8 [4,880.5-4,887.0] | 114.7 [113.32-116.09] | 52.42 [52.39-52.46] |
+
+Peak VRAM 31,134 MiB on the main card; host RAM in use 124.7 GiB; decode expert-cache hit 98.0-98.5 %.
+Against the same pack at 128K on two cards (5,124 tok/s prefill, 130.2 tok/s decode, 25.0 s TTFT):
+prefill scales linearly with prompt length and decode gives up about 12 % as the larger KV cache
+takes room from the expert cache. The model's full 262K window is usable on two cards.
+
 ## Three GPUs (layer split)
 
 Added 2026-10-01, same engine build and packs, with the desktop's **NVIDIA RTX

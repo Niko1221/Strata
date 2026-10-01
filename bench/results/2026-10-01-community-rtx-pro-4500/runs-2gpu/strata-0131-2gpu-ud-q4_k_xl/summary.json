@@ -173,6 +173,43 @@
     "max": 175.2,
     "n": 2
    }
+  },
+  "long256k": {
+   "max_tokens": 512,
+   "prompt_tokens_server": 256011,
+   "ttft_s": {
+    "median": 52.42,
+    "min": 52.39,
+    "max": 52.46,
+    "n": 2
+   },
+   "prefill_tok_s": {
+    "median": 4883.75,
+    "min": 4880.5,
+    "max": 4887.0,
+    "n": 2
+   },
+   "decode_tok_s": {
+    "median": 114.7,
+    "min": 113.32,
+    "max": 116.09,
+    "n": 2
+   },
+   "completion_tokens": {
+    "median": 512.0,
+    "min": 512,
+    "max": 512,
+    "n": 2
+   },
+   "errors": [],
+   "vram_mib_max": 31134.0,
+   "ram_used_gib_max": 124.7,
+   "power_w_mean": {
+    "median": 183.05,
+    "min": 182.2,
+    "max": 183.9,
+    "n": 2
+   }
   }
  },
  "ended": "2026-10-01T18:50:37+02:00",
@@ -186,6 +223,11 @@
    "prompts": "long128k",
    "started": "2026-10-01T18:53:23+02:00",
    "ended": "2026-10-01T18:54:52+02:00"
+  },
+  {
+   "prompts": "long256k",
+   "started": "2026-10-01T22:00:38+02:00",
+   "ended": "2026-10-01T22:03:31+02:00"
   }
  ]
 }
