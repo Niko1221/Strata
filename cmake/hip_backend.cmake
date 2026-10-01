@@ -60,11 +60,20 @@ target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA_HIP_ARCHS=\"${STRATA_HIP_ARCHS}\"")
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
-foreach(_language IN ITEMS CXX HIP)
+# MSVC host compiles take /FI. HIP and other host compilers take -include.
+# The header path uses forward slashes so /FI does not swallow backslashes.
+file(TO_CMAKE_PATH "${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h" _strata_hip_force)
+if(MSVC)
   target_compile_options(strata_hip_runtime INTERFACE
-    "$<$<COMPILE_LANGUAGE:${_language}>:-include>"
-    "$<$<COMPILE_LANGUAGE:${_language}>:${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h>")
-endforeach()
+    "$<$<COMPILE_LANGUAGE:CXX>:/FI${_strata_hip_force}>")
+else()
+  target_compile_options(strata_hip_runtime INTERFACE
+    "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+    "$<$<COMPILE_LANGUAGE:CXX>:${_strata_hip_force}>")
+endif()
+target_compile_options(strata_hip_runtime INTERFACE
+  "$<$<COMPILE_LANGUAGE:HIP>:-include>"
+  "$<$<COMPILE_LANGUAGE:HIP>:${_strata_hip_force}>")
 
 # CMake does not infer HIP from Strata's existing CUDA-shaped .cu suffixes.
 file(GLOB_RECURSE _strata_hip_sources CONFIGURE_DEPENDS

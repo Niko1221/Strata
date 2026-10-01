@@ -47,6 +47,20 @@ void note(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d (continuing)\n", what, (int) s);
 }
 
+// gfx1201 hipBLAS on Windows can return success and the right product, then leave
+// hipErrorInvalidValue set. The multiply has finished. Clearing it is Windows-only:
+// on Linux a sticky error can be a real fault.
+void absorb_hipblas_sticky(const char* what) {
+#if defined(__HIPCC__) && defined(_WIN32)
+    const hipError_t sticky = hipGetLastError();
+    if (sticky == hipSuccess || sticky == hipErrorInvalidValue) return;
+    std::fprintf(stderr, "prefill gemm: %s left %s\n", what, hipGetErrorString(sticky));
+    std::exit(1);
+#else
+    (void) what;
+#endif
+}
+
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 struct HipLtCallKey {
     strata::prefill::hipblaslt::InputType type;
@@ -363,6 +377,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
+        absorb_hipblas_sticky("hipBLASLt bf16");
         return;
     }
 #endif
@@ -371,6 +386,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx");
+    absorb_hipblas_sticky("cublasGemmEx");
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
@@ -381,6 +397,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
+        absorb_hipblas_sticky("hipBLASLt f16");
         return;
     }
 #endif
@@ -388,6 +405,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
+    absorb_hipblas_sticky("cublasGemmEx f16");
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
