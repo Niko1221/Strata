@@ -229,9 +229,50 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
+    // Fase 3 (hetero multi-GPU): the RoPE tables are the main state's BY POINTER (qsa_state_init), which is
+    // that session's device's memory.  With the roles the drafter can sit on ANOTHER GPU, where those pointers
+    // are only readable through peer access - which the engine never requires.  When the pointers belong to
+    // another device the drafter gets its own tables, filled by ONE cross-device cudaMemcpy (peer-direct on a
+    // peer-capable rig, driver-staged through host otherwise); a same-device run keeps passing by reference,
+    // byte-identical to today.
+    const auto localize_rope = [&](QsaState& st, const QsaState& share, uint64_t& added) {
+        cudaPointerAttributes attr{};
+        if (cudaPointerGetAttributes(&attr, share.cos_tab) != cudaSuccess) { cudaGetLastError(); return; }
+        if (attr.type != cudaMemoryTypeDevice || (int) attr.device == (int) device_) return;
+        float* from = (float*) attr.devicePointer;
+        const int64_t rows = max_cells * (s.n_rot / 2);
+        float* my_cos = nullptr, *my_sin = nullptr;
+        if (cudaMalloc(&my_cos, (size_t) rows * sizeof(float)) != cudaSuccess) { cudaGetLastError(); return; }
+        if (cudaMalloc(&my_sin, (size_t) rows * sizeof(float)) != cudaSuccess) {
+            cudaGetLastError();
+            cudaFree(my_cos);
+            return;
+        }
+        const cudaError_t a = cudaMemcpy(my_cos, from, (size_t) rows * sizeof(float), cudaMemcpyDeviceToDevice);
+        // attr's device pointer for sin_tab: read its own attributes (the K/V pools are arena-carved one after
+        // another, but no layout rule is assumed)
+        cudaPointerAttributes attr2{};
+        if (cudaPointerGetAttributes(&attr2, share.sin_tab) != cudaSuccess) { cudaGetLastError(); attr2.devicePointer = share.sin_tab; }
+        const cudaError_t b = cudaMemcpy(my_sin, (float*) attr2.devicePointer, (size_t) rows * sizeof(float),
+                                         cudaMemcpyDeviceToDevice);
+        cudaDeviceSynchronize();
+        if (a != cudaSuccess || b != cudaSuccess) {
+            cudaGetLastError();
+            std::fprintf(stderr, "strata mtp: the RoPE tables on the draft device could not be filled; the drafter stays on the main path\n");
+            cudaFree(my_cos); cudaFree(my_sin);
+            return;
+        }
+        st.cos_tab = my_cos;
+        st.sin_tab = my_sin;
+        added += (uint64_t) rows * 2 * sizeof(float);
+    };
+    uint64_t rope_vram = 0;
+    const auto localize = [&]() { localize_rope(st_, ss.qsa_states[ss.qsa_primary()], rope_vram); };
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
-    qsa_state_zero(st_, g, nullptr);
+    localize();
+    vram_ += rope_vram;
+        qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
 

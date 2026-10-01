@@ -1352,7 +1352,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         if (o.main_device != o.draft_device)
-            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (two GPUs; the drafter still runs on the main path until a Fase 3 step wires it)\n",
+            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (two GPUs; the drafter and its own K/V load on the draft device)\n",
                          o.main_device, o.draft_device);
         else
             std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (degenerate: both roles on this one GPU)\n",
@@ -2555,7 +2555,12 @@ int main(int argc, char** argv) {
         // so it always sees the canonical geometry; `static` because MtpDrafter keeps a reference
         static const strata::core::ModelGeometry draft_geometry{};
         // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device
-        const strata::core::OnDevice on_mtp(last_st ? last_st->dev : -1);
+        // Fase 3 (hetero multi-GPU): the DRAFT role owns the drafter.  Without the roles: today's device - the
+        // last stage's when split (it reads THAT stage's residual), else CUDA0.  With roles: the draft device,
+        // so its weights, its own K/V arena and its buffers are placed there while it keeps binding INTO the
+        // main session's state.
+        const int draft_dev = o.draft_device >= 0 ? o.draft_device : (last_st ? last_st->dev : -1);
+        const strata::core::OnDevice on_mtp(draft_dev);
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st ? last_st->ss : ss, o.spec, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     }
     // Create the additional contexts after MTP has secured CUDA0 memory, but
