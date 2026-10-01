@@ -34,11 +34,17 @@ if [ "$cur" -lt "$HUGEPAGES" ]; then
 fi
 echo "nr_hugepages=$(cat /proc/sys/vm/nr_hugepages) HugePages_Free=$(grep '^HugePages_Free:' /proc/meminfo | awk '{print $2}')"
 if [ "$(ulimit -l)" != "unlimited" ]; then
-    sudo prlimit --pid $$ --memlock=unlimited:-1 || echo "warning: could not raise memlock limit"
+    # -n so the script does not hang on an interactive password prompt when run
+    # from a shell that has not inherited the pam_limits memlock setting.
+    sudo -n prlimit --pid $$ --memlock=unlimited:-1 2>/dev/null || echo "warning: memlock still $(ulimit -l); MAP_HUGETLB will not be used"
 fi
 echo "memlock=$(ulimit -l)"
 
 stop_server() {
+    # Stop the systemd user unit and mask it so a pkill is not interpreted as a
+    # crash that triggers Restart=on-failure.
+    systemctl --user stop strata 2>/dev/null || true
+    systemctl --user mask strata 2>/dev/null || true
     pkill -x strata 2>/dev/null || true
     pkill -f 'serve/server\.py --engine strata --config' 2>/dev/null || true
     pkill -f 'serve/server\.py.*8097' 2>/dev/null || true
@@ -50,7 +56,8 @@ stop_server() {
 }
 
 restart() {
-    setsid "$STRATA/run-swift-iq3_xxs.sh" >/dev/null 2>&1 &
+    systemctl --user unmask strata 2>/dev/null || true
+    systemctl --user start strata 2>/dev/null || setsid "$STRATA/run-swift-iq3_xxs.sh" >/dev/null 2>&1 &
     echo "server restarting on :8080"
 }
 trap restart EXIT INT TERM
@@ -89,8 +96,7 @@ run "A: 0.1.18 engine, kv int8" "$CFG_A" SERVE="$STRATA/serve/server.py" || echo
 run "B: build/strata, kv int8"  "$CFG_B" || echo "B produced no number - see /tmp/e2e-*.log"
 run "C: build/strata, kv k8v4"  "$CFG_C" || echo "C produced no number - see /tmp/e2e-*.log"
 
-say "3. install the new engine and restart"
+say "3. restart the nix-managed server"
 stop_server
-cp "$ROOT/build/strata" "$STRATA/engine/strata"
 
-say "done - A/B/C above; the server restarts on the new engine with k8v4"
+say "done - A/B/C above; the server restarts on the nix-managed engine"
