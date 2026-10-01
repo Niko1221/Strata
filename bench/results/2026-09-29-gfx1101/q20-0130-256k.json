@@ -1,0 +1,263 @@
+[
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.5307749938219786,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 389.0,
+      "prefill_tps": 38.5,
+      "generated": 2.0,
+      "decode_ms": 133.0,
+      "decode_tps": 15.1
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "fresh",
+    "trial": 1,
+    "wall_s": 7.290126991458237,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4493.0,
+      "prefill_tps": 937.1,
+      "generated": 128.0,
+      "decode_ms": 2786.0,
+      "decode_tps": 45.9
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported functions, named `rule0` through `rule139`, each designed to perform a specific conditional arithmetic operation on an input value `x`. The behavior of each function follows a consistent pattern: if the input `x` is exactly equal to the function's index `n` (e.g., `rule5` checks if `x === 5`), the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Essentially, each function acts as a specialized transformation that increments the input by one more than its index when"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "followup",
+    "trial": 1,
+    "wall_s": 3.747773800045252,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1223.0,
+      "prefill_tps": 202.9,
+      "generated": 128.0,
+      "decode_ms": 2514.0,
+      "decode_tps": 50.9
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** (`x === n`), which defines the transition between the \"increment\" branch (`x + n + 1`) and the \"decrement\" branch (`x - n`). For any function `ruleN`, the critical boundary is the integer `N` itself. If `x` is exactly `N`, the output is `2N + 1`; if `x` is `N + 1` or `N - 1`, the output is `1` or `-1` respectively (for `N > 0`). This sharp discontinuity makes integer"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "fresh",
+    "trial": 2,
+    "wall_s": 12.176019170321524,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 9692.0,
+      "prefill_tps": 911.1,
+      "generated": 128.0,
+      "decode_ms": 2469.0,
+      "decode_tps": 51.9
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported functions, named `rule0` through `rule279`, each designed to perform a specific conditional arithmetic operation on an input value `x`. The behavior of each function follows a consistent pattern: if the input `x` is exactly equal to the function's index `n` (e.g., `rule5` checks if `x === 5`), the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Essentially, each function acts as a specialized transformation that increments the input by one more than its index when"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "followup",
+    "trial": 2,
+    "wall_s": 3.732921221293509,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8823.0,
+      "fresh": 248.0,
+      "prefill_ms": 1152.0,
+      "prefill_tps": 215.3,
+      "generated": 128.0,
+      "decode_ms": 2559.0,
+      "decode_tps": 50.0
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8823
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** (`x === n`), which defines the singular point where the function's behavior flips from subtraction to addition. For any function `ruleN`, the critical boundary is the integer `N`. If `x` is exactly `N`, the output is `N + (N + 1) = 2N + 1`. If `x` is any other value (including `N-1` or `N+1`), the output is `x - N`. This creates a discontinuity in the function's output relative to the input.\n\nThe **sm"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "fresh",
+    "trial": 3,
+    "wall_s": 6.926882081665099,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4400.0,
+      "prefill_tps": 956.7,
+      "generated": 128.0,
+      "decode_ms": 2517.0,
+      "decode_tps": 50.9
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported functions, named `rule0` through `rule139`, each designed to perform a specific conditional arithmetic operation on an input value `x`. The behavior of each function follows a consistent pattern: if the input `x` is exactly equal to the function's index `n` (e.g., `rule5` checks if `x === 5`), the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Essentially, each function acts as a specialized transformation that increments the input by one more than its index when"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "followup",
+    "trial": 3,
+    "wall_s": 3.5969052677974105,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1156.0,
+      "prefill_tps": 214.5,
+      "generated": 128.0,
+      "decode_ms": 2430.0,
+      "decode_tps": 52.7
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** (`x === n`), which defines the transition between the \"increment\" branch (`x + n + 1`) and the \"decrement\" branch (`x - n`). For any function `ruleN`, the critical boundary is the integer `N` itself. If `x` is exactly `N`, the output is `2N + 1`; if `x` is `N + 1` or `N - 1`, the output is `1` or `-1` respectively (for `N > 0`). This sharp discontinuity makes integer"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "fresh",
+    "trial": 4,
+    "wall_s": 12.233578911982477,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 9712.0,
+      "prefill_tps": 909.2,
+      "generated": 128.0,
+      "decode_ms": 2505.0,
+      "decode_tps": 51.1
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported functions, named `rule0` through `rule279`, each designed to perform a specific conditional arithmetic operation on an input value `x`. The behavior of each function follows a consistent pattern: if the input `x` is exactly equal to the function's index `n` (e.g., `rule5` checks if `x === 5`), the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Essentially, each function acts as a specialized transformation that increments the input by one more than its index when"
+    }
+  },
+  {
+    "label": "gfx1101-q20-0130-256k",
+    "kind": "followup",
+    "trial": 4,
+    "wall_s": 3.507386254146695,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8823.0,
+      "fresh": 248.0,
+      "prefill_ms": 1156.0,
+      "prefill_tps": 214.5,
+      "generated": 128.0,
+      "decode_ms": 2334.0,
+      "decode_tps": 54.8
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8823
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** (`x === n`), which defines the transition between the \"increment\" branch (`x + n + 1`) and the \"decrement\" branch (`x - n`). For any function `ruleN`, the critical boundary is the integer `N` itself. If `x` is exactly `N`, the output is `2N + 1`; if `x` is `N - 1` or `N + 1`, the output is `x - N`. This creates a discontinuity in the function's behavior at the point of equality.\n\n"
+    }
+  }
+]

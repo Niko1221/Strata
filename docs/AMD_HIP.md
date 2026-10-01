@@ -1,7 +1,7 @@
 # Experimental AMD HIP backend (gfx1100, gfx1101, gfx1201)
 
-This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100), the RX 7800 XT (RDNA3, gfx1101) and the
-RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)).
+This is a Linux source build for the RX 7900 XT / XTX (RDNA3, gfx1100), the RX 7800 XT (RDNA3, gfx1101; see
+[RDNA3](#rdna3-gfx1101)) and the RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)).
 It is opt-in; the NVIDIA installer and CUDA build remain the default. Other AMD
 architectures, wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
 
@@ -116,6 +116,42 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 The installer supports this backend (see "Install with setup" above). The vision helper is NVIDIA-only for now.
 Setup installs one AMD card; the engine's layer split also runs on two AMD cards when the config is written by hand
 (see RDNA4 below).
+
+## RDNA3 (gfx1101)
+
+The RX 7800 XT runs the same kernels as gfx1100: wave32, 64 KiB of LDS per workgroup and the signed dot4
+instruction. Validated on 2026-09-29 on the dev machine: an RX 7800 XT 16 GB (gfx1101, device ID 0x747e),
+a Ryzen 9 5950X (16 threads, no AVX-512), 121 GB RAM, Ubuntu 26.04.
+
+- **Build:** complete HIP build with tests (`-DCMAKE_HIP_ARCHITECTURES=gfx1101 -DSTRATA_BUILD_TESTS=ON`), with
+  the amdrocm SDK 10.0 in `/opt/rocm` (hipBLASLt 1.4.1). The distro's ROCm in `/usr` (hipBLASLt 1.1) ships no
+  CMake configs, so the SDK's are used (`-DCMAKE_PREFIX_PATH=/opt/rocm`); with both installed, the CMake cache
+  must point at one or the other. The build needed one new shim, `include/strata/hip_compat/math_constants.h`,
+  which renames the `CUDART_*` float constants to `HIP_*` (the CUDA build uses NVIDIA's own header).
+- **ctest:** 44 of 47 registered tests pass (engine 0.1.30). Three fail for reasons outside the GPU:
+  `ple_parity` needs the unpublished `ple_in.bin`/`ple_out.bin` fixtures, `platform_memory_test` needs a memlock
+  limit the shell denies, `expert_multi_test` needs an AVX-512 CPU (Zen 4 or newer). With the shipped table,
+  `hip_prefill_hipblaslt_gemm` passes (both required rows exact against the reference).
+- **Arch check:** the startup check compares the card with the compiled archs, so a build compiled for gfx1100
+  only stops on the 7800 XT (and a gfx1101-only build on a 7900) with the arch message, in the engine and
+  `strata-device`.
+- **hipBLASLt:** `tools/hip/gfx1101-hipblaslt-100401.txt`, calibrated on this card from the shapes file
+  `tools/hip/gfx1101-shapes.txt` (26 rows; the 4 (dtype, tokens) combos the library rejects on gfx1101 fall
+  back to plain hipBLAS). Re-running the tuner under concurrent host load produced a byte-identical table.
+- **End to end** (engine 0.1.30, setup's arguments, MTP, `--kv int8`, the tuned table, `reasoning_effort:
+  "none"` — the model is a reasoning model and without the flag the answer lands in `reasoning_content` and
+  `content` is null):
+
+  | model | context | expert cache | fresh prefill (4.2K / 8.8K prompts) | decode (128 tok) |
+  |---|---|---|---|---|
+  | Coder IQ1_M | 65K | 4,873 experts, 9.27 GiB | 898-956 tok/s (avg 920) | 39-43 tok/s |
+  | Q2_0 (2-bit) | 256K | 7,551 experts, 9.72 GiB | 909-957 tok/s (avg 929) | 46-52 tok/s |
+
+  Probe: `tools/hip/bench_prefill.py` (fresh and follow-up trials, timings from the engine log). The Q2_0 run
+  uses the model's full 256K window: the KV cache streams to RAM (~3.4 GB, `--kv-resident`) and the GPU expert
+  cache stays at 9.72 GiB of the 16 GiB. Expert arenas: 23.4 GiB (Coder) / 31.6 GiB (Q2_0) of the 121 GB.
+- **Not validated:** answer-quality benchmarks, images, and the numbers against the gfx1100 card (different
+  card and models; the gfx1100 evidence is in [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md)).
 
 ## RDNA4 (gfx1201)
 

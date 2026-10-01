@@ -1,0 +1,263 @@
+[
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.607142155058682,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 451.0,
+      "prefill_tps": 33.3,
+      "generated": 2.0,
+      "decode_ms": 149.0,
+      "decode_tps": 13.4
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "fresh",
+    "trial": 1,
+    "wall_s": 7.822388597764075,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4547.0,
+      "prefill_tps": 925.9,
+      "generated": 128.0,
+      "decode_ms": 3267.0,
+      "decode_tps": 39.2
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of 140 exported functions, named `rule0` through `rule139`, each of which accepts a single numeric argument `x` and implements a specific conditional arithmetic transformation based on its index. For any given function `ruleN`, the logic checks if the input `x` is strictly equal to the integer `N`; if this condition is true, the function returns `x + (N + 1)`, effectively adding the next consecutive integer to the input. If the condition is false, the function returns `x - N`, subtracting the function's index from the input."
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "followup",
+    "trial": 1,
+    "wall_s": 4.442085433751345,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4338.0,
+      "fresh": 113.0,
+      "prefill_ms": 1065.0,
+      "prefill_tps": 106.1,
+      "generated": 128.0,
+      "decode_ms": 3368.0,
+      "decode_tps": 38.0
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4338
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** where the input `x` equals the function's index `N` (e.g., `rule5(5)`). This is the only scenario where the function returns `x + (N + 1)` instead of `x - N`. For `rule0`, this is particularly critical because `x === 0` triggers the \"true\" branch (`0 + 1 = 1`), whereas any other input (including negative numbers) triggers the \"false\" branch (`x - 0 = x`). This means `rule0` acts as an identity function"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "fresh",
+    "trial": 2,
+    "wall_s": 12.955297768115997,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 9808.0,
+      "prefill_tps": 900.3,
+      "generated": 128.0,
+      "decode_ms": 3132.0,
+      "decode_tps": 40.9
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of 280 exported functions, named `rule0` through `rule279`, each of which accepts a single numeric argument `x` and implements a specific conditional arithmetic operation based on a unique integer constant associated with the function's name. For any given function `ruleN`, the logic checks if the input `x` is strictly equal to the integer `N`; if this condition is true, the function returns the sum of `x` and `N + 1` (which effectively results in `2N + 1`), whereas if the condition is false, it returns the"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "followup",
+    "trial": 2,
+    "wall_s": 4.323285086080432,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8958.0,
+      "fresh": 113.0,
+      "prefill_ms": 1064.0,
+      "prefill_tps": 106.2,
+      "generated": 128.0,
+      "decode_ms": 3239.0,
+      "decode_tps": 39.5
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8958
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gatekeeper for the \"special\" branch. For any function `ruleN`, the behavior changes drastically only when `x` is exactly `N`. For example, in `rule0`, `x=0` triggers the special case (`0 + 1 = 1`), while `x=1` triggers the default case (`1 - 0 = 1`). Interestingly, for `rule0`, both branches yield the same result (1), but for `rule1`, `x=1` yields"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "fresh",
+    "trial": 3,
+    "wall_s": 7.4751852648332715,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4404.0,
+      "prefill_tps": 956.0,
+      "generated": 128.0,
+      "decode_ms": 3063.0,
+      "decode_tps": 41.8
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of 140 exported functions, named `rule0` through `rule139`, each of which accepts a single numeric argument `x` and applies a conditional transformation based on a specific integer constant associated with the function's name. For any given function `ruleN`, if the input `x` is strictly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. This pattern creates a set of specialized arithmetic operations where the \"true\" branch adds an incrementally larger value (starting from 1 for `"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "followup",
+    "trial": 3,
+    "wall_s": 4.614686601795256,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1347.0,
+      "prefill_tps": 184.1,
+      "generated": 128.0,
+      "decode_ms": 3256.0,
+      "decode_tps": 39.3
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gate for the \"special\" branch (`x + N + 1`) versus the \"default\" branch (`x - N`). This creates a discontinuity in the function's behavior: for `ruleN`, the output jumps from `N - N = 0` (if `x` were slightly less than N, e.g., `N-1` yields `-1`) to `N + N + 1 = 2N + 1` at the exact point `x = N`, and then"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "fresh",
+    "trial": 4,
+    "wall_s": 12.801479186862707,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 9829.0,
+      "prefill_tps": 898.4,
+      "generated": 128.0,
+      "decode_ms": 2957.0,
+      "decode_tps": 43.3
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of exported functions named `rule0` through `rule279`, each accepting a single numeric argument `x` and returning a modified value based on a specific conditional logic. For any given function `ruleN`, if the input `x` is strictly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. This pattern creates a set of 280 distinct transformation rules where the \"special case\" (the equality check) and the arithmetic offsets are directly tied to the function's index number, resulting in a"
+    }
+  },
+  {
+    "label": "gfx1101-coder-0130",
+    "kind": "followup",
+    "trial": 4,
+    "wall_s": 4.499249228276312,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8957.0,
+      "fresh": 114.0,
+      "prefill_ms": 1085.0,
+      "prefill_tps": 105.1,
+      "generated": 128.0,
+      "decode_ms": 3395.0,
+      "decode_tps": 37.7
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8957
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gate for the \"special\" branch (`x + N + 1`) versus the \"default\" branch (`x - N`). This behavior is highly sensitive to type coercion and precision; for example, `rule0(0)` returns `1` (special case), while `rule0(0.0)` also returns `1` in JavaScript due to strict equality with numbers, but `rule0(\"0\")` returns `-0` (or `0`) because the string `\"0\"` fails the strict equality"
+    }
+  }
+]
