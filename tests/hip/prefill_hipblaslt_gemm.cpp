@@ -5,6 +5,7 @@
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
 
+#include "strata/kernels/bf16_bits.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "hipblaslt_tuning.hpp"
 
@@ -42,7 +43,7 @@ struct DeviceBuffer {
 };
 
 uint16_t encode(float value, bool bf16) {
-    if (bf16) return hip_bfloat16(value).data;
+    if (bf16) return strata::kernels::bf16_from_f32(value);
     const __half half = __float2half_rn(value);
     uint16_t bits = 0;
     std::memcpy(&bits, &half, sizeof(bits));
