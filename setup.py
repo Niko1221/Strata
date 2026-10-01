@@ -13,13 +13,16 @@ What the first run does (each step is skipped when it is already done):
   1. checks your PC: NVIDIA GPU and driver, RAM, CPU, free disk space
   2. asks the questions
   3. installs the Python packages it needs into .venv (numpy, jinja2, ..., and NVIDIA's CUDA libraries)
-  4. gets the Strata engine: a ready-made build for RTX 30/40/50 cards (no compiler needed); if none fits your PC,
+  4. gets the Strata engine: a ready-made build for RTX 20/30/40/50 cards (no compiler needed); if none fits your PC,
      it installs the build tools (asks first) and compiles the engine for your GPU
   5. downloads the model from Hugging Face (resumable), and the vision encoder if you want images
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --vision yes|no|gpu|cpu, --port 8080, --yes (recommended
+Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
+(--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
+at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
+8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
@@ -36,6 +39,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -57,11 +61,13 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 22)                # v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 30)                # v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 
 MODELS = {
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
+    # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
+    # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
+    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen",)},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
                "arena_gb": 35.5},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
@@ -74,7 +80,12 @@ MODELS = {
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
 }
-CONTEXTS = [8192, 32768, 65536, 131072, 262144]
+# Contexts past 262144 (the model's trained length) extend it by rope scaling: for the context it will
+# serve the setup resolves the method (yarn, or one question when interactive) and derives the factor
+# from the final context (final / 262144, at least 1) itself (below), keeps an explicit
+# --rope-scaling/--rope-scale, and refuses an explicit --rope-scaling none there - the stock angles past
+# the trained range are out of spec.
+CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
@@ -220,7 +231,7 @@ def cpu_info():
     name, avx2, avx512 = platform.processor() or "unknown CPU", False, False
     if WIN:
         pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
-        avx2 = bool(pf(40))                       # PF_AVX2_INSTRUCTIONS_AVAILABLE
+        avx2 = bool(pf(40)) or _cpuid_avx2()      # PF_AVX2_INSTRUCTIONS_AVAILABLE, else the CPU itself (#159)
         n = out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]).strip()
         name = n or name
         avx512 = bool(pf(41)) and _cpuid_avx512_full()
@@ -254,6 +265,47 @@ def _cpuid_avx512_full() -> bool:
         need_ebx = (1 << 16) | (1 << 30) | (1 << 31)                   # F, BW, VL
         need_ecx = (1 << 1) | (1 << 11)                                # VBMI, VNNI
         return (ebx & need_ebx) == need_ebx and (ecx & need_ecx) == need_ecx
+    except Exception:
+        return False
+
+
+def _run_stub(code: bytes, *args) -> None:
+    """Runs a few bytes of x64 machine code (Windows calling convention: the arguments in rcx, rdx)."""
+    k32 = ctypes.windll.kernel32
+    k32.VirtualAlloc.restype = ctypes.c_void_p
+    k32.VirtualFree.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32)
+    buf = k32.VirtualAlloc(None, len(code), 0x3000, 0x40)
+    if not buf:
+        raise OSError("VirtualAlloc failed")
+    try:
+        ctypes.memmove(buf, code, len(code))
+        ctypes.CFUNCTYPE(None, *[ctypes.c_void_p] * len(args))(buf)(*args)
+    finally:
+        k32.VirtualFree(buf, 0, 0x8000)
+
+
+def _cpuid_avx2() -> bool:
+    """AVX2 asked from the CPU (CPUID leaf 7 EBX bit 5), with the OS saving the YMM registers (OSXSAVE + XCR0):
+    Windows' IsProcessorFeaturePresent(PF_AVX2) says no on some PCs whose CPU has it (a Ryzen 9 3950X, #159)."""
+    try:
+        def cpuid(leaf):
+            regs = (ctypes.c_uint32 * 4)()
+            _run_stub(bytes([0x53, 0x49, 0x89, 0xC8, 0x89, 0xD0, 0x31, 0xC9, 0x0F, 0xA2,      # push rbx; r8=rcx; eax=edx; ecx=0; cpuid
+                             0x41, 0x89, 0x00, 0x41, 0x89, 0x58, 0x04, 0x41, 0x89, 0x48, 0x08,  # [r8]=eax, [r8+4]=ebx, [r8+8]=ecx
+                             0x41, 0x89, 0x50, 0x0C, 0x5B, 0xC3]),                             # [r8+12]=edx; pop rbx
+                      ctypes.addressof(regs), leaf)
+            return list(regs)
+        if cpuid(0)[0] < 7:
+            return False
+        ecx1 = cpuid(1)[2]
+        if not (ecx1 >> 27) & 1 or not (ecx1 >> 28) & 1:             # OSXSAVE, AVX
+            return False
+        xcr0 = (ctypes.c_uint32 * 2)()
+        _run_stub(bytes([0x49, 0x89, 0xC8, 0x31, 0xC9, 0x0F, 0x01, 0xD0,                        # r8=rcx; ecx=0; xgetbv
+                         0x41, 0x89, 0x00, 0x41, 0x89, 0x50, 0x04, 0xC3]), ctypes.addressof(xcr0))
+        if xcr0[0] & 6 != 6:                                           # the OS saves XMM and YMM
+            return False
+        return bool((cpuid(7)[1] >> 5) & 1)
     except Exception:
         return False
 
@@ -557,10 +609,44 @@ def download(url, dst: Path, what=None):
             warn(f"download interrupted ({e}); retrying in 10 s ...")
             time.sleep(10)
     if total and part.stat().st_size != total:
-        fail(f"could not finish downloading {dst.name}", "check your internet connection and run it again")
+        fail(f"could not finish downloading {dst.name}: {part.stat().st_size:,} bytes on disk, the server says {total:,}",
+             "check your internet connection and run it again (the download resumes where it stopped)")
     part.replace(dst)
     mark(dst)
     ok(f"{what or dst.name} downloaded")
+
+
+def whole_shard(s: Path) -> bool:
+    """A shard as long as its own tensor directory says (check_shards' test, without stopping setup)."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    try:
+        g = GGUFFile(s)
+        return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
+                                                     default=0)
+    except (OSError, ValueError, struct.error):
+        return False
+
+
+def check_shards(shards):
+    """Every shard present and whole, or setup stops naming the file and the numbers.  Whole means as long as
+    its own tensor directory says (the header is read, the data is not): a truncated copy (--gguf-dir, a .part
+    renamed by hand, a download finished by an older setup) otherwise passes as a model file and the engine
+    fails much later, at the first tensor that runs past the end."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    for s in shards:
+        if not s.exists():
+            fail(f"missing {s}")
+        try:
+            g = GGUFFile(s)
+        except (ValueError, struct.error) as e:
+            fail(f"{s.name} is not a whole GGUF shard ({e})", "delete it and run setup again")
+        need = g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors), default=0)
+        have = s.stat().st_size
+        if have < need:
+            fail(f"{s.name} is short: {have:,} of {need:,} bytes ({need - have:,} missing)",
+                 "delete it and run setup again (or copy the whole file into --gguf-dir)")
 
 
 def get_llama_cpp():
@@ -573,7 +659,9 @@ def get_llama_cpp():
     tmp = ROOT / "third_party" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+        # llama.cpp's own web UI (tools/ui) is not used, and its deep paths passed Windows' 260-character limit in a
+        # folder like Downloads\Strata-main\Strata-main (#206)
+        f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
     top = next(tmp.iterdir())
     shutil.rmtree(llama, ignore_errors=True)
     # PR #63: on Windows a rename can fail with PermissionError while an antivirus scanner still holds a file of the
@@ -619,6 +707,182 @@ def cuda_lib_dirs():
     return [str(d) for d in dirs]
 
 
+# ------------------------------------------------------------------------------------------------ AMD (experimental)
+# The RX 7900 XT / XTX (gfx1100) and the RX 9070 series / Radeon AI PRO R9700 (gfx1201) on Linux, through the HIP
+# backend (docs/AMD_HIP.md).  There is no ready-made AMD engine: ROCm comes from AMD's TheRock Python wheels into .venv
+# (no sudo; a system ROCm 7 in /opt/rocm is used when it has hipcc and hipBLAS) and the engine is compiled here for
+# the card.  One GPU, no images yet.
+ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   # TheRock's wheels per GPU family
+                "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/"}
+ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
+ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
+AMD_ARCHS = ("gfx1100", "gfx1201")
+AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
+             "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)"}
+AMD_CARDS = "the RX 7900 XT / XTX (gfx1100) and the RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201)"
+
+
+def rocm_index(arch):
+    return os.environ.get("STRATA_ROCM_INDEX") or ROCM_INDEXES[arch]
+
+
+def amd_gpus():
+    """AMD GPUs from the kernel's KFD topology (the amdgpu driver; no ROCm needed), numbered as HIP numbers them:
+    the GPU nodes in order, the CPU nodes skipped.  Integrated GPUs are listed too (not supported)."""
+    base = Path("/sys/class/kfd/kfd/topology/nodes")
+    found = []
+    if WIN or not base.is_dir():
+        return found
+    for node in sorted((p for p in base.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
+        try:
+            props = {}
+            for line in (node / "properties").read_text().splitlines():
+                k, _, v = line.partition(" ")
+                props[k] = v.strip()
+            ver = int(props.get("gfx_target_version") or 0)
+            if ver == 0 or int(props.get("simd_count") or 0) == 0:
+                continue
+        except (OSError, ValueError):
+            continue
+        arch = f"gfx{ver // 10000}{(ver // 100) % 100:x}{ver % 100:x}"
+        dev = Path(f"/sys/class/drm/renderD{props.get('drm_render_minor', '')}/device")
+        try:
+            vram = int((dev / "mem_info_vram_total").read_text()) / 2 ** 30
+        except (OSError, ValueError):
+            vram = 0.0
+        try:
+            name = (dev / "product_name").read_text().strip() or f"AMD Radeon ({arch})"
+        except OSError:
+            name = f"AMD Radeon ({arch})"
+        if name == f"AMD Radeon ({arch})" and arch in AMD_NAMES:
+            name = AMD_NAMES[arch]
+        found.append({"index": len(found), "name": name, "vram_gb": vram, "arch": arch, "driver": "amdgpu",
+                      "vendor": "amd"})
+    return found
+
+
+def amd_problem(g):
+    if g["arch"] not in AMD_ARCHS:
+        return f"not supported - Strata's AMD backend runs on {AMD_CARDS} only, this is {g['arch']}"
+    return None
+
+
+def rocm_version(root):
+    """(major, minor) of a ROCm install, from rocm-core's header; None when it has none."""
+    try:
+        text = (Path(root) / "include" / "rocm-core" / "rocm_version.h").read_text()
+        return tuple(int(re.search(rf"#define\s+ROCM_VERSION_{k}\s+(\d+)", text).group(1)) for k in ("MAJOR", "MINOR"))
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def rocm_root(arch):
+    """ROCm for compiling and running the HIP engine for `arch`: (root, library folders).  A system ROCm 7 with hipcc
+    and hipBLAS, else AMD's TheRock wheels (ROCM_VERSION, from the card family's index) installed into .venv."""
+    sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
+    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
+        ver = rocm_version(sysroot)
+        if ver is None or ver >= ROCM_SYSTEM_MIN:
+            return sysroot, [str(sysroot / "lib")]
+        warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} or "
+             "newer: using AMD's wheels in .venv instead")
+    index = rocm_index(arch)
+    stamp = Path(sys.prefix) / ".strata-rocm.json"
+    have = json.loads(stamp.read_text()) if stamp.exists() else {}
+    if have.get("version") != ROCM_VERSION or have.get("index") != index:
+        say(f"  Installing ROCm {ROCM_VERSION} for AMD GPUs into .venv (AMD's TheRock wheels, ~10 GB, no sudo) ...")
+        pip = [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--index-url", index]
+        if have.get("version") == ROCM_VERSION:        # the same version for another GPU family: its own libraries
+            run(pip + ["--force-reinstall", "--no-deps", f"rocm=={ROCM_VERSION}"])
+        run(pip + [f"rocm[libraries,devel]=={ROCM_VERSION}"])
+        stamp.write_text(json.dumps({"version": ROCM_VERSION, "index": index}))
+    sdk = Path(sys.executable).parent / "rocm-sdk"
+    root = Path(out([str(sdk), "path", "--root"]).strip())
+    if not (root / "llvm" / "bin" / "clang++").exists():
+        fail(f"ROCm was installed but its compiler is missing ({root})",
+             f"remove {stamp} and run this again; or install ROCm 7 system-wide")
+    # the card family's libraries only (gfx120X-all -> _rocm_sdk_libraries_gfx120X_all): another family's
+    # libhipblaslt.so first on the path would have no kernels for this card
+    family = "_rocm_sdk_libraries_" + index.rstrip("/").rsplit("/", 1)[-1].replace("-", "_")
+    dirs = [str(root / "lib")]
+    for sp in {Path(p) for p in sys.path if p.endswith("site-packages")}:
+        libs = sorted(sp.glob("_rocm_sdk_libraries_*"))
+        libs = [d for d in libs if d.name.lower() == family.lower()] or libs
+        dirs += [str(d / "lib") for d in libs if (d / "lib").is_dir()]
+    ok(f"ROCm: {root}")
+    return root, list(dict.fromkeys(dirs))
+
+
+def hipblaslt_version(lib_dirs):
+    """The installed hipBLASLt's version as the engine reads it (hipblasLtGetVersion: 1.4.1 -> 100401), from the
+    header of the ROCm whose libraries the engine loads; None when not found."""
+    for d in lib_dirs:
+        try:
+            text = (Path(d).parent / "include" / "hipblaslt" / "hipblaslt-version.h").read_text()
+            v = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", text).group(1))
+                 for k in ("MAJOR", "MINOR", "PATCH")]
+        except (OSError, AttributeError, ValueError):
+            continue
+        return v[0] * 100000 + v[1] * 100 + v[2]
+    return None
+
+
+def hipblaslt_table(arch, lib_dirs):
+    """tools/hip/<arch>-hipblaslt-<version>.txt for this card AND the installed hipBLASLt, else None: its solution
+    ids are valid only for that pair (the engine refuses any other table and uses plain hipBLAS)."""
+    ver = hipblaslt_version(lib_dirs)
+    table = ROOT / "tools" / "hip" / f"{arch}-hipblaslt-{ver}.txt"
+    if ver is not None and table.exists():
+        head = table.read_text().split("\n", 2)[:2]
+        if f"STRATA_HIPBLASLT_TUNING_V1 {arch} {ver}" in (h.strip() for h in head):
+            ok(f"hipBLASLt tuning table: {table.name} (faster prompts)")
+            return table
+    have = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{arch}-hipblaslt-*.txt"))
+    warn(f"no hipBLASLt tuning table for {arch} with hipBLASLt {ver or '(version unknown)'}"
+       + (f" (have: {', '.join(have)})" if have else "")
+       + ": the prompt's dense matrix products use plain hipBLAS (tools/hip/tune_hipblaslt makes a table: "
+         "docs/AMD_HIP.md, Tuning table)")
+    return None
+
+
+def build_engine_hip(gpu, llama) -> Path:
+    """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`)."""
+    eng = ROOT / "engine"
+    eng.mkdir(exist_ok=True)
+    stamp = eng / "BUILD.json"
+    meta = json.loads(stamp.read_text()) if stamp.exists() else {}
+    src = source_hash(ENGINE_SOURCES)
+    if meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and             gpu["arch"] in meta.get("archs", []):
+        ok("engine already built for this PC")
+        return eng
+    if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
+        fail("a C++ compiler and git are needed to compile the AMD engine",
+             "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
+    root, dirs = rocm_root(gpu["arch"])
+    libs = [str(Path(d).parent) for d in dirs[1:]]
+    bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
+                   root / "amdgcn" / "bitcode")
+    os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
+                       "HIP_PATH": str(root)})
+    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+    os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(root / "llvm" / "bin"), os.environ.get("PATH", "")])
+    say("  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
+        if meta.get("backend") == "hip" and (eng / EXE).exists() and gpu["arch"] in meta.get("archs", [])
+        else "  Compiling the Strata engine for your AMD GPU (10-20 minutes, once) ...")
+    cmake_build(ROOT, ROOT / "build-hip", "strata",
+                ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
+                 "-DSTRATA_PREFILL_MMQ=ON", f"-DCMAKE_HIP_ARCHITECTURES={gpu['arch']}",
+                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+                 "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
+                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
+                 f"-DSTRATA_GGML_DIR={llama}"], None, "")
+    shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
+    stamp.write_text(json.dumps({"source": "local-hip", "backend": "hip", "version": source_version(),
+                                 "archs": [gpu["arch"]], "vision": "none", "lib_dirs": dirs, "src": src}, indent=1))
+    ok(f"engine compiled: {eng / EXE}")
+    return eng
+
+
 # ------------------------------------------------------------------------------------------------ the engine
 def driver_major(gpu):
     try:
@@ -635,7 +899,16 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
     if info.exists() and (eng / EXE).exists():
         meta = json.loads(info.read_text())
         ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
-        if meta.get("source") == "local" or ver >= MIN_ENGINE:
+        if meta.get("source") == "local":              # compiled here: build_engine checks its source and cards
+            return None
+        have = [int(a) for a in meta.get("archs", [])]
+        miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
+                if have and int(x) not in have and not (meta.get("ptx") and int(x) > max(have))]
+        if miss:                                       # a card it has no code for (#128): compiled here instead
+            warn(f"the installed engine is built for {', '.join(str(a) for a in have)}; your GPU is "
+                 f"{', '.join(str(x) for x in miss)}: compiling instead")
+            return None
+        if ver >= MIN_ENGINE:
             ok("ready-made engine already installed")
             return eng
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
@@ -705,6 +978,18 @@ def update_installed_engine(url_base) -> None:
         return
     meta_text = info.read_text()
     meta = json.loads(meta_text)
+    if meta.get("backend") == "hip":                   # AMD: compiled here, again when its source changed
+        if meta.get("src") != source_hash(ENGINE_SOURCES):
+            try:
+                usable = [x for x in amd_gpus() if amd_problem(x) is None]
+                g = next((x for x in usable if x["arch"] in meta.get("archs", [])), usable[0] if usable else None)
+                if g is None:
+                    raise RuntimeError("no supported AMD GPU found")
+                build_engine_hip(g, get_llama_cpp())
+            except (Exception, SystemExit) as e:
+                warn(f"could not compile the updated engine{'' if isinstance(e, SystemExit) else f' ({e})'}: "
+                     "starting the installed one")
+        return
     ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
@@ -749,7 +1034,8 @@ def update_installed_engine(url_base) -> None:
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     nvcc, cuda_v = find_nvcc()
-    need_cuda = (12, 8) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
+    # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
+    need_cuda = (13, 0) if max(int(x) for x in gpu.get("archs", [gpu["arch"]])) >= 120 else (12, 0)
     vcvars = find_vcvars() if WIN else None
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
@@ -855,16 +1141,24 @@ def build_engine(gpu, vision, yes, llama) -> Path:
     want_vision = vision != "none"
     local = meta.get("source") == "local"
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
-    engine_ok = local and (eng / EXE).exists() and meta.get("src") == src
+    archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
+    built = {int(x) for x in meta.get("archs", [])}
+    # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
+    # same; the compile keeps the generations it was built for
+    new_arch = local and not set(archs) <= built
+    engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
-    nvcc, vcvars = install_build_tools(gpu, yes)
-    archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
+    if local:
+        archs = sorted(built | set(archs))
+    nvcc, vcvars = install_build_tools({**gpu, "archs": archs}, yes)
     cuda_archs = ";".join(str(x) for x in archs)
     if not engine_ok:
-        say("  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
+        say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
+            "10-20 minutes, once) ..." if new_arch else
+            "  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, ROOT / "build", "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
@@ -892,6 +1186,44 @@ def build_engine(gpu, vision, yes, llama) -> Path:
 # folder and a full download again.  Where it is, and which Strata folders this user ran, is kept in a small
 # per-user file, so every Strata folder on the PC finds the same files.
 DATA_ITEMS = ("models", "packs", "mtp")
+
+
+LOW_RAM_HEADROOM_GB = 10   # RAM beside the experts: the OS, the engine's other buffers, the server
+RESIDENT_ENGINE = (0, 1, 30)   # the first engine with --resident-experts (the low-RAM mode's resident variant)
+
+
+def low_ram_needed(model, ram) -> bool:
+    """The model's experts do not fit this PC's RAM with room left for the rest: they are then mapped from the pack's
+    experts.bin instead of copied into RAM (the low-RAM mode)."""
+    return ram < MODELS[model]["arena_gb"] + LOW_RAM_HEADROOM_GB
+
+
+def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8") -> float:
+    """About how many GB of the model's experts the GPU's cache holds: its VRAM minus ~5 GB for the dense weights,
+    buffers and a 32K context's KV cache, minus the KV cache of a longer context (in VRAM in the low-RAM mode: its RAM
+    has no room for KV streaming)."""
+    kv_tok = 13 * (576 if kv == "q4_0" else 1056)       # bytes per context token: 12 QSA layers + the draft layer
+    longer = max(0, ctx - 32768) * kv_tok / 1e9
+    return max(0.0, min(MODELS[model]["arena_gb"], vram_gb - 5 - longer))
+
+
+def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8") -> float:
+    """About how much of the model's experts the GPU holds."""
+    return low_ram_gpu_gb(model, vram_gb, ctx, kv) / MODELS[model]["arena_gb"]
+
+
+def low_ram_resident(model, ram, vram_gb, ctx=32768, kv="int8") -> bool:
+    """In the low-RAM mode: the experts the GPU does not hold fit the RAM with the usual room beside them, so they are
+    copied into RAM once (the resident variant, `--resident-experts`) instead of being read through the OS file cache
+    (plain `--mmap-experts`, which a PC this short of RAM keeps re-reading from the SSD)."""
+    rest = MODELS[model]["arena_gb"] - low_ram_gpu_gb(model, vram_gb, ctx, kv)
+    return ram >= rest + LOW_RAM_HEADROOM_GB
+
+
+def low_ram_fits(model, ram, vram_gb) -> bool:
+    """In the low-RAM mode: the experts the GPU does not hold fit the RAM left beside the rest (as file cache)."""
+    arena = MODELS[model]["arena_gb"]
+    return ram - 6 + max(0.0, vram_gb - 5) >= arena
 
 
 def settings_path() -> Path:
@@ -1016,7 +1348,18 @@ def data_folder(requested: str | None) -> tuple:
         warn(f"cannot use {dest} for the model files ({e}): keeping them in {ROOT}")
         dest = ROOT
     elsewhere = []
-    for folder in [ROOT, *other_installs(settings)]:
+    # #198: the data folder remembered before (a --data-dir to a new place) is a source too, and so is a Strata-data
+    # folder nested in any of them (an install that kept its models one level down)
+    sources = [ROOT, *other_installs(settings)]
+    if settings.get("data_dir") and Path(settings["data_dir"]) != dest:
+        sources.append(Path(settings["data_dir"]))
+    sources += [f / "Strata-data" for f in list(sources) if (f / "Strata-data") != dest]
+    seen = set()
+    for folder in sources:
+        key = os.path.normcase(str(folder))
+        if key in seen:
+            continue
+        seen.add(key)
         if folder == dest or not has_data(folder):
             continue
         if not same_drive(folder, dest):
@@ -1189,16 +1532,39 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
-          layer_split=None) -> int:
+          layer_split=None, keep=None) -> int:
+    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
+    keep = {k: v for k, v in (keep or {}).items() if v is not None}
+    if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
+        cfg.update(keep)
+        cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+        ok("saved for this model: " + ", ".join("api key" if k == "api_key" else f"{k.replace('_', ' ')} {v}"
+                                                for k, v in keep.items()))
     cfg_path.touch()                                     # the most recently used model
+    if "--mtp" in cfg["args"][:-1]:
+        refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
-    found = gpus()
-    if isinstance(gpu, list):                          # --gpus: saved, this model runs on these cards from now on
+    if cfg.get("backend") == "hip":                    # AMD: one card, numbered as HIP numbers them
+        if isinstance(gpu, list):
+            fail("several GPUs sharing one model: NVIDIA only for now", "use one AMD card (--gpu N)")
+        if gpu is not None:
+            cmd += ["--gpu", str(gpu)]
+        found = []
+        use = gpu if gpu is not None else cfg.get("gpu")
+        g = next((x for x in amd_gpus() if x["index"] == (use if use is not None else x["index"])
+                  and amd_problem(x) is None), None)
+        if g is not None:
+            ok(f"GPU: {g['name']} ({g['vram_gb']:.0f} GB, AMD)")
+    else:
+        found = gpus()
+    if cfg.get("backend") == "hip":
+        pass
+    elif isinstance(gpu, list):                        # --gpus: saved, this model runs on these cards from now on
         check_gpus(gpu, found)
         cfg["gpu"], cfg["gpus_asked"] = gpu, True
         cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
@@ -1210,14 +1576,18 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     else:
         cfg = offer_together(cfg_path, cfg, yes)
     use = gpu if gpu is not None else cfg.get("gpu")
-    if isinstance(use, list):
+    if cfg.get("backend") == "hip":
+        pass
+    elif isinstance(use, list):
         check_gpus(use, found, "(chosen for this model) ")
         byid = {g["index"]: g for g in found}
+        cfg = ensure_engine_for([byid[i] for i in use], cfg_path, cfg, yes)
         ok("GPUs: " + " + ".join(gpu_name(byid[i]) for i in use) + f" together (layers split {cfg.get('layer_split') or 'auto'})")
     elif found:
         g = next((x for x in found if x["index"] == use), None) if use is not None else max(
             found, key=lambda x: (round(x["vram_gb"]), -x["index"]))
         if g is not None:
+            cfg = ensure_engine_for([g], cfg_path, cfg, yes)
             ok("GPU: " + gpu_name(g))
     if open_browser:
         cmd.append("--open")
@@ -1235,7 +1605,59 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
     say("  Later, closing this window stops the model.")
     say("  " + "-" * 100)
+    if not WIN and os.environ.get("STRATA_EXECV"):
+        # Replace this process instead of spawning a child. The Docker image sets STRATA_EXECV=1,
+        # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
+        # answer the engine with QUIT. Normal Linux starts keep spawning the server as a child.
+        os.execv(cmd[0], cmd)
     return subprocess.call(cmd)
+
+
+# the draft subsets setup copied before (sha256): replaced by the current one, a subset made by hand is kept
+OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}   # to 0.1.26: 27 Han tokens
+
+
+DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin"}
+
+
+def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
+    """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137) or `en`
+    (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster).
+    Copied when missing or when a shipped subset other than the chosen one is there; a subset made by hand is kept."""
+    new, dst = ROOT / "data" / DRAFT_VOCABS.get(choice, "draft_vocab.bin"), rt / "draft_vocab.bin"
+    if not new.exists() or not rt.is_dir():
+        return
+    if dst.exists():
+        old = hashlib.sha256(dst.read_bytes()).hexdigest()
+        shipped = OLD_DRAFT_VOCABS | {hashlib.sha256((ROOT / "data" / f).read_bytes()).hexdigest()
+                                      for f in DRAFT_VOCABS.values() if (ROOT / "data" / f).exists()}
+        if old not in shipped or old == hashlib.sha256(new.read_bytes()).hexdigest():
+            return
+        ok("draft layer: the token subset " + ("with Chinese, Japanese and Korean" if choice == "cjk" else
+                                               "for English and code (less VRAM)"))
+    shutil.copyfile(new, dst)
+
+
+def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
+    """The installed engine must have code for every card the model starts on: a card added later (--gpus with an
+    older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
+    card gets the engine compiled for all of them, before the start."""
+    missing = [g for g in cards if not engine_runs_on(g)]
+    if not missing:
+        return cfg
+    info = ROOT / "engine" / "BUILD.json"
+    meta = json.loads(info.read_text())
+    say()
+    say("  The installed engine has no code for " + ", ".join(f"{g['name']} (sm_{g['arch']})" for g in missing) +
+        ": it is compiled for " + ("these cards" if len(cards) > 1 else "it") + " now.")
+    main = gpu_info(cards[0]["index"])
+    archs = sorted({int(x) for x in meta.get("archs", [])} | {int(g["arch"]) for g in cards})
+    vision = meta.get("vision") or ("gpu" if (ROOT / "engine" / VEXE).exists() else "none")
+    build_engine({**main, "archs": archs}, vision, yes, get_llama_cpp())
+    dirs = json.loads(info.read_text()).get("cuda_dirs") or []
+    cfg["lib_dirs"] = dirs + [d for d in cfg.get("lib_dirs") or [] if d not in dirs]
+    cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    return cfg
 
 
 def write_run_script(model, cfg_path, port):
@@ -1244,7 +1666,7 @@ def write_run_script(model, cfg_path, port):
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
-                          " ".join(f'"{x}"' for x in serve) + "\r\npause\r\n", encoding="utf-8")
+                          " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8")
     else:
         script = ROOT / f"run-{model.lower()}.sh"
         script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
@@ -1253,15 +1675,59 @@ def write_run_script(model, cfg_path, port):
     return script
 
 
+# ------------------------------------------------------------------------------------------------ the rope config
+def derived_factor(ctx: int, trained: int = 262144) -> float:
+    """The automatic extension factor: the FINAL context over the trained one, at least 1.
+
+    Factor 1 removes the automatic expansion - the trained angles stand as they are - but it is not a
+    switch for rope as a whole: an explicitly chosen method's settings keep their defined behavior.
+    """
+    return max(1.0, float(ctx) / float(trained))
+
+
+def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
+    """The rope config for the context ACTUALLY SERVED: (scaling, scale); scaling None = no scaling flags.
+
+    An explicit --rope-scaling/--rope-scale always wins - a user-supplied factor is kept verbatim even
+    when a reduction changed the context.  Past the trained range an omitted method defaults to yarn -
+    llama.cpp's extension method: the trained angles survive on the high-frequency pairs and the
+    magnitude correction keeps the attention temperature - and an omitted factor is derived from the
+    final context (final / trained, at least 1), as is an explicitly chosen method's missing factor
+    inside the trained range: factor 1, the trained angles, no expansion.  An explicit none is refused
+    past the trained range (the setup will not configure a run it knows is out of spec) rather than
+    silently overridden.
+    """
+    if ctx <= trained:
+        if scale is not None and scaling in (None, "none"):
+            raise ValueError("--rope-scale needs --rope-scaling linear or yarn (the chosen context fits the "
+                             "trained 262144, so there is nothing to scale)")
+        if scaling in (None, "none"):
+            return None, None          # the stock model, by choice or by default
+        return scaling, scale if scale is not None else derived_factor(ctx, trained)
+    if scaling == "none":
+        raise ValueError(f"a {ctx // 1024}K context is past the model's trained 262144, and --rope-scaling none "
+                         "keeps the stock angles there - the model has never seen those positions, so the setup "
+                         "refuses the combination instead of quietly overriding it. Pick --rope-scaling yarn or "
+                         "linear, or rerun with --context 262144 or lower")
+    return scaling or "yarn", scale if scale is not None else derived_factor(ctx, trained)
+
+
 # ------------------------------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--context", type=int)
-    ap.add_argument("--kv", choices=["int8", "q4_0"],
-                    help="KV cache precision above 8K context: int8 (default) or q4_0 (half the memory, a little less "
-                         "precise)")
+    ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
+                    help="the RoPE extension for a context past the model's trained 262144: linear (position "
+                         "interpolation) or yarn - llama.cpp's types. Omitted with a scaled context, the setup "
+                         "picks yarn; 'none' is refused for such a context")
+    ap.add_argument("--rope-scale", type=float,
+                    help="the extension factor (default: the final context over the trained 262144, at least 1 - "
+                         "1.5 for 384K, 2 for 512K, 1 inside the trained range)")
+    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4"],
+                    help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
+                         "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (yes = the encoder on the GPU)")
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
@@ -1291,6 +1757,17 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
+    ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
+                    help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
+                         "and code only (~110 MiB less VRAM, English answers 1-2%% faster)")
+    ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
+                    help="read the model's experts from one file in its folder instead of copying them all into RAM "
+                         "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
+                         "this mode the experts the GPU does not hold are copied into RAM once when they fit (resident), "
+                         "else read through the OS file cache (mmap); resident / mmap force one of the two")
+    ap.add_argument("--backend", choices=["cuda", "hip"],
+                    help="cuda = NVIDIA (default), hip = AMD RX 7900 XT/XTX or RX 9070 / AI PRO R9700 on Linux (experimental; chosen by itself "
+                         "when the PC has no NVIDIA card Strata can use)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.gpu is not None:                              # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
@@ -1300,7 +1777,7 @@ def main() -> int:
             a.gpu = int(a.gpu)
         else:
             ap.error(f"--gpu takes a GPU number as nvidia-smi numbers them, e.g. --gpu 1 (or --gpus 0,2), not {a.gpu!r}")
-    say("Strata - Qwen3.8-Flash-Next on a normal PC (NVIDIA GPU + system RAM + CPU)")
+    say("Strata - Qwen3.8-Flash-Next on a normal PC (a GPU + system RAM + CPU)")
     data, elsewhere = data_folder(a.data_dir)          # the model files: in the data folder, found from any copy
     roots = [data, *elsewhere]
     if a.models_dir is None:
@@ -1344,53 +1821,96 @@ def main() -> int:
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
         calibrate_config(pick_cfg)
-        return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+        return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
-            return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+            return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
         say(f"  {len(have) + 1}) install another model / change settings")
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
-            return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
+            return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
 
     # ---- 1. the PC
     step(1, "checking your PC")
     found = gpus()
-    if not found:
-        fail("no NVIDIA GPU found (nvidia-smi did not answer)",
-             "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC")
-    if len(found) > 1 or gpu_problem(found[0]) is not None:
-        gpu_table(found)
-    sel = choose_gpus(a, found)                        # asked when two or more cards can share the model
-    multi = sel if len(sel) > 1 else []
-    a.gpu = sel[0]                                     # the main GPU: the checks and the sizing below are its
-    GPU_PICK = a.gpu
-    gpu = gpu_info(a.gpu)
-    chosen = [gpu_info(i) for i in sel]
-    gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
-    if multi:
-        ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-    ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
-    if driver_major(gpu) < MIN_DRIVER:
-        fail(f"the NVIDIA driver is too old ({gpu['driver']}; {MIN_DRIVER} or newer is needed)",
-             "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
+    amd = [] if WIN else amd_gpus()
+    nv_ok = any(gpu_problem(g) is None for g in found)
+    amd_ok = [g for g in amd if amd_problem(g) is None]
+    hip = a.backend == "hip" or (a.backend is None and not nv_ok and bool(amd_ok))
+    if a.backend is None and nv_ok and amd_ok:
+        # both kinds of card: asked (a first run on such a PC used to take NVIDIA without mentioning the Radeon)
+        say()
+        say("  This PC has NVIDIA and AMD cards Strata can use:")
+        say("  1) NVIDIA: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in found if gpu_problem(g) is None)
+            + "   (recommended)")
+        say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in amd_ok)
+            + "   (experimental: compiled here, one GPU, no images - docs/AMD_HIP.md)")
+        hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
+        if a.check and not hip:
+            say("  (the AMD card: ./setup.sh --backend hip)")
+    if hip:                                            # AMD (experimental): one card, compiled here
+        if WIN:
+            fail("Strata's AMD backend runs on Linux only", "use an NVIDIA RTX 20 series or newer card on Windows")
+        say("  Your AMD GPUs:" if amd else "  No AMD GPU found (the amdgpu driver's KFD topology is empty).")
+        for g in amd:
+            say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.0f} GB VRAM - " + (amd_problem(g) or "can be used"))
+        usable = [g for g in amd if amd_problem(g) is None]
+        if not usable:
+            fail("no AMD GPU Strata can use", f"the AMD backend runs on {AMD_CARDS} on Linux")
+        if a.gpus:
+            fail("several GPUs sharing one model: NVIDIA only for now", "use one AMD card (--gpu N)")
+        if a.gpu is not None:
+            gpu = next((g for g in usable if g["index"] == a.gpu), None)
+            if gpu is None:
+                fail(f"AMD GPU {a.gpu} cannot be used", "use one of: " + ", ".join(f"--gpu {g['index']}" for g in usable))
+        else:
+            gpu = max(usable, key=lambda x: (round(x["vram_gb"]), -x["index"]))
+        gpu = {**gpu, "count": len(amd), "archs": [gpu["arch"]]}
+        sel, multi, chosen = [gpu["index"]], [], [gpu]
+        a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
+        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, {gpu['arch']} (AMD, experimental: docs/AMD_HIP.md)")
+    else:
+        if not found:
+            fail("no NVIDIA GPU found (nvidia-smi did not answer)",
+                 "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC"
+                 + ("; an AMD RX 7900 XT/XTX or RX 9070 / AI PRO R9700: --backend hip" if amd else ""))
+        if len(found) > 1 or gpu_problem(found[0]) is not None:
+            gpu_table(found)
+        sel = choose_gpus(a, found)                    # asked when two or more cards can share the model
+        multi = sel if len(sel) > 1 else []
+        a.gpu = sel[0]                                 # the main GPU: the checks and the sizing below are its
+        GPU_PICK = a.gpu
+        gpu = gpu_info(a.gpu)
+        chosen = [gpu_info(i) for i in sel]
+        gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
+        if multi:
+            ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
+        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        if driver_major(gpu) < MIN_DRIVER:
+            fail(f"the NVIDIA driver is too old ({gpu['driver']}; {MIN_DRIVER} or newer is needed)",
+                 "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
     if gpu["vram_gb"] < 11:
         warn("less than 12 GB of VRAM: Strata will run, but most experts stay on the CPU and it will be slow")
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values())
-    if ram < need - 4 and not a.check:
+    low_ok = low_ram_fits("IQ1_M", ram, gpu["vram_gb"]) and a.low_ram != "off"   # the smallest model, mapped
+    if ram < need - 4 and not a.check and not low_ok:
         # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
         # bigger GPU does not lower this
         fail(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
              "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a copy "
              "of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model)")
-    ok(f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)")
+    ok(f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
+       + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so "
@@ -1403,6 +1923,10 @@ def main() -> int:
         say()
         for m, d in MODELS.items():
             verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+            if low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}% "
+                           "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, gpu["vram_gb"])
+                                                 else "the rest is read from the SSD as needed)"))
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
         say("\nThis PC can run Strata. Run it again without --check to install.")
         return 0
@@ -1428,12 +1952,29 @@ def main() -> int:
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        if low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+            fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}%, "
+                   + ("the rest in RAM)" if low_ram_resident(m, ram, gpu["vram_gb"]) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
-    if ram < MODELS[model]["ram_gb"] - 4:
-        fail(f"{model} needs about {MODELS[model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB",
-             "choose Q2_0 or IQ2_XS, or add RAM")
+    low_ram = a.low_ram in ("on", "resident", "mmap") or (a.low_ram == "auto" and low_ram_needed(model, ram))
+    if low_ram and multi:
+        warn("the low-RAM mode runs on one GPU: using " + gpu_name(gpu) + " only")
+        multi, sel, chosen = [], [gpu["index"]], [gpu]
+    # (the low-RAM mode's variant is decided once the context is known, below)
+    if not low_ram and ram < MODELS[model]["ram_gb"] - 4:
+        # #125: a warning and a question, not a stop: the user may accept paging (asked, "no" by default, so an
+        # unattended --yes install still stops here)
+        need_gb, arena = MODELS[model]["ram_gb"], MODELS[model]["arena_gb"]
+        warn(f"{model} needs about {need_gb} GB of RAM and this PC has {ram:.0f} GB: its experts alone are "
+             f"{arena:.0f} GB and must stay in RAM, so Windows/Linux will page part of them from disk. Expect it "
+             "to be much slower, and it may not start at all.")
+        say("       A smaller size (Q2_0 or IQ2_XS) fits; more RAM fixes it.")
+        if ask("  Install it anyway?", ["y", "n"], "n", a.yes) != "y":
+            fail(f"{model} needs about {need_gb} GB of RAM; this PC has {ram:.0f} GB",
+                 "choose Q2_0 or IQ2_XS, or add RAM")
+        warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
@@ -1445,12 +1986,43 @@ def main() -> int:
         say("  Context length = how much text the model can see at once (your chat, files, tool output).")
         say("  Longer needs more VRAM for it, so fewer experts fit on the GPU:")
         for i, c in enumerate(CONTEXTS, 1):
-            say(f"  {i}) {c // 1024}K tokens" + ("   (recommended for your GPU)" if c == rec_ctx else ""))
-        ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, 6)], str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
-    if model in ("IQ3_XXS", "IQ3_S") and ram < 90 and ctx > 131072:
-        warn(f"{model} with a 262K context needs more than 64 GB of RAM ({MODELS[model]['arena_gb']:.0f} GB of experts "
-             "+ the context): using 128K")
+            note = ("   (recommended for your GPU)" if c == rec_ctx else "") + \
+                   ("   (experimental: setup adds rope scaling)" if c > 262144 else "")
+            say(f"  {i}) {c // 1024}K tokens{note}")
+        ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, len(CONTEXTS) + 1)],
+                               str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
+    # the RAM limit comes FIRST: the rope config must cover the context the engine will actually serve -
+    # a reduced 384K can land back inside the trained 262144, and then nothing needs scaling (§4).  Counted,
+    # not a fixed 90 GB (the 0.1.29 arithmetic): arena + the context's KV + 24 GB of room for everything else.
+    asked_ctx = ctx
+    need_gb = MODELS[model].get("arena_gb", 0) + ctx * 13 * 1056 / 1e9 + 24
+    if model in ("IQ3_XXS", "IQ3_S") and ram < need_gb and ctx > 131072:
+        warn(f"{model} with a {ctx // 1024}K context needs about {need_gb:.0f} GB of RAM "
+             f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest): using 128K")
         ctx = 131072
+    scaling = a.rope_scaling
+    if ctx > 262144 and scaling is None and not a.yes:
+        # the interactive path: one question, yarn preselected (llama.cpp's extension method, recall-tested
+        # here at 512K).  With --yes nothing prints: resolve_rope takes yarn below and the ok() line says so.
+        say()
+        say(f"  A {ctx // 1024}K context runs the model past its trained 262,144 positions: the rotary angles")
+        say("  get rescaled (llama.cpp's RoPE extension). yarn keeps the trained angles on the high-frequency")
+        say("  pairs and corrects the magnitudes; linear shrinks every angle. Override any time with")
+        say("  --rope-scaling.")
+        scaling = ask("RoPE extension method?", ["yarn", "linear"], "yarn", a.yes)
+    try:
+        scaling, rope_scale = resolve_rope(ctx, scaling, a.rope_scale)
+    except ValueError as e:
+        fail(str(e))
+    if scaling is not None:
+        origin = ("final context / trained 262144; override with --rope-scale" if a.rope_scale is None
+                  else "as requested")
+        ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
+    elif asked_ctx > 262144:
+        ok(f"the RAM limit brings the context to {ctx // 1024}K, inside the trained 262,144: no rope scaling")
+    if scaling is not None and asked_ctx > 262144 and ctx <= 262144:
+        warn(f"the RAM limit reduced the context to {ctx // 1024}K, inside the trained 262,144; keeping your "
+             f"explicit rope scaling ({scaling}) anyway - drop --rope-scaling for the completely stock model")
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
     kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
@@ -1463,7 +2035,11 @@ def main() -> int:
         kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
     if ctx > 8192:
         ok(f"KV cache: {'8-bit' if kv == 'int8' else '4-bit (Hadamard-rotated)'}")
-    if a.vision:
+    if hip:
+        vision = "none"
+        if a.vision not in (None, "no", "none"):
+            warn("images are not available with the AMD backend yet: off")
+    elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
         say()
@@ -1471,6 +2047,27 @@ def main() -> int:
         say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
+    # The low-RAM mode's two variants.  resident: the experts the GPU's cache does not hold (and, as far as RAM allows,
+    # the ones the prompt path borrows cache room from) are copied from the pack's experts.bin into RAM once, so
+    # nothing is read from the SSD while it answers (engine 0.1.30, --resident-experts; the engine falls back to mmap
+    # with a warning when they do not fit the RAM it finds free).  mmap: they are read through the OS file cache.
+    # The GPU's share: its VRAM less the dense weights and buffers, this context's KV cache and the image encoder's room.
+    resident = False
+    if low_ram:
+        arena = MODELS[model]["arena_gb"]
+        vram = gpu["vram_gb"] - (VISION[vision]["reserve_mib"] / 1024 if vision != "none" else 0)
+        share = low_ram_gpu_share(model, vram, ctx, kv)
+        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv)
+        resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, kv))
+        if resident:
+            ok(f"low-RAM mode: the GPU holds ~{100 * share:.0f}% of {model}'s experts ({arena:.0f} GB) and the other "
+               f"~{rest:.0f} GB stay in RAM ({ram:.0f} GB), read once from a copy in the model folder")
+        else:
+            ok(f"low-RAM mode: {model}'s experts ({arena:.0f} GB) are read from the model folder through the OS file "
+               f"cache instead of a copy in RAM ({ram:.0f} GB); the GPU holds ~{100 * share:.0f}% of them")
+            if share < 0.6:
+                warn("most of the experts are read from the SSD while it answers: expect it to be much slower than "
+                     "with enough RAM (a faster SSD and a smaller size help)")
     # EXPERIMENTAL: the experimental-speed-projection control vector (data/experimental-speed-projection), off unless
     # chosen here; with it loaded, the web app and the API switch it off per request
     esp = None
@@ -1499,12 +2096,16 @@ def main() -> int:
                 models_dir, shards = cand[0].parent, cand
                 ok(f"model files found in {models_dir}")
                 break
+    for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
+        if s.exists() and not done(s) and whole_shard(s):
+            mark(s, "whole (checked against its own tensor directory)")
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     resumed_bytes = sum(max((p.stat().st_size for p in (s, Path(str(s) + ".part")) if p.exists()), default=0)
                         for s in shards)
     remaining_download_gb = max(0.0, MODELS[model]["download_gb"] - resumed_bytes / 1e9)
     need = (0 if a.gguf_dir or have_model else remaining_download_gb) + 8 + \
-        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0)
+        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
+        (MODELS[model]["arena_gb"] + 1 if low_ram and not (model == "Q2_0" and avx512 and family == "qwen") else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB", "use --models-dir on a bigger drive")
 
@@ -1516,16 +2117,22 @@ def main() -> int:
     step(4, "the Strata engine")
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
-    eng = None if a.build else get_prebuilt(a.prebuilt, gpu, vision)
+    eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision)
     if eng is not None and json.loads((eng / "BUILD.json").read_text()).get("source") != "local":
         pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
         if vision != "none" and not (eng / VEXE).exists():
             warn("the ready-made engine has no image encoder: compiling it")
             eng = None
+        elif vision == "gpu":                          # the encoder can cover fewer cards than the engine (RTX 20)
+            m = json.loads((eng / "BUILD.json").read_text())
+            va = [int(x) for x in m.get("vision_archs", m.get("archs", []))]
+            if va and int(gpu["arch"]) not in va and not (m.get("ptx") and int(gpu["arch"]) > max(va)):
+                warn(f"the ready-made image encoder has no code for your GPU (sm_{gpu['arch']}): compiling it")
+                eng = None
     if eng is None:
-        eng = build_engine(gpu, vision, a.yes, llama)
+        eng = build_engine_hip(gpu, llama) if hip else build_engine(gpu, vision, a.yes, llama)
     meta = json.loads((eng / "BUILD.json").read_text())
-    lib_dirs = meta.get("cuda_dirs") or cuda_lib_dirs()
+    lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs()
     ok(f"engine: {eng / EXE}")
 
     # ---- 5. the model files
@@ -1546,9 +2153,7 @@ def main() -> int:
                 except OSError:
                     pass
             download(fam["hf"].format(q=model) + s.name, s)
-    for s in shards:
-        if not s.exists():
-            fail(f"missing {s}")
+    check_shards(shards)
     ok("model files present")
     mmproj = Path(a.models_dir) / fam["mmproj"]
     if not mmproj.exists():
@@ -1577,6 +2182,10 @@ def main() -> int:
     elif not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
         # every tensor as the GGUF stores it; the experts are read from the GGUF at start (seconds to build)
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack)], env=env)
+    if low_ram and not (pack / "experts.bin").exists():
+        say(f"  Writing the experts into one file for the low-RAM mode (one time, {MODELS[model]['arena_gb']:.0f} GB) ...")
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
+             "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
     mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
@@ -1588,8 +2197,7 @@ def main() -> int:
              "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
         run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
             env=env)
-    if not (rt / "draft_vocab.bin").exists():
-        shutil.copyfile(ROOT / "data" / "draft_vocab.bin", rt / "draft_vocab.bin")
+    refresh_draft_vocab(rt, a.draft_vocab or "cjk")
     ok(f"MTP draft layer: {rt}")
 
     # ---- 7. the start script
@@ -1603,14 +2211,28 @@ def main() -> int:
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
+    if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
+        args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
     if ctx > 8192:
         args += ["--kv", kv]
+    engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
+        resident = False                               # an engine from before --resident-experts would refuse it
+        ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "
+           "the OS file cache (run setup again after the next engine update)")
+    if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
+        args += ["--resident-experts" if resident else "--mmap-experts"]
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.
     kv_ram_gb = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9   # 12 QSA layers + the draft layer
-    # the RAM copy must be pinned, and under WSL the NVIDIA driver pins only about 1 GB in all
-    if is_wsl() and ctx >= 65536:
+    # Hybrid K8V4 never streams its KV (mode 0 only, layer.hpp), so it is excluded from the WHOLE streaming
+    # decision rather than one threshold at a time - a future tier added to this chain cannot reintroduce the
+    # combination the engine refuses (PR review).
+    if kv == "k8v4":
+        if ctx >= 65536:
+            ok("KV streaming off: not supported with --kv k8v4; the KV cache stays in VRAM")
+    elif is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
     elif ctx >= 65536 and ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1:
         args += ["--kv-resident", "32768"]
@@ -1624,6 +2246,16 @@ def main() -> int:
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
+    if hip:
+        cfg["backend"] = "hip"
+        # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
+        # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
+        # engine refuses any other one and falls back to plain hipBLAS)
+        table = hipblaslt_table(gpu["arch"], lib_dirs)
+        if table:
+            cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
+        if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
+            cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
         cfg["gpus_asked"] = True                       # chosen at setup: not asked again at start
@@ -1635,13 +2267,15 @@ def main() -> int:
         cfg["host"] = a.host
     if a.api_key:
         cfg["api_key"] = a.api_key
+    if a.draft_vocab:
+        cfg["draft_vocab"] = a.draft_vocab
     if vision != "none":
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
                          "gpu": vision == "gpu", "max_tokens": VISION[vision]["max_tokens"]}
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
-    cal = saved_calibration(cfg)
+    cal = None if hip else saved_calibration(cfg)     # tools/calibrate.py is NVIDIA-only for now
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
@@ -1650,7 +2284,7 @@ def main() -> int:
     cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     script = write_run_script(tag, cfg_path, port)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
-    if cal is None and not a.no_start and not a.yes and ask(
+    if cal is None and not hip and not a.no_start and not a.yes and ask(
             "Tune Strata for this PC now? It measures a few engine settings (about 5-10 minutes; the PC is busy "
             "meanwhile; later: START-HERE --calibrate)", ["y", "n"], "y", a.yes) == "y":
         calibrate_config(cfg_path)

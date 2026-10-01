@@ -19,6 +19,9 @@ __device__ __forceinline__ float h2f(const uint8_t* p) {
 }
 __device__ __forceinline__ uint16_t f2bf(float f) {
     uint32_t u = __float_as_uint(f);
+    // a NaN (a NaN scale in the block) stays a quiet NaN, as in ggml_compute_fp32_to_bf16 and `bf16_from_f32`:
+    // the rounding add below would carry it into -0 or inf
+    if ((u & 0x7fffffffu) > 0x7f800000u) return (uint16_t) ((u >> 16) | 64u);
     u += 0x7fffu + ((u >> 16) & 1u);          // round to nearest even
     return (uint16_t) (u >> 16);
 }

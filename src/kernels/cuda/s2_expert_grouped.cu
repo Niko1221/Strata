@@ -14,8 +14,10 @@
 // The two agree to float rounding and not to the bit, which is the same contract `s_gemv_parity` carries for
 // the same reason.  `bench/micro/moe_hit_parity.cu` is the check.
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/dp4a.hpp"
 
 #include "strata/kernels/quantize_act.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -88,8 +90,8 @@ __device__ __forceinline__ float row_dot_s2_q8(const uint8_t* __restrict__ codes
             // it rather than reasoning about which cast happens to work.
             int xw;
             memcpy(&xw, xq + 4 * j, 4);
-            s = __dp4a(cw, xw, s);
-            hx = __dp4a(ones, xw, hx);
+            s = STRATA_DP4A(cw, xw, s);
+            hx = STRATA_DP4A(ones, xw, hx);
         }
         // One weight scale per 64 elements, so per TWO 32-element chunks.
         const float dw = f16_at(scales + (size_t) (c >> 1) * 2);
@@ -210,7 +212,7 @@ __device__ __forceinline__ int dot4(const uint8_t* codes, const int8_t* q) {
                           (((c >> 4) & 3u) << 16) | (((c >> 6) & 3u) << 24));
     int xw;
     memcpy(&xw, q, sizeof xw);
-    return __dp4a(cw, xw, 0);
+    return STRATA_DP4A(cw, xw, 0);
 }
 
 __device__ __forceinline__ float row_dot_cpu_order(const uint8_t* codes, const uint8_t* scales,
@@ -512,6 +514,9 @@ namespace {
 // hit kernel's.
 constexpr int GU_CHUNKS = (H / 32 + 31) / 32;   // 3: chunks of a gate/up row per lane (80 chunks / 32 lanes)
 constexpr int GMAX = 8;                          // entries per group (tokens routed to one expert in a window)
+// a group holds one entry per token of the window routed to its expert, and the kernels below keep at
+// most GMAX of them (`min(..., GMAX)`): a longer window would drop entries without a word.
+static_assert(GMAX >= kVerifyMaxT, "a verify window's group can exceed GMAX entries");
 constexpr int GU_ROWS = 32;                      // gate/up rows per block: 4 per warp
 constexpr int D_ROWS = 64;                       // down rows per block: 8 per warp
 
@@ -526,8 +531,8 @@ __device__ __forceinline__ float chunk_dot(uint2 cb, const int* xw, float dw, fl
         const unsigned cbyte = cbytes[j];
         const int cw = (int) ((cbyte & 3u) | (((cbyte >> 2) & 3u) << 8) | (((cbyte >> 4) & 3u) << 16) |
                               (((cbyte >> 6) & 3u) << 24));
-        s = __dp4a(cw, xw[j], s);
-        hx = __dp4a(ones, xw[j], hx);
+        s = STRATA_DP4A(cw, xw[j], s);
+        hx = STRATA_DP4A(ones, xw[j], hx);
     }
     return dw * dx * (float) (s - hx);
 }

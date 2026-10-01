@@ -1,10 +1,11 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_q4.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <math_constants.h>
+#include <cmath>
 
 #include <cstdio>
 #include <cstdlib>
@@ -24,7 +25,9 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 
 // The instruction shapes: m16n8k16 needs sm_80; Volta/Turing (sm_70/75) run the same fragments as two m16n8k8
 // MMAs, and cp.async needs sm_80, so the i8 pipeline kernel only runs there (the sync v1 kernel covers < 8).
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the old kernel (below)
+#define STRATA_PA_SM80 0
+#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 #define STRATA_PA_SM80 1
 #else
 #define STRATA_PA_SM80 0
@@ -68,15 +71,18 @@ __device__ __forceinline__ uint32_t pack_h2(float lo_k, float hi_k) {   // eleme
 }
 
 // KV_MODE 1: int8 codes + fp16 scale per 64 values. KV_MODE 0: fp16 values (scales 1).
+// KV_MODE 3 (hybrid K8V4): K as mode 1, V as mode 0 - the row's q4_0 blocks are dequantized to fp16 at
+// gather, so everything downstream of the load is the mode-0 V path; the caller un-rotates the output.
 template <int KV_MODE>
 struct Smem {
-    using Elem = typename std::conditional<KV_MODE == 1, int8_t, __half>::type;
-    static constexpr int ROW = KV_MODE == 1 ? HD + 16 : HD + 8;   // elements; 16-byte aligned rows, banks spread
-
+    using KElem = typename std::conditional<KV_MODE == 0, __half, int8_t>::type;
+    using VElem = typename std::conditional<KV_MODE == 1, int8_t, __half>::type;
+    static constexpr int KROW = KV_MODE == 0 ? HD + 8 : HD + 16;   // elements; 16-byte aligned rows, banks spread
+    static constexpr int VROW = KV_MODE == 1 ? HD + 16 : HD + 8;
     __half qh[16][QS];
     __half ql[16][QS];
-    Elem k[CH][ROW];
-    Elem v[CH][ROW];
+    KElem k[CH][KROW];
+    VElem v[CH][VROW];
     float ks[CH][4];
     float vs[CH][4];
     float s[16][CH + 1];
@@ -122,7 +128,7 @@ __device__ __forceinline__ void v_score_k16(float cc[8], const __half* qh, const
         const uint32_t ah0 = *reinterpret_cast<const uint32_t*>(&qh[row * QS + k0 + 4 * c]);
         const uint32_t ah1 = *reinterpret_cast<const uint32_t*>(&qh[row * QS + k0 + 4 * c + 2]);
         uint32_t b0, b1;
-        if constexpr (KV_MODE == 1) {
+        if constexpr (KV_MODE != 0) {   // modes 1 and 3: the K side is INT8 codes
             b0 = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + col][k0 + 4 * c]));
             b1 = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + col][k0 + 4 * c + 2]));
         } else {
@@ -175,7 +181,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         S.qh[h][d] = hi;
         S.ql[h][d] = __float2half_rn(x - __half2float(hi));
     }
-    if (t < 16) { S.mrow[t] = -CUDART_INF_F; S.lsum[t] = 0.0f; }
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
 
 #if STRATA_PA_SM80
     float acc[8][4];
@@ -202,24 +208,55 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             S.row[t] = r;
         }
         __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v, s
-        // gather the chunk's K and V rows (16-byte pieces) and their scales
+        // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
+        // and their scales
         {
-            constexpr int PIECES = HD * (int) sizeof(typename Smem<KV_MODE>::Elem) / 16;   // per row
-            for (int i = t; i < CH * PIECES; i += THREADS) {
-                const int c = i / PIECES, pc = i % PIECES;
+            constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16;   // per K row
+            for (int i = t; i < CH * KPIECES; i += THREADS) {
+                const int c = i / KPIECES, pc = i % KPIECES;
                 const long long r = S.row[c];
-                uint4 kx = make_uint4(0, 0, 0, 0), vx = kx;
+                uint4 kx = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
-                    if constexpr (KV_MODE == 1) {
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
-                        vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
-                    } else {
+                    if constexpr (KV_MODE == 0)
                         kx = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + pc);
-                        vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
-                    }
+                    else   // modes 1 and 3: the K side is INT8
+                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
                 }
                 *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
-                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
+            }
+            if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
+                constexpr int BLKS = HD / QK4_0;
+                constexpr int BYTES = BLKS * (int) sizeof(block_q4_0);
+                for (int i = t; i < CH * BLKS; i += THREADS) {
+                    const int c = i / BLKS, b = i % BLKS;
+                    const long long r = S.row[c];
+#pragma unroll
+                    for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
+                    if (r >= 0) {
+                        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + r * BYTES) + b;
+                        const float d = __half2float(__ushort_as_half(blk->d));
+#pragma unroll
+                        for (int j = 0; j < QK4_0 / 2; ++j) {
+                            S.v[c][b * QK4_0 + j] = __float2half_rn((float) ((int)(blk->qs[j] & 0x0F) - 8) * d);
+                            S.v[c][b * QK4_0 + j + QK4_0 / 2] =
+                                __float2half_rn((float) ((int)(blk->qs[j] >> 4) - 8) * d);
+                        }
+                    }
+                }
+            } else {
+                constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
+                for (int i = t; i < CH * VPIECES; i += THREADS) {
+                    const int c = i / VPIECES, pc = i % VPIECES;
+                    const long long r = S.row[c];
+                    uint4 vx = make_uint4(0, 0, 0, 0);
+                    if (r >= 0) {
+                        if constexpr (KV_MODE == 1)
+                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
+                        else
+                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
+                    }
+                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
+                }
             }
             for (int i = t; i < CH * 4; i += THREADS) {
                 const int c = i / 4, g = i % 4;
@@ -229,6 +266,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     if constexpr (KV_MODE == 1) {
                         a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
                         b = __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + g]));
+                    } else if constexpr (KV_MODE == 3) {   // K as int8, V dequantized to fp16 (scale 1)
+                        a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
+                        b = 1.0f;
                     } else {
                         a = b = 1.0f;
                     }
@@ -260,7 +300,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     al[1] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig]);
                     al[2] = *reinterpret_cast<const uint32_t*>(&S.ql[gid][k0 + 2 * tig + 8]);
                     al[3] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig + 8]);
-                    if constexpr (KV_MODE == 1) {
+                    if constexpr (KV_MODE != 0) {   // modes 1 and 3: the K side is INT8 codes
                         b[0] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig]));
                         b[1] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig + 8]));
                     } else {
@@ -279,10 +319,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 sc[3] = fmaf(tg[3], s1, sc[3]);
             }
             const int c = cb + 2 * tig;
-            S.s[gid][c] = c < nh ? sc[0] * qdown : -CUDART_INF_F;
-            S.s[gid][c + 1] = c + 1 < nh ? sc[1] * qdown : -CUDART_INF_F;
-            S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -CUDART_INF_F;
-            S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -CUDART_INF_F;
+            S.s[gid][c] = c < nh ? sc[0] * qdown : -INFINITY;
+            S.s[gid][c + 1] = c + 1 < nh ? sc[1] * qdown : -INFINITY;
+            S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -INFINITY;
+            S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -INFINITY;
         }
 #else
         // scores as m8n8k4 tiles: warps still take cells 8w..8w+7; each lane's C frame is 2 heads x 4 cells
@@ -310,7 +350,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 for (int i = 0; i < 8; ++i) {
                     const int head_i = 8 * comp + (lane & 1) + 2 * ((i >> 1) & 1) + (lane >= 16 ? 4 : 0);
                     const int cell_i = cb + (lane & 2) + (i & 1) + 4 * ((i >> 2) & 1);
-                    if (comp < 2) S.s[head_i][cell_i] = cell_i < nh ? sc8[i] * qdown : -CUDART_INF_F;
+                    if (comp < 2) S.s[head_i][cell_i] = cell_i < nh ? sc8[i] * qdown : -INFINITY;
                 }
             }
         }
@@ -320,7 +360,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         {
             constexpr int PER = CH / 8;
             const int r = t >> 3, sub = t & 7;
-            float x[PER], mx = -CUDART_INF_F;
+            float x[PER], mx = -INFINITY;
 #pragma unroll
             for (int j = 0; j < PER; ++j) { x[j] = S.s[r][sub * PER + j]; mx = fmaxf(mx, x[j]); }
 #pragma unroll
@@ -330,7 +370,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < PER; ++j) {
-                const float e = x[j] == -CUDART_INF_F ? 0.0f : exp2f(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
                 S.s[r][sub * PER + j] = e;
                 sum += e;
             }
@@ -338,7 +378,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
             __syncwarp();
             if (sub == 0) {
-                const float a = m_old == -CUDART_INF_F ? 0.0f : exp2f(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
                 S.alpha[r] = a;
                 S.lsum[r] = fmaf(S.lsum[r], a, sum);
                 S.mrow[r] = m_new;
@@ -580,7 +620,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
     if (lane == 0) S.qmax[warp] = qm;
-    if (t < 16) { S.mrow[t] = -CUDART_INF_F; S.lsum[t] = 0.0f; }
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
     __syncthreads();
     qm = fmaxf(fmaxf(S.qmax[0], S.qmax[1]), fmaxf(S.qmax[2], S.qmax[3]));
     int qe = 0;
@@ -672,12 +712,12 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
             const int r = t >> 3, sub = t & 7;
-            float x[4], mx = -CUDART_INF_F;
+            float x[4], mx = -INFINITY;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
                 const int c = sub * 4 + j;
                 x[j] = c0 + c < n ? (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * qdown
-                                  : -CUDART_INF_F;
+                                  : -INFINITY;
                 mx = fmaxf(mx, x[j]);
             }
 #pragma unroll
@@ -687,7 +727,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
-                const float e = x[j] == -CUDART_INF_F ? 0.0f : exp2f(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
                 S.p[r][sub * 4 + j] = e;
                 sum += e;
             }
@@ -695,7 +735,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
             __syncwarp();
             if (sub == 0) {
-                const float a = m_old == -CUDART_INF_F ? 0.0f : exp2f(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
                 S.alpha[r] = a;
                 S.lsum[r] = fmaf(S.lsum[r], a, sum);
                 S.mrow[r] = m_new;
@@ -774,15 +814,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 
 bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
-    static bool attr = false;
+    static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs this on several)
+    int dev = 0;
+    cudaGetDevice(&dev);
     const int bytes = (int) sizeof(Smem2);
-    if (!attr) {
+    if (dev < 0 || dev >= 64) return false;
+    if (!attr[dev]) {
         if (cudaFuncSetAttribute(prompt_attn_i8_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
         }
-        attr = true;
+        attr[dev] = true;
     }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
@@ -802,15 +845,18 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
 template <int KV_MODE>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
-    static bool attr = false;
+    static bool attr[64] = {};   // per device, as above
+    int dev = 0;
+    cudaGetDevice(&dev);
     const int bytes = (int) sizeof(Smem<KV_MODE>);
-    if (!attr) {
+    if (dev < 0 || dev >= 64) return false;
+    if (!attr[dev]) {
         if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
         }
-        attr = true;
+        attr[dev] = true;
     }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
@@ -849,11 +895,18 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
     const int cc_major = device_cc_major();
-    if (cc_major < 7) return false;   // Volta or newer: the m16n8k8 / m16n8k16 MMAs above; an older card keeps the old kernel
+    if (cc_major < 7) return false;   // Volta or newer: the m8n8k4 / m16n8k8 / m16n8k16 MMAs above; an older card keeps the old kernel
+#if defined(__HIPCC__)
+    return false;   // the tensor-core kernel is compiled out on AMD (its major version is not a CUDA sm)
+#endif
     if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids ||
         !steps || !pools.page_table)
         return false;
     cudaStream_t st = (cudaStream_t) stream;
+    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
+        if (!pools.k_scale) return false;
+        return launch<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
     if (pools.k_q != nullptr) {
         if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;

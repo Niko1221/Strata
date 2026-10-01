@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
-<link rel="stylesheet" href="/web/tokens.css">
-<link rel="stylesheet" href="/web/components.css">
-<link rel="stylesheet" href="/web/app.css">
+<link rel="stylesheet" href="web/tokens.css">
+<link rel="stylesheet" href="web/components.css">
+<link rel="stylesheet" href="web/app.css">
 <script>
   // the theme before the first paint: the saved choice, else the system's
   try {
@@ -21,17 +21,17 @@
   <span class="st-header__brand">Strata</span>
   <nav class="st-tabs" role="tablist" aria-label="Views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
-      <svg class="st-icon st-icon--sm"><use href="/web/sprite.svg#i-chat"/></svg>Chat</button>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
-      <svg class="st-icon st-icon--sm"><use href="/web/sprite.svg#i-activity"/></svg>Monitor</button>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
-      <svg class="st-icon st-icon--sm"><use href="/web/sprite.svg#i-info"/></svg>About</button>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
-    <svg class="st-icon"><use id="theme-icon" href="/web/sprite.svg#i-moon"/></svg></button>
+    <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
 </header>
 
 <main>
@@ -51,20 +51,20 @@
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
         <div class="st-composer__bar">
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
-            <svg class="st-icon"><use href="/web/sprite.svg#i-attach"/></svg></button>
+            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
           <input type="file" id="file" multiple hidden>
           <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
-            <svg class="st-icon"><use href="/web/sprite.svg#i-new-chat"/></svg></button>
+            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
-            <svg class="st-icon"><use href="/web/sprite.svg#i-download"/></svg></button>
+            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="/web/sprite.svg#i-settings"/></svg></button>
+            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
           <span class="spacer"></span>
           <span class="composer-hint" id="composer-hint"></span>
           <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
-            <svg class="st-icon st-icon--sm"><use href="/web/sprite.svg#i-stop"/></svg>Stop</button>
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
           <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
-            <svg class="st-icon"><use href="/web/sprite.svg#i-send"/></svg></button>
+            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
         </div>
       </form>
     </div>
@@ -169,7 +169,7 @@
 <aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
   <div class="st-drawer__head"><span class="card-title">Sampling</span>
     <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close">
-      <svg class="st-icon"><use href="/web/sprite.svg#i-chevron"/></svg></button></div>
+      <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
     <div class="st-field">
       <label class="st-label" for="s-thinking">Thinking <output id="o-thinking"></output></label>
@@ -218,6 +218,6 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="/web/app.js"></script>
+<script src="web/app.js"></script>
 </body>
 </html>

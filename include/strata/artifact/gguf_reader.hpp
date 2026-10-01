@@ -26,11 +26,15 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <algorithm>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX   // windows.h's min/max macros would break std::min/std::max in every file that includes this one
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -418,9 +422,14 @@ private:
             meta_.emplace(std::move(key), read_value(c, t));
         }
         tensors_.reserve((size_t)n_tensors);
+        // GGUF has no index to arbitrate between two tensors of one name: find() is first-match, so a
+        // duplicate would silently win by position.  Refuse the file at open instead, naming both.
+        std::set<std::string> names;
         for (uint64_t i = 0; i < n_tensors; ++i) {
             TensorInfo t;
             t.name = c.str();
+            if (!names.insert(t.name).second)
+                throw std::runtime_error("GGUF: duplicate tensor name '" + t.name + "' in " + path_);
             const uint32_t nd = c.read<uint32_t>();
             if (nd == 0 || nd > 4) throw std::runtime_error("GGUF: bad n_dims for " + t.name);
             t.shape.resize(nd);

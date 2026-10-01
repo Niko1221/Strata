@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/dp4a.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -50,7 +51,7 @@ __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_
     }
     return make_int2(__byte_perm(tmp[0], tmp[1], 0x6420), __byte_perm(tmp[0], tmp[1], 0x7531));
 }
-#define ggml_cuda_dp4a(a, b, c) __dp4a((a), (b), (c))
+#define ggml_cuda_dp4a(a, b, c) STRATA_DP4A((a), (b), (c))
 
 // ---------------------------------------------------------------- the dot products (vecdotq.cuh)
 __device__ __forceinline__ float vec_dot_q2_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,

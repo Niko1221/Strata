@@ -18,7 +18,7 @@ Strata can use it:
 ```
   Your NVIDIA GPUs:
     GPU 0: NVIDIA GeForce RTX 5080, 16 GB VRAM - can be used
-    GPU 1: NVIDIA GeForce RTX 2080 Ti, 22 GB VRAM - not supported - older than the RTX 30 series (compute capability 7.5; Strata needs 8.0 or newer)
+    GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
   1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
@@ -41,10 +41,11 @@ now on; the answer is kept.
 ```
 
 **Not supported** (setup says so and names the cards that can be used instead):
-- a card older than the RTX 30 series (compute capability below 8.0: RTX 20, GTX 16/10);
+- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
   own prompt buffers);
-- AMD and Intel GPUs, and a mix of NVIDIA with them.
+- AMD and Intel GPUs, and a mix of NVIDIA with them. (Two AMD RDNA4 cards run the split from a hand-written
+  config; see [AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201).)
 
 Or edit an existing config (`strata-*.json`), then restart:
 

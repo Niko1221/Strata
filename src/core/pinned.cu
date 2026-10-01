@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -12,10 +13,21 @@
 #include <mutex>
 #include <thread>
 
+// Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and the pack is 42.9 GB), and the 64-bit
+// spelling is not the same on the two platforms the engine builds for.
+#ifdef _WIN32
+#define STRATA_FSEEK64(f, o) _fseeki64((f), (long long) (o), SEEK_SET)
+#else
+#define STRATA_FSEEK64(f, o) fseeko((f), (off_t) (o), SEEK_SET)
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
 #define MAP_HUGE_2MB (21 << 26)
@@ -26,9 +38,32 @@ namespace strata::core {
 
 namespace {
 
+constexpr uint64_t kSharedArenaHeaderBytes = 4096;
+constexpr char kSharedArenaMagic[16] = "STRATA-ARENA-V1";
+
+struct SharedArenaHeader {
+    char magic[16];
+    uint32_t version;
+    uint32_t header_bytes;
+    uint64_t arena_bytes;
+    uint64_t pack_hash;
+    uint64_t reserved[4];
+};
+static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
+
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
-void* reserve(uint64_t bytes, PageBacking& got, std::string& note) {
+// A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
+// are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
+// hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
+void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+    mapping_base = nullptr;
+    mapping_bytes = 0;
 #ifdef _WIN32
+    if (!shared_file.empty()) {
+        note = "shared-file arena backing is not implemented on Windows";
+        return nullptr;
+    }
     // MEM_LARGE_PAGES needs SeLockMemoryPrivilege.  Having it assigned to the account is not enough: the
     // PROCESS must enable it in its own token (AdjustTokenPrivileges) before VirtualAlloc, or the call fails.
     // An account without the assignment, or a failure to enable, leaves the process as it was: VirtualAlloc
@@ -76,6 +111,94 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note) {
     got = PageBacking::NormalPages;
     return p;
 #else
+    if (!shared_file.empty()) {
+        if (shared_pack_hash == 0) {
+            note = "shared arena requires a nonzero pack hash";
+            return nullptr;
+        }
+        if (bytes > UINT64_MAX - kSharedArenaHeaderBytes) {
+            note = "shared arena size overflows its header";
+            return nullptr;
+        }
+        const uint64_t file_bytes = kSharedArenaHeaderBytes + bytes;
+        const int fd = open(shared_file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            note = "cannot open shared arena " + shared_file + ": " + std::strerror(errno);
+            return nullptr;
+        }
+        struct stat st{};
+        if (fstat(fd, &st) != 0) {
+            const int e = errno;
+            close(fd);
+            note = "cannot stat shared arena " + shared_file + ": " + std::strerror(e);
+            return nullptr;
+        }
+
+        const bool fresh = st.st_size == 0;
+        if (fresh) {
+            if (ftruncate(fd, (off_t) file_bytes) != 0) {
+                const int e = errno;
+                close(fd);
+                note = "cannot size shared arena " + shared_file + ": " + std::strerror(e);
+                return nullptr;
+            }
+            SharedArenaHeader hdr{};
+            std::memcpy(hdr.magic, kSharedArenaMagic, sizeof hdr.magic);
+            hdr.version = 1;
+            hdr.header_bytes = (uint32_t) kSharedArenaHeaderBytes;
+            hdr.arena_bytes = bytes;
+            hdr.pack_hash = shared_pack_hash;
+            const ssize_t written = pwrite(fd, &hdr, sizeof hdr, 0);
+            if (written != (ssize_t) sizeof hdr) {
+                const int e = errno;
+                close(fd);
+                note = "cannot write shared arena header " + shared_file + ": " +
+                       (written < 0 ? std::string(std::strerror(e)) : std::string("short write"));
+                return nullptr;
+            }
+        } else {
+            if (st.st_size < 0 || (uint64_t) st.st_size != file_bytes) {
+                close(fd);
+                note = "shared arena " + shared_file + " is " +
+                       std::to_string((unsigned long long) st.st_size) + " B, expected " +
+                       std::to_string((unsigned long long) file_bytes) + " B including its header";
+                return nullptr;
+            }
+            SharedArenaHeader hdr{};
+            const ssize_t got_header = pread(fd, &hdr, sizeof hdr, 0);
+            if (got_header != (ssize_t) sizeof hdr ||
+                std::memcmp(hdr.magic, kSharedArenaMagic, sizeof hdr.magic) != 0 ||
+                hdr.version != 1 || hdr.header_bytes != kSharedArenaHeaderBytes || hdr.arena_bytes != bytes) {
+                close(fd);
+                note = "shared arena " + shared_file + " has an incompatible or missing header";
+                return nullptr;
+            }
+            if (hdr.pack_hash != shared_pack_hash) {
+                close(fd);
+                char b[256];
+                std::snprintf(b, sizeof b,
+                              "shared arena %s was written for pack hash %016llx, expected %016llx",
+                              shared_file.c_str(), (unsigned long long) hdr.pack_hash,
+                              (unsigned long long) shared_pack_hash);
+                note = b;
+                return nullptr;
+            }
+        }
+
+        void* map = mmap(nullptr, (size_t) file_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        const int e = errno;
+        close(fd);
+        if (map == MAP_FAILED) {
+            note = "cannot map shared arena " + shared_file + ": " + std::strerror(e);
+            return nullptr;
+        }
+        mapping_base = map;
+        mapping_bytes = file_bytes;
+        got = PageBacking::NormalPages;
+        note = "MAP_SHARED file " + shared_file + " (pack hash checked)";
+        return (uint8_t*) map + kSharedArenaHeaderBytes;
+    }
+
     void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
     if (p != MAP_FAILED) {
@@ -130,9 +253,14 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
-                         uint64_t max_pinned_bytes) : capacity(bytes) {
+                         uint64_t max_pinned_bytes, const std::string& shared_file,
+                         uint64_t shared_pack_hash) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
@@ -210,8 +338,10 @@ PinnedArena::~PinnedArena() {
         } else {
             cudaHostUnregister(base);
         }
-        release(base, capacity);
+        release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
+        mapping_base = nullptr;
+        mapping_bytes = 0;
     }
 }
 
@@ -234,11 +364,33 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint64_t> layer_hash((size_t) layers, 1469598103934665603ull);
     std::atomic<uint64_t> next_layer{0};
+    std::atomic<uint64_t> read_ns_sum{0};   // summed over the threads: see LoadStats::read_seconds
+    std::atomic<uint64_t> copy_ns_sum{0};
     std::mutex err_mu;
     std::string err;
 
     auto worker = [&]() {
         std::vector<uint8_t> buf((size_t) chunk);
+        // One handle per thread, seeked once per layer: a shared handle would need a lock around the seek and
+        // would serialise the very thing the threads are here to parallelise.  `fread` on a `FILE*` rather than
+        // `std::ifstream`: see the header - MSVC's `basic_filebuf::xsgetn` splits any request larger than
+        // `_INTERNAL_BUFSIZ - 1` into 4095-byte freads, which turned one 8 MiB chunk into ~2048 4 KiB reads.
+        // `fread` sees a request bigger than the stream buffer and passes it to `_read()`/
+        // `ReadFile()` unchanged, so the chunk size reaches the disk.  Buffered, not `FILE_FLAG_NO_BUFFERING`:
+        // the cache should still hold what it can.
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (f == nullptr) {
+            std::lock_guard<std::mutex> g(err_mu);
+            err = "cannot open " + path;
+            return;
+        }
+        // A `FILE*` has no destructor that closes it, and this function has early returns below (open, seek and
+        // short-read failures), so the guard is what keeps the closing correct on every path.
+        struct Closer {
+            FILE* f;
+            ~Closer() { if (f != nullptr) std::fclose(f); }
+        } closer{f};
+        uint64_t read_ns = 0, copy_ns = 0;
         for (;;) {
             const uint64_t L = next_layer.fetch_add(1);
             if (L >= layers) break;
@@ -246,30 +398,39 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
             uint64_t remaining = layer_bytes[(size_t) L];
             uint64_t pos = 0;
             uint64_t h = 1469598103934665603ull;
-            // one handle per thread, seeked once per layer: a shared handle would need a lock around the seek
-            // and would serialise the very thing the threads are here to parallelise
-            std::ifstream f(path, std::ios::binary);
-            if (!f) {
+            // 64-bit seek: the pack is 42.9 GB, so the 32-bit `fseek` would wrap past 4 GiB
+            if (STRATA_FSEEK64(f, off) != 0) {
                 std::lock_guard<std::mutex> g(err_mu);
-                err = "cannot open " + path;
+                err = "seek to " + std::to_string(off) + " B failed in layer " + std::to_string(L);
                 return;
             }
-            f.seekg((std::streamoff) off);
             while (remaining > 0) {
                 const uint64_t n = remaining < chunk ? remaining : chunk;
-                f.read((char*) buf.data(), (std::streamsize) n);
-                if ((uint64_t) f.gcount() != n) {
+                const auto t_read = std::chrono::steady_clock::now();
+                const size_t got = std::fread(buf.data(), 1, (size_t) n, f);
+                read_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - t_read).count();
+                // A short read is EOF or an I/O error, never a silent zero fill: say WHERE and HOW SHORT, and
+                // keep going no further - the caller turns this into a refused load, not a wrong answer.
+                if (got != (size_t) n) {
                     std::lock_guard<std::mutex> g(err_mu);
-                    err = "short read in layer " + std::to_string(L);
+                    err = "short read in layer " + std::to_string(L) + ": got " + std::to_string(got) + " of "
+                          + std::to_string(n) + " B at offset " + std::to_string(off + pos)
+                          + (std::ferror(f) != 0 ? " (ferror set)" : "");
                     return;
                 }
+                const auto t_copy = std::chrono::steady_clock::now();
                 std::memcpy(dst + off + pos, buf.data(), (size_t) n);
                 h = fnv1a64(buf.data(), n, h);
+                copy_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - t_copy).count();
                 pos += n;
                 remaining -= n;
             }
             layer_hash[(size_t) L] = h;
         }
+        read_ns_sum.fetch_add(read_ns);
+        copy_ns_sum.fetch_add(copy_ns);
     };
 
     std::vector<std::thread> pool;
@@ -280,8 +441,12 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
     if (!err.empty()) {
         std::fprintf(stderr, "load_experts: %s\n", err.c_str());
         st.seconds = -1.0;
+        st.ok = false;
+        st.error = err;
         return st;
     }
+    st.read_seconds = (double) read_ns_sum.load() / 1e9;
+    st.copy_seconds = (double) copy_ns_sum.load() / 1e9;
     st.layer_checksums = std::move(layer_hash);
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return st;

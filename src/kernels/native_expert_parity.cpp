@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -37,6 +38,14 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
     if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [layer ...]\n"); return 2; }
+    // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
+    if (std::getenv("STRATA_IQ_MT_MIN") == nullptr) {
+#ifdef _WIN32
+        _putenv_s("STRATA_IQ_MT_MIN", "1");
+#else
+        setenv("STRATA_IQ_MT_MIN", "1", 1);
+#endif
+    }
     strata::GgufFile gguf(argv[1]);
     std::vector<int> layers;
     for (int i = 2; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
@@ -163,6 +172,27 @@ int main(int argc, char** argv) {
                 op[k] = got_c.data() + k * H;
             }
             cpu::native_down_rows(f, blob.data(), hp, NT, op, 0, (int) H);
+            {   // #152: a token's rows must not depend on how many tokens share the call - each token alone (nt = 1)
+                // against its row of the NT-token call above, bit for bit, gate/up and down
+                size_t gu_diff = 0, dn_diff = 0;
+                std::vector<float> one_ff(FF), one_out(H);
+                // the NT-token gate/up rows again: the throughput loops above overwrote ff with other kernels' rows
+                for (int k = 0; k < NT; ++k) ffp[k] = ff[k].data();
+                cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
+                for (int k = 0; k < NT; ++k) {
+                    const void* a1[1] = {a[k]};
+                    float* f1[1] = {one_ff.data()};
+                    cpu::native_gu_rows(f, blob.data(), a1, 1, f1, 0, (int) FF);
+                    for (int64_t r = 0; r < FF; ++r) gu_diff += std::memcmp(&one_ff[r], &ff[k][r], 4) != 0;
+                    const void* h1[1] = {hp[k]};
+                    float* o1[1] = {one_out.data()};
+                    cpu::native_down_rows(f, blob.data(), h1, 1, o1, 0, (int) H);
+                    for (int64_t r = 0; r < H; ++r) dn_diff += std::memcmp(&one_out[r], &got_c[k * H + r], 4) != 0;
+                }
+                std::printf("          width invariance (1 vs %d tokens): gate/up %zu, down %zu rows differ\n", NT,
+                            gu_diff, dn_diff);
+                if (gu_diff || dn_diff) ++failures;
+            }
             if (f.d_type == 42) {
                 // (b2) the GGUF-layout Q2_0 kernel the pool uses for Q2_0 down projections - the AVX-512 one
                 // where the CPU has it, the AVX-2 one (q2_avx2.cpp) where it does not.  Calling the AVX-512
