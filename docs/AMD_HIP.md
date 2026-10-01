@@ -154,9 +154,15 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   The engine's resident memory was about 26 GB in every run. Since 0.1.31 `__byte_perm` is one `v_perm_b32` and the
   packed byte subtracts/compare work on four lanes at once (#262, ttio2tech): decode +15% on the R9700 (46.0 -> 53.0
   tok/s on a 4K prompt, 52.0 -> 60.5 warm) and +5-7% on the 9070 XT, prompts unchanged, the same tokens.
-- **hipBLASLt:** there is no gfx1201 table in `tools/hip`. A table calibrated on the R9700 at the engine's shapes
-  (hipBLASLt 1.4.1; 0.98-1.76x per GEMM over hipBLAS) changed the end-to-end prompt speed by 0-3%, within noise,
-  so none is shipped: on gfx1201 the plain hipBLAS path is already close.
+- **hipBLASLt:** a table calibrated on the R9700 at the engine's shapes (hipBLASLt 1.4.1; 0.98-1.76x per GEMM over
+  hipBLAS) changed the end-to-end prompt speed by 0-3%, within noise: with that hipBLASLt the plain hipBLAS path is
+  already close. With the hipBLASLt 1.2.2 of a system ROCm 7.2.4 it is not, and `tools/hip/gfx1201-hipblaslt-100202.txt`
+  is shipped for it (calibrated on an R9700 with `tune_hipblaslt` at 24 of the gfx1100 table's 26 shapes; setup uses it
+  only with that exact version). R9700, Ryzen 7 9800X3D with 30 GB of single-channel DDR5, the full GSQ-RCO IQ3_XXS
+  (native pack, `--mmap-experts`, 15,602 cached slots, `--kv int8 --kv-resident 32768 --max-context 131072`,
+  `STRATA_STAGER_THREADS=8 STRATA_STAGER_RING=32`), engine 0.1.31, the median of 4 warm runs per arm with the arms
+  alternated over two server starts: a fresh 32K prompt 638 -> 1,177 tok/s and a fresh 7K prompt 656 -> 1,164 tok/s
+  with the table, decode unchanged (44 tok/s after the prompt). `hip_prefill_hipblaslt_gemm` passes with it.
 - **Both cards in one run (layer split, engine 0.1.30):** the config's `"backend": "hip", "gpu": [1, 0]` (R9700
   first) runs through `serve/server.py` (setup writes it with `--gpus 1,0` since 0.1.31). Auto split put layers 0-27 on the R9700 and
   28-47 on the 9070 XT. With every expert on the GPUs the split gives exactly the tokens of the R9700 alone (4K and
