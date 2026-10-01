@@ -1,0 +1,25 @@
+# decode tok/s = median of 3 x 160-token generations, cold prompts (salted), int8 KV
+
+## IQ2_XS @ 32768
+=== IQ2_XS @ 32K, kv=int8 ===
+RESULT quant=IQ2_XS ctx=32768 kv=int8 tok_s=27.5 slots=7546 free_mib=635
+
+## IQ2_XS @ 131072
+=== IQ2_XS @ 128K, kv=int8 ===
+RESULT quant=IQ2_XS ctx=131072 kv=int8 tok_s=24.0 slots=6396 free_mib=752
+
+## IQ2_XS @ 262144
+=== IQ2_XS @ 256K, kv=int8 ===
+RESULT quant=IQ2_XS ctx=262144 kv=int8 tok_s=23.2 slots=5043 free_mib=634
+
+## IQ3_XXS @ 32768
+=== IQ3_XXS @ 32K, kv=int8 ===
+RESULT quant=IQ3_XXS ctx=32768 kv=int8 tok_s=25.3 slots=6009 free_mib=662
+
+## IQ3_XXS @ 131072
+=== IQ3_XXS @ 128K, kv=int8 ===
+RESULT quant=IQ3_XXS ctx=131072 kv=int8 tok_s=20.7 slots=5050 free_mib=740
+
+## IQ3_XXS @ 262144
+=== IQ3_XXS @ 256K, kv=int8 ===
+RESULT quant=IQ3_XXS ctx=262144 kv=int8 tok_s=24.5 slots=3915 free_mib=662
