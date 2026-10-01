@@ -1985,44 +1985,10 @@ int main(int argc, char** argv) {
         }
         if (native_pack) skip.insert("token_embd.weight");
     }
-    uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
-        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-        return 1;
-    }
-    void* arena = nullptr;
-    if (const cudaError_t ce = cudaMalloc(&arena, pool_bytes); ce != cudaSuccess) {
-        // #486: the arena is the first large allocation and its size does not depend on the context, so what is
-        // missing is held by something else: say how much was free
-        cudaGetLastError();
-        size_t free_b = 0, total_b = 0;
-        cudaMemGetInfo(&free_b, &total_b);
-        std::fprintf(stderr, "strata generate: cudaMalloc(%llu) for the weight arena failed (%s): %llu MiB of %llu "
-                             "MiB VRAM free on this GPU. The arena is allocated first, before the KV and expert "
-                             "caches: another program (or an engine that is still exiting) holds the rest - "
-                             "nvidia-smi / rocm-smi lists them\n",
-                     (unsigned long long) pool_bytes, cudaGetErrorString(ce), (unsigned long long) (free_b >> 20),
-                     (unsigned long long) (total_b >> 20));
-        return 1;
-    }
-    strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
-        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-        return 1;
-    }
-    std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s (%zu canonical tensors skipped: "
-                         "served natively)\n",
-                 (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), skip.size());
-
-    strata::core::NativeDense native_dense;
-    if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
-            std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights\n",
-                     native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0));
-    }
+    // ---- CUDA0's DENSE WEIGHTS WAIT FOR THE SPLIT SEARCH TOO.  They are the largest single block on the card
+    // and, with a layer split, CUDA0 runs only [0, split_at[0]) of them - so the arena cannot be sized here.
+    // `WeightTable wt` and `NativeDense native_dense` are constructed in "the carve" below, once the range is
+    // known; everything between here and there touches no weight, which is why nothing else had to move.
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
@@ -2167,55 +2133,9 @@ int main(int argc, char** argv) {
                                  "(STRATA_SSD_KEEPALIVE=0 turns it off)\n", pio.keepalive_ms, pio.keepalive_window_s);
         else if (pio.mode == strata::kernels::PleIo::Direct)
             std::fprintf(stderr, "strata generate: SSD keep-alive off: the SSD may fall asleep between reads\n");
-        const strata::core::WeightRef* wk = wt.find("blk.1.ple_key.weight");
-        const strata::core::WeightRef* wv = wt.find("blk.1.ple_value.weight");
-        const strata::core::WeightRef* wnk = wt.find("blk.1.ple_norm_key.weight");
-        const strata::core::WeightRef* wnq = wt.find("blk.1.ple_norm_query.weight");
-        const strata::core::WeightRef* wnc = wt.find("blk.1.ple_norm_conv.weight");
-        const strata::core::WeightRef* wc = wt.find("blk.1.ple_conv1d.weight");
-        if (!wk || !wv || !wnk || !wnq || !wnc || !wc) {
-            std::fprintf(stderr, "strata generate: the pack has no blk.1.ple_* tensors, so the PLE cannot be "
-                                 "wired - and running without it is a DIFFERENT MODEL (LEDGER L123)\n");
-            return 1;
-        }
-        // `ple_key` is S2 and the loader has already widened its scales to f32, so the two planes are located
-        // by the sizes the `WeightRef` records rather than re-derived - the same rule `plane_ptrs` follows.
-        if (!wk->quantized()) {
-            // plan v0.3 P6: the IQ model files' BF16 key (the pack's extra.bin, raw BF16)
-            ss.ple.w.key_bf16 = (const uint16_t*) wk->data;
-        } else if (wk->data != nullptr) {
-            ss.ple.w.key_codes = (const uint8_t*) wk->data;
-            ss.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
-        }
-        if (o.native_ple_key && wk->quantized()) {
-            if (!wk->native_data || (wk->native_type != 42 && wk->native_type != 18 && wk->native_type != 23 &&
-                                     wk->native_type != 8) || !wk->native_q8_1) {
-                std::fprintf(stderr, "strata generate: native PLE key is absent or incompatible\n");
-                return 1;
-            }
-            ss.ple.w.key_native_data = wk->native_data;
-            ss.ple.w.key_native_type = wk->native_type;
-            ss.ple.w.key_native_q8_1 = wk->native_q8_1;
-        }
-        ss.ple.w.value_bf16 = (const uint16_t*) wv->data;
-        ss.ple.w.norm_key = (const float*) wnk->data;
-        ss.ple.w.norm_query = (const float*) wnq->data;
-        ss.ple.w.norm_conv = (const float*) wnc->data;
-        // The conv1d kernel reads F16, so this cast is a claim about the pack's storage.  A checkpoint that keeps
-        // the tensor F32 (Q8_0, UD-Q4_K_XL) would hand the kernel the low halves of the f32 words - not an error,
-        // a plausible wrong layer-1 routing.  tools/iq_pack.py narrows it (index kind 3); a pack that did not is
-        // refused here (#255, gopinath87607).  F16 is index kind 5 or 3 (F16InF32) in a native pack and kind 0
-        // (verbatim 2-byte F16) in the canonical Q2_0 pack; BF16 (kind 4) has the same size and is not F16.
-        const bool f16 = wc->kind == strata::core::WeightKind::F16InF32 ||
-                         (wc->kind == strata::core::WeightKind::Verbatim && wc->code_bits == 0);
-        if (!f16 || wc->bytes != (uint64_t) wc->elements * 2) {
-            std::fprintf(stderr, "strata generate: blk.1.ple_conv1d.weight is not stored as F16 (pack index kind %d, "
-                                 "%llu B for %lld values); the PLE conv1d kernel reads F16 - repack with "
-                                 "tools/iq_pack.py\n",
-                         (int) wc->kind, (unsigned long long) wc->bytes, (long long) wc->elements);
-            return 1;
-        }
-        ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+        // THE SIX WEIGHTS ARE WIRED IN "the carve" BELOW, not here: `wt` does not exist yet.  Nothing between
+        // the two points reads the PLE weights, so the only thing this costs is that a pack with no
+        // `blk.1.ple_*` tensors is refused a little later than it used to be.
         ss.ple.consts = strata::kernels::ple_artifact_consts();
         if (o.ple_delay_us > 0) ple_table.set_injected_delay_us(o.ple_delay_us);
         ss.ple.table = &ple_table;
@@ -2244,6 +2164,67 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- THE RANGE CARVE, PRICED.  A stage that runs [lb, le) holds that range's dense weights and no others,
+    // and `layer_bytes` / `served_layer_bytes` read that cost out of the pack's index and the GGUF headers
+    // alone - the same "priced before it is allocated" rule the session carve already follows, and what lets
+    // the search below subtract it.  Before this, EVERY stage held the whole model's dense weights: a card
+    // running 9 of 48 layers was holding 39 layers' worth of projections it can never reach.
+    //
+    // It is read HERE, before the split search and before `--split-skip-if-fits`, because that decision is a
+    // VRAM measurement on CUDA0 whose weights are no longer resident when it is taken (`full_dense` below).
+    //
+    // STRATA_WEIGHT_SLICE=0 disables the carve everywhere, so one binary runs both arms of the A/B.
+    const bool weight_slice = []() {
+        const char* v = std::getenv("STRATA_WEIGHT_SLICE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    std::vector<uint64_t> wt_layer;             // dense bytes per layer: canonical arena + native projections
+    uint64_t wt_global = 0;                     // what EVERY range also holds: the head, the embedding
+    uint64_t wt_routers = 0;                    // the routers CUDA0 holds whatever its range (see `router_keep`)
+    // CS-T's file-tier lookahead reads EVERY layer's router out of CUDA0's table to warm the next layer's
+    // pages, and a dropped row has `data == nullptr`: the copy fails, `ok` goes false, and the lookahead turns
+    // itself off without saying so.  Keeping all 48 is 120 MiB and is cheaper than losing the prefetch.
+    std::set<std::string> router_keep;
+    for (int64_t l = 0; l < g.n_layers; ++l)
+        router_keep.insert("blk." + std::to_string(l) + ".ffn_gate_inp.weight");
+    if (multi_gpu) {
+        std::vector<uint64_t> canon, native_;
+        if (!strata::core::WeightTable::layer_bytes(o.pack, g.n_layers, canon, wt_global, wt_routers, err,
+                                                    skip.empty() ? nullptr : &skip, &router_keep) ||
+            (!o.native_dense_gguf.empty() &&
+             !strata::core::NativeDense::served_layer_bytes(o.native_dense_gguf, o.native_ple_key, g.n_layers,
+                                                            native_, err))) {
+            std::fprintf(stderr, "strata generate: layer split: the weight carve cannot price itself: %s\n",
+                         err.c_str());
+            return 1;
+        }
+        wt_layer.assign((size_t) g.n_layers, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l) wt_layer[(size_t) l] = canon[(size_t) l];
+        for (size_t l = 0; l < native_.size() && l < wt_layer.size(); ++l) wt_layer[l] += native_[l];
+    }
+    auto range_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (lo < 0) lo = 0;
+        if (hi > (int64_t) wt_layer.size()) hi = (int64_t) wt_layer.size();
+        uint64_t sum = 0;
+        for (int64_t l = lo; l < hi; ++l) sum += wt_layer[(size_t) l];
+        return sum;
+    };
+    // THE WHOLE MODEL - what every stage loads when the carve is off, and what CUDA0 alone would need to run
+    // without a split at all (`--split-skip-if-fits`).
+    const uint64_t full_dense = wt_global + wt_routers + range_bytes(0, (int64_t) wt_layer.size());
+    // WHAT A STAGE HOLDING [lo, hi) SPENDS ON WEIGHTS.  Priced with the carve OFF as well, and that is not
+    // symmetry for its own sake: the weights load after the split search in BOTH arms, so `stage_room` has
+    // already measured the VRAM they are about to take.  `weight_slice` decides only WHICH bytes.
+    auto weight_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (wt_layer.empty()) return 0;   // no split at all: nothing is loaded after the search
+        return weight_slice ? wt_global + range_bytes(lo, hi) : full_dense;
+    };
+    // CUDA0's own, which also carries every router.
+    auto cuda0_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (wt_layer.empty()) return 0;
+        return weight_slice ? wt_global + wt_routers + range_bytes(lo, hi) : full_dense;
+    };
+
     // ---- --split-skip-if-fits: before any later stage loads, does CUDA0 alone hold every profiled pair?  What it
     // still has to allocate on one GPU is the whole session (the KV of every layer), the drafter and the head
     // (kDrafterMib below), the verify windows and the reserve; the prompt path borrows from the cache.  If the
@@ -2265,7 +2246,11 @@ int main(int argc, char** argv) {
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
             const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers);
-            const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
+            // CUDA0's own dense weights are NOT resident yet - the carve loads them after the search - so they
+            // are part of what this measurement has to hold back.  Without this term a carve would make the
+            // split look skippable by exactly the VRAM it is about to spend.
+            const int64_t held_back = session + (int64_t) full_dense +
+                                      (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
             const int64_t room = (int64_t) fb - held_back;
             cudaDeviceProp dp{};
             cudaGetDeviceProperties(&dp, 0);
@@ -2427,45 +2412,6 @@ int main(int argc, char** argv) {
     const int64_t split_pf_mib =
         (o.prefill_chunk > 0 && !pf_borrow) ? 160 + (o.prefill_chunk * 680) / 1024 + split_ring_mib : 0;
 
-    // ---- THE RANGE CARVE, PRICED.  A stage that runs [lb, le) holds that range's dense weights and no others,
-    // and `layer_bytes` / `served_layer_bytes` read that cost out of the pack's index and the GGUF headers
-    // alone - the same "priced before it is allocated" rule the session carve already follows, and what lets
-    // the search below subtract it.  Before this, EVERY stage held the whole model's dense weights: a card
-    // running 9 of 48 layers was holding 39 layers' worth of projections it can never reach.
-    //
-    // STRATA_WEIGHT_SLICE=0 disables the carve everywhere, so one binary runs both arms of the A/B.
-    const bool weight_slice = []() {
-        const char* v = std::getenv("STRATA_WEIGHT_SLICE");
-        return v == nullptr || std::atoi(v) != 0;
-    }();
-    std::vector<uint64_t> wt_layer;             // dense bytes per layer: canonical arena + native projections
-    uint64_t wt_global = 0;                     // what EVERY range also holds: the head, the embedding, `keep`
-    if (multi_gpu && weight_slice) {
-        std::vector<uint64_t> canon, native_;
-        uint64_t keep_bytes = 0;
-        if (!strata::core::WeightTable::layer_bytes(o.pack, g.n_layers, canon, wt_global, keep_bytes, err,
-                                                    skip.empty() ? nullptr : &skip) ||
-            (!o.native_dense_gguf.empty() &&
-             !strata::core::NativeDense::served_layer_bytes(o.native_dense_gguf, o.native_ple_key, g.n_layers,
-                                                            native_, err))) {
-            std::fprintf(stderr, "strata generate: layer split: the weight carve cannot price itself: %s\n",
-                         err.c_str());
-            return 1;
-        }
-        wt_layer.assign((size_t) g.n_layers, 0);
-        for (int64_t l = 0; l < g.n_layers; ++l) wt_layer[(size_t) l] = canon[(size_t) l];
-        for (size_t l = 0; l < native_.size() && l < wt_layer.size(); ++l) wt_layer[l] += native_[l];
-    }
-    // What a stage holding [lo, hi) spends on dense weights; 0 for a disabled carve (`hi < 0`, or an empty
-    // price table, which is the same thing and is why this reads the table rather than trusting the caller).
-    auto weight_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
-        if (hi < 0 || wt_layer.empty()) return 0;
-        if (lo < 0) lo = 0;
-        if (hi > (int64_t) wt_layer.size()) hi = (int64_t) wt_layer.size();
-        uint64_t sum = wt_global;
-        for (int64_t l = lo; l < hi; ++l) sum += wt_layer[(size_t) l];
-        return sum;
-    };
     // ---- WHAT A STAGE RESERVES, AND ON WHICH STAGE.  The flat 1 GiB this used to withhold from EVERY stage
     // after the first was booked "for its windows and the drafter", but the windows measure 75 MiB ("window up
     // to 6 tokens, 74.1 MiB of device buffers", on every boot) and the drafter is loaded on ONE stage - the
@@ -2524,15 +2470,16 @@ int main(int argc, char** argv) {
         auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
             // THE CARVE, PRICED BOTH WAYS: a placement gives stage i the layers [lb, le), and that range's
             // session AND its dense weights are real costs on its device - subtracted here so the search knows
-            // what it leaves for experts.  This is why the sessions and the weights are allocated after the
-            // search: both are pure arithmetic over a range.  Stage 0 is free of the weight term because CUDA0
-            // loads the whole model before the search and keeps it (its own carve lands separately).
+            // what it leaves for experts.  Stage 0 is in this too: CUDA0's weights are no longer resident when
+            // `stage_room` measured its free VRAM either, and its range is [0, at[0]).  This is why the
+            // sessions and the weights are both allocated after the search - `session_bytes` and `layer_bytes`
+            // are pure arithmetic over a range.
             std::vector<int64_t> capr((size_t) ns);
             for (int i = 0; i < ns; ++i) {
                 const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1];
                 const int64_t le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
                 capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
-                                   (i == 0 ? 0 : (int64_t) weight_bytes(lb, le));
+                                   (int64_t) (i == 0 ? cuda0_bytes(lb, le) : weight_bytes(lb, le));
             }
             std::fill(used.begin(), used.end(), 0);
             held_mass = 0;
@@ -2612,6 +2559,92 @@ int main(int argc, char** argv) {
             stages[i]->lb = split_at[i];
             stages[i]->le = i + 1 < stages.size() ? split_at[i + 1] : g.n_layers;
         }
+    }
+
+    // ---- CUDA0'S OWN CARVE, AND THE PLE WEIGHTS THAT READ IT.  The same rule as the stages below, and the
+    // same guard: `--split-skip-if-fits` and `--split-device 0` both clear `multi_gpu`, and both want CUDA0 to
+    // hold everything - `ver_same` replays a later stage against THIS table, so a carved one would hand it the
+    // null `data` of a dropped row rather than an error.  `hi0 < 0` is the whole model.
+    strata::core::WeightTable wt;
+    strata::core::NativeDense native_dense;
+    void* arena = nullptr;
+    const int64_t hi0 = (multi_gpu && weight_slice && !split_at.empty()) ? split_at[0] : -1;
+    {
+        const strata::core::OnDevice on(0);
+        const std::set<std::string>* const sk = skip.empty() ? nullptr : &skip;
+        const std::set<std::string>* const kp = hi0 >= 0 ? &router_keep : nullptr;
+        uint64_t arena_bytes = 0;
+        if (!strata::core::WeightTable::pool_bytes(o.pack, arena_bytes, err, sk, 0, hi0, kp) ||
+            cudaMalloc(&arena, arena_bytes) != cudaSuccess ||
+            !wt.load(o.pack, arena, arena_bytes, err, sk, 0, hi0, kp)) {
+            std::fprintf(stderr, "strata generate: %s\n",
+                         err.empty() ? "cudaMalloc for the weight arena failed" : err.c_str());
+            return 1;
+        }
+        if (!o.native_dense_gguf.empty()) {
+            if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key, 0, hi0)) {
+                std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights\n",
+                         native_dense.tensor_count(), (double) native_dense.weight_bytes() / 1048576.0);
+        }
+        std::fprintf(stderr, "strata generate: %.2f MiB of weights for layers [0, %lld) from %s (%zu canonical "
+                             "tensors skipped: served natively)\n", (double) arena_bytes / 1048576.0,
+                     (long long) (hi0 < 0 ? g.n_layers : hi0), o.pack.c_str(), skip.size());
+    }
+    // THE PLE's SIX WEIGHTS.  Wired here and not in the PLE block above because `wt` is built just now - and
+    // every one of them is `blk.1.*`, which is inside CUDA0's range whatever the split turns out to be.
+    if (!o.ple_gguf.empty()) {
+        const strata::core::WeightRef* wk = wt.find("blk.1.ple_key.weight");
+        const strata::core::WeightRef* wv = wt.find("blk.1.ple_value.weight");
+        const strata::core::WeightRef* wnk = wt.find("blk.1.ple_norm_key.weight");
+        const strata::core::WeightRef* wnq = wt.find("blk.1.ple_norm_query.weight");
+        const strata::core::WeightRef* wnc = wt.find("blk.1.ple_norm_conv.weight");
+        const strata::core::WeightRef* wc = wt.find("blk.1.ple_conv1d.weight");
+        if (!wk || !wv || !wnk || !wnq || !wnc || !wc) {
+            std::fprintf(stderr, "strata generate: the pack has no blk.1.ple_* tensors, so the PLE cannot be "
+                                 "wired - and running without it is a DIFFERENT MODEL (LEDGER L123)\n");
+            return 1;
+        }
+        // `ple_key` is S2 and the loader has already widened its scales to f32, so the two planes are located
+        // by the sizes the `WeightRef` records rather than re-derived - the same rule `plane_ptrs` follows.
+        if (!wk->quantized()) {
+            // plan v0.3 P6: the IQ model files' BF16 key (the pack's extra.bin, raw BF16)
+            ss.ple.w.key_bf16 = (const uint16_t*) wk->data;
+        } else if (wk->data != nullptr) {
+            ss.ple.w.key_codes = (const uint8_t*) wk->data;
+            ss.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
+        }
+        if (o.native_ple_key && wk->quantized()) {
+            if (!wk->native_data || (wk->native_type != 42 && wk->native_type != 18 && wk->native_type != 23 &&
+                                     wk->native_type != 8) || !wk->native_q8_1) {
+                std::fprintf(stderr, "strata generate: native PLE key is absent or incompatible\n");
+                return 1;
+            }
+            ss.ple.w.key_native_data = wk->native_data;
+            ss.ple.w.key_native_type = wk->native_type;
+            ss.ple.w.key_native_q8_1 = wk->native_q8_1;
+        }
+        ss.ple.w.value_bf16 = (const uint16_t*) wv->data;
+        ss.ple.w.norm_key = (const float*) wnk->data;
+        ss.ple.w.norm_query = (const float*) wnq->data;
+        ss.ple.w.norm_conv = (const float*) wnc->data;
+        // The conv1d kernel reads F16, so this cast is a claim about the pack's storage.  A checkpoint that keeps
+        // the tensor F32 (Q8_0, UD-Q4_K_XL) would hand the kernel the low halves of the f32 words - not an error,
+        // a plausible wrong layer-1 routing.  tools/iq_pack.py narrows it (index kind 3); a pack that did not is
+        // refused here (#255, gopinath87607).  F16 is index kind 5 or 3 (F16InF32) in a native pack and kind 0
+        // (verbatim 2-byte F16) in the canonical Q2_0 pack; BF16 (kind 4) has the same size and is not F16.
+        const bool f16 = wc->kind == strata::core::WeightKind::F16InF32 ||
+                         (wc->kind == strata::core::WeightKind::Verbatim && wc->code_bits == 0);
+        if (!f16 || wc->bytes != (uint64_t) wc->elements * 2) {
+            std::fprintf(stderr, "strata generate: blk.1.ple_conv1d.weight is not stored as F16 (pack index kind %d, "
+                                 "%llu B for %lld values); the PLE conv1d kernel reads F16 - repack with "
+                                 "tools/iq_pack.py\n",
+                         (int) wc->kind, (unsigned long long) wc->bytes, (long long) wc->elements);
+            return 1;
+        }
+        ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
     }
 
     // ---- EACH STAGE LOADS ONLY ITS OWN LAYERS' DENSE WEIGHTS.  `st.lb`/`st.le` are set, so this is the first
