@@ -426,6 +426,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     file_ = f;
     mapping_ = m;
     base_ = (const uint8_t*) view;
+    paths_.assign(1, path);
 #else
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) { err = "FileExpertSource: cannot open " + path; return false; }
@@ -765,7 +766,7 @@ const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
 }
 
 void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
-    if (role_ptr_.empty() || n <= 0 || layer < 0 || layer >= n_layers_) return;
+    if (!staged() || n <= 0 || layer < 0 || layer >= n_layers_) return;
     std::vector<Fill> todo;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -872,8 +873,8 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
 
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
 #if defined(_WIN32)
-    if (role_ptr_.empty() || !direct_.empty()) {
-        why = role_ptr_.empty() ? "only for the GGUF in place" : "already unbuffered";
+    if (base_ == nullptr || paths_.empty() || !direct_.empty()) {
+        why = !direct_.empty() ? "already unbuffered" : "no expert files open";
         return !direct_.empty();
     }
     if (!experts_unbuffered(paths_, ram_bytes, why, /*cache_counts=*/false)) return false;
@@ -891,6 +892,10 @@ bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
             return false;
         }
         direct_.push_back(h);
+    }
+    if (role_ptr_.empty()) {   // experts.bin: blob() now assembles into the stage buffers, sized for the largest blob
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
     }
     return true;
 #else
@@ -929,6 +934,13 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     for (size_t k = 0; k < n; ++k) {
         const Fill& f = fills[k];
         if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
+        if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
+            const uint64_t per = layer_blob_bytes_[(size_t) f.layer];
+            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * per;
+            const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
+            sc.win.push_back({0, a0, a1 - a0, off - a0, per, 0, f.dst, 0, 0});
+            continue;
+        }
         uint64_t at = 0;
         for (int r = 0; r < 3; ++r) {
             const size_t i = (size_t) (3 * f.layer + r);
@@ -1134,7 +1146,7 @@ void RouterLookahead::run() {
 void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k) {
     (void) ids;
     (void) k;
-    if (role_ptr_.empty()) return;
+    if (!staged()) return;
     std::lock_guard<std::mutex> lk(stage_mu_);
     if (layer != last_layer_) {
         ++epoch_;
@@ -1143,7 +1155,7 @@ void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k)
 }
 
 bool FileExpertSource::transient(int64_t layer, int64_t expert) const {
-    if (role_ptr_.empty() || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
+    if (!staged() || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
     if (complement_ready_ && index < complement_offsets_.size() && complement_offsets_[index] != kNoComplement)
         return false;
@@ -1672,7 +1684,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
         }
     }
     if (from_files) {
-        if (!role_ptr_.empty()) {
+        if (staged()) {
             result = staged_blob(layer, expert);          // counts its bytes
         } else {
             result = mapped_blob(layer, expert);

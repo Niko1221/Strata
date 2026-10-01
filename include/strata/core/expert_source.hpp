@@ -471,11 +471,11 @@ public:
     double file_ms() const { return (double) file_us_.load(std::memory_order_relaxed) / 1000.0; }
     /// Threads `prefetch` reads the GGUF with (STRATA_FETCH_THREADS, default 8).
     void set_fetch_threads(int n) { fetch_threads_ = n < 1 ? 1 : n; }
-    /// #286 (Windows): with the GGUF in place, read the experts straight from the drive (FILE_FLAG_NO_BUFFERING,
-    /// overlapped) instead of through the mapped files, when the file cache could not keep them beside `ram_bytes`
-    /// (the RAM budget), cached now or not (their mapped pages would land in the working set) - see
-    /// experts_unbuffered.  The mapped reads' page faults are one small request each,
-    /// and the pages they bring in take the RAM the budget was sized for.  `why` says what decided.
+    /// #286 (Windows): read the experts straight from the drive (FILE_FLAG_NO_BUFFERING, overlapped) instead of
+    /// through the mapped files - the GGUF in place, or a pack's experts.bin - when the file cache could not keep them
+    /// beside `ram_bytes` (the RAM budget), cached now or not (their mapped pages would land in the working set); see
+    /// experts_unbuffered.  The mapped reads' page faults are one small request each, and the pages they bring in
+    /// take the RAM the budget was sized for.  `why` says what decided.
     bool set_unbuffered(uint64_t ram_bytes, std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -523,6 +523,8 @@ private:
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered overlapped handle (Windows)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
+    /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
+    bool staged() const { return !role_ptr_.empty() || !direct_.empty(); }
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
