@@ -4,6 +4,7 @@
 // without the model.  It is also the run-time half of the sm_120 policy: CMake refuses to COMPILE for another
 // architecture, and this refuses to RUN on one.
 #include "strata/core/device.hpp"
+#include "strata/core/emulate.hpp"
 #include "strata/plan/plan.hpp"
 
 #include <cstdio>
@@ -81,6 +82,39 @@ int main(int argc, char** argv) {
             if (GetModuleFileNameA(h, path, MAX_PATH) > 0) std::printf("  HIP runtime         %s\n", path);
         }
 #endif
+
+        // And the OTHER visible cards: a role plan (main-device / draft-device) is decided from every
+        // device record, not from the first ordinal.  The peer matrix is only reported; enabling peer
+        // access stays a later, explicit decision (docs/MULTI_GPU.md).
+        const auto cards = strata::core::device_caps();
+        const auto peers = strata::core::peer_access_matrix();
+        for (const auto& c : cards) {
+            std::printf("\n");
+#if defined(STRATA_USE_HIP)
+            std::printf("device %d: %s (HIP %s)\n", c.ordinal, c.name.c_str(), c.arch.c_str());
+#else
+            std::printf("device %d: %s\n", c.ordinal, c.name.c_str());
+            std::printf("  compute capability  %d.%d   (sm_%d%d)\n", c.cc_major, c.cc_minor, c.cc_major, c.cc_minor);
+            if (strata::emulated_cc()) {
+                std::printf("  (STRATA_EMULATE_CC is on: a test mode; the cc above is the EMULATED card)\n");
+            }
+#endif
+            std::printf("  multiprocessors     %d\n", c.multi_processor_count);
+            std::printf("  VRAM total / free   %s / %s\n", human(c.total_bytes).c_str(), human(c.free_bytes).c_str());
+            std::printf("  shared mem default / opt-in  %d / %d B\n", c.shared_mem_default, c.shared_mem_optin);
+            std::printf("  dp4a %s   int8 mma %s   tf32 mma %s   cp.async %s\n", c.dp4a ? "yes" : "no",
+                        c.mma_int8 ? "yes" : "no", c.mma_tf32 ? "yes" : "no", c.cp_async ? "yes" : "no");
+        }
+        const int n = (int) cards.size();
+        if (n > 1) {
+            std::printf("\npeer access (canAccessPeer, reported - never enabled here):\n");
+            for (int a = 0; a < n; ++a) {
+                for (int b = 0; b < n; ++b) {
+                    if (a == b) continue;
+                    std::printf("  %d -> %d: %s\n", a, b, peers[(size_t) a * n + b] ? "yes" : "no");
+                }
+            }
+        }
 
         // The planner's view against the card's.  A plan that does not fit in what is actually FREE is the
         // failure this print exists to make visible at startup rather than at token 4000.
