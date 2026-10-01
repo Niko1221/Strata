@@ -134,6 +134,12 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16
             cudaEventElapsedTime(&ms, b0, b1);
             std::printf("SKIP %s ctx %lld, %lld queries: tensor-core kernel not available on this device; old kernel %.3f ms per chunk\n",
                         fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, ms / reps);
+            cudaEventDestroy(b0);
+            cudaEventDestroy(b1);
+            cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
+            cudaFree(scratch);
+            cudaFree((void*) pl.k_q); cudaFree((void*) pl.v_q); cudaFree((void*) pl.k_scale); cudaFree((void*) pl.v_scale);
+            cudaFree((void*) pl.k_pool); cudaFree((void*) pl.v_pool); cudaFree((void*) pl.page_table);
             return 0;
         }
     }
