@@ -637,8 +637,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
             nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
             nsw.q8_1 = xq_;
-            if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, cs);   // contiguous rows
-            else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, cs);
+            // the BF16 copy feeds ONLY the fallback scalar gate; the native gate reads the original F32, so the
+            // bulk conversion would otherwise be an unread write per layer (the flag is fixed before capture)
+            if (!strata::kernels::shared_expert_native_bf16()) {
+                if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, cs);   // contiguous rows
+                else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, cs);
+            }
             try {
                 shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data, sh_gate_ + (size_t) tb * g.n_ff,
                                     sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N, N, g.n_ff, cs);
@@ -705,10 +709,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 21, grp);
         grouped(p_ptr2, p_start2, p_counts + 2);
         stamp(l, 22, grp);
-        if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
+        if (device_plan_) {   // the device planned the whole group (skip == ring): all rows are GPU-owned zeros;
             wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
-            copy_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
-                                     skip_ + grp, ring, cs);
+            // otherwise the host plan governs and its entries are zeroed here on the device, not on the host
+            copy_rows_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
+                                          skip_ + grp, ring, p_dst, p_counts + 1, cs);
         } else {
             wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
             stamp(l, 23, grp);
@@ -716,7 +721,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 copy_rows_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
                                       p_dst, p_counts + 1, cs);
             else
-                copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+                // STRATA_DEC_BATCH=0 reads the same hit-aware copy: with a published plan the GPU-owned rows are
+                // written +0.0 here on the device (the pool no longer zeroes them on the host), and with no
+                // plan (an empty one: counts[1] == 0) every row is copied verbatim - bitwise the plain block
+                // copy this replaced, and the pool kept the host zeros that path relies on
+                copy_rows_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
+                                      p_dst, p_counts + 1, cs);
         }
         moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, cap, N, cs);
         if (dec_batch && n > 1 && native_moe_combine_enabled()) {   // one launch for the window's rows

@@ -481,11 +481,29 @@ __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile
     if (*skip == value) return;
     for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
 }
-__global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile float4* src, long long n4,
-                                    const uint32_t* skip, uint32_t value) {
-    const bool zero = *skip == value;
-    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x)
-        dst[i] = zero ? make_float4(0.f, 0.f, 0.f, 0.f) : const_cast<const float4*>(src)[i];
+__global__ void copy_rows_or_zero_kernel(float4* __restrict__ dst, const volatile float4* src, int64_t row4,
+                                         const uint32_t* skip, uint32_t value, const int32_t* __restrict__ hit_rows,
+                                         const int32_t* __restrict__ count) {
+    // the device-planned group's rows (skip == value) are all GPU-owned: the whole block is zeroed.  With the
+    // host's plan (skip != value) the GPU-owned rows of the published plan - hit_rows[0, *count) - are zeroed
+    // here too, whether or not the host rows hold anything (the pool no longer zeroes them), and only the CPU's
+    // rows cross from the mapped host memory.
+    const int row = blockIdx.x;
+    __shared__ int hit;
+    if (threadIdx.x == 0) {
+        int h = *skip == value;
+        const int c = *count;
+        for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
+        hit = h;
+    }
+    __syncthreads();
+    float4* d = dst + (int64_t) row * row4;
+    if (hit) {
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+    } else {
+        const volatile float4* sr = src + (int64_t) row * row4;
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = const_cast<const float4*>(sr)[i];
+    }
 }
 }  // namespace
 
@@ -506,14 +524,17 @@ void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, 
     copy_i32_unless_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(dst, (const volatile int32_t*) src, (int) n, skip, value);
     check("copy_i32_from_mapped_unless");
 }
-void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
-                              void* stream) {
-    if (n <= 0) return;
-    const long long n4 = n / 4;
-    const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
-    copy_or_zero_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, (const volatile float4*) src, n4, skip,
-                                                                    value);
-    check("copy_or_zero_from_mapped");
+void copy_rows_or_zero_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const uint32_t* skip,
+                                   uint32_t value, const int32_t* hit_rows, const int32_t* count, void* stream) {
+    if (rows <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr,
+                     "copy_rows_or_zero_from_mapped: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    copy_rows_or_zero_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>(
+        (float4*) dst, (const volatile float4*) src, width / 4, skip, value, hit_rows, count);
+    check("copy_rows_or_zero_from_mapped");
 }
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {

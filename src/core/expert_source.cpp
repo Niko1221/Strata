@@ -1108,6 +1108,16 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
         }
     }
+    // Plan v0.3 P6: did THIS call publish the GPU plan?  Its entries (VRAM + PCIe rows) are exactly the rows
+    // with kind >= 0, and the verify window's readers (`copy_rows_from_mapped`, `copy_rows_or_zero_from_mapped`)
+    // never read those rows from the host - they write +0.0 into them on the device, whatever the host rows
+    // hold.  So the host zeroing below would be dead stores on the pool's own core.  WITHOUT a published plan
+    // the CPU's rows are the only source - the reader copies every row, plan-owned rows included - and their
+    // zeros are load-bearing (kind == 2 rows are fully overwritten by RemoteExperts::finish either way).  The
+    // guard repeats the publish branch's condition exactly, `publish != nullptr` included: a sink that never
+    // raises flag A is superseded by an empty host plan, which the reader then copies verbatim.
+    const bool plan_published =
+        d.plan != nullptr && d.plan->publish != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap;
     const auto c1 = std::chrono::steady_clock::now();
     if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
@@ -1132,7 +1142,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
             if (kind[i] >= 0) {             // CUDA0, PCIe, or a remote result staged into this row below
                 if (kind[i] == 0) ++d.cache_hits;
-                std::memset(row, 0, (size_t) H * sizeof(float));
+                if (!plan_published) std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
             }
             ++d.cache_refused;

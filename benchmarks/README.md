@@ -7,6 +7,7 @@ This directory is the contributor-facing index for Strata benchmark results acro
 | Accelerator | Model | Quantization | Context | Results |
 | --- | --- | --- | ---: | --- |
 | NVIDIA Tesla V100-PCIE-16GB | Qwen3.8-Flash-Next | Q2_0 | 262,144 | [V100, 2026-09-28](v100-pcie-16gb-q2_0-2026-09-28.md) |
+| 2 × NVIDIA Tesla V100-PCIE-16GB, Gen3 x2 + x16 | Qwen3.8-Flash-Next | Q2_0 | 262,144 | [Asymmetric PCIe, 2026-09-30](v100-asymmetric-pcie-q2_0-2026-09-30.md) |
 
 ## Contributing results
 1. Run the existing [`bench/run_v100_bench.py`](../bench/run_v100_bench.py) runner for the published workload, or add the closest equivalent runner under `bench/`.
