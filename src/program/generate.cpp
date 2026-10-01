@@ -362,6 +362,11 @@ struct Options {
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
     /// the VRAM tier in place of the least-routed resident ones (decayed counts).  0 = static residency.
     int adapt_every = 4;
+    float adapt_decay = 0.7f;   ///< the usage counts are multiplied by this after each adaptation (--adapt-decay)
+    /// --adapt-tuned (STRATA_ADAPT_TUNED=1): every 2 rounds, up to 192 swaps, x0.92 - where that was measured to help
+    /// (see where it is applied); explicit --adapt-* flags win
+    bool adapt_tuned = false;
+    bool adapt_given = false;
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
@@ -1191,7 +1196,9 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
-        else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
+        else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_given = true; }
+        else if (a == "--adapt-decay") { o.adapt_decay = (float) std::atof(next("--adapt-decay")); o.adapt_given = true; }
+        else if (a == "--adapt-tuned") o.adapt_tuned = true;
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
@@ -1260,7 +1267,7 @@ int main(int argc, char** argv) {
             if (!parse_i64_list(next("--eos-ids"), o.eos_ids, e)) { std::fprintf(stderr, "--eos-ids: %s\n", e.c_str()); return 2; }
             o.stop_eos = true;
         }
-        else if (a == "--adapt-swaps") o.adapt_swaps = std::atoi(next("--adapt-swaps"));
+        else if (a == "--adapt-swaps") { o.adapt_swaps = std::atoi(next("--adapt-swaps")); o.adapt_given = true; }
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
@@ -3900,6 +3907,28 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // --adapt-tuned: a longer memory and more frequent, larger steps for the adaptive tier, where they were measured
+    // to help - a cache that holds 20-60% of the experts, with every expert outside VRAM in RAM.  With fewer, a swap
+    // evicts experts that are needed again; with more, nearly everything hits already; with experts on the drive, a
+    // swap can read it.  It pays where the CPU's share of the misses is the round's critical path (large experts).
+    if (const char* v = std::getenv("STRATA_ADAPT_TUNED"); v != nullptr) o.adapt_tuned = v[0] != '0';
+    if (o.adapt_tuned && !o.adapt_given && o.expert_cache > 0 && !host_res.empty()) {
+        const double cover = (double) xcache.slots() / (double) (g.n_layers * g.n_expert);
+        bool in_ram = !(o.mmap_experts && !o.resident_cpu_experts);
+        if (o.resident_cpu_experts)   // the RAM budget must hold every expert the GPU cache does not
+            for (int64_t i = 0; i < g.n_layers * g.n_expert && in_ram; ++i)
+                if (host_res[(size_t) i] < 0 && !src.has_resident(i / g.n_expert, i % g.n_expert)) in_ram = false;
+        const bool fits = cover >= 0.2 && cover <= 0.6 && in_ram;
+        if (fits) {
+            o.adapt_every = 2;
+            o.adapt_swaps = 192;
+            o.adapt_decay = 0.92f;
+        }
+        std::fprintf(stderr, "strata generate: --adapt-tuned: the cache holds %.0f%% of the experts%s -> adaptive tier "
+                             "every %d rounds, %d swaps, x%.2f%s\n", 100.0 * cover,
+                     in_ram ? "" : ", some only on the drive", o.adapt_every, o.adapt_swaps, o.adapt_decay,
+                     fits ? "" : " (the defaults)");
+    }
     if (o.serve) {
         if (o.spec < 2 || o.mtp.empty() || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
@@ -4652,10 +4681,11 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(st->dev);
                     cudaEventRecord(st->adapt_ev, st->adapt_stream);
                 }
-            // #477: the routing counted since the start (each count adds up to 1 / (1 - 0.7) over its decays: the
-            // sum is proportional to the routing itself) - only with --expert-profile-save, else `heat` is empty
+            // #477: the routing counted since the start (each count adds up to 1 / (1 - --adapt-decay) over its
+            // decays: the sum is proportional to the routing itself) - only with --expert-profile-save, else `heat`
+            // is empty
             for (size_t i = 0; i < heat.size(); ++i) heat[i] += (double) drive.d.usage[i];
-            for (float& v : drive.d.usage) v *= 0.7f;
+            for (float& v : drive.d.usage) v *= o.adapt_decay;
             return true;
         };
         // #477: write the learned profile (between requests and at QUIT: a prompt's lent slots are back by then).
@@ -6274,7 +6304,7 @@ int main(int argc, char** argv) {
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
-            for (float& v : drive.d.usage) v *= 0.7f;
+            for (float& v : drive.d.usage) v *= o.adapt_decay;
             swaps_total += (int64_t) swaps.size();
             ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
             return true;
