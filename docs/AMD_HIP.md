@@ -146,9 +146,11 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   | R9700, TheRock 7.10 wheels | 12,288 slots | | 957 tok/s | 44.2 tok/s | 1,284 tok/s | 43.9 tok/s |
 
   The engine's resident memory was about 26 GB in every run.
-- **hipBLASLt:** there is no gfx1201 table in `tools/hip`. A table calibrated on the R9700 at the engine's shapes
-  (hipBLASLt 1.4.1; 0.98-1.76x per GEMM over hipBLAS) changed the end-to-end prompt speed by 0-3%, within noise,
-  so none is shipped: on gfx1201 the plain hipBLAS path is already close.
+- **hipBLASLt:** the validation above used hipBLASLt 1.4.1. A table calibrated on the R9700 at the engine's shapes
+  with that version (0.98-1.76x per GEMM over hipBLAS) changed the end-to-end prompt speed by 0-3%, within noise,
+  so none was shipped for it: there the plain hipBLAS path is already close. For hipBLASLt 1.5.0 (ROCm
+  10.2.0a nightly) `tools/hip/gfx1201-hipblaslt-100500.txt` is shipped (see "Tuning table" below); on one R9700 it
+  measured +3.9% prompt speed on 4,210-token prompts (1,590 vs 1,531 tok/s), a modest gain.
 - **Both cards in one run (layer split, engine 0.1.30):** the config's `"backend": "hip", "gpu": [1, 0]` (R9700
   first) runs through `serve/server.py`; setup does not offer it yet. Auto split put layers 0-27 on the R9700 and
   28-47 on the 9070 XT. With every expert on the GPUs the split gives exactly the tokens of the R9700 alone (4K and
@@ -192,8 +194,12 @@ Shipped tables:
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
   T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
   when that is a system ROCm 7 or newer). The version number is the only thing the engine can check, so another
-  1.5.0 build could number its solutions differently. `hip_prefill_hipblaslt_gemm` only spot-checks one BF16 and
-  one F16 row, so recalibrate with `tune_hipblaslt` before using this table with a different 1.5.0 build.
+  1.5.0 build could number its solutions differently. `hip_prefill_hipblaslt_gemm` (with `STRATA_HIPBLASLT_TUNING`
+  set) is a smoke test: it refuses a table for another architecture or version and checks that one BF16 and one
+  F16 row exist and agree with hipBLASEx, which covers 2 of the 32 rows. It does not prove that a solution id is
+  valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
+  `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
+  `tune_hipblaslt` before using this table with a different 1.5.0 build.
 
 ## Original backend validation (PR #94)
 
