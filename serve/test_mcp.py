@@ -298,6 +298,19 @@ class ToolLoop(unittest.TestCase):
         self.assertIn("<tool_response>\nhello from the tool\n</tool_response>", second)
         self.assertEqual(cs[-1]["usage"]["prompt_tokens"], len(self.engine.prompts[1]))
 
+    def test_a_call_the_output_ends_inside_is_not_run(self):
+        """#211: the model's turn ends inside an MCP call: nothing runs (it used to run with no arguments)."""
+        script = call_script("fake__echo", text="hello from the tool")
+        self.start(script[:script.index("from the tool")], "</think>\n\nnever")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        mcp = [c["strata_mcp"] for c in cs if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start"])        # the web app shows it as "Not run" at the end
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+
     def test_non_stream(self):
         self.start(call_script("fake__add", a=2, b=3), "</think>\n\n5.")
         code, text = self.post({"strata_mcp": True}, stream=False)

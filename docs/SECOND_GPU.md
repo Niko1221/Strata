@@ -34,8 +34,9 @@ compute capacity.
 
 The experiment requires the corresponding visible CUDA devices and a CUDA
 enabled build. Each card must keep at least 512 MiB free. Tiers must be enabled
-in order. On Windows, CUDA registration of the host expert arena is capped at
-8 GiB to leave room for the contexts and MTP on CUDA0. The rest remains
+in order. Under WDDM (Windows, WSL2), CUDA registration of the host expert arena is capped at
+8 GiB to leave room for the contexts and MTP on CUDA0 (`STRATA_ARENA_PIN_GIB` overrides it; on Linux the whole
+arena is registered). The rest remains
 available to the CPU pool; the PCIe expert path is available only for the
 registered layers. Without secondary GPUs, the original uncapped registration
 behavior applies.

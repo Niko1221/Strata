@@ -42,6 +42,9 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
 (about 5-10 minutes; on the PC above it made the Coder 7% faster).
 
+Measured Strata on your own PC? See [Community benchmark results](docs/COMMUNITY_BENCHMARKS.md)
+for a report template and how to share your results in a pull request.
+
 **Two or three NVIDIA cards?** Just run `START-HERE.bat`: it lists your cards, says which ones Strata can use, and
 asks whether to share the model across them (recommended when two can). An install made on one card asks once at
 its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
@@ -84,9 +87,10 @@ one later with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./se
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](docs/ORCA.md).
 It needs an explicit packing conversion and is not an installer menu option.
 
-An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental):
+An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental; the
+RX 7800 XT / 7700 XT and RX 9060 XT were validated by their owners):
 `./setup.sh --backend hip`, chosen by itself on a PC with no NVIDIA card Strata can use. It installs ROCm without sudo
-and compiles the engine (one GPU, no images yet). Details: [AMD HIP](docs/AMD_HIP.md).
+and compiles the engine (no images yet; several cards with `--gpus`). Details: [AMD HIP](docs/AMD_HIP.md).
 
 ## Install
 
@@ -176,6 +180,19 @@ the same way - nothing big is downloaded again.
 
 **Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute per
 30,000 tokens); after that it keeps the conversation and reads only what is new, so follow-ups start in seconds.
+
+### Where things are stored
+
+- **Your chats: only in your browser.** The Chat tab keeps the conversation, its settings and the API key you typed
+  in the browser's local storage (`strata.*` keys) - not on the server and not in the Strata folder. Pictures are not
+  kept, only their names. Another browser or a private window starts empty; clearing the site's data deletes them.
+- **How the model starts:** `strata-<model>.json` in the Strata folder (context, GPUs, host, API key, ...), written
+  by setup; next to it `run-<model>.bat` / `.sh`, the log `strata-<model>.log` and, when you use "Use for other
+  apps too", `strata-<model>.shared-settings.json`.
+- **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
+  wherever `--data-dir` put them.
+- **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
+  Linux ([details](docs/DETAILS.md)).
 
 ## Something went wrong?
 

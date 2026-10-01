@@ -54,6 +54,8 @@ from serve.winjob import contain  # noqa: E402
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
 VISION_START = "<|vision_start|>"
+# #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
+REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 # The live tok/s is a rate over a window, not a mean since the first token: a mean reads ~1/elapsed at the first
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
@@ -284,6 +286,8 @@ class StrataEngine:
             self.last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
         if len(f) >= 11:                                  # decode hit rate fields
             self.last.update(hits=int(f[9]), lookups=int(f[10]))
+        if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
+            self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -544,6 +548,9 @@ def engine_args(cfg: dict) -> list[str]:
     args = list(cfg["args"])
     if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
+    if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
+        args.append("--split-skip-if-fits")
     return args
 
 
@@ -601,6 +608,12 @@ class Detokenizer:
         self.tok, self.ids, self.sent = tok, [], 0
         self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace") if hasattr(tok, "token_bytes") else None
 
+    def pending(self) -> bool:
+        """A character is split across the tokens so far: its first bytes are held."""
+        if self.inc is not None:
+            return bool(self.inc.getstate()[0])
+        return self.tok.decode(self.ids).endswith("\ufffd")
+
     def push(self, t: int) -> str:
         if self.inc is not None:
             return self.inc.decode(self.tok.token_bytes(t))
@@ -641,11 +654,25 @@ class Service:
         self.idle_unload_s = 0
         self.min_free_vram_mib = 0
         self.before_load = None
+        self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def reasoning_budget(self, req) -> int | None:
+        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
+        config's.  0 (or less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for
+        anything that is not a whole number."""
+        value = (req or {}).get("reasoning_budget_tokens") if isinstance(req, dict) else None
+        if value is None:
+            value = self.reasoning_budget_tokens
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
+        return value if value > 0 else None
 
     def _vision_down(self) -> bool:
         return self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
@@ -955,7 +982,7 @@ class Service:
                     s["phase"], s["tool"] = f"writing a tool call: {ev.call.name}", ev.call.name
                 elif ev.kind == "tool_call":
                     s["phase"] = "tool call complete"
-                s["tail"] = (s["tail"] + (ev.text or ""))[-600:]
+                s["tail"] = ((s.get("tail") or "") + (ev.text or ""))[-600:]
 
     def _progress(self, last_print, every=1.0):
         """A progress line in the server window every `every` seconds while a request runs."""
@@ -977,6 +1004,7 @@ class Service:
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
+        budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
@@ -993,101 +1021,138 @@ class Service:
             self.status["queued"] += 1
         try:
             with self.fifo:
-                with self.status_lock:
-                    self.status["queued"] -= 1
-                # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
-                self.ensure_loaded()
-                with self.status_lock:
-                    self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids), generated=0,
-                                       started=time.time(), first_token=None, tool=None, tail="", max_tokens=max_new)
-                    self.last_request_at = time.time()
-                    self.rate.clear()               # the previous request's samples must not leak into this one
-                before = getattr(self.engine, "last", None)
-                last_print = time.time()
-                gen = self.engine.generate(ids, max_new, sampling, cancel, embeddings=emb) if emb else \
-                    self.engine.generate(ids, max_new, sampling, cancel)
                 try:
-                    for t in gen:
-                        if t is None:                   # heartbeat while the engine is quiet
-                            last_print = self._progress(last_print)
-                            yield "ping", None
-                            continue
-                        n += 1
-                        if t in self.stop_ids:
-                            finish = "stop"
-                            raw_ids.append(t)
+                    with self.status_lock:
+                        self.status["queued"] -= 1
+                    # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
+                    self.ensure_loaded()
+                    with self.status_lock:
+                        self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                                           generated=0, started=time.time(), first_token=None, tool=None, tail="",
+                                           max_tokens=max_new)
+                        self.last_request_at = time.time()
+                        self.rate.clear()               # the previous request's samples must not leak into this one
+                    before = getattr(self.engine, "last", None)
+                    last_print = time.time()
+                    prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    while True:
+                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
+                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        seg, wrap = [], False           # this pass's tokens; the budget is reached
+                        try:
+                            for t in gen:
+                                if t is None:               # heartbeat while the engine is quiet
+                                    last_print = self._progress(last_print)
+                                    yield "ping", None
+                                    continue
+                                n += 1
+                                if t in self.stop_ids:
+                                    finish = "stop"
+                                    raw_ids.append(t)
+                                    break
+                                raw_ids.append(t)
+                                seg.append(t)
+                                evs = parser.feed(detok.push(t))
+                                self._note(n, evs)
+                                last_print = self._progress(last_print)
+                                for ev in evs:
+                                    yield "event", ev
+                                if budget and parser.state == "reasoning":
+                                    thought += 1
+                                    # at a clean point: no tag held back, no character split across tokens
+                                    if thought >= budget and not parser.buf and not detok.pending():
+                                        wrap = True
+                                        break
+                        except EngineDied as e:
+                            finish = "error"
+                            note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
+                            log = getattr(self.engine, "log_path", None)
+                            print(f"[strata] {e}. {note} The next request starts the engine again."
+                                  f"{' Its log: ' + log if log else ''}", flush=True)
+                            raise
+                        except ValueError as e:             # the engine's ERR line (it may have ended after it)
+                            finish = "error"
+                            print(f"[strata] the engine reported an error: {e}", flush=True)
+                            raise
+                        finally:
+                            gen.close()                 # STOP+drain to THIS request's DONE while still holding the
+                            #                             fifo, so a stop-token break can't leave the shared engine
+                            #                             queue mid-drain for the next request to read as its own DONE
+                        if not wrap or cancel.is_set():
                             break
-                        raw_ids.append(t)
-                        evs = parser.feed(detok.push(t))
-                        self._note(n, evs)
-                        last_print = self._progress(last_print)
-                        for ev in evs:
-                            yield "event", ev
+                        # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
+                        # short wrap-up and </think>) and let it answer: the next pass's prompt is this one plus what
+                        # was generated plus the wrap-up, so the engine continues from the prefix it already holds.
+                        budget = None
+                        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+                        if max_new - n - len(extra) < 1:
+                            break                       # no room left to answer: "length", as without a budget
+                        print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
+                              flush=True)
+                        for t in extra:
+                            n += 1
+                            raw_ids.append(t)
+                            evs = parser.feed(detok.push(t))
+                            self._note(n, evs)
+                            for ev in evs:
+                                yield "event", ev
+                        prompt = prompt + seg + extra
                     if cancel.is_set():
                         finish = "cancel"
-                except EngineDied as e:
-                    finish = "error"
-                    note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
-                    print(f"[strata] {e}. {note} The next request starts the engine again."
-                          f"{' Its log: ' + self.engine.log_path if getattr(self.engine, 'log_path', None) else ''}",
-                          flush=True)
-                    raise
-                except ValueError as e:                 # the engine's ERR line (it may have ended after it)
-                    finish = "error"
-                    print(f"[strata] the engine reported an error: {e}", flush=True)
+                except GeneratorExit:                   # the client disconnected mid-stream
+                    finish = "disconnect"
                     raise
                 finally:
-                    gen.close()                         # STOP+drain to THIS request's DONE while still holding the
-                    #                                     fifo, so a stop-token break can't leave the shared engine
-                    #                                     queue mid-drain for the next request to read as its own DONE
-        except GeneratorExit:                           # the client disconnected mid-stream
-            finish = "disconnect"
-            raise
+                    # #266: settle this request's status, history and totals while still holding the fifo: once
+                    # it is released the next request sets its own status, which this must not record or clear
+                    with self.status_lock:
+                        if self.status.get("busy"):
+                            # only this request's DONE counts: same object means no DONE arrived (death, error,
+                            # disconnect)
+                            last = dict(getattr(self.engine, "last", {}) or {}) \
+                                if getattr(self.engine, "last", None) is not engine_last0 else {}
+                            started = self.status.get("started", time.time())
+                            cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
+                            loaded = str(cvec) not in ("0", "", "None")
+                            hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                            self.history.append({
+                                "projection": (sampling or {}).get("experimental_speed_projection") is not False
+                                if loaded else None,
+                                "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                                "prompt_tokens": len(ids), "reused": last.get("reused"), "output_tokens": n,
+                                "engine_generated": last.get("generated"),
+                                "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
+                                "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
+                                if n and last.get("generated") and last.get("decode_ms") else None,
+                                "hit_rate": hit_rate, "ram_blobs": last.get("ram_blobs"),
+                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb")})
+                            t = self.totals
+                            t["requests"] += 1
+                            t["prompt_tokens"] += len(ids)
+                            t["reused"] += last.get("reused") or 0
+                            t["output_tokens"] += n
+                            t["prompt_ms"] += last.get("prompt_ms") or 0.0
+                            t["decode_ms"] += last.get("decode_ms") or 0.0
+                            fresh = getattr(self.engine, "last", None)
+                            if fresh is not None and fresh is not before:      # the engine's clock for THIS request
+                                timings = request_timings(len(ids), n, last)
+                                self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                            self.last_request_at = time.time()
+                            now = time.time()
+                            el = now - self.status.get("started", now)
+                            ft = self.status.get("first_token")
+                            rate = n / max(1e-6, now - ft) if ft else 0.0
+                            hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
+                            print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                                  f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            if os.environ.get("STRATA_DEBUG") and raw_ids:
+                                print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
+                        self.status["busy"] = False
+                        self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
+                        self.status.pop("tool", None)
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
-            with self.status_lock:
-                if self.status.get("busy"):
-                    # only this request's DONE counts: same object means no DONE arrived (death, error, disconnect)
-                    last = dict(getattr(self.engine, "last", {}) or {}) \
-                        if getattr(self.engine, "last", None) is not engine_last0 else {}
-                    started = self.status.get("started", time.time())
-                    loaded = str((getattr(self.engine, "info", {}) or {}).get("cvec", 0)) not in ("0", "", "None")
-                    hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
-                    self.history.append({
-                        "projection": (sampling or {}).get("experimental_speed_projection") is not False
-                        if loaded else None,
-                        "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
-                        "prompt_tokens": len(ids), "reused": last.get("reused"), "output_tokens": n,
-                        "engine_generated": last.get("generated"),
-                        "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
-                        "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
-                        if n and last.get("generated") and last.get("decode_ms") else None,
-                        "hit_rate": hit_rate})
-                    t = self.totals
-                    t["requests"] += 1
-                    t["prompt_tokens"] += len(ids)
-                    t["reused"] += last.get("reused") or 0
-                    t["output_tokens"] += n
-                    t["prompt_ms"] += last.get("prompt_ms") or 0.0
-                    t["decode_ms"] += last.get("decode_ms") or 0.0
-                    fresh = getattr(self.engine, "last", None)
-                    if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                        timings = request_timings(len(ids), n, last)
-                        self.last_timings = dict(timings, at=int(time.time())) if timings else None
-                    self.last_request_at = time.time()
-                    now = time.time()
-                    el = now - self.status.get("started", now)
-                    ft = self.status.get("first_token")
-                    rate = n / max(1e-6, now - ft) if ft else 0.0
-                    hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
-                    print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
-                          f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                    if os.environ.get("STRATA_DEBUG") and raw_ids:
-                        print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
-                self.status["busy"] = False
-                self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
-                self.status.pop("tool", None)
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
@@ -1230,6 +1295,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     yield chunk({"role": "assistant", "content": ""})
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
+    finished = set()                               # ... and the ones whose final tool_call came (#211)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
             yield None
@@ -1251,14 +1317,16 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             elif ev.kind == "tool_args":
                 yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
             elif ev.kind == "tool_call" and ev.call.id in streamed:
-                continue
+                finished.add(ev.call.id)
             elif ev.kind == "tool_call":
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
-            finish = "tool_calls" if calls and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
+            # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
+            whole = calls and streamed.keys() <= finished
+            finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
@@ -1268,6 +1336,14 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
             yield last
+
+
+def _is_json(text: str) -> bool:
+    try:
+        json.loads(text)
+        return True
+    except ValueError:
+        return False
 
 
 def openai_collect(chunks) -> dict:
@@ -1289,6 +1365,8 @@ def openai_collect(chunks) -> dict:
             cur["function"]["arguments"] += fn.get("arguments") or ""
         last = c
     calls = [by_index[i] for i in sorted(by_index)]
+    if last["choices"][0]["finish_reason"] != "tool_calls":
+        calls = [c for c in calls if _is_json(c["function"]["arguments"])]   # a call the output ended inside (#211)
     msg = {"role": "assistant", "content": "".join(content) or None}
     if "".join(reasoning):
         msg["reasoning_content"] = "".join(reasoning)
@@ -1315,7 +1393,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     def close():
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    streamed = set()
+    streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
             yield None
@@ -1327,6 +1405,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                                               "delta": {"type": "input_json_delta", "partial_json": ev.text}}
                 continue
             if ev.kind == "tool_call" and ev.call.id in streamed:
+                finished.add(ev.call.id)
                 continue
             want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
             if ev.kind not in ("tool_call", "tool_start") and not ev.text:
@@ -1359,7 +1438,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         else:
             if open_kind is not None:
                 yield close()
-            stop = "tool_use" if used_tool and x["finish"] == "stop" else \
+            stop = "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
             # which is cache_read_input_tokens (message_start could only say the whole prompt)
@@ -1390,7 +1469,10 @@ def anthropic_collect(events) -> dict:
                 b["_json"] = b.get("_json", "") + d["partial_json"]
         elif name == "content_block_stop" and blocks and "_json" in blocks[-1]:
             b = blocks[-1]
-            b["input"] = json.loads(b.pop("_json") or "{}")
+            try:
+                b["input"] = json.loads(b.pop("_json") or "{}")
+            except ValueError:                     # a call the output ended inside (#211): it has no input to give
+                blocks.pop()
         elif name == "message_delta":
             msg["stop_reason"] = e["delta"]["stop_reason"]
             msg["usage"].update(e["usage"])
@@ -1631,6 +1713,7 @@ def make_handler(svc: Service):
                 extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
+            svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -1662,6 +1745,7 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
+            svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -1943,6 +2027,15 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
+        try:
+            svc.reasoning_budget_tokens = cfg["reasoning_budget_tokens"]
+            budget = svc.reasoning_budget({})
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if budget:
+            print(f"[strata] thinking budget: {budget} tokens (reasoning_budget_tokens; a request can set its own)",
+                  flush=True)
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     if a.config:                                        # the Chat settings shared with other apps, from last time

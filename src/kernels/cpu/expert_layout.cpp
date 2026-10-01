@@ -3,6 +3,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
@@ -51,6 +53,61 @@ bool cpu_avx512_ok() {
     return ok;
 }
 
+bool cpu_avx2_ok() {
+    static const bool ok = [] {
+        unsigned r[4] = {0, 0, 0, 0};
+        auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+            int x[4];
+            __cpuidex(x, (int) leaf, (int) sub);
+            for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+            __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+        };
+        cpuid(0, 0);
+        if (r[0] < 7) return false;
+        cpuid(1, 0);
+        const unsigned ecx1 = r[2];
+        // FMA (12), OSXSAVE (27), AVX (28), F16C (29)
+        if (!((ecx1 >> 12) & 1u) || !((ecx1 >> 27) & 1u) || !((ecx1 >> 28) & 1u) || !((ecx1 >> 29) & 1u)) return false;
+#if defined(_MSC_VER)
+        const unsigned long long xcr0 = _xgetbv(0);
+#else
+        unsigned lo = 0, hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+        if ((xcr0 & 0x6) != 0x6) return false;            // the OS saves the SSE and AVX state
+        cpuid(7, 0);
+        return ((r[1] >> 5) & 1u) != 0;                    // AVX2
+    }();
+    return ok;
+}
+
+std::string cpu_name() {
+    unsigned r[12] = {};
+#if defined(_MSC_VER)
+    int x[4];
+    __cpuid(x, (int) 0x80000000u);
+    if ((unsigned) x[0] < 0x80000004u) return "unknown";
+    for (unsigned i = 0; i < 3; ++i) {
+        __cpuid(x, (int) (0x80000002u + i));
+        for (int j = 0; j < 4; ++j) r[i * 4 + j] = (unsigned) x[j];
+    }
+#else
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    __cpuid(0x80000000u, a, b, c, d);
+    if (a < 0x80000004u) return "unknown";
+    for (unsigned i = 0; i < 3; ++i) __cpuid(0x80000002u + i, r[i * 4], r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3]);
+#endif
+    char s[49] = {};
+    std::memcpy(s, r, 48);
+    std::string name(s);
+    const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
+    return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
+}
+
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
@@ -95,6 +152,18 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') {
             if (!line.empty() && line[0] == '#') {
+                // "# strata native experts vN: ...".  A version this engine does not know may mean columns it
+                // would misread, so it is refused rather than parsed as far as the known columns go.
+                static const char tag[] = "# strata native experts v";
+                if (line.compare(0, sizeof tag - 1, tag) == 0) {
+                    L.version = std::atoi(line.c_str() + sizeof tag - 1);
+                    if (L.version > kExpertLayoutVersion) {
+                        err = "native_experts.txt is v" + std::to_string(L.version) + "; this engine reads up to v" +
+                              std::to_string(kExpertLayoutVersion) + " (the pack was written by a newer tools/"
+                              "iq_pack.py: update the engine, or repack with this one)";
+                        return false;
+                    }
+                }
                 // v3 packs record their expert count in the header; a pruned model (GSQ-RCO Coder) ships
                 // fewer experts than the canonical geometry the caller passes, which is a compile-time
                 // default, so the header wins.
@@ -124,8 +193,29 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             L.gguf_off[(size_t) (3 * l + 2)] = dox;
             std::string file;             // v3: the shard that holds this layer (a file name beside --native)
             if (ss >> file) {
-                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) n_layers, std::string());
-                L.gguf_file[(size_t) l] = file;
+                if (L.gguf_file.empty()) L.gguf_file.assign((size_t) (3 * n_layers), std::string());
+                // One name covers all three roles.  When a shard boundary falls inside a layer the packer writes
+                // "gate,up,down" instead (v4), an empty field meaning the --native shard.  A GGUF file name has no
+                // comma, so the split is unambiguous; an engine older than v4 fails to open such a "file" loudly.
+                // The comma form is from #255 (gopinath87607).
+                std::vector<std::string> parts;
+                for (size_t from = 0;;) {
+                    const size_t comma = file.find(',', from);
+                    parts.push_back(file.substr(from, comma == std::string::npos ? comma : comma - from));
+                    if (comma == std::string::npos) break;
+                    from = comma + 1;
+                }
+                if (parts.size() == 1) {
+                    const std::string one = parts[0];   // not parts.assign(3, parts[0]): that aliases the element
+                    parts.assign(3, one);                //   the assignment is about to overwrite
+                }
+                std::string extra;
+                if (parts.size() != 3 || (ss >> extra)) {
+                    err = "native_experts.txt: layer " + std::to_string(l) + ": the shard column is one name or "
+                          "gate,up,down, not: " + line;
+                    return false;
+                }
+                for (size_t r = 0; r < 3; ++r) L.gguf_file[(size_t) (3 * l) + r] = parts[r];
             }
         }
         L.fmt[(size_t) l] = f;

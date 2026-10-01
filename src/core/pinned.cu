@@ -238,6 +238,47 @@ namespace {
 bool clear_error() { (void) cudaGetLastError(); return true; }
 }  // namespace
 
+int arena_pin_cap_gib() {
+    const char* e = std::getenv("STRATA_ARENA_PIN_GIB");
+    if (e == nullptr || *e == '\0') return -1;
+    if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
+    const int v = std::atoi(e);
+    return v < 0 ? -1 : v;
+}
+
+namespace {
+#ifdef _WIN32
+// #243: how much of the arena the sliced registration may pin on Windows when the whole arena was refused.
+// Page-locked memory the GPU maps is charged to its shared (non-local) WDDM segment; pinned slice by slice until
+// the driver refused one (28 GiB of a 63 GB PC), that segment was left full and every later cudaMalloc failed
+// "out of memory".  4 GiB of the budget stay free for what the engine allocates after the arena; without the DXGI
+// numbers, RAM/2 - 8 GiB (the budget is about half the RAM).  False: no limit could be worked out.
+bool sliced_pin_limit(uint64_t& limit, std::string& why) {
+    constexpr uint64_t GiB = 1ull << 30;
+    char buf[256];
+    int dev = 0;
+    cudaDeviceProp p{};
+    uint64_t budget = 0, usage = 0;
+    std::string err = "no CUDA device properties";
+    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
+        limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
+        std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
+                      (double) budget / GiB, (double) usage / GiB);
+        why = buf;
+        return true;
+    }
+    (void) cudaGetLastError();
+    const uint64_t ram = strata::platform::total_physical_memory();
+    if (ram == 0) return false;
+    limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
+    std::snprintf(buf, sizeof buf, "%s: RAM/2 - 8 GiB of %.1f GiB", err.c_str(), (double) ram / GiB);
+    why = buf;
+    return true;
+}
+#endif
+}  // namespace
+
 namespace {
 std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
     std::vector<uint64_t> b;
@@ -265,7 +306,15 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
     if (base) {
-        const bool capped = max_pinned_bytes > 0 && max_pinned_bytes < bytes && bounds.size() >= 2;
+        // #243: STRATA_ARENA_PIN_GIB=N caps the registration from the start where the caller set no cap
+        const int env_gib = arena_pin_cap_gib();
+        uint64_t cap = max_pinned_bytes;
+        std::string cap_why = "by the engine (multi-GPU under WDDM, or remote experts)";
+        if (cap == 0 && env_gib > 0) {
+            cap = (uint64_t) env_gib << 30;
+            cap_why = "by STRATA_ARENA_PIN_GIB";
+        }
+        const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
         const cudaError_t e = capped ? cudaSuccess :
             cudaHostRegister(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
         if (!capped && e == cudaSuccess) {
@@ -275,9 +324,18 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             // Plan v0.3 P5: the whole range is refused, so pin it slice by slice from the start.  The rest stays
             // resident through the working-set lock below.  (P6: slices may differ in size, one per layer.)
             slice_bytes = 1;   // sliced; the uniform constructor records the size
+            bool limited = capped;
+            uint64_t limit = cap;
+            std::string limit_why;
+#ifdef _WIN32
+            // #243 (opt-in, STRATA_ARENA_PIN_GIB=auto): not up to the driver's refusal but below the shared-memory
+            // budget, for a PC where the full sliced pin leaves WDDM refusing later allocations.  Not the default: a
+            // 64 GB PC pins 30 GiB past that budget without trouble, and capping it at 26 cost ~20% prompt speed.
+            if (!capped && env_gib == -2) limited = sliced_pin_limit(limit, limit_why);
+#endif
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
-                if (capped && (off > max_pinned_bytes || n > max_pinned_bytes - off)) break;
+                if (limited && (off > limit || n > limit - off)) break;
                 if (cudaHostRegister((uint8_t*) base + off, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
                     (void) cudaGetLastError();
                     break;
@@ -286,9 +344,12 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                 registered_bytes = off + n;
                 ++registered_slices;
             }
-            note = (capped ? "cudaHostRegister limited to " + std::to_string(max_pinned_bytes >> 30) +
-                             " GiB for CUDA1; " :
-                             "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); ") +
+            char gib[32];
+            std::snprintf(gib, sizeof gib, "%.1f", (double) limit / (double) (1ull << 30));
+            note = (capped ? "cudaHostRegister limited to " + std::to_string(cap >> 30) + " GiB " + cap_why + "; " :
+                             "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); " +
+                             (limited ? "slices capped at " + std::string(gib) + " GiB (" + limit_why +
+                                        "; STRATA_ARENA_PIN_GIB=auto; N sets a cap; #243); " : std::string())) +
                    std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
                    " GiB); " + note;
             if (registered_bytes < bytes) {

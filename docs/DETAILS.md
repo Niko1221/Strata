@@ -112,6 +112,32 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   reads went to the file (`resident RAM: ... blob reads from the file`: 0 in steady use).
 - `--low-ram resident|mmap` forces one variant (also on a PC with enough RAM, e.g. to try it).
 
+**Low-RAM mode without `experts.bin` (engine 0.1.31):** for the native packs (IQ2_XS, IQ3_XXS, IQ3_S, the Coder, Swift,
+Q2_0 packed by `tools/iq_pack.py`; not the canonical Q2_0 pack setup makes for AVX-512 CPUs) the mapped mode no longer
+needs the pack's `experts.bin`: when the pack has none, the engine
+maps the model's GGUF files themselves and reads each expert's gate, up and down rows from where `native_experts.txt`
+says they are (the files are checked against it first: every tensor's name, type, shape, offset and bounds). That
+saves the 23-50 GB copy on the disk. The answers are the same: on the Coder, 64 greedy tokens from `experts.bin` and
+from the GGUF gave identical tokens and logits. An expert read from the GGUF is three reads instead of one, so the
+engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) with one batched page request
+(Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
+
+**A RAM budget (engine 0.1.31, `--resident-budget-gib N`):** the resident variant for a model whose experts do not all
+fit: the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied into RAM at
+start (locked; page-locked when the driver allows the whole budget), and the rest are read from the files through the
+OS file cache. It implies `--mmap-experts` and leaves 4 GB of free RAM (a larger N is clamped, with a message). With
+the GGUF read in place it also warms the next layer's likely experts: while the CPU works on a layer, a thread applies
+the next layer's router to this layer's input and asks the OS for the pages of the predicted experts that neither the
+GPU nor the RAM budget holds (only pages - the experts computed are the same; `STRATA_LOOKAHEAD=0` turns it off). This
+is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 GB PC: 7-8.5 tokens/s at N = 40 on an
+RTX 5070, against ~3 tokens/s before these changes.
+
+**How much came from where:** with `--stats` the engine prints the tiers of the decode (`expert tiers`: blobs from the
+RAM copy, blobs and MB from the files, the time spent reading them; `routing prefetch`: how many of the file reads had
+been warmed). The server log has the same per request (`expert tiers: GPU ... hits ...; RAM ... blobs, files ...
+blobs ... MB read`), and `GET /metrics` lists `ram_blobs`, `file_blobs` and `file_mb` for each recent request (with
+engine 0.1.31 or newer).
+
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
 
@@ -194,6 +220,12 @@ thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
 ```
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
+
+### Experimental: Unsloth's UD-Q4_K_XL (manual import)
+
+A 4-bit quantization of the same model (111 GB, 72 GiB of experts). Not in setup: packing it and the server
+configuration are in **[docs/UNSLOTH_Q4.md](UNSLOTH_Q4.md)**. On a 64 GB PC with a 12 GB RTX 5070 it writes 7-8.5
+tokens/s, most experts read from the SSD; quality has not been measured against llama.cpp yet.
 
 ## Before you start
 
@@ -383,6 +415,12 @@ print(r.choices[0].message.content)
   Without a setting the model uses its own default, **high**. `none` answers at once (fastest); `low` keeps the thinking
   short. The levels are instructions the model was trained with, not a hard token limit: on easy questions all three
   think briefly, on hard ones `high` thinks longest and is most accurate.
+- **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` in a request (OpenAI or Anthropic) caps the
+  thinking at N tokens: when it gets there the server ends it with a short wrap-up line and `</think>`, and the model
+  answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
+  part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
+  `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
+  Anthropic's `"thinking": {"budget_tokens": N}` still only chooses the level, as above.
 - **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
   (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
