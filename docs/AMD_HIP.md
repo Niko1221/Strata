@@ -192,8 +192,8 @@ Shipped tables:
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
   T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
   when that is a system ROCm 7 or newer). The version number is the only thing the engine can check, so another
-  1.5.0 build could number its solutions differently: run `hip_prefill_hipblaslt_gemm` with `STRATA_HIPBLASLT_TUNING` pointing at the table
-  (it exits non-zero when the table does not fit) and recalibrate with `tune_hipblaslt` if it fails.
+  1.5.0 build could number its solutions differently. `hip_prefill_hipblaslt_gemm` only spot-checks one BF16 and
+  one F16 row, so recalibrate with `tune_hipblaslt` before using this table with a different 1.5.0 build.
 
 ## Original backend validation (PR #94)
 
