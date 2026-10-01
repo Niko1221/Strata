@@ -128,6 +128,12 @@ bool VmmRange::set_access(int64_t lo, int64_t hi) {
            CUDA_SUCCESS;
 }
 
+bool VmmRange::commit_run(int64_t lo, int64_t hi) {
+    if (set_access(lo, hi)) return true;
+    for (int64_t c = lo; c < hi; ++c) vmm_chunk_free(unmap(c));
+    return false;
+}
+
 VmmChunk VmmRange::unmap(int64_t i) {
     if (!mapped(i)) return 0;
     const Api& a = api();
@@ -151,6 +157,7 @@ void VmmRange::release() {}
 int64_t VmmRange::mapped_count() const { return 0; }
 bool VmmRange::map_one(int64_t, VmmChunk) { return false; }
 bool VmmRange::set_access(int64_t, int64_t) { return false; }
+bool VmmRange::commit_run(int64_t, int64_t) { return false; }
 VmmChunk VmmRange::unmap(int64_t) { return 0; }
 }  // namespace strata::core
 
