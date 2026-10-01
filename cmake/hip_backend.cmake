@@ -59,6 +59,14 @@ add_library(strata_hip_runtime INTERFACE)
 target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA_HIP_ARCHS=\"${STRATA_HIP_ARCHS}\"")
+# RDNA3 WMMA intrinsics only compile for gfx11 targets, and the host pass of a HIP compile does not define
+# __gfx1100__ (it does define __HIP_DEVICE_COMPILE__), so a compiler-macro guard would silently build the
+# returning-false stubs for the symbol the engine links.  The build supplies the macro for gfx11 configs only;
+# the kernels additionally gate themselves at runtime on the device's gcnArchName, so a non-gfx11 device or a
+# mixed-arch build never executes them.
+if(CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
+  target_compile_definitions(strata_hip_runtime INTERFACE STRATA_WMMA_GFX11=1)
+endif()
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
 foreach(_language IN ITEMS CXX HIP)
   target_compile_options(strata_hip_runtime INTERFACE

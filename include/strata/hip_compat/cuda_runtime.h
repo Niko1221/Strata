@@ -1,6 +1,14 @@
 #pragma once
 // Included only by STRATA_ENABLE_HIP builds. CUDA builds use NVIDIA headers.
 #include <hip/hip_runtime.h>
+// CUDA's <math_constants.h> provides CUDART_INF_F, which CUDA-shaped sources use; HIP spells it HIP_INF_F.  This
+// header is force-included into every translation unit, so mapping it here makes the constant available without
+// every source knowing about the port; the standalone header beside this one covers explicit <math_constants.h>
+// includes.
+#include <hip/hip_math_constants.h>
+#ifndef CUDART_INF_F
+#define CUDART_INF_F HIP_INF_F
+#endif
 // Do not let HIP's legacy macro corrupt libstdc++ attribute names.
 #ifdef __noinline__
 #undef __noinline__
