@@ -478,6 +478,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
+| Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 
@@ -623,8 +624,8 @@ print(r.choices[0].message.content)
   (`chrome-extension://`, `moz-extension://`, `app://`: no web site can send those), and only with a JSON body; any
   other page, and `Origin: null`, gets **403**. Clients that send no `Origin` (curl, the OpenAI and Anthropic SDKs,
   other servers) are not affected. With
-  an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
-  own page (or no `Origin`), like `/settings`.
+  an API key, the key decides. `POST /unload`, `POST /load` and `POST /slots/0?action=save|restore` take
+  `Content-Type: application/json` from Strata's own page (or no `Origin`), like `/settings`.
 
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
@@ -680,8 +681,43 @@ rather than permission to continue with partial state. Indexer spare keys and th
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
-retention for diagnostic comparisons. Snapshots are not
-persisted across restarts.
+retention for diagnostic comparisons. Parked snapshots are not
+persisted across restarts; the session files below are.
+
+**Session files (disk).** A conversation the engine holds can be saved to a file and restored later, also after a
+restart, so a long prompt is not read again. The server exposes this as llama-server's slot API when started with
+`--slot-save-path DIR` (also `"slot_save_path"` in the config); NAME must be a plain file name inside DIR:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/slots/0?action=save"    -H "Content-Type: application/json" -d '{"filename": "chat1.bin"}'
+# {"id_slot": 0, "filename": "chat1.bin", "n_saved": 63025, "n_written": 1198691396, "timings": {"save_ms": 709.5}}
+curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: application/json" -d '{"filename": "chat1.bin"}'
+# {"id_slot": 0, "filename": "chat1.bin", "n_restored": 63025, "n_read": 1198691396, "timings": {"restore_ms": 898.2}}
+```
+
+The request must be `Content-Type: application/json` (else `415`) and come from no browser page or Strata's own
+(another site's `Origin` gets `403`), like `/load` and `/unload`; the Host check applies as everywhere.
+Errors: `501` without `--slot-save-path`, `400` for a slot other than 0, an unknown action, a file name with a path
+in it, or a file the engine refuses (the reason is in `error.message`), `404` for a restore of a missing file, `503`
+while the model is not loaded. The next request whose messages continue the restored conversation reads only the new
+tokens. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
+`SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>` or `ERR <reason>`.
+
+One file holds the running state, the deepest checkpoint (the next turn's resume point), every QSA layer's K/V up to
+the conversation's length and the draft layer's K/V. Format v1: 64-byte header (magic, version, model fingerprint,
+config fingerprint, payload length, header hash), the payload, then a payload hash and an end marker; written to
+`<path>.tmp` and renamed over `path` (`MoveFileExW` on Windows). The model fingerprint samples the weight files (name,
+size, first and last MiB of each pack / GGUF / MTP file); the config fingerprint covers the engine version, `--kv`,
+`STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window` and the control vectors. A restore checks the file
+size, header, both fingerprints, every count against the bytes left, the payload hash and then the usual snapshot
+validation, all before any device write: a refused file leaves the current session untouched. A restore does not
+park the outgoing session. Not supported with `--layer-split` or `--prompt-cache 0`. On Linux the file is read and
+written with `O_DIRECT` in 16 MiB blocks when the filesystem allows it (buffered otherwise, or with
+`STRATA_SESSION_BUFFERED=1`); on Windows with ordinary buffered I/O.
+
+Measured on an RTX 4070 Ti (12 GB), Ryzen 9 5900X, 64 GB RAM, NVMe, IQ3_XXS, a 63,025-token conversation: file
+1.20 GB, save 0.72 s (0.62-0.66 s for the next ten), restore 0.89 s, then the next 32-token turn in 1.15 s (first
+token after 0.55 s) with the same 32 output tokens as without saving; the cold first turn takes 25.5 s.
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
