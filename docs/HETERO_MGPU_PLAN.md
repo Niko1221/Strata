@@ -231,7 +231,11 @@ logged, and exposed by `strata-device`. Kernel-selection sites read the record (
 consumers: the `static int cc_major[64]` caches in `qsa_select.cu`/`qsa_prompt_attn.cu` —
 replace with a shared accessor; behavior-identical).
 Gate: build, unit test of the caps record, `strata-device` prints the full matrix on the
-2×1080 Ti rig (expect `can_peer == 0` both ways).
+2×1080 Ti rig. DONE 2026-10-01 (commit fe665a5) - and the expectation above was WRONG:
+canAccessPeer reports YES both ways on this rig, so peer access is *available* here even on
+the (claimed) PHB topology - which only makes the optional P2P upgrade path cheaper; the
+design still never requires it. Caps measured: sm_61, 49152 B smem opt-in, dp4a yes, mma no,
+cp.async no, GPU0 free ~0.41 GiB (production engine resident on both cards).
 
 ### Fáze 3 — Explicit roles (`main-device` / `draft-device`)
 New execution strategy, **separate from layer split** (opt-in flag group; layer split and
@@ -333,3 +337,261 @@ CPU pool, and the Pascal build (`STRATA_EXPERIMENTAL_SM60`).
 | Draft prefill on the DRAFT GPU stalls TTFT if the handoff is not double-buffered | event-guarded double buffer; measure B1 vs B2; fall back to B2 |
 | Host sync storm (8+ syncs/round) grows with the new handoff | instrumentation first (Fáze 7), batching only in Fáze 9 |
 | sm61 rig cannot falsify heterogeneous-role claims | explicit measurement-honesty section (Fáze 12); bench script for other owners |
+---
+
+## 6. Corrections recorded 2026-10-01 (user) — baseline and test-rig reality
+
+1. **The work targets upstream `Niko1221/Strata`** (the x99 tree origin), not just the
+   `hireymage/Strata` fork. Upstream `main` has moved past the v0.1.30 base this analysis
+   was written against: **0.1.32 at `c499bd1` = +150 commits / +55,759 lines over
+   `08ea0e0^`**, touching `device.cu`, `verify.cpp`, `mtp.cpp`, `prefill.cpp`,
+   `generate.cpp`, `session.hpp`, `layer.cpp` and more. **The Fáze 2+ line references
+   above are valid for the sm61-1080ti tree (2ab8e23) but must be re-validated after the
+   branch is rebased onto 0.1.32** — the analysis conclusions (mechanisms, handoff
+   patterns, no-P2P discipline) need a re-check against the newer tree, not a blind carry.
+2. **Direct heterogeneous-role testing is not possible in this homelab, on either rig:**
+   - **Intel 8700K (Windows)**: the only Turing card (runs upstream `main` fine, cc >= 7.5)
+     — **one card, so no second device exists to pair with it**; heterogeneous roles can
+     never be exercised there.
+   - **x99**: two GTX 1080 Ti (Pascal, PHB topology) — both assignments of a two-role
+     setup are testable, but only on the `STRATA_EXPERIMENTAL_SM60` build; **upstream
+     `main` still refuses cc < 7.5** (`device.cu` guard, unwrapped there).
+   Consequence for Fáze 12: every heterogeneous-perf claim stays unmeasured here by
+   construction (symmetric 1080 Ti pair only); the bench script must be runnable
+   untouched by an owner of a mixed rig (e.g. RTX 4090 + RTX 2070).
+---
+
+## 7. Re-validation on 0.1.32 (2026-10-01, commit worktree `sm61-hetero`)
+
+The `sm61-1080ti` commits were ported onto upstream `c499bd1` (0.1.32) in the worktree
+`/home/hozzy/src/Strata-rebase` (branch `sm61-hetero`). Port notes:
+
+- `33d9a9f` (sm61-enable) **superseded by upstream #236**: 0.1.32's CMake adds
+  `STRATA_EXPERIMENTAL_SM60=1` for `strata_core` and `device.cu` takes `kMinCc = 60`.
+- cc12d0a's logic re-applied by hand as the 0.1.32 `iq_pack.py` rewrote the pack writer
+  (tmp+rename+sidecar atomic publish); port = `SafeMemmap` on all three memmap sites, per-layer
+  fsync, resume on `experts.bin.tmp`.
+- 0.1.32's `open_sized()` still zeros `layer_next_` after `open()` rebuilt it — the open_sized
+  fix (7d0f9f9) remains required; ported as `db6a67c`.
+
+Anchor re-check (v0.1.30 → 0.1.32): `window_R_` kernel handoff `mtp.cpp:631 → 634`;
+`draft_first` R_ write-back → `mtp.cpp:825`; draft-chain syncs unchanged in shape
+(mtp.cpp:679-826); `draft_kv` cross-device refusal → `prefill.cpp:741`; static per-device cc
+caches → `qsa_select.cu:697` + `qsa_prompt_attn.cu:982`; `OnDevice on_mtp` →
+`generate.cpp:2499`; `kDrafterMib` → `generate.cpp:2287` (comment updated to "839 MiB"); P2P
+still absent everywhere (0 hits). The design's Fáze 1 conclusions survive 0.1.32.
+
+**New for Fáze 9**: upstream 0.1.32 already has an async-commit path (`E-6`,
+`g_commit_async` / `STRATA_VERIFY_ASYNC_COMMIT`, `commit_done_` event at `verify.cpp:351`;
+synchronisation kept as fallback by default and always under a split, `verify.cpp:1329-1338`).
+The drafter already reads only this window's final rows while commit completes in the
+background. Fáze 9's remaining scope is therefore mostly the draft-chain batching (the
+3 sequential launch+sync in `mtp.cpp`) rather than commit overlap.
+
+Build/test on 0.1.32 (sm61, -DCMAKE_CUDA_ARCHITECTURES=61): 237/237 targets; ctest 50/53 PASS
+(12 new upstream tests all pass). The 3 failures are pre-existing baseline, not rebase
+regressions: `ple_parity` (upstream test fixture absent), `kv_hybrid_parity` (mode-5
+`qsa_prompt_attn` refuses hybrid pools — fails identically on the 0.1.30 build; our
+production uses int8 KV, unaffected), `expert_multi_test` (E5-2678 v3 has no AVX512-VNNI/
+VBMI). Config note: vendored `third_party/ggml` in 0.1.32 is an incomplete checkout (no
+CMakeLists); configure with `-DSTRATA_GGML_DIR=<llama.cpp checkout with pinned 3cf0325>`.
+
+## 8. Fáze 2 krok-záznam (2026-10-01 večer)
+
+- Commit fe665a5: DeviceCaps (+ device_caps(), peer_access_matrix()) in
+  include/strata/core/device.hpp + src/core/device.cu; strata-device enumerates every visible
+  device with its caps and prints the peer matrix. HIP path kept (gcn arch + guards);
+  STRATA_EMULATE_CC honoured via cc_major_of/cc_minor_of/smem_optin_of.
+- Build 237/237, ctest 50/53 (the same 3 pre-existing baseline failures; no new ones).
+- Gate result on 2×1080 Ti: full matrix printed; canAccessPeer YES both ways (the earlier
+  "expected 0" prediction falsified - peer IS available over this topology).
+- Next (Fáze 2b): first consumers - point the static int cc_major[64] caches at the caps
+  record (behaviour-identical), then Fáze 3 explicit roles.
+
+- Fase 2b done: `int device_cc_major(int)` - one shared per-ordinal cached accessor
+  (STRATA_EMULATE_CC honoured); both static cc-caches replaced by it, with the call-site A/B
+  override (STRATA_QSA_WARP = select / attn) applied as POLICY on top of the fact, exactly as
+  before (behaviour-identical: same kernels chosen, same failure paths). Build clean; ctest
+  unchanged (50/53, same 3 baseline).
+
+## 9. Fáze 3 gate-záznam (2026-10-02) — the portable-mapped hand-off is green
+
+The mapped-hand-off step (verifier's window residual carried through a host mapped mirror;
+cross-device kernel reads only of mapped host memory) CLOSED Fáze 3: the drafter runs on another
+GPU end to end, with the P2P path still never used.
+
+Two root findings from the gate runs (both now in code comments):
+
+1. **P2P on this rig is not only deadlocked, it is unnecessary**: `cudaDeviceCanAccessPeer`
+   answers yes, but plain `cudaMemcpyDeviceToDevice / cudaMemcpyDefault` across two non-peer
+   GPUs already works (driver stages through host) - measured with a standalone probe
+   (uva_probe.cu on the rig, 2026-10-02).  The design's premise holds: the peer path is
+   never required.
+2. **`cudaPointerGetAttributes` from a foreign context answers `devicePointer = (nil)`** for
+   another device's arena memory - the RoPE-table localization copied a nil source and failed
+   'invalid argument', and the fallback shared the main device's tables, which the draft
+   kernels then read cross-device and crashed with an illegal access (uva_probe2.cu).
+   Fix: localize_rope copies through the raw UVA pointers, never through the queried
+   devicePointer.  The same rule applies anywhere else we copy across devices.
+
+Gate result (125B pack, 95-token prompt, 60 new tokens, greedy, --spec 4, both 1080 Ti):
+the role plans 0->1 AND 1->0 (the reversed one loads the whole main stage on the second GPU) and
+the degenerate 0->0 WITH role flags are all rc=0 and **bit-identical** to the flagless baseline
+(60/60 tokens, same speculation statistics 23 rounds of 6, 37/65 drafts accepted).  The
+regression gate (Fáze 13 harness) compares the engine's "output :" dump lines.
+
+Harness note (bench-hetero.sh): the one-shot CLI takes --mtp DIR (the serve config's "mtp" key
+names the same directory; there is no --rt flag), and a native (IQ) pack additionally needs
+--native SHARD1, --ple-gguf, --prefill CHUNK and the --expert-profile residency table for --spec.
+## 10. Fáze 4 krok-záznam (2026-10-02) — the roles' capability view and the ambient-device contract
+
+The roles' plan now reads its own premises out loud at startup (generate.cpp, after the
+role range check): one informational line per role device (name, cc, dp4a or the software
+fallback, free VRAM) plus the peer-matrix entry for the pair, reported only - the mapped
+mirror needs no peer pair, the kernel paths self-select per device.  No new refusals.
+
+The step also captured a real hazard: `caps_from` (device.cu, the `device_caps()` record's
+per-device probe) `cudaSetDevice`s the probed ordinal and never handed the ambient device
+back.  The roles view's three probes left the LAST probed ordinal current, and the engine's
+later device picks read the wrong device - the verifier's banner printed "GPU 1" for
+`--main-device 0`, the expert-cache auto sizing came off the wrong card (4579 instead of
+the certified 5011 slots), and the run died with "prefill copy_i32: an illegal memory
+access".  Fix: a CurrDeviceGuard in caps_from brackets the probe (destructor restores, the
+throw paths included).  `device_info` stays unguarded on purpose - the engine's init path
+may legitimately consume the set device; only the informational query changed its contract.
+
+Gate (125B pack, 95-token prompt, 60 new tokens, greedy, --spec 4): 0->1 and 1->0 both
+rc=0 and BIT-IDENTICAL to the certified baseline (the same 23 rounds of 6, 37/65 accepted;
+regression gate PASS both.  The banner and the 5011-slot cache match the certified log
+again).  ctest 50/53 (the 3 pre-existing).  Harness note: ctest with -j 4 collides while
+the production engine holds the RAM - run the suite serially near a loaded machine; a
+single test alone passes at any time.
+## 11. Fáze 6/7/8/10/11 krok-záznam + the determinism fix (2026-10-02)
+
+Commits on `sm61-hetero-0134` (tree `/home/hozzy/src/Strata-rebase`): 041e21b (Fase 6: the drafter
+ring restore launches on the ring owner device), 5032a98 (Fase 7 instrumentation + THE DETERMINISM
+FIX), 7a15ea5 (Fase 8: `--draft-prefill-parallel`), cc4646d (Fase 10: `--auto-roles`), ae5c180
+(Fase 11: per-role VRAM report). ctest stays 50/53 throughout (the same 3 pre-existing parity
+failures: `ple_parity`, `kv_hybrid_parity`, `expert_multi_test`).
+
+### 11.1 THE ROLES' NONDETERMINISM (pre-existing, only main=0 draft=1) — root cause and fix (5032a98)
+
+Symptom: a roles 0->1 run gave either A=23 rounds/37 of 65 or B=24/36/69 (or 25/35/72); the same
+GPU0-only and 1->0 runs were always A. Method: CRC instrumentation over the mapped mirror, the
+drafter window and the per-round drafts (STRATA_DBG_MIRROR/DRAFT, reverted before the commit) plus
+one-Knob bisections. Findings, in order:
+
+- The hand-off itself is EXACT: the mirror's crc equals the drafter's window crc in EVERY window of
+  both attractor runs, and the divergence starts at pos=101 = the first window AFTER the first
+  adapt round ((rounds+1) % 4) on IDENTICAL window inputs (state, tokens, drafts all bit-equal).
+- The suspect is main-side: `adapt()` runs the experts' H2D swap copies on `adapt_stream` (async),
+  while the residency table (d_res) reached the devices only in `apply_pending` - a NON-BLOCKING
+  call at the window boundary that DROPS while a copy is in flight. Two consequences:
+  (a) the evicted expert stays marked resident -> a window can read its slot mid-overwrite;
+  (b) the admitted expert switches from the CPU pool to the GPU-resident path at whichever window
+  the copy had landed by - and the GPU expert path and the CPU pool path round DIFFERENTLY (the
+  pre-existing parity gap; the same one behind the 3 failing ctests) - so the stream depends on the
+  race. The 0->0 and 1->0 runs had no jitter in that timing, hence always A.
+- Bisect proof: `--adapt-swaps 0` (adapt runs, no copies) is deterministic (D-attractor 26/37/75 x2);
+  an early res_upload()-only attempt still left B alive (it fixed (a) only).
+
+Fix: upload the table right after the copies are SUBMITTED (evictions visible at once, and
+swapped-in experts stay non-resident until they land) and make the window-boundary call BLOCKING
+(`apply_pending(true)`), bounded by one ~1.4 MB copy (~1 ms). Both decode loops (serve, one-shot)
+and the chat loops got it.
+
+### 11.2 THE NEW GATE REFERENCE (the old certified stream is VOID)
+
+The previously certified reference (A, md5 1515024ed68a8a2797f98710df847ca7) was measured UNDER
+the race: deterministic by schedule, not by construction. WITH the fix:
+
+- baseline (no roles flags, drafter same-device, 4400 slots): 22 rounds/38 of 62, bit-identical x3;
+- roles 1->0 (4400 slots): 22/38/62, bit-identical x3, BIT-IDENTICAL to the baseline;
+- roles 0->1 (auto, 5011 slots): 26 rounds/34 of 75, bit-identical x3;
+- roles 0->1 with FORCED `--expert-cache 4400`: 22/38/62, BIT-IDENTICAL to the baseline.
+
+That last row is the real proof of the phases: under EQUAL expert residency the drafter's placement
+changes nothing token for token; directions otherwise differ only through residency (the auto slot
+count differs because the drafter's 68+870 MiB sit on the MAIN's GPU when the roles are the same
+device but on the DRAFT's otherwise). Gate logs: /tmp/bench-gate0 (fc9b4c93e2c2), /tmp/bench-gate10
+(22fe41487d75), /tmp/bench-gate01 (39d97c814cd8), /tmp/bench-gate01n (b172785529af).
+
+Fase 13 gate rule that follows:
+
+1. every plan is bit-exact across repeats (now enforced >= x2);
+2. directions are compared only under EQUAL residency - either the same effective slot count, or a
+   forced `--expert-cache N` shared by all plans;
+3. the reference streams are the 22/38/62 ones above (NOT the 0.1.34 re-certification's md5).
+
+### 11.3 Fase 8 measurements (the pipelined prompt fill)
+
+- The 95-token probe prompt: no change (5.30 vs 5.30 s prefill; the drafter catches up inside one
+  chunk). The flag's output is bit-identical with and without the pipeline.
+- A 4,099-token prompt (3 chunks of 2,048, mmap-experts): 655.6 -> 590.7 and 587.5 s without the
+  flag vs 469.3 and 656.7 s with it. The prefill is I/O-BOUND (the experts' mmap reads alone: 388 -
+  577 s = 78-98 % of the window), and the run-to-run spread covers the drafter's share, so the
+  pipeline's gain is NOT PROVEN on this rig's pack - the honest number is "variance-noise-dominated";
+  a fair claim needs a cached/pinned-expert profile (the flag itself is correct and off by default).
+
+### 11.4 Fase 7/11 numbers worth quoting
+
+- decode timing (serve probe, 125B, roles 0->1): 938.91 ms/window, of which verify 929.86 (host
+  experts 715.96 = the CPU pool), commit/emit 0.14, draft 4.42, mirror 1.66 - the mapped mirror
+  hand-off costs ~1.7 ms per ~939 ms window (~0.18 %); there is no measurable hand-off tax.
+- per-role VRAM after the binding (Fase 11): main 633 MiB free of 11163, draft 9619 MiB free of
+  11165 (the drafter is tiny; the main's VRAM is the expert-cache budget).
+## 12. Fáze 9 krok-záznam (2026-10-02) — the batched draft chain (`--draft-chain-batch`, d21f369)
+
+The design's insight still held on 0.1.34 with one simplification: the chain's steps ALREADY
+propagate their data on the device (`mtp_select` leaves the next step's residual and token in
+`Rin_[0]` / `tok_[0]`), so the per-step waits only ever bought the HOST-side min-p cut.  The opt-in
+flag restructures `draft()` to stage every step's cell (`p + a + j`, known before any launch) up
+front, capture the step graphs while the stream is idle, launch the round graph and all of them
+back to back, and apply the cut from the mapped probabilities after ONE wait - the same rule as the
+per-step loop (the count of drafts whose probability and every one before it reaches min_p).  A
+step past the cut runs harmlessly: it writes only ring cells the chain rewrites when it reaches
+them again, and its drafts/probabilities are zeroed before the caller sees them.  Roles-independent
+(a same-device run gains too); STRATA_DECODE_TIMING's draft figure and the one-shot's
+`mtp ... ms/round drafting` measure it.
+
+Gate (125B, greedy 60 tokens, the F12 reference EXTRA - reconstructed from the pack's
+sm61-config.json and verified bit-identical to the a306853 reference streams before A/B): every
+row bit-identical to its flag-off reference - same-device (22/38/62), roles 0->1 (26/34/75), roles
+1->0, and `--spec-min-p 0.20` (an ACTIVE cut: 23/39/64, window sizes T4:21) - determinism x2-x3
+per row; ctest 50/53 (the same 3 pre-existing).  Drafting 4.63 -> 4.14 ms/round same-device,
+4.40 -> ~4.1 ms/round roles (noise ±0.4 over 25 rounds) - the drafter is ~0.5% of a ~939 ms window
+(Fase 7/12), so the batching is measured, not felt.  Gate logs: /tmp/bench-f9-ref-sd,
+/tmp/bench-f9-sd, /tmp/bench-f9-01, /tmp/bench-f9-01on, /tmp/bench-f9-10on, /tmp/bench-f9-minp-{off,on}.
+
+PHASE STATE after this: 1-8, 9, 10, 11, 12, 13 COMPLETE.  The hetero plan's implementation list is
+done; what remains is the PR strategy (issue to the author first, then a hetero-only PR) and the
+production tree's promotion decision.
+## 13. Fáze 14: the third-party test harness (`tools/hetero-test.sh`)
+
+Everything above was proven on OUR rig (2x GTX 1080 Ti). For the upstream issue to carry weight it
+must travel to OTHER rigs: different GPUs, different expert-cache ceilings, possibly one GPU. The
+harness turns the F13 gate rule into a one-command, dependency-free probe:
+
+    tools/hetero-test.sh BUILD_DIR "BASE_FLAGS" OUT_DIR [MAX_NEW=60] [REPEATS=2]
+
+- BUILD_DIR holds `strata` + `strata-device` (the tester's own build of the branch);
+- BASE_FLAGS is the tester's own model load (quoted, the engine's own demanded set -- the pack,
+  the (optional) MTP, quantization flags...); the harness only APPENDS the roles/batching flags;
+- the probe input is a deterministic random token-id list (seeded; the builds have no tokenizer,
+  so ids ARE the input) -- every variant runs the same ids with `--max-new`, temperature off.
+
+Variants: V0 baseline (same GPU), V1 roles 0->1, V2 roles reversed, V3 +`--draft-prefill-parallel`,
+V4 +`--draft-chain-batch`, V5 both, V6 `--auto-roles`; on ONE GPU with `--mtp`, V7 = the batch
+alone. Then the exactness row V1f: V1 at V0's auto slot count (`--expert-cache N`) -- the
+EQUAL-residency run that isolates "placement changed the output?" from "residency changed the
+output" (two-GPU rigs only, and only when BASE does not already force a numeric cache).
+
+The report (`OUT/report.md`, markdown, ready to paste): per run the accepted/of-totals, tok/round,
+ms/round drafting, expert slot count and the GREEDY stream md5; verdicts -- repeats identical
+(determinism); every auto-residency variant compared bit-exactly against a reference of the SAME
+residency (V1 if the slot counts match, else V0, else V1f), otherwise SKIPPED with the slot counts
+stated; V1f vs V0 as the placement-exactness proof; the residency-dividend NOTE when V0's and V1's
+auto slot counts differ (that difference IS the "is it worth it" signal on the tester's rig).
+
+Validated on the source rig (0.1.34 sm61-hetero-0134): all verdicts PASS, V1f == V0 bit-exact --
+the same outcome the F13 gate measured by hand.
