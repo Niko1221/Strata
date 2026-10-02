@@ -26,7 +26,7 @@ static void check(bool ok, const char* what) {
 namespace {
 
 q::Mat fmat(const std::vector<float>& v, int64_t nin, int64_t nout) {
-    return {v.data(), 0, nin, nout, (size_t) nin * sizeof(float)};
+    return {v.data(), nullptr, 0, nin, nout, (size_t) nin * sizeof(float)};
 }
 
 struct Weights {

@@ -18,7 +18,7 @@ static void check(bool ok, const char* what) {
 }
 
 namespace {
-q::Mat fmat(const float* p, int64_t nin, int64_t nout) { return {p, 0, nin, nout, (size_t) nin * sizeof(float)}; }
+q::Mat fmat(const float* p, int64_t nin, int64_t nout) { return {p, nullptr, 0, nin, nout, (size_t) nin * sizeof(float)}; }
 
 struct Arena {
     std::mt19937 rng{7};
