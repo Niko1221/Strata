@@ -130,6 +130,19 @@ struct Fp8Table {
 const Fp8Table kFp8;
 }  // namespace
 
+void bf16_dequant_row(const uint8_t* row, float* out160) {
+    // bfloat16 IS the top 16 bits of a float32, so widening is exact for every value, normal or not - no
+    // rounding, no clamp, no scale. Bytes are assembled little-endian explicitly rather than reinterpreted, so
+    // this is the same on a big-endian host.
+    for (int j = 0; j < PLE_HEAD_DIM; ++j) {
+        const uint32_t bits = (uint32_t) row[2 * j] | ((uint32_t) row[2 * j + 1] << 8);
+        const uint32_t wide = bits << 16;
+        float v;
+        std::memcpy(&v, &wide, sizeof v);
+        out160[j] = v;
+    }
+}
+
 void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160) {
     for (int j = 0; j < PLE_HEAD_DIM; ++j) out160[j] = kFp8.v[row[j]] * scale;
 }
@@ -150,11 +163,13 @@ struct PleTable::Impl {
     bool locked = false;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
-    bool fp8 = false;                 // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
+    bool fp8 = false;                 // F8_E4M3 rows (tools/ple_table_pack.py); else IQ4_NL
+    bool bf16 = false;                // BF16 rows, the checkpoint's own table; else one of the above
     float scale = 1.0f;               // the FP8 table's one scale
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
     void decode(const uint8_t* row, float* out160) const {
         if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
+        else if (bf16) bf16_dequant_row(row, out160);
         else if (q5_0)
             for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
         else iq4nl_dequant_row(row, out160);
@@ -188,9 +203,11 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as
-    // shipped: I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
+    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), the FP8 table as
+    // shipped (I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale), or the same table at full
+    // BF16 precision straight out of the checkpoint (tools/ple_table_pack.py).
     impl_->fp8 = false;
+    impl_->bf16 = false;
     impl_->q5_0 = std::strcmp(t->type_name(), "Q5_0") == 0;
     impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : PLE_ROW_BYTES;
     if (std::strcmp(t->type_name(), "I8") == 0) {
@@ -204,8 +221,14 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->fp8 = true;
         impl_->scale = (float) s->num();
         impl_->rb = PLE_ROW_BYTES_FP8;
+    } else if (std::strcmp(t->type_name(), "BF16") == 0) {
+        // Self-describing: a BF16 row carries its own values, so there is no scale to require and no metadata
+        // to trust. Widening to float is exact, so this row is the checkpoint's value, not a rounded copy.
+        impl_->bf16 = true;
+        impl_->rb = PLE_ROW_BYTES_BF16;
     } else if (!impl_->q5_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q5_0 or FP8 (I8)";
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() +
+              ", not IQ4_NL, Q5_0, BF16 or FP8 (I8)";
         close();
         return false;
     }
@@ -291,7 +314,9 @@ void PleTable::close() {
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL"; }
+const char* PleTable::format() const {
+    return impl_->fp8 ? "F8_E4M3" : impl_->bf16 ? "BF16" : impl_->q5_0 ? "Q5_0" : "IQ4_NL";
+}
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }

@@ -41,12 +41,13 @@ inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
 inline constexpr float NG_RMS_EPS = 1e-6f;
 
-// The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements =
+// The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so the ROW index is shape[1] and a row is contiguous.
 // 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
 inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90: an IQ4_NL row
 inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160: an F8_E4M3 row, one byte a value
-inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_FP8;
+inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;              // 320: a BF16 row, two bytes a value
+inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format uses
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -100,7 +101,15 @@ void iq4nl_dequant_row(const uint8_t* row, float* out160);
 
 /// One FP8 row -> 160 floats: each byte an E4M3 value (the "fn" variant: no infinities, 0x7F/0xFF are NaN), times the
 /// table's one scale. This is the table as Qwen3.8-Flash-Next ships it (`...ngram_embedding.shard_k`, F8_E4M3, and
-/// `weight_scale`), kept byte for byte by tools/ple_fp8_pack.py; IQ4_NL is 8% off it per row.
+/// `weight_scale`), kept byte for byte by tools/ple_table_pack.py; IQ4_NL is 8% off it per row.
+void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160);
+
+/// One BF16 row -> 160 floats, EXACTLY: bfloat16 is the top half of a float32, so this is a shift and a copy
+/// with no rounding anywhere. It is the other published form of this same table - the full checkpoint stores
+/// `...ngram_embedding.shard_k` as BF16 (2 B a value, 102.4 GB), which is the source of record rather than a
+/// re-quantization: tools/ple_table_pack.py copies it through and the reader expands it here. There is no scale,
+/// because BF16 values are the values.
+void bf16_dequant_row(const uint8_t* row, float* out160);
 void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
@@ -115,7 +124,8 @@ enum class PleIo { Direct, Mmap };
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
     uint32_t max_inflight = 256;     ///< outstanding SSD reads (decode needs 16; a prompt chunk saturates the SSD at 256)
-    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
+    uint64_t cache_rows = 1u << 20;  ///< bounded row cache, in ROWS: 1,048,576 x 90 B ~ 95 MB (IQ4_NL), or
+                                     ///< ~160 MB (FP8) / ~335 MB (BF16); 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
     /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
@@ -162,7 +172,9 @@ public:
     /// True when `PleIoOptions::lock` was asked for and mlock succeeded (false: pages only pre-touched).
     bool locked() const;
     uint64_t rows() const;
-    /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
+    /// "IQ4_NL", "F8_E4M3" (a GGUF from tools/ple_table_pack.py: type I8 with strata.ple.format = f8_e4m3 and
+    /// strata.ple.scale), "Q5_0" (OrcaRouter's own GGUF), or "BF16" (the same tool, full precision: type BF16,
+    /// no scale).
     const char* format() const;
 
     /// 16 row indices -> 2560 floats.  The gathered rows are flattened HEAD-SLOWEST: row h's 160 values
