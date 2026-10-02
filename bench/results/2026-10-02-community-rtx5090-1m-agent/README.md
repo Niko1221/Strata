@@ -6,12 +6,13 @@ on a Linux desktop. This tests Strata 0.1.31 with Qwen3.8-Flash-Next IQ3_S at a
 to resemble agentic use: long repeated system-style prompts, streaming
 completions with reasoning enabled, and immediate prefix-reuse repeats.
 
-Headline medians (see [agent_bench.jsonl](agent_bench.jsonl) for every run):
+Headline numbers (see [agent_bench.jsonl](agent_bench.jsonl) for every run):
 
-- Decode throughput: TBD tok/s (thinking mode, 256-token cap)
-- Prefill throughput, cold: TBD tok/s at 4k / 32k / 128k / 512k prompt tokens
-- Prefill throughput, warm repeat: TBD tok/s (prefix cache reuse, see `cache_n`)
-- Time to first token: TBD s at 512k cold
+- Decode throughput: **94–105 tok/s** with reasoning enabled (256-token cap)
+- Prefill throughput, cold: **~2,500 tok/s at 4k, ~3,300 at 32k, ~3,400 at 128k, ~3,000 at 512k** prompt tokens
+- Prefill throughput, warm repeat: **500,553 of 500,558 tokens reused in 36 ms** (see the reuse table below)
+- Time to first token: engine-side prefill as above; client TTFT is contaminated by co-tenant traffic — see Note A
+- Needle recall: **5/5 found at depth 50%, up to a 1,048,265-token prompt**
 
 These are synthetic English-prose prompts with a fixed task suffix. They do not
 establish general answer quality or performance on other workloads.
@@ -109,6 +110,24 @@ Instruct-mode greedy decode ran 71–87 tok/s (fewer draft acceptances at
 temperature 0 on this repetitive prompt; small samples, treat as indicative).
 
 Expert-cache hit rate during the 512k runs: 96–98% (from the engine log).
+
+### Correctness check: needle-in-a-haystack recall
+
+Run with the repository's own `tools/needle_bench.py`, depth 50%, five
+haystack sizes (full results: [needles.json](needles.json)):
+
+| Haystack | Actual prompt tokens | Result | Wall time |
+|----------|---------------------|--------|-----------|
+| 32k | 31,453 | FOUND | 10 s |
+| 128k | 121,793 | FOUND | 117 s |
+| 256k | 249,709 | FOUND | 158 s |
+| 512k | 528,950 | FOUND | 262 s |
+| 1024k | 1,048,265 | FOUND | 526 s |
+
+**5 of 5 found**, including the full 1,048,265-token prompt. Recall at
+depth 50% only; other depths and needle types were not tested. These runs
+shared the server with a live agent session (see Note A), so wall times
+include co-tenant queueing and are upper bounds, not clean latencies.
 
 ### Note A — cross-session contention, not a server-side stall
 
