@@ -180,6 +180,10 @@ private:
     uint16_t* x_bf16_ = nullptr;
     float* head_logits_ = nullptr;    uint8_t* head_dev_ = nullptr;   /// Fase 3 (hetero multi-GPU): the draft head when it must live here
     float* dummy_inj_ = nullptr;
+    // Fase 3 (hetero multi-GPU): a drafter-local gr_read workspace (the session's block.gr is main-device memory)
+    bool local_gr_ = false;
+    strata::kernels::GrWorkspace gr_ws_{};
+    void* gr_ws_base_ = nullptr;
     int64_t cap_ = 0, attn_scratch_floats_ = 0;
 };
 
