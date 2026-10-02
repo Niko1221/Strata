@@ -1036,7 +1036,8 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1101": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",
                 "gfx1200": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
-                "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/"}
+                "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
+                "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/"}
 ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030")
@@ -1044,9 +1045,10 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1200": "AMD Radeon RX 9060 series (gfx1200)",
              "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)",
-             "gfx1030": "AMD Radeon RX 6800 / 6900 series (gfx1030)"}
+             "gfx1030": "AMD Radeon RX 6800 / 6900 series (gfx1030)",
+             "gfx1031": "AMD Radeon RX 6700 XT series (gfx1031)"}
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
-             "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030, unvalidated)")
+             "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), RX 6800 / 6900 series (gfx1030, unvalidated), and the RX 6700 XT (gfx1031, unvalidated) ")
 
 
 def rocm_index(arch):
