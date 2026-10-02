@@ -119,10 +119,30 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    args = list(cfg["args"])
-    if isinstance(cfg.get("gpu"), list) and "--layer-split" not in args:   # several cards: measured as it runs
-        args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
-    return measure(args, ids_list, start_engine, say)
+    return measure(engine_args(cfg), ids_list, start_engine, say)
+
+
+def engine_args(cfg: dict) -> list[str]:
+    """The arguments the server starts this config's engine with (serve.server.engine_args), so the tuning measures
+    the engine as it runs.  #447: this used to read any "gpu" list as a layer split and add --layer-split auto, which
+    broke a one-card config with a helper card for the expert tier ("gpu": [0] + --expert-cache-device1: the engine
+    refuses a split that leaves no card without a stage), missed the "0,2" spelling, and ignored split_skip_if_fits."""
+    from serve.server import engine_args as server_args
+    return server_args(cfg)
+
+
+def engine_error(log: str | None, since: int = 0) -> str | None:
+    """#447: the engine's own reason for a failed start - the last line of its log written after byte `since` that is
+    its own ("strata ..." or "ERR ..."), else the last line there; None without a log or a new line."""
+    if not log:
+        return None
+    try:
+        with open(log, "rb") as f:
+            f.seek(since)
+            lines = [x.strip() for x in f.read()[-16384:].decode("utf-8", "replace").splitlines() if x.strip()]
+    except OSError:
+        return None
+    return next((x for x in reversed(lines) if x.startswith(("strata", "ERR"))), lines[-1] if lines else None)
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:

@@ -92,6 +92,64 @@ class GgufDirShards(unittest.TestCase):
         self.assertEqual(self.shards(["a-00001-of-00002.gguf", "b-00001-of-00002.gguf"]), want)   # ambiguous
 
 
+class GgufDirUnsupported(unittest.TestCase):
+    """#444: --gguf-dir with GGUFs Strata cannot run (Unsloth's UD-IQ3_XXS, UD-Q2_K_XL) says so, names the files it
+    runs (ISTA-DASLab's GSQ-RCO, the Coder's, Unsloth's UD-Q4_K_XL) and the --family/--model of the usable ones."""
+    UD = ["Qwen3.8-Flash-Next-UD-IQ3_XXS-%05d-of-00003.gguf" % i for i in range(1, 4)] + \
+         ["Qwen3.8-Flash-Next-UD-Q2_K_XL-%05d-of-00003.gguf" % i for i in range(1, 4)]
+
+    def problem(self, names, family="qwen", model="IQ3_XXS"):
+        with tempfile.TemporaryDirectory() as d:
+            for n in names:
+                (Path(d) / n).write_bytes(b"")
+            fam = setup.FAMILIES[family]
+            first = setup.gguf_dir_shards(Path(d), fam, model)[0]
+            p = setup.gguf_dir_problem(Path(d), first, fam, model)
+            return p and (p[0].replace(d, "<D>"), p[1])
+
+    def test_quant_names(self):
+        for name, want in (("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "UD-IQ3_XXS"),
+                           ("Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", "UD-Q2_K_XL"),
+                           ("model-Q4_K_M.gguf", "Q4_K_M"),
+                           ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf", None),
+                           ("Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", None),
+                           ("my-IQ3_XXS-00001-of-00003.gguf", None), ("mmproj-F16.gguf", None),
+                           ("a-00001-of-00002.gguf", None)):
+            self.assertEqual(setup.gguf_unsupported(name), want, name)
+
+    def test_an_unsloth_ud_file_is_not_taken_for_a_gsq_rco_size(self):
+        msg, hint = self.problem(self.UD)                   # IQ3_XXS: UD-IQ3_XXS has the size in its name
+        self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
+                              "cannot run")
+        self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
+        self.assertIn("Unsloth's UD-Q4_K_XL only", hint)
+
+    def test_a_folder_without_the_choice_names_what_is_there(self):
+        gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
+        msg, hint = self.problem(self.UD + gsq, "unsloth", "UD-Q4_K_XL")
+        self.assertEqual(msg, "<D> has no Qwen3.8-Flash-Next (Unsloth) UD-Q4_K_XL file")
+        self.assertIn("Not usable here: Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf, "
+                      "Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", hint)
+        self.assertIn("Usable here: --family coder --model IQ1_M", hint)
+
+    def test_usable_folders_are_left_alone(self):
+        good = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-%05d-of-00002.gguf" % i for i in (1, 2)]
+        self.assertIsNone(self.problem(good + self.UD))
+        self.assertIsNone(self.problem(["my-IQ3_XXS-%05d-of-00003.gguf" % i for i in (1, 2, 3)]))
+        self.assertIsNone(self.problem([]))                 # nothing there: check_shards' "missing", as before
+
+    def test_the_size_of_another_family(self):
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["64GB-1x32GB"]
+        with tempfile.TemporaryDirectory() as d:
+            code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
+        self.assertEqual(code, 1)
+        self.assertIn("has no IQ3_XXS model file", out)
+        self.assertIn("choose one of: UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+                      "IQ3_XXS)", out)
+        self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
+
+
 class ExperimentalSm60(unittest.TestCase):
     """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
     and a CUDA 12.x toolkit; nothing changes without the variable."""

@@ -159,7 +159,8 @@ RTX 5070, against ~3 tokens/s before these changes.
 RAM copy, blobs and MB from the files, the time spent reading them; `routing prefetch`: how many of the file reads had
 been warmed). The server log has the same per request (`expert tiers: GPU ... hits ...; RAM ... blobs, files ...
 blobs ... MB read`), and `GET /metrics` lists `ram_blobs`, `file_blobs` and `file_mb` for each recent request (with
-engine 0.1.31 or newer).
+engine 0.1.31 or newer). It also lists each request's speculative drafts, `drafts_offered` and `drafts_accepted`
+(`null` when the engine did not report them), and their sums since the server started in `totals` (#457).
 
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
