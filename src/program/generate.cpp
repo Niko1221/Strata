@@ -4849,6 +4849,8 @@ int main(int argc, char** argv) {
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
+            static const bool ts = std::getenv("STRATA_TRACE_RES") != nullptr;
+            if (ts) std::fprintf(stderr, "strata: SERVE adapt swapped %zu experts this round\n", swaps.size());
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             (void) main_live;
             for (auto& st : stages)
@@ -5976,7 +5978,23 @@ int main(int argc, char** argv) {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n);
             std::fflush(stdout);
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
-            // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
+            {   // STRATA_TRACE_RES: what a request LEAVES behind for the next one.  The residency table is
+                // a process-level vector, so if this differs between identical requests then request N+1
+                // runs a different SET of experts on the GPU than request N did - which is the same class of
+                // difference as a resident vs CPU-computed expert, and it is not a rounding wobble.
+                static const bool trace_res = std::getenv("STRATA_TRACE_RES") != nullptr;
+                if (trace_res && !host_res.empty()) {
+                    uint64_t h = 1469598103934665603ull;
+                    int32_t resident = 0;
+                    for (int32_t v : host_res) {
+                        h = (h ^ (uint64_t) (uint32_t) v) * 1099511628211ull;
+                        if (v >= 0) ++resident;
+                    }
+                    std::fprintf(stderr, "strata: RES digest=%016llx resident=%d of %zu\n",
+                                 (unsigned long long) h, resident, host_res.size());
+                }
+            }
+
             char read_txt[64];
             if (cancelled)
                 std::snprintf(read_txt, sizeof(read_txt), "%lld of %lld", (long long) read_n, (long long) fresh);
