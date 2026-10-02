@@ -190,6 +190,7 @@ function render(m) {
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderConversations(m.conversations);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -314,6 +315,31 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
   $("req-totals").textContent = renderTotals(totals);
+}
+
+// --conversation-cache-mib: the conversation in the GPU and the ones parked in RAM, from the engine's CACHE lines
+function renderConversations(c) {
+  const card = $("conv-card");
+  card.hidden = !c || !c.budget_mib;
+  if (card.hidden) return;
+  const budget = c.budget_mib * 1048576, parked = (c.parked || []).slice().reverse();   // most recently active first
+  const rows = [];
+  if (c.live_tokens > 0)
+    rows.push(`<tr><td>Live</td><td><span class="st-badge st-badge--generating">In GPU</span></td>
+      <td class="num">${fmt(c.live_tokens)}</td><td class="num">–</td></tr>`);
+  parked.forEach((p, i) => {
+    const next = i === parked.length - 1 && parked.length >= c.slots;
+    rows.push(`<tr><td>${i + 1} / ${fmt(c.slots)}</td><td><span class="st-badge">Parked</span>${next ? ` <span class="st-badge st-badge--queued" title="Evicted first when another conversation needs the room">Next out</span>` : ""}</td>
+      <td class="num">${fmt(p.tokens)}</td><td class="num">${gb(p.bytes)} GB</td></tr>`);
+  });
+  for (let i = parked.length; i < c.slots; i++)
+    rows.push(`<tr><td>${i + 1} / ${fmt(c.slots)}</td><td class="muted">Empty</td><td class="num">–</td><td class="num">–</td></tr>`);
+  $("conv-body").innerHTML = rows.join("");
+  $("conv-sum").textContent = `${fmt(parked.length)} of ${fmt(c.slots)} parked · ${gb(c.bytes)} of ${gb(budget)} GB RAM`;
+  $("conv-bar").style.width = budget ? `${Math.min(100, (100 * c.bytes) / budget)}%` : "0%";
+  $("conv-note").textContent = c.reported
+    ? `Since the engine started: ${fmt(c.evictions)} evicted, ${fmt(c.superseded)} superseded by a later turn`
+    : "Waiting for the engine's first report (an engine before this version sends none)";
 }
 
 function facts(el, rows) {

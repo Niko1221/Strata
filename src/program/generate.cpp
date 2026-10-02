@@ -4388,6 +4388,19 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // CACHE <live tokens> <parked bytes> <evictions> <superseded> [<tokens>:<bytes> ...]: the conversation cache
+        // for the Monitor, the parked conversations least recently active first; after READY and after every DONE
+        // (a server that does not know the line skips it)
+        auto report_cache = [&] {
+            if (!conversations.enabled()) return;
+            std::string s = "CACHE " + std::to_string(live_ok ? live.size() : 0) + " " +
+                            std::to_string(conversations.bytes()) + " " + std::to_string(conversations.evictions()) +
+                            " " + std::to_string(conversations.superseded());
+            for (const auto& e : conversations.entries())
+                s += " " + std::to_string(e.live.ids.size()) + ":" + std::to_string(e.bytes());
+            std::printf("%s\n", s.c_str());
+            std::fflush(stdout);
+        };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
         // mid-read reports as read, instead of the whole prompt
@@ -4787,6 +4800,7 @@ int main(int argc, char** argv) {
         bool mrope_identity = true;
         std::vector<float> img_rows;
         std::vector<const float*> row_ptr;
+        report_cache();
         while (next_line(line)) {
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
@@ -5698,6 +5712,7 @@ int main(int argc, char** argv) {
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n);
             std::fflush(stdout);
+            report_cache();
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];

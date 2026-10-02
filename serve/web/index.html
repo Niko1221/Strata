@@ -125,6 +125,18 @@
         </div>
       </div>
 
+      <div class="st-card conv-card" id="conv-card" hidden>
+        <div class="req-head"><span class="card-title">Conversation cache</span><span class="muted small" id="conv-sum"></span></div>
+        <div class="st-progress"><div class="st-progress__bar" id="conv-bar" style="width:0%"></div></div>
+        <div class="table-wrap">
+          <table class="st-table">
+            <thead><tr><th>Slot</th><th>State</th><th class="num">Tokens</th><th class="num">RAM</th></tr></thead>
+            <tbody id="conv-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small" id="conv-note"></p>
+      </div>
+
       <div class="st-card mcp-card" id="mcp-card" hidden>
         <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
         <div class="mcp-list" id="mcp-list"></div>
