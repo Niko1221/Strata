@@ -40,6 +40,15 @@ public:
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
 
+    /// Cards without BF16 tensor cores (sm_70 Volta, sm_75 Turing): cuBLAS runs a BF16 GEMM as an FP32 SIMT kernel there
+    /// (magma_sgemmEx).  On the CURRENT device `bf16_via_f16_wanted()` says whether bf16() should instead convert W (into
+    /// the scratch) and X (into the buffer given to `set_act16`) to FP16 - exact for every BF16 value inside FP16's range -
+    /// and take the tensor-core f16() path.  The caller reserves the X copy (T x the widest K) with its other buffers;
+    /// without it, or when X does not fit, bf16() keeps cuBLAS's BF16 path.  STRATA_BF16_VIA_F16=0|1 forces the choice
+    /// off / on; STRATA_BF16_VIA_F16_CHECK=1 counts the values FP16 could not hold exactly (printed at exit).
+    static bool bf16_via_f16_wanted();
+    void set_act16(uint16_t* buf, int64_t elems) { act16_ = buf; act16_elems_ = buf ? elems : 0; }
+
     uint16_t* scratch() const { return scratch_; }
     int64_t scratch_elems() const { return scratch_elems_; }
     void* stream() const { return stream_; }
@@ -52,6 +61,11 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
+
+    bool bf16_via_f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                      float beta);
+    uint16_t* act16_ = nullptr;
+    int64_t act16_elems_ = 0;
 };
 
 

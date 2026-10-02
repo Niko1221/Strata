@@ -3,6 +3,7 @@
 #include "strata/kernels/dequant_bf16.hpp"
 
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
@@ -291,11 +292,77 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
 }
 #endif
 
+
+#if !defined(__HIPCC__)
+// ---- BF16 -> FP16 on cards without BF16 tensor cores (see gemm.hpp) ---------------------------------------------
+// [0] weights > FP16 max, [1] weights below FP16's normal range (<2^-14: abs error <= 2^-25), [2]/[3] the same for activations
+__device__ unsigned long long g_bf16_f16_inexact[4];
+
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ x, uint16_t* __restrict__ y, int64_t n,
+                                   unsigned long long* __restrict__ inexact) {
+    unsigned long long over = 0, under = 0;
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
+        const float f = __uint_as_float((uint32_t) x[i] << 16);
+        const float c = fminf(fmaxf(f, -65504.0f), 65504.0f);        // out of FP16's range: saturate, never inf
+        const __half h = __float2half_rn(f == f ? c : f);
+        y[i] = __half_as_ushort(h);
+        if (inexact != nullptr && f == f) {
+            if (fabsf(f) > 65504.0f) ++over;
+            else if (__half2float(h) != f) ++under;
+        }
+    }
+    if (inexact != nullptr) {
+        if (over != 0) atomicAdd(inexact, over);
+        if (under != 0) atomicAdd(inexact + 1, under);
+    }
+}
+
+void bf16_to_f16(const uint16_t* x, uint16_t* y, int64_t n, void* stream, bool check, int which) {
+    unsigned long long* counter = nullptr;
+    if (check && cudaGetSymbolAddress((void**) &counter, g_bf16_f16_inexact) != cudaSuccess) counter = nullptr;
+    if (counter != nullptr) counter += which;
+    const int64_t blocks = (n + 255) / 256;
+    bf16_to_f16_kernel<<<(unsigned) (blocks < 4096 ? blocks : 4096), 256, 0, (cudaStream_t) stream>>>(x, y, n, counter);
+}
+
+// 1 when this device has no BF16 tensor cores and the FP16 path is wanted (per device: a layer split has several).
+bool bf16_via_f16_wanted(int& check) {
+    static const int force = [] {
+        const char* e = std::getenv("STRATA_BF16_VIA_F16");
+        return e != nullptr ? std::atoi(e) : -1;
+    }();
+    static const int chk = [] {
+        const char* e = std::getenv("STRATA_BF16_VIA_F16_CHECK");
+        return e != nullptr && std::atoi(e) != 0 ? 1 : 0;
+    }();
+    check = chk;
+    if (force == 0) return false;
+    if (force == 1) return true;
+    static int major[64] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (major[dev] == 0) {
+        int m = 0;
+        if (cudaDeviceGetAttribute(&m, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) { cudaGetLastError(); return false; }
+        major[dev] = m;
+    }
+    return major[dev] < 8;
+}
+#endif
+
 }  // namespace
 
 Gemm::~Gemm() {
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
+#endif
+#if !defined(__HIPCC__)
+    if (std::getenv("STRATA_BF16_VIA_F16_CHECK") != nullptr) {
+        unsigned long long bad[4] = {};
+        if (cudaMemcpyFromSymbol(bad, g_bf16_f16_inexact, sizeof(bad)) == cudaSuccess)
+            std::fprintf(stderr, "prefill gemm: BF16 values FP16 could not hold: weights %llu over / %llu under, "
+                                 "activations %llu over / %llu under\n", bad[0], bad[1], bad[2], bad[3]);
+    }
 #endif
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
     if (!external_) {
@@ -377,6 +444,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
+#if !defined(__HIPCC__)
+    if (bf16_via_f16(X, W, Y, T, N, K, ldy, beta)) return;
+#endif
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
@@ -390,6 +460,36 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx");
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
+}
+
+bool Gemm::bf16_via_f16_wanted() {
+#if defined(__HIPCC__)
+    return false;
+#else
+    int check = 0;
+    return ::strata::prefill::bf16_via_f16_wanted(check);
+#endif
+}
+
+bool Gemm::bf16_via_f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                        int64_t ldy, float beta) {
+#if defined(__HIPCC__)
+    (void) X; (void) W; (void) Y; (void) T; (void) N; (void) K; (void) ldy; (void) beta;
+    return false;
+#else
+    int check = 0;
+    if (scratch_ == nullptr || scratch_elems_ < K || act16_ == nullptr || T * K > act16_elems_ ||
+        !::strata::prefill::bf16_via_f16_wanted(check))
+        return false;                                // no room for the FP16 copy: the BF16 path stays (slower, same result)
+    bf16_to_f16(X, act16_, T * K, stream_, check != 0, 2);
+    const int64_t rows = scratch_elems_ / K < N ? scratch_elems_ / K : N;     // weight rows per scratch fill
+    for (int64_t r0 = 0; r0 < N; r0 += rows) {
+        const int64_t n = (N - r0 < rows) ? N - r0 : rows;
+        bf16_to_f16(W + r0 * K, scratch_, n * K, stream_, check != 0, 0);
+        f16(act16_, scratch_, Y + r0, T, n, K, ldy, beta);
+    }
+    return true;
+#endif
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,

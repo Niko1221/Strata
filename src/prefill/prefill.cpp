@@ -792,6 +792,8 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.mixed_h = o.take<uint16_t>(T * N, ok); m.bo = o.take<float>(T * N, ok);
     if (bf16x2_hc()) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2()) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
+    // sm_70 / sm_75: the BF16 projections run as FP16 tensor-core GEMMs on a FP16 copy of their activations (the widest is D)
+    m.gemm.set_act16(Gemm::bf16_via_f16_wanted() ? o.take<uint16_t>(T * D, ok) : nullptr, (int64_t) (T * D));
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
@@ -1166,6 +1168,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok); f(T * N);
     if (bf16x2_hc()) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2()) o.take<uint16_t>(T * N, ok);
+    if (Gemm::bf16_via_f16_wanted()) o.take<uint16_t>(T * D, ok);
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
