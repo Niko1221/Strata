@@ -69,6 +69,18 @@ public:
         return best;
     }
 
+    // Where `prompt` leaves id's live tokens: the common prefix length (0 when there is no entry). For the log when
+    // a conversation that comes back does not continue its own live end.
+    template<class Token>
+    size_t divergence(const std::string& id, const std::vector<Token>& prompt, std::vector<int32_t>& live) const {
+        const auto it = entries_.find(id);
+        if (it == entries_.end()) return 0;
+        live = it->second.ids;
+        size_t n = 0;
+        while (n < live.size() && n < prompt.size() && (int64_t) prompt[n] == (int64_t) live[n]) ++n;
+        return n;
+    }
+
     // Writes the live session as conversation `id`. `unchanged` is how many leading tokens of the session's K/V
     // are still byte-identical to id's files (0 = write everything). The session is only read. On failure the
     // conversation is dropped from disk and the session is untouched.

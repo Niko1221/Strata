@@ -5323,6 +5323,22 @@ int main(int argc, char** argv) {
             std::optional<strata::core::SavedConversation> from_disk;
             if (switching && !req_conv.empty() && want_cvec == cvec_cached) {
                 on_disk = disk.best(req_conv, ids, req_imgs, want_cvec);
+                if (on_disk.tokens > 0 && !on_disk.live) {
+                    // the client re-rendered something this conversation generated: say where, with the ids around
+                    // it, so the cause (a template, a parser, a tokenization the model did not produce) can be found
+                    std::vector<int32_t> was;
+                    const size_t at = disk.divergence(req_conv, ids, was);
+                    auto window = [&](auto get, size_t size) {
+                        std::string out;
+                        for (size_t i = at >= 8 ? at - 8 : 0; i < std::min(size, at + 24); ++i)
+                            out += (i == at ? "|" : i ? "," : "") + std::to_string((long long) get(i));
+                        return out;
+                    };
+                    std::fprintf(stderr, "strata serve: conversation disk: %s does not continue its live end: diverges "
+                                         "at %zu of %zu (prompt %zu); live=%s prompt=%s\n", req_conv.c_str(), at,
+                                 was.size(), ids.size(), window([&](size_t i) { return was[i]; }, was.size()).c_str(),
+                                 window([&](size_t i) { return ids[i]; }, ids.size()).c_str());
+                }
                 if (on_disk.tokens > resume) {
                     const auto t0 = Clock::now();
                     from_disk.emplace();
