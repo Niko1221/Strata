@@ -799,6 +799,8 @@ def download(url, dst: Path, what=None):
         return
     have = part.stat().st_size if part.exists() else 0
     for attempt in range(30):
+        if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
+            break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
             with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
