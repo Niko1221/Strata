@@ -1766,6 +1766,25 @@ __device__ void dq_q8_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     for (int j = 0; j < 8; ++j) y[j] = cvt<dst_t>((float) x[ib].qs[8 * il + j] * d);
 }
 
+// Q6_K (Agention's Gyro-S token embedding): llama.cpp's dequantize_block_q6_K (64 threads per superblock there,
+// 2 per thread here), the same expression d * sc * q, so the same floats as ggml's dequantize_row_q6_K.
+template<typename dst_t>
+__device__ void dq_q6_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+    const block_q6_K* x = (const block_q6_K*) vx;
+    const float d = __half2float(x[ibs].d);
+    for (int t = tid; t < 64; t += 32) {
+        const int ip = t / 32, il = t - 32 * ip, is = 8 * ip + il / 16;
+        dst_t* y = yy + 128 * ip + il;
+        const uint8_t* ql = x[ibs].ql + 64 * ip + il;
+        const uint8_t qh = x[ibs].qh[32 * ip + il];
+        const int8_t* sc = x[ibs].scales + is;
+        y[0] = cvt<dst_t>(d * sc[0] * ((int8_t) ((ql[0] & 0xF) | (((qh >> 0) & 3) << 4)) - 32));
+        y[32] = cvt<dst_t>(d * sc[2] * ((int8_t) ((ql[32] & 0xF) | (((qh >> 2) & 3) << 4)) - 32));
+        y[64] = cvt<dst_t>(d * sc[4] * ((int8_t) ((ql[0] >> 4) | (((qh >> 4) & 3) << 4)) - 32));
+        y[96] = cvt<dst_t>(d * sc[6] * ((int8_t) ((ql[32] >> 4) | (((qh >> 6) & 3) << 4)) - 32));
+    }
+}
+
 // BF16 (the token embedding as the checkpoint ships it, tools/embd_bf16_pack.py): 8 values per thread.
 template<typename dst_t>
 __device__ void dq_bf16(const void* vx, int64_t ibs, dst_t* yy, int tid) {
@@ -1815,6 +1834,7 @@ __device__ __forceinline__ void dq_dispatch(int ty, const void* vx, int64_t ibs,
         case 6: dq_q5_0(vx, ibs, y, tid); break;
         case 8: dq_q8_0(vx, ibs, y, tid); break;
         case 30: dq_bf16(vx, ibs, y, tid); break;
+        case 14: dq_q6_k(vx, ibs, y, tid); break;
         case 144: dq_tq<144>(vx, ibs, y, tid); break;
         case 145: dq_tq<145>(vx, ibs, y, tid); break;
         case 146: dq_tq<146>(vx, ibs, y, tid); break;
@@ -1935,7 +1955,8 @@ void iq_set_old_kernels(bool old) { g_old_kernels = old; }
 bool iq_old_kernels() { return g_old_kernels; }
 
 bool iq_supported(int t) noexcept { return is_iq(t); }
-bool embed_type_supported(int t) noexcept { return is_iq(t) || t == 30; }
+// BF16 and Q6_K: embedding only (dq_dispatch has them; no expert or prompt-path kernels take them)
+bool embed_type_supported(int t) noexcept { return is_iq(t) || t == 30 || t == 14; }
 
 size_t iq_row_bytes(int t, int64_t n) noexcept {
     switch (t) {
@@ -1955,6 +1976,7 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 6: return (size_t) (n / 32) * sizeof(block_q5_0);
         case 8: return (size_t) (n / 32) * sizeof(block_q8_0);
         case 30: return (size_t) n * 2;   // BF16: the token embedding only (iq_embed_rows, iq_dequant_f32)
+        case 14: return (size_t) (n / 256) * sizeof(block_q6_K);   // Q6_K: likewise (Gyro-S's token_embd)
         case 144: return (size_t) (n / 128) * sizeof(block_tq2_t);   // APR trellis types
         case 145: return (size_t) (n / 128) * sizeof(block_tqk6);
         case 146: return (size_t) (n / 128) * sizeof(block_tqk7);
