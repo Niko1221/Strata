@@ -214,19 +214,25 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
-        text, reasoning, calls = [], [], []
+        text, reasoning, calls, parts = [], [], [], []
         for block in content or []:
             kind = block.get("type")
             if kind == "text":
                 text.append(block.get("text", ""))
+                parts.append(block)
+            elif kind in IMAGE_PARTS:
+                parts.append(block)
             elif kind == "thinking":
                 reasoning.append(block.get("thinking", ""))
             elif kind == "tool_use":
                 calls.append({"function": {"name": block.get("name"), "arguments": block.get("input") or {}}})
             elif kind == "tool_result":
-                messages.append({"role": "tool", "content": _text_of(block.get("content"))})
-        if text or calls or reasoning:
-            out = {"role": m["role"], "content": "".join(text)}
+                # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
+                # path's tool messages already do; a text-only result is one string, as before.
+                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+        if text or calls or reasoning or parts:
+            # an image sent beside tool results stays in this turn instead of being dropped
+            out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
             if reasoning:
                 out["reasoning_content"] = "".join(reasoning)
             if calls:

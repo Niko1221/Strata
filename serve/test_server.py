@@ -236,6 +236,63 @@ class ImageMarkers(unittest.TestCase):
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
 
+    def test_anthropic_tool_result_image(self):
+        """Claude Code's Read of a picture returns it inside a tool_result: it reaches the encoder, in place."""
+        import tempfile
+        from serve.frontend import anthropic_to_messages
+        tok = ByteTokenizer()
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        call = {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a.png"}}]}
+        with tempfile.TemporaryDirectory() as d:
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=self.FakeVision(d))
+            pad = tok.encode("<|image_pad|>", parse_special=True)[0]
+            for result, extra, n in (([img], [], 3), ([{"type": "text", "text": "a.png"}, img], [], 3),
+                                     ("plain text", [img, {"type": "text", "text": "and this one"}], 3),
+                                     ([img], [img], 6)):
+                with self.subTest(result=str(result)[:30], extra=len(extra)):
+                    msgs = [{"role": "user", "content": "look at a.png"}, call,
+                            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": result}] + extra}]
+                    m, _, _ = anthropic_to_messages({"messages": msgs})
+                    ids, _, _ = svc.prepare(m, None, {})
+                    self.assertEqual(ids.count(pad), n)
+                    prompt = tok.decode(ids)
+                    inside = prompt.split("<tool_response>", 1)[1].split("</tool_response>", 1)[0]
+                    self.assertEqual("<|vision_start|>" in inside, not isinstance(result, str))
+                    self.assertEqual("<|vision_start|>" in prompt.split("</tool_response>", 1)[1], bool(extra))
+            svc.embeddings.path.unlink(missing_ok=True)
+        # a tool's picture the server cannot read is a note, not a 400 (the client resends it every turn); the user's
+        # own picture still fails
+        class Refusing(self.FakeVision):
+            def encode(self, source):
+                if "bad" in str(source):
+                    raise ValueError("this image format needs Pillow")
+                return super().encode(source)
+        good = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        bad = {"type": "image", "source": {"type": "url", "url": "http://x/bad.webp"}}
+        tool_msgs = [{"role": "user", "content": "look"}, call,
+                     {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [bad, good]}]}]
+        with tempfile.TemporaryDirectory() as d:
+            for vision, n, note in ((None, 0, "[image omitted: this server has no image encoder]"),
+                                    (Refusing(d), 3, "[image omitted: this image format needs Pillow]")):
+                with self.subTest(vision=vision is not None):
+                    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                                  ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+                    m, _, _ = anthropic_to_messages({"messages": tool_msgs})
+                    ids, _, _ = svc.prepare(m, None, {})
+                    self.assertEqual(ids.count(pad), n)
+                    self.assertIn(note, tok.decode(ids))
+                    if svc.embeddings.path:
+                        svc.embeddings.path.unlink(missing_ok=True)
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+            m, _, _ = anthropic_to_messages({"messages": [{"role": "user", "content": [good]}]})
+            with self.assertRaises(ValueError):
+                svc.prepare(m, None, {})
+        # a text-only tool result renders exactly as before: one string
+        msgs = [{"role": "user", "content": "q"}, call,
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "r"}]}]}]
+        self.assertEqual(anthropic_to_messages({"messages": msgs})[0][-1], {"role": "tool", "content": "r"})
+
 
 class StatusNeedsTheKey(unittest.TestCase):
     """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
