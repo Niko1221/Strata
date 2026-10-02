@@ -8,6 +8,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_moe.hpp"
@@ -170,6 +171,20 @@ Verifier::~Verifier() {
     for (auto& slot : g_live) {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
+    }
+    // P1: give the caller's thread its affinity back - but only the thread that took it.  A verifier that landed
+    // on another thread cannot restore this thread's mask, and nailing the wrong thread to one core is worse than
+    // the pin leaking; log once and leave it.
+    if (pinned_) {
+        pinned_ = false;
+        if (std::this_thread::get_id() == pin_thread_) {
+            strata::kernels::cpu::restore_thread_affinity(pin_prev_);
+        } else {
+            static std::atomic<bool> warned{false};
+            if (!warned.exchange(true))
+                std::fprintf(stderr, "strata verify: the host pin (core %d) was taken on another thread; leaving "
+                                     "this thread's affinity untouched\n", pin_core_);
+        }
     }
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : exec_)
@@ -1013,6 +1028,34 @@ bool Verifier::capture_commit(std::string& err) {
     return true;
 }
 
+int Verifier::host_pin_core(bool split) {
+    if (split) return -1;   // one reserved core, one stage's host: pinning every stage serializes them
+    const std::vector<int> workers = strata::kernels::cpu::physical_cores(true);
+    for (int c : strata::kernels::cpu::physical_cores(false))
+        if (std::find(workers.begin(), workers.end(), c) == workers.end()) return c;
+    return -1;
+}
+
+void Verifier::maybe_pin_host() {
+    if (pin_attempted_) return;
+    pin_attempted_ = true;
+    if (std::getenv("STRATA_NO_VERIFY_PIN") != nullptr) return;   // the A/B off arm
+    const bool split = next_ != nullptr || lb_ > 0 || (g_ != nullptr && le_ < g_->n_layers);
+    const int core = host_pin_core(split);
+    if (core < 0 || core >= 64) return;
+    const long long prev = strata::kernels::cpu::pin_current_thread(core);
+    // Refuse when the platform failed, or when the calling thread's affinity did not include the reserved core (a
+    // worker's thread, or a cpuset that excludes it): undo and leave the thread exactly as it was.
+    if (prev <= 0 || ((prev >> core) & 1) == 0) {
+        if (prev > 0) strata::kernels::cpu::restore_thread_affinity(prev);
+        return;
+    }
+    pin_prev_ = prev;
+    pin_core_ = core;
+    pinned_ = true;
+    pin_thread_ = std::this_thread::get_id();
+}
+
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
     using namespace strata::kernels;
@@ -1022,6 +1065,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
+    maybe_pin_host();
     if (!capture(T, err) || !capture_commit(err)) return false;
     VDBG("captured; staging\n");
     const Clock::time_point t0 = Clock::now();

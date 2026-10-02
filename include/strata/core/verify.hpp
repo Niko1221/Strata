@@ -33,6 +33,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace strata::core {
@@ -66,6 +67,11 @@ public:
     /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
+
+    /// P1: the core `ExpertPool` reserves for the host loop (the first physical core `physical_cores(true)`
+    /// drops), or -1 to refuse.  A layer split returns -1: every stage's host would otherwise fight for the one
+    /// reserved core and serialize the stages.  Pure topology, no side effects - `maybe_pin_host` calls it.
+    static int host_pin_core(bool split);
 
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
@@ -174,6 +180,15 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
+    // P1: the serve/spec host thread pins itself to the core ExpertPool reserves for the host - the other half of
+    // the reservation SessionLoopScratch::init honours on the generate path - once per verifier.  Layer splits do
+    // not pin (see host_pin_core).  Restored in the destructor when the same thread destroys the verifier.
+    bool pin_attempted_ = false;
+    bool pinned_ = false;
+    long long pin_prev_ = -1;
+    int pin_core_ = -1;
+    std::thread::id pin_thread_;
+    void maybe_pin_host();
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)

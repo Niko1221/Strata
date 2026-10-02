@@ -350,6 +350,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)
     set_tests_properties(file_expert_source_test PROPERTIES TIMEOUT 60)
   endif()
+  # P1: the verify host pin picks a core no pool worker uses, and refuses under a layer split.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/verify_host_pin_test.cpp")
+    enable_testing()
+    add_executable(verify_host_pin_test tests/core/verify_host_pin_test.cpp)
+    target_link_libraries(verify_host_pin_test PRIVATE strata_engine)
+    add_test(NAME verify_host_pin_test COMMAND verify_host_pin_test)
+    set_tests_properties(verify_host_pin_test PROPERTIES TIMEOUT 60)
+  endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
     # synthetic GGUF shards at the real expert dimensions
