@@ -131,6 +131,15 @@ if [ "${STRATA_CHECK_ONLY:-0}" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------- 8. serve
+# The engine is the source of truth for what it can serve.  run3.sh checks this before the download too;
+# this is the in-container backstop (e.g. an image swapped in later).
+CAPS="$(/usr/local/bin/strata --capabilities 2>/dev/null | tr '\n' ' ')"
+case " $CAPS " in
+  *" qwen35moe "*) ;;
+  *) log "this engine build has no qwen35moe execution backend (it serves: ${CAPS:-unknown})."
+     log "The Ornith artifact and geometry validated; running the model is future work (docs/ORNITH_QWEN35MOE.md)."
+     exit 78 ;;
+esac
 cd "$REPO"
 log "starting the server on ${STRATA_HOST:-0.0.0.0}:${STRATA_PORT:-8080}"
 exec "$PY" -m serve.server --engine strata --config "$CONFIG" --port "${STRATA_PORT:-8080}"

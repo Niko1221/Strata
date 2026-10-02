@@ -71,3 +71,18 @@ execution backend (GDN layers, dense attention, MoE block, MTP, session) is futu
 throughput for a path that does not execute the model would be a fabricated number, which this
 repository's evidence rule forbids. The launcher performs the full host-side preparation and artifact
 validation; the engine serve step is the remaining work, tracked in `docs/ORNITH_QWEN35MOE.md`.
+
+The engine advertises what it can serve: `strata --capabilities` prints `qwen4exp` only
+(`engine-capabilities.txt`), and `run3.sh` reads it and refuses before the ~22 GB download
+(`run3-refusal.txt`) rather than accepting an artifact it cannot run.
+
+## Regression found and fixed during this work
+
+The single-file/MTP generalization of `docker/hfmodel.py` first emitted a bare `STRATA_MTP` key in
+`--print shell`. `docker/entrypoint-hip.sh` evals that output and keeps its own `STRATA_MTP` (the packed
+MTP runtime directory), so the eval overwrote it with the empty string for the Qwen3.8 families, the
+entrypoint built a config without `--spec`, and a native IQ pack refuses to start without
+`--spec T (T >= 2)` - which made `run.sh` and `run2.sh` fail. The emitted key is now
+`STRATA_MTP_GGUF` / `STRATA_MTP_GGUF_CACHED`, `docker/test_hfmodel_ornith.py` asserts a bare `STRATA_MTP`
+is never emitted, and both launchers were re-verified end to end on gfx1101 (`/v1/models` reports
+`qwen3.8-flash-next-iq3_s loaded ctx=131072` and `qwen3.8-flash-next-iq3_xxs loaded ctx=131072`).

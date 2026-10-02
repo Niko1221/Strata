@@ -1,0 +1,7 @@
+[1;36m==>[0m GPU: gfx1101 (/dev/dri/renderD128), 12272 MiB VRAM; 10240 MiB Strata ceiling
+    allocation guard preserves runtime overhead and slack; cache reserves 768 MiB for later buffers
+[1;36m==>[0m image: strata-hip:gfx1101-latest   container: strata-ornith-gfx1101
+[1;31merror:[0m this engine image has no qwen35moe execution backend yet (it serves: qwen4exp ).
+       The Ornith artifact and its geometry DO validate (strata-qwen35-check), but running the model is
+       future work - see docs/ORNITH_QWEN35MOE.md.  Refusing before the ~22 GB download.  Qwen3.8 is
+       unaffected: ./run.sh and ./run2.sh serve it as before.

@@ -133,10 +133,15 @@ The container entrypoint is `docker/entrypoint-ornith.sh`. It resolves the singl
 through `docker/hfmodel.py` (generalized so a family describes one or more files), validates the artifact
 with `strata-qwen35-check`, builds the engine config and starts the server.
 
+The engine advertises what it can serve with `strata --capabilities` (one architecture per line).
+`run3.sh` reads it before starting and refuses with an explicit message - and without the ~22 GB download -
+if the build has no `qwen35moe` backend yet. It currently prints `qwen4exp` only; when the backend lands it
+prints `qwen35moe` too and `run3.sh` proceeds.
+
 **The launcher is complete and its host side is verified (`--dry-run`, cache resolution, space gate,
 `hfmodel` unit tests), but the engine serve step depends on the execution backend below. Until that
-backend exists, a real `./run3.sh` will prepare and validate everything and then be refused by the engine
-at model load.** No throughput is claimed for it.
+backend exists, a real `./run3.sh` refuses before the download rather than accepting a model it cannot
+run.** No throughput is claimed for it.
 
 ## Measured on gfx1101
 

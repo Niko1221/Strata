@@ -418,6 +418,7 @@ void usage() {
     std::fprintf(stderr,
                  "strata generate --pack DIR --tokens \"1,2,3\" [options]\n"
                  "\n"
+                 "  --capabilities       print the architectures this engine can serve, one per line, and exit\n"
                  "  --pack DIR           the pack directory (default pack/full)\n"
                  "  --tokens LIST        the prompt as comma-separated token IDS (required)\n"
                  "  --tokens-file PATH   pretokenized prompt, commas or whitespace (alternative to --tokens)\n"
@@ -1004,6 +1005,13 @@ int main(int argc, char** argv) {
         };
         bool parsed = true;
         if (a == "--help" || a == "-h") { usage(); return 0; }
+        // Which architectures THIS binary can serve.  The launchers read it before starting (and before a
+        // model download): `strata --capabilities` is the single source of truth, so a build without the
+        // Qwen35MoE backend says so instead of accepting an Ornith GGUF and failing at load.
+        else if (a == "--capabilities" || a == "--list-architectures") {
+            std::printf("qwen4exp\n");
+            return 0;
+        }
         else if (a == "--pack") o.pack = next("--pack");
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
