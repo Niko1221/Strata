@@ -55,3 +55,4 @@ build-vision.bat
 /third_party/*.zip
 
 /.rocm-win/
+ornith-1.5.md

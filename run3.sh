@@ -158,13 +158,11 @@ log "image: $IMAGE   container: $NAME"
 # say so BEFORE spending ~22 GB of download on an artifact the engine will refuse at load.
 [ "$FRESH" = 1 ] && [ "$DRY" != 1 ] && docker rm -f "$NAME" >/dev/null 2>&1 || true
 if [ "$DRY" != 1 ]; then
-  CAPS="$(docker run --rm --entrypoint /usr/local/bin/strata "$IMAGE" --capabilities 2>/dev/null | tr '\n' ' ')"
+  CAPS="$(docker run --rm --entrypoint /usr/local/bin/strata-qwen35 "$IMAGE" --capabilities 2>/dev/null | tr '\n' ' ')"
   case " $CAPS " in
     *" qwen35moe "*) ;;
-    *) die "this engine image has no qwen35moe execution backend yet (it serves: ${CAPS:-unknown}).
-       The Ornith artifact and its geometry DO validate (strata-qwen35-check), but running the model is
-       future work - see docs/ORNITH_QWEN35MOE.md.  Refusing before the ~22 GB download.  Qwen3.8 is
-       unaffected: ./run.sh and ./run2.sh serve it as before." ;;
+    *) die "this engine image has no qwen35moe backend (strata-qwen35 reported: ${CAPS:-nothing}).
+       Rebuild it with ./build.sh; see docs/ORNITH_QWEN35MOE.md." ;;
   esac
 fi
 

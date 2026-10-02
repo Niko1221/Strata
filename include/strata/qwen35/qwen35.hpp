@@ -164,6 +164,7 @@ struct TrunkWeights {
     std::vector<std::vector<ExpertWeights>> expert_store;
     /// Owns the mmap the `Mat`s point into: the loader keeps the GGUF open for the lifetime of the weights.
     std::shared_ptr<void> backing;
+    int64_t eos_token = -1;   ///< tokenizer.ggml.eos_token_id, so the serve loop can stop on it
 };
 
 struct TrunkState {

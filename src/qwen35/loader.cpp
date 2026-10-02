@@ -56,6 +56,8 @@ bool load_trunk(const std::string& path, Qwen35Geometry& g, TrunkWeights& w, std
         w.backing = holder;
         if (!core::check_qwen35_all(model, g, err)) return false;
         const int64_t L = g.n_layers, H = g.n_embd;
+        if (const strata::MetaValue* e = model.meta().get("tokenizer.ggml.eos_token_id"))
+            if (e->is_num()) w.eos_token = (int64_t) e->num();
 
         w.token_embd = make_mat(model, "token_embd.weight", err);
         w.output = make_mat(model, "output.weight", err);

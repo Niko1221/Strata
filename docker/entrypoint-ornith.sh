@@ -69,8 +69,7 @@ MTP_MODE="${STRATA_MTP_MODE:-auto}"      # auto | 0 | a path inside the containe
 
 log "resolving the Ornith artifact in the HF cache ..."
 "$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print available | sed 's/^/  /'
-eval "$("$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print shell \
-        ${STRATA_MTP_REPO:+--repo "$STRATA_MTP_REPO"})"
+eval "$("$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print shell)"
 
 # STRATA_NATIVE / STRATA_MTP_PATH bypass the cache lookup (an artifact mounted from somewhere else).
 NATIVE="${STRATA_NATIVE:-$STRATA_SHARD1}"
@@ -94,10 +93,14 @@ log "  mtp=${MTP_GGUF:-<none>}"
 
 # ---------------------------------------------------------------- 5. validate the artifact (the guard)
 log "validating the qwen35moe geometry and tensor set ..."
-if command -v strata-qwen35-check >/dev/null 2>&1; then
-  strata-qwen35-check "$NATIVE" || die "the artifact failed the Qwen35MoE guard above"
-else
-  log "strata-qwen35-check is not installed in this image; skipping the header guard"
+strata-qwen35 --check --model "$NATIVE" >/dev/null || die "the artifact failed the Qwen35MoE guard above"
+
+# The server needs a tokenizer directory; Ornith ships its tokenizer inside the GGUF.
+TOKENIZER_DIR="${STRATA_TOKENIZER:-$STRATA_WORK/tokenizer/ornith}"
+if [ ! -f "$TOKENIZER_DIR/vocab.json" ]; then
+  log "extracting the tokenizer from the GGUF into $TOKENIZER_DIR ..."
+  "$PY" "$REPO/tools/ornith_tokenizer.py" --model "$NATIVE" --out "$TOKENIZER_DIR" \
+    || die "could not extract the tokenizer from $NATIVE"
 fi
 
 # ---------------------------------------------------------------- 6. the engine config
@@ -106,18 +109,15 @@ CONFIG="${STRATA_CONFIG:-$RUN_DIR/strata-ornith.json}"
 # The engine gains a qwen35moe serve path behind --native; until that backend is enabled in the build,
 # the engine refuses the artifact at load with a message naming the architecture.  The config below is
 # the intended invocation, kept here so the launcher is not the thing that has to change.
-export CONFIG NATIVE MTP_GGUF LOG MODEL_NAME MAX_CONTEXT MAX_TOKENS REASONING PREFILL KV SPEC POOL_WORKERS EXPERT_CACHE
+export CONFIG NATIVE MTP_GGUF LOG MODEL_NAME MAX_CONTEXT MAX_TOKENS REASONING PREFILL KV SPEC POOL_WORKERS EXPERT_CACHE TOKENIZER_DIR
 "$PY" - <<'PY'
 import json, os
 e = os.environ
-args = ["--native", e["NATIVE"]]
+args = ["--serve", "--model", e["NATIVE"], "--max-context", e["MAX_CONTEXT"]]
 if e["MTP_GGUF"]:
-    args += ["--mtp", e["MTP_GGUF"], "--spec", e["SPEC"], "--spec-min-p", "0.5"]
-args += ["--expert-cache", e["EXPERT_CACHE"], "--prefill", e["PREFILL"],
-         "--max-context", e["MAX_CONTEXT"], "--kv", e["KV"],
-         "--pool-workers", e["POOL_WORKERS"], "--adapt-every", "0", "--pcie-frac", "0"]
-cfg = {"exe": os.environ.get("STRATA_EXE", "/usr/local/bin/strata"), "args": args,
-       "cwd": "/opt/strata", "tokenizer": e["NATIVE"], "model_name": e["MODEL_NAME"],
+    args += ["--mtp", e["MTP_GGUF"], "--spec", e["SPEC"]]
+cfg = {"exe": os.environ.get("STRATA_EXE", "/usr/local/bin/strata-qwen35"), "args": args,
+       "cwd": "/opt/strata", "tokenizer": e["TOKENIZER_DIR"], "model_name": e["MODEL_NAME"],
        "log": e["LOG"], "host": os.environ.get("STRATA_HOST", "0.0.0.0"),
        "max_tokens": int(e["MAX_TOKENS"]), "reasoning_effort": e["REASONING"]}
 open(e["CONFIG"], "w").write(json.dumps(cfg, indent=1) + "\n")
@@ -133,7 +133,7 @@ fi
 # ---------------------------------------------------------------- 8. serve
 # The engine is the source of truth for what it can serve.  run3.sh checks this before the download too;
 # this is the in-container backstop (e.g. an image swapped in later).
-CAPS="$(/usr/local/bin/strata --capabilities 2>/dev/null | tr '\n' ' ')"
+CAPS="$(/usr/local/bin/strata-qwen35 --capabilities 2>/dev/null | tr '\n' ' ')"
 case " $CAPS " in
   *" qwen35moe "*) ;;
   *) log "this engine build has no qwen35moe execution backend (it serves: ${CAPS:-unknown})."
