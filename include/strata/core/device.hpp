@@ -38,9 +38,23 @@ std::string gpu_arch_problem(int ordinal);
 // The GPU architectures this binary was compiled for ("gfx1100,gfx1201"); "" on CUDA builds.
 const char* compiled_gpu_archs();
 
+// How many devices the runtime enumerates, numbered as HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES number them; 0 when
+// there is none (or no usable runtime).  `device_info` throws on a card this binary cannot run, so a caller that LISTS
+// every card - the ones it has no code for included (`strata-device --list-devices`) - counts them with this first.
+int device_count();
+
+// One line per device for `strata-device --list-devices`, without the arch check that `device_info` applies:
+// "arch gfx1201, 15.9 GiB" (HIP) or "compute capability 12.0, 11.9 GiB" (CUDA), plus the device's name.  false when
+// the runtime cannot describe it.
+bool device_summary(int ordinal, std::string& name, std::string& detail);
+
 // Throws when there is no supported CUDA device.  CMake applies the same compute-capability 7.0 floor at
 // build time and omits optional kernels that require newer GPU instructions.
 DeviceInfo device_info(int ordinal = 0);
+
+/// "" when this build has device code for the current device, else CUDA's error: a build for other GPUs would
+/// otherwise fail at its first kernel launch, with nothing that names the cause.
+std::string device_code_error();
 
 class CudaError : public std::runtime_error {
 public:

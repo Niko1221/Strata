@@ -14,6 +14,8 @@ namespace strata::kernels {
 
 /// ggml type ids handled here.
 bool iq_supported(int ggml_type) noexcept;
+/// The token-embedding types iq_embed_rows and iq_dequant_f32 read: the i-quants above and BF16 (30).
+bool embed_type_supported(int ggml_type) noexcept;
 /// Bytes of one row of `n` values of `ggml_type` (n a multiple of the type's block).
 size_t iq_row_bytes(int ggml_type, int64_t n) noexcept;
 
@@ -71,6 +73,5 @@ bool iq_old_kernels();
 /// capture like `iq_set_old_kernels`; captured graphs keep what they captured.
 void iq_set_pair_kernels(bool pair);
 bool iq_pair_kernels();
-
 
 }  // namespace strata::kernels

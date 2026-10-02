@@ -1024,6 +1024,23 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t bytes = 0;
     if (!detail::make_cache_complement_plan(n_layers_, n_expert_, layer_blob_bytes_, primary_gpu_pairs,
                                             additional_gpu_pairs, offsets, bytes, err)) return false;
+#if defined(_WIN32)
+    // #467: the GPU cache's pre-fill touched its experts through the mapping (~19 GiB on a 24 GB card), and Windows
+    // counts those file pages in this process's working set, not as available: a 32 GB PC read 0.44 GiB here
+    // (20.7 GiB before the start).  Trimmed, they move to the standby list (still cached, counted as available).
+    // Resident mode only: nothing else calls this function.  Locked/pinned pages stay; the rest fault back softly.
+    {
+        uint64_t before = 0, after = 0;
+        const bool read_before = available_memory_bytes(before);
+        (void) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T) -1, (SIZE_T) -1);
+        if (read_before && available_memory_bytes(after))
+            std::fprintf(stderr, "FileExpertSource: available RAM %.2f GiB, %.2f GiB after the mapped experts left the "
+                                 "process working set (#467)\n",
+                         (double) before / 1073741824.0, (double) after / 1073741824.0);
+    }
+#endif
+    const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
+    uint64_t budget_physical = 0;   // #403: the RAM reading a budget was sized from (0: no budget)
     if (budget_bytes > 0) {
         // CS-T: a RAM budget.  The complement's experts in `rank` order (the expert profile, hottest first) while
         // they fit, the rest left on the mapped files; clamped to what the RAM has room for.
@@ -1032,13 +1049,25 @@ bool FileExpertSource::pin_cache_complement(
             err = "FileExpertSource: cannot determine available RAM for --resident-budget-gib";
             return false;
         }
+        budget_physical = physical;
         const uint64_t room = physical > headroom_bytes ? physical - headroom_bytes : 0;
         if (budget_bytes > room) {
-            std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %.2f is more than the RAM has room for "
-                                 "(%.2f GiB available minus %.0f GiB headroom): %.2f GiB\n",
-                         (double) budget_bytes / 1073741824.0, (double) physical / 1073741824.0,
-                         (double) headroom_bytes / 1073741824.0, (double) room / 1073741824.0);
-            budget_bytes = room;
+            // #403: 256 MiB under the room, so the engine's own allocations after this reading still leave the
+            // headroom (a budget clamped to exactly the room failed the safety check below on a reading a few MB
+            // lower).  An unclamped budget is unchanged.
+            const uint64_t margin = 256ull << 20;
+            const uint64_t clamped = room > margin ? room - margin : 0;
+            if (what_fits)
+                std::fprintf(stderr, "FileExpertSource: RAM room for the complement: %.2f GiB (%.2f GiB available "
+                                     "minus %.0f GiB headroom and a 0.25 GiB margin)\n",
+                             (double) clamped / 1073741824.0, (double) physical / 1073741824.0,
+                             (double) headroom_bytes / 1073741824.0);
+            else
+                std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %.2f is more than the RAM has room for "
+                                     "(%.2f GiB available minus %.0f GiB headroom and a 0.25 GiB margin): %.2f GiB\n",
+                             (double) budget_bytes / 1073741824.0, (double) physical / 1073741824.0,
+                             (double) headroom_bytes / 1073741824.0, (double) clamped / 1073741824.0);
+            budget_bytes = clamped;
         }
         std::vector<uint64_t> ranked(offsets.size(), kNoComplement);
         uint64_t at = 0;
@@ -1054,6 +1083,10 @@ bool FileExpertSource::pin_cache_complement(
                 at += b;
                 ++held;
             }
+        if (what_fits && held == 0) {   // #467: nothing to keep - the caller's plain mmap fallback, not an empty copy
+            err = "FileExpertSource: the RAM has no room for any expert of the complement";
+            return false;
+        }
         std::fprintf(stderr, "FileExpertSource: RAM budget %.2f GiB: %lld of the %.2f GiB of experts the GPU cache does "
                              "not hold, by profile rank; the rest are read from the files\n",
                      (double) budget_bytes / 1073741824.0, (long long) held, (double) bytes / 1073741824.0);
@@ -1065,8 +1098,10 @@ bool FileExpertSource::pin_cache_complement(
     const bool lend = lend_from_slot >= 0 && lend_from_slot < n_slots && additional_gpu_pairs.empty();
     uint64_t budget = std::numeric_limits<uint64_t>::max();
     if (bytes > 0 || lend) {
-        uint64_t physical = 0;
-        if (!available_memory_bytes(physical)) {
+        // #403: with a budget, the reading it was sized from - a second reading a few MB lower (the engine's own
+        // allocations, the file cache) failed a budget the first one had clamped.  (A budget turns `lend` off.)
+        uint64_t physical = budget_physical;
+        if (physical == 0 && !available_memory_bytes(physical)) {
             err = "FileExpertSource: cannot determine available RAM for the resident-memory safety check";
             return false;
         }

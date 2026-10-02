@@ -67,6 +67,16 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
     }
 }
 
+bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
+                                           std::string& err) {
+    const std::string key = "blk.1.ple_key.weight";
+    if (!skip.count(key)) return true;
+    int code_bits = -1;
+    if (!WeightTable::index_code_bits(pack_dir, key, code_bits, err)) return false;
+    if (code_bits == 0) skip.erase(key);
+    return true;
+}
+
 NativeDense::~NativeDense() {
     if (scratch_) cudaFree(scratch_);
     for (void* p : weights_) cudaFree(p);
@@ -158,6 +168,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 auto& ref = found->second;
                 if (ref.native_data) { err = "native dense: override already attached"; return false; }
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
+                // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
+                if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
                 if (!ref.quantized() || tensor.shape.size() != 2 ||
                     ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
                     tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
