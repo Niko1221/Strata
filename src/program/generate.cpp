@@ -52,6 +52,7 @@
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
+#include "strata/program/window_logits_dump.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -6521,6 +6522,7 @@ int main(int argc, char** argv) {
             ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
             return true;
         };
+        std::FILE* window_logits_file = nullptr;   // STRATA_DUMP_WINDOW_LOGITS: one record per window
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
         std::vector<int32_t> drafts((size_t) o.spec, 0);
@@ -6600,6 +6602,26 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            // PER-WINDOW LOGITS (diagnostic, default off).  Read once, opened on the first window, and it
+            // streams records rather than promising a row count it has not written - the reason this is not
+            // `--dump-logits`, which a native pack reaches never (see the header of window_logits_dump.hpp).
+            // Row 0 is the row that chose the next token, so a reader can find the first window whose
+            // prediction stopped reproducing without storing every window's rows.
+            static const char* wl_path = std::getenv("STRATA_DUMP_WINDOW_LOGITS");
+            if (wl_path != nullptr && wl_path[0] != '\0') {
+                if (window_logits_file == nullptr) {
+                    window_logits_file = strata::program::window_logits::open_file(wl_path, (std::uint32_t) ver.vocab());
+                    if (window_logits_file != nullptr)
+                        std::fprintf(stderr, "strata generate: per-window logits -> %s (vocab %lld)\n", wl_path,
+                                     (long long) ver.vocab());
+                }
+                if (window_logits_file != nullptr) {
+                    std::vector<float> wrow((std::size_t) ver.vocab());
+                    if (ver.copy_logits(0, wrow.data()))
+                        strata::program::window_logits::write_record(window_logits_file, p, T, a, 1,
+                                                                    (std::uint32_t) ver.vocab(), wrow.data());
+                }
+            }
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
