@@ -155,6 +155,11 @@ target_link_libraries(strata_artifact INTERFACE strata_warnings)
 add_library(strata_qwen35 STATIC src/qwen35/qwen35.cpp src/qwen35/loader.cpp src/core/qwen35.cpp)
 target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(strata_qwen35 PRIVATE strata_warnings)
+# OpenMP parallelises the quantized matvec (the token's dominant cost); 12 physical cores is ~4-6x on gfx1101's PC.
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(strata_qwen35 PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 add_executable(strata-gguf src/artifact/gguf_reader.cpp)
 target_link_libraries(strata-gguf PRIVATE strata_artifact)

@@ -221,12 +221,17 @@ int main(int argc, char** argv) {
     std::printf("\ngen:");
     Sampling s;
     std::mt19937_64 rng(0);
+    const auto d0 = std::chrono::steady_clock::now();
     for (int64_t n = 0; n < max_new; ++n) {
         const int64_t best = sample(logits, s, rng);
         std::printf(" %lld", (long long) best);
         std::fflush(stdout);
         q::trunk_forward(g, w, st, best, logits.data());
     }
+    const auto d1 = std::chrono::steady_clock::now();
+    const double dms = std::chrono::duration<double, std::milli>(d1 - d0).count();
     std::printf("\n");
+    std::fprintf(stderr, "decode %lld tokens in %.0f ms (%.2f tok/s)\n", (long long) max_new, dms,
+                 dms > 0 ? 1000.0 * (double) max_new / dms : 0.0);
     return 0;
 }

@@ -28,6 +28,12 @@ unset HSA_OVERRIDE_GFX_VERSION
 [ -n "${AMD_SERIALIZE_KERNEL:-}" ] && { log "unsetting AMD_SERIALIZE_KERNEL=$AMD_SERIALIZE_KERNEL"; unset AMD_SERIALIZE_KERNEL; }
 export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0}"
 export HSA_ENABLE_SDMA="${HSA_ENABLE_SDMA:-1}"
+# The Qwen35 CPU path parallelises its matvecs with OpenMP; one worker per PHYSICAL core is the sweet spot
+# (the Ryzen 9 7900 has 12 physical / 24 logical).
+if [ -z "${OMP_NUM_THREADS:-}" ] && [ -r /proc/cpuinfo ]; then
+  export OMP_NUM_THREADS="$(grep -c '^cpu cores' /proc/cpuinfo 2>/dev/null || true)"
+  OMP_NUM_THREADS="${OMP_NUM_THREADS:-$(nproc)}"
+fi
 
 # ---------------------------------------------------------------- 2. the device
 ARCH="$("$PY" "$DIR/hipinfo.py" --arch)" \

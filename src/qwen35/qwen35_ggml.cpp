@@ -33,9 +33,15 @@ void quant_matvec(int type, const void* w, int64_t n_in, int64_t n_out, const fl
     at->from_float(x, scratch.data(), n_in);
     const size_t rb = ggml_row_size((ggml_type) type, n_in);
     const int n = (int) n_in;
+    // The activation buffer is a `thread_local` scratch: take the pointer HERE, on the thread that quantized it.
+    // Reading `scratch.data()` inside the parallel region would resolve to each worker's own (empty) buffer.
+    const uint8_t* act = scratch.data();
+    // The rows are independent and the weight/activation are read-only, so this is the one place the Qwen35
+    // path gets its threads.  A token issues ~1000 of these; the per-call barrier is negligible beside the rows.
+#pragma omp parallel for schedule(static)
     for (int64_t o = 0; o < n_out; ++o) {
         float s = 0.0f;
-        t->vec_dot(n, &s, 0, (const char*) w + (size_t) o * rb, 0, scratch.data(), 0, 1);
+        t->vec_dot(n, &s, 0, (const char*) w + (size_t) o * rb, 0, act, 0, 1);
         y[o] = s;
     }
 }
