@@ -265,6 +265,11 @@ private:
     };
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
+    struct QuantTask {
+        int e = 0;
+        int t = 0;
+    };
+    std::vector<QuantTask> quant_tasks_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
 };
