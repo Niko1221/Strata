@@ -5,6 +5,7 @@
 #include "strata/core/session.hpp"
 
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -47,6 +48,16 @@ bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const Sess
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 
+// A layer split's later stage for whole-session parking (generate.cpp fills this from its GpuStage table;
+// the primary stage's session is the `session` argument itself).  Each stage owns the layers in [lb, le);
+// every QSA layer's K/V and running state is captured from - and restored to - its OWNER's session, on the
+// owner's device.  The draft layer rides the last stage.  An empty vector is the single-GPU case.
+struct ConversationStageRef {
+    int dev = 0;
+    int64_t lb = 0, le = 0;
+    SessionState* ss = nullptr;
+};
+
 struct ConversationView {
     const std::vector<int32_t>& ids;
     const std::vector<ConversationImageKey>& images;
@@ -54,10 +65,12 @@ struct ConversationView {
     bool cvec;
 };
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
-                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
+                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error,
+                                 const std::vector<ConversationStageRef>& later = {});
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g,
-                                         const QsaState& draft, size_t& bytes, std::string& error);
+                                         const QsaState& draft, size_t& bytes, std::string& error,
+                                         const std::vector<ConversationStageRef>& later = {});
 // The capture estimate includes retained capacity and transient segment directories;
 // only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
 // the uniquely owned reusable buffers, including on failure.
@@ -66,14 +79,17 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& session, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
-                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,
+                                const std::vector<ConversationStageRef>& later = {});
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
-                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+                                    const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                    const std::vector<ConversationStageRef>& later = {});
 enum class ConversationRestore { restored, invalid, transfer_failed };
 // Invalid images are rejected before any CUDA call/write. Transfer failure may
 // leave partial state: caller MUST NOT continue inference from that session.
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState& draft,
-                                                   std::string& error);
+                                                   std::string& error,
+                                                   const std::vector<ConversationStageRef>& later = {});
 
 } // namespace strata::core
