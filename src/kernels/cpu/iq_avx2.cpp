@@ -57,13 +57,25 @@ inline __m256i sc32(int s) { return _mm256_set1_epi16(s); }
 // = 0xFF when bit k of ksigns_iq2xs[i] is set, 0x01 otherwise.  With this a whole 32-value sign vector
 // is four scalar loads and a set_epi64x - no ksigns byte packing chain and no bit_selector expansion.
 // Built once at load time from the shared ggml-common table so it can never drift from it.
+//
+// The byte is WRITTEN, not shifted into place.  `<< (8 * k)` is a VARIABLE shift, and MSVC compiling
+// this file with /arch:AVX2 emits BMI2 `shlx` for it - it assumes that anything with AVX2 also has
+// BMI2, which is true of Haswell and every later core, and false of everything before it.  Because
+// `even_signs` is a namespace-scope static, that constructor runs BEFORE main(), so the fault happens
+// at process start rather than at first use: strata.exe exited 0xC000001D (illegal instruction) with
+// no output at all, not even for --help.  One `shlx` in the whole binary was enough.
+//
+// Storing the byte directly gives the same 64-bit value on the little-endian targets this file is
+// for (byte k of the OR of `0xFF << 8k` / `0x01 << 8k` is exactly that byte and nothing else), and it
+// contains no variable shift for the compiler to widen.
 struct EvenSigns {
     uint64_t v[128];
     EvenSigns() {
         for (int i = 0; i < 128; ++i) {
-            uint64_t r = 0;
-            for (int k = 0; k < 8; ++k)
-                r |= (uint64_t) (((ksigns_iq2xs[i] >> k) & 1) ? 0xFF : 0x01) << (8 * k);
+            uint8_t b[8];
+            for (int k = 0; k < 8; ++k) b[k] = ((ksigns_iq2xs[i] >> k) & 1) ? 0xFF : 0x01;
+            uint64_t r;
+            std::memcpy(&r, b, sizeof(r));
             v[i] = r;
         }
     }

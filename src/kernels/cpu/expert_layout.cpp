@@ -21,6 +21,49 @@ ExpertLayout g_layout;
 
 const ExpertLayout& expert_layout() { return g_layout; }
 
+namespace {
+
+/// LOCAL PORT (Z620): raw CPUID leaf 1, shared by the AVX2 and AVX1 probes below.
+/// Kept as one helper because both probes need the same OSXSAVE/XCR0 dance, and duplicating it is how
+/// the two end up disagreeing about what "this CPU has AVX" means.
+struct Leaf1 {
+    bool osxsave = false;
+    unsigned ecx = 0;
+    unsigned long long xcr0 = 0;
+};
+
+Leaf1 read_leaf1() {
+    Leaf1 s;
+    unsigned r[4] = {0, 0, 0, 0};
+    auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+        int x[4];
+        __cpuidex(x, (int) leaf, (int) sub);
+        for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+        __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+    };
+    unsigned maxleaf[4] = {0, 0, 0, 0};
+    cpuid(0, 0);
+    maxleaf[0] = r[0];
+    if (maxleaf[0] < 1) return s;
+    cpuid(1, 0);
+    s.ecx = r[2];
+    s.osxsave = ((r[2] >> 27) & 1u) != 0;
+    if (!s.osxsave) return s;                             // no OSXSAVE: the OS is not saving YMM
+#if defined(_MSC_VER)
+    s.xcr0 = _xgetbv(0);
+#else
+    unsigned lo = 0, hi = 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    s.xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+    return s;
+}
+
+}  // namespace
+
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -108,15 +151,161 @@ std::string cpu_name() {
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
 
+/// The AVX1 rung: the CPU has AVX (256-bit float), SSSE3 and SSE4.1, but no AVX2.
+///
+/// Deliberately does NOT require FMA3 or F16C.  Those arrived a generation after AVX (Ivy Bridge,
+/// 2011), while this probe exists for the generation before that (Sandy Bridge / Westmere, 2008-2010).
+/// q2_avx1.cpp does a software fp16 decode and a mul+add rather than using them, so demanding them
+/// here would reject exactly the CPUs the kernel is written for.  Verified by EXECUTION on a Xeon
+/// E5-2680 (family 6 model 45 stepping 7): FMA (leaf 1 ECX 12) = 0, F16C (ECX 29) = 0, and
+/// `vfmadd*` / `vcvtph2ps` each raise #UD there, while `pmaddubsw` works.
+///
+/// STRATA_FORCE_AVX2 is upstream's "skip the widest path" switch and only has a VALUE meaning at '1' -
+/// cpu_avx512_ok() above tests `f[0] == '1'`.  An earlier revision of this probe tested mere PRESENCE
+/// of the variable, which combined with the same test in cpu_avx512_ok() to make all three rungs return
+/// false at once on an AVX-512 machine, and the startup gate then exited.  Hence `f[0] == '1'` here too.
+bool cpu_avx1_ok() {
+    static const bool ok = [] {
+        if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+        if (const char* f = std::getenv("STRATA_FORCE_AVX1"); f != nullptr && f[0] == '1') return true;
+        unsigned r[4] = {0, 0, 0, 0};
+        auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+            int x[4];
+            __cpuidex(x, (int) leaf, (int) sub);
+            for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+            __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+        };
+        cpuid(0, 0);
+        cpuid(1, 0);
+        const unsigned ecx1 = r[2];
+        if (!((ecx1 >> 27) & 1u)) return false;            // OSXSAVE
+#if defined(_MSC_VER)
+        const unsigned long long xcr0 = _xgetbv(0);
+#else
+        unsigned lo = 0, hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+        if ((xcr0 & 0x6) != 0x6) return false;            // the OS saves the YMM state
+        const bool avx   = ((ecx1 >> 28) & 1u) != 0;      // leaf 1 ECX 28
+        const bool ssse3 = ((ecx1 >> 9) & 1u) != 0;       // leaf 1 ECX 9
+        const bool sse41 = ((ecx1 >> 19) & 1u) != 0;      // leaf 1 ECX 19
+        return avx && ssse3 && sse41;
+    }();
+    return ok;
+}
+
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
-    if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
-    else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    if (cpu_avx512_ok()) {
+        q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    } else if (cpu_avx2_ok()) {
+        q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    } else if (cpu_avx1_ok()) {
+        q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    } else {
+        // Nothing vectorised is available; s2_expert_scalar is the only correct answer left, and it is
+        // slow enough that it is better to say so than to decode at a crawl.
+        std::fprintf(stderr,
+                     "strata: no usable CPU kernel: this CPU has neither AVX-512 (F/BW/VL/VNNI/VBMI), AVX2, "
+                     "nor AVX+FMA+F16C. The scalar fallback exists for tests only.\n");
+        std::exit(1);
+    }
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
-    else act_quant_q8_1_avx2(x, n, a);
+    else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
+    else if (cpu_avx1_ok()) act_quant_q8_1_avx1(x, n, a);
+    else std::exit(1);
+}
+
+/// LOCAL PORT (Z620): the startup gate, in the same file as the dispatch and for the same reason.
+///
+/// `cpu_require_expert_support()` lives in `expert.cpp`, which is compiled with `/arch:AVX512`, and the
+/// CMakeLists comment above says why that is a hazard: a TU built with the flag may use those instructions
+/// ANYWHERE in its code, so calling into it from a CPU without AVX-512 can trap inside what is supposed to
+/// be the error message. This TU carries no per-file ISA flag, so asking here is safe everywhere.
+///
+/// The check is the full ladder, not just the AVX-512 rung, so a Sandy Bridge is told what it actually gets
+/// (the AVX1 kernel) instead of being refused for a feature it was never going to use.
+void cpu_require_expert_support_any() {
+    if (cpu_avx512_ok()) return;
+    if (cpu_avx2_ok()) return;
+    if (cpu_avx1_ok()) return;
+    std::fprintf(stderr,
+                 "strata: this CPU cannot run the expert kernel: no AVX-512 (F/BW/VL/VNNI/VBMI), no AVX2, "
+                 "and no AVX+SSSE3+SSE4.1.\n"
+                 "        The fastest path Strata has on this CPU would be its scalar fallback, which exists "
+                 "for tests only and is far too slow to decode with.\n");
+    std::exit(1);
+}
+
+// ================================ LOCAL PORT: the canonical expert path, dispatched ================
+//
+// `pool.cpp` is the CPU expert worker loop and it calls `s2_expert_vnni_q` / `s2_expert_gu_rows` /
+// `s2_expert_down_rows` and their `_multi` forms directly.  All of those are DEFINED in `expert.cpp`, a
+// translation unit compiled with `/arch:AVX512`, so on a CPU without AVX-512 calling them is not merely
+// slow - it is a trap.  Upstream's answer is to refuse the CPU at startup (`cpu_require_expert_support`).
+//
+// This adds the missing middle: each entry point picks the AVX-512 original or the AVX1 port.  Two
+// properties matter and both come from where the dispatch LIVES:
+//
+//   * it is in this TU, which carries no per-file ISA flag, so evaluating `cpu_avx512_ok()` is safe
+//     anywhere.  Putting the same check in `expert.cpp` would risk the compiler emitting AVX-512 into
+//     the check itself.
+//   * the AVX-512 originals are only CALLED when `cpu_avx512_ok()` has already returned true, which is
+//     exactly the condition under which calling them is defined.  On a Sandy Bridge the branch is not
+//     taken and the AVX1 port runs instead.
+//
+// Each wrapper is a straight forward-through: the AVX1 and AVX-512 versions have the same contract, and
+// the parity test (s2_avx1_parity.cpp) checks that claim against an independent reference rather than
+// taking it on trust.
+
+// The AVX-512 originals, renamed from s2_expert_* in expert.cpp so these can be told apart.  The rename
+// is the only change to that file and it is mechanical.
+
+void s2_expert_vnni_q_any(const uint8_t* blob, const ActQ& a1, float* out, ExpertScratch& ws) {
+    if (cpu_avx512_ok()) s2_expert_vnni_q(blob, a1, out, ws);
+    else s2_expert_vnni_q_avx1(blob, a1, out, ws);
+}
+
+void s2_expert_gu_rows_any(const uint8_t* blob, const ActQ& a1, float* ff, int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_gu_rows(blob, a1, ff, r0, r1);
+    else s2_expert_gu_rows_avx1(blob, a1, ff, r0, r1);
+}
+
+void s2_expert_down_rows_any(const uint8_t* blob, const ActQ& a2, float* out, int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_down_rows(blob, a2, out, r0, r1);
+    else s2_expert_down_rows_avx1(blob, a2, out, r0, r1);
+}
+
+void s2_expert_gu_rows_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* ff, int r0,
+                                 int r1) {
+    if (cpu_avx512_ok()) s2_expert_gu_rows_multi(blob, a1, n_tokens, ff, r0, r1);
+    else s2_expert_gu_rows_multi_avx1(blob, a1, n_tokens, ff, r0, r1);
+}
+
+void s2_expert_down_rows_multi_any(const uint8_t* blob, const ActQ* const* a2, int n_tokens, float* const* out,
+                                   int r0, int r1) {
+    if (cpu_avx512_ok()) s2_expert_down_rows_multi(blob, a2, n_tokens, out, r0, r1);
+    else s2_expert_down_rows_multi_avx1(blob, a2, n_tokens, out, r0, r1);
+}
+
+void s2_expert_vnni_multi_any(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
+                              ExpertScratchMulti& ws) {
+    // The experimental oracle contract (`expert_set_oracle_q8_0`) is implemented only in the AVX-512 TU,
+    // and it is off by default, so on this CPU fall back to one full expert per token rather than
+    // pretending the two agree.  Upstream's own multi path does the same thing for this flag.
+    if (expert_oracle_q8_0_enabled()) {
+        for (int t = 0; t < n_tokens; ++t) s2_expert_vnni_q_any(blob, *a1[t], out[t], ws.single);
+        return;
+    }
+    if (cpu_avx512_ok()) s2_expert_vnni_multi(blob, a1, n_tokens, out, ws);
+    else s2_expert_vnni_multi_avx1(blob, a1, n_tokens, out, ws);
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)

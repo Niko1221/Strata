@@ -1720,9 +1720,14 @@ int main(int argc, char** argv) {
     // ... and nothing runs on a CPU without AVX2: every CPU expert kernel is AVX2 at least (the AVX-512 ones are
     // chosen above it), and so is ggml-cpu in the release build, which the native pack's layout load initializes
     // next.  Refused here, by name, rather than an illegal instruction in the first expert.
-    if (!strata::kernels::cpu::cpu_avx2_ok()) {
-        std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX2 with FMA and F16C, which every CPU "
-                             "expert kernel needs; Strata runs on Intel Haswell (2013), AMD Zen (2017) or newer\n",
+    // A CPU with AVX but no AVX2 is also admissible. The multi-token kernels that do need AVX2 are now
+    // gated on cpu_avx2_ok() (see native_expert.cpp) and fall through to ggml-cpu's vec_dot, which the
+    // build compiles for whatever baseline it selected - so the floor is the AVX1 rung, and the message
+    // below names it instead of naming a floor the dispatch no longer has.
+    if (!strata::kernels::cpu::cpu_avx1_ok()) {
+        std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX (256-bit float) with SSSE3 and "
+                             "SSE4.1, which every CPU expert kernel needs; Strata runs on Intel Sandy Bridge (2011), "
+                             "AMD Bulldozer (2011) or newer\n",
                      strata::kernels::cpu::cpu_name().c_str());
         return 2;
     }
@@ -1793,8 +1798,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
         }
     }
-    // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
+    // The canonical Q2_0 pack's CPU kernels now have three rungs, not one, so the gate
+    // is `cpu_require_expert_support_any()` (AVX-512 -> AVX2 -> AVX1) instead of the AVX-512-only
+    // `cpu_require_expert_support()`.  Keeping the old call would refuse every pre-AVX-512 CPU at startup
+    // even though the AVX1 kernel in q2_avx1.cpp is exactly what such a CPU should use.  Upstream's comment
+    // here ("AVX-512 only") described the two-rung ladder; with the third rung it is accurate for neither
+    // the canonical nor the native pack, which is why the wording changed along with the call.
+    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support_any();
     else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
