@@ -1338,6 +1338,13 @@ def rocm_version(root):
         return None
 
 
+def rocm_has_hip_development(root):
+    """Whether a system ROCm tree has the HIP files needed to compile the engine."""
+    hip_config = any((root / d / "cmake" / "hip-lang" / "hip-lang-config.cmake").is_file()
+                     for d in ("lib", "lib64", "lib/x86_64-unknown-linux-gnu"))
+    return hip_config and (root / "include" / "hip" / "hip_runtime.h").is_file()
+
+
 def rocm_root(archs):
     """ROCm for compiling and running the HIP engine for `archs` (one arch or a list: the cards of a layer split):
     (root, library folders).  A system ROCm 7 with hipcc and hipBLAS, else AMD's TheRock wheels (ROCM_VERSION, from the
@@ -1347,9 +1354,12 @@ def rocm_root(archs):
     if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
         ver = rocm_version(sysroot)
         if ver is None or ver >= ROCM_SYSTEM_MIN:
-            return sysroot, [str(sysroot / "lib")]
-        warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} or "
-             "newer: using AMD's wheels in .venv instead")
+            if rocm_has_hip_development(sysroot):
+                return sysroot, [str(sysroot / "lib")]
+            warn(f"the ROCm in {sysroot} has no HIP development files; using AMD's wheels in .venv instead")
+        else:
+            warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} or "
+                 "newer: using AMD's wheels in .venv instead")
     indexes = list(dict.fromkeys(rocm_index(a) for a in archs))
     if len(indexes) > 1:                               # TheRock's wheels hold one GPU family's libraries
         fail(f"cards of two GPU families ({', '.join(archs)}) need a system ROCm 7 (in /opt/rocm): AMD's Python "

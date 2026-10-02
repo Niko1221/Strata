@@ -117,6 +117,17 @@ class GpuLists(unittest.TestCase):
                 else:
                     setup.os.environ["ROCM_PATH"] = old
 
+    def test_system_rocm_needs_hip_development_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "include/hip").mkdir(parents=True)
+            (root / "lib/cmake/hip-lang").mkdir(parents=True)
+            self.assertFalse(setup.rocm_has_hip_development(root))
+            (root / "include/hip/hip_runtime.h").touch()
+            self.assertFalse(setup.rocm_has_hip_development(root))
+            (root / "lib/cmake/hip-lang/hip-lang-config.cmake").touch()
+            self.assertTrue(setup.rocm_has_hip_development(root))
+
     def test_build_for_every_arch(self):
         """build_engine_hip compiles for the set of the chosen cards' archs and records it in BUILD.json."""
         calls = {}
