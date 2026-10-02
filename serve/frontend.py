@@ -312,18 +312,31 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
         text, reasoning, calls = [], [], []
+        items = []              # the ordered content list, built only for a message that holds a top-level image
         for block in content or []:
             kind = block.get("type")
             if kind == "text":
                 text.append(block.get("text", ""))
+                items.append({"type": "text", "text": block.get("text", "")})
             elif kind == "thinking":
                 reasoning.append(block.get("thinking", ""))
             elif kind == "tool_use":
                 calls.append({"function": {"name": block.get("name"), "arguments": block.get("input") or {}}})
+            elif kind == "image":
+                # Reached only for a message that also holds a tool_result (the branch above takes the rest), and
+                # dropped before this: the model was asked about a picture it was never shown.
+                items.append({"type": "image", "source": _image_source(block)})
             elif kind == "tool_result":
-                messages.append({"role": "tool", "content": _text_of(block.get("content"))})
-        if text or calls or reasoning:
-            out = {"role": m["role"], "content": "".join(text)}
+                # A tool's result may BE an image - Claude Code's Read on a picture, a screenshot tool, a browser
+                # tool.  `_text_of` kept the text parts only, so the image went in silence: the model received an
+                # empty tool result and answered anyway, describing a picture it had never been given.  `_parts_of`
+                # keeps it, and the pack's chat template renders one image item for a message of any role.
+                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+        images = any(item["type"] == "image" for item in items)
+        if text or calls or reasoning or images:
+            # the list form only when there is an image (the template renders one <|vision_start|> per image item);
+            # otherwise a plain string, exactly as before
+            out = {"role": m["role"], "content": items if images else "".join(text)}
             if reasoning:
                 out["reasoning_content"] = "".join(reasoning)
             if calls:
