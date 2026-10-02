@@ -2142,9 +2142,33 @@ class Service:
         prompt, plain = unmark_think_literals(prompt)
         return self.tok.encode(prompt, parse_special=True, plain=plain)
 
+    def _note_unreadable_tool_images(self, messages):
+        """A picture a tool returned (Claude Code's Read of an image file) that this server cannot read - it has no
+        image encoder, or the encoder refuses that picture - becomes a short note in its place instead of a 400.
+        Clients resend the whole history every turn, so one unreadable tool picture would fail every later request of
+        the conversation; a picture the user sends keeps the 400.  A picture that encodes stays in the cache, so the
+        prompt's own encode below finds it."""
+        for m in messages:
+            content = m.get("content")
+            if m.get("role") != "tool" or not isinstance(content, list):
+                continue
+            for n, item in enumerate(content):
+                if not isinstance(item, dict) or item.get("type") != "image":
+                    continue
+                why = "this server has no image encoder" if self.vision is None else None
+                if why is None:
+                    try:
+                        with self.fifo:          # the encoder takes its turn with the requests (see below)
+                            self.vision.encode(item["source"])
+                    except (ValueError, OSError) as e:
+                        why = str(e)
+                if why is not None:
+                    content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
+
     def prepare(self, messages, tools, kwargs, max_new=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
+        self._note_unreadable_tool_images(messages)
         ids = self.encode_prompt(messages, tools, kwargs)
         self.embeddings.path = None
         images = images_of(messages)
