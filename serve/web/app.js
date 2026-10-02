@@ -73,9 +73,10 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "monitor", "pool", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "monitor", "pool", "about"]) $(`view-${v}`).hidden = v !== tab;
+  window.dispatchEvent(new CustomEvent("strata:tab", {detail: tab}));   // the Pool tab's pool.js polls while shown
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();

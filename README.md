@@ -55,7 +55,8 @@ other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [commu
 | **Disk** | about 80 GB free, on an SSD if you can (the first start is much faster) |
 | **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD |
 
-Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
+Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)),
+and several PCs on your network can work as one ([pool](docs/POOL.md)).
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
 ## Install

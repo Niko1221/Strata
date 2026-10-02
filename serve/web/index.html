@@ -24,6 +24,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-pool" aria-controls="view-pool" aria-selected="false" data-tab="pool">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-network"/></svg>Pool</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -134,6 +136,176 @@
     </div>
   </section>
 
+  <!-- ============================ Pool ============================ -->
+  <section class="view view--pool" id="view-pool" role="tabpanel" aria-labelledby="tab-btn-pool" hidden>
+    <div class="pool">
+      <div class="st-card pool-hero">
+        <div class="pool-hero__head">
+          <div>
+            <span class="card-title">Pool</span>
+            <p class="muted pool-hero__sub">Several PCs as one: share the requests (each PC runs the whole model), or split
+              one model's layers across them (each runs its own layers, with their experts in its own RAM and VRAM).</p>
+          </div>
+          <span class="st-badge" id="pool-state-badge">&ndash;</span>
+        </div>
+        <div class="st-field">
+          <span class="st-label">This PC's role</span>
+          <div class="seg" id="pool-role" role="radiogroup" aria-label="This PC's role in the pool">
+            <button type="button" role="radio" data-v="off">Off (alone)</button>
+            <button type="button" role="radio" data-v="router">Share requests</button>
+            <button type="button" role="radio" data-v="coordinator">Split: coordinator</button>
+            <button type="button" role="radio" data-v="worker">Split: worker</button>
+          </div>
+          <p class="muted small" id="pool-role-help"></p>
+          <div class="pool-explain" role="note">
+            <b>Pooling does not add up the speed of the PCs.</b> Each new word passes through the model's layers one
+            after another, so one chat always runs at about one PC's speed.
+            <ul>
+              <li><b>Share requests</b>: every PC runs the whole model on its own. Two chats at once run on two PCs at
+                full speed each; a chat stays on the PC that holds its conversation.</li>
+              <li><b>Split layers</b>: the PCs divide the model's layers, and each keeps its layers' experts in its own
+                RAM and VRAM and its share of the context. The pool caches more experts, and fits a model or context
+                one PC could not. The PCs take turns on every word, so a chat gains only from fewer cache misses, and
+                a slow GPU or network slows it down.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="pool-notice" id="pool-notice" hidden></div>
+      </div>
+
+      <div class="st-card" id="pool-map-card">
+        <div class="req-head"><span class="card-title">Layer map</span><span class="muted small" id="pool-map-sum"></span></div>
+        <div class="layer-map" id="pool-map" aria-label="Which PC runs which layer"></div>
+        <div class="layer-legend" id="pool-legend"></div>
+      </div>
+
+      <div class="pool-grid">
+        <div class="st-card">
+          <span class="card-title">This PC</span>
+          <dl class="facts" id="pool-node"></dl>
+        </div>
+        <div class="st-card">
+          <span class="card-title">Pool secret</span>
+          <p class="muted small">Every PC of the pool needs the same secret: a worker only serves coordinators that
+            know it. Copy it here and paste it into the other PCs' Pool tab.</p>
+          <div class="secret-row">
+            <input class="st-input" id="pool-secret" type="password" autocomplete="off" spellcheck="false"
+                   placeholder="Set (open this page on the PC itself to see it)">
+            <button class="st-btn st-btn--icon" id="pool-secret-show" type="button" title="Show / hide" aria-label="Show or hide the secret">
+              <svg class="st-icon"><use href="web/sprite.svg#i-info"/></svg></button>
+            <button class="st-btn st-btn--icon" id="pool-secret-copy" type="button" title="Copy" aria-label="Copy the secret">
+              <svg class="st-icon"><use href="web/sprite.svg#i-copy"/></svg></button>
+            <button class="st-btn st-btn--icon" id="pool-secret-new" type="button" title="Make a new one" aria-label="Make a new secret">
+              <svg class="st-icon"><use href="web/sprite.svg#i-refresh"/></svg></button>
+          </div>
+          <div class="pool-inline">
+            <div class="st-field">
+              <label class="st-label" for="pool-name">Name of this PC</label>
+              <input class="st-input" id="pool-name" maxlength="64" placeholder="its computer name">
+            </div>
+            <div class="st-field">
+              <label class="st-label" for="pool-port">Worker port <output>TCP</output></label>
+              <input class="st-input" id="pool-port" type="number" min="1" max="65535">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="st-card" id="pool-route-card" hidden>
+        <div class="req-head"><span class="card-title">Other PCs</span><span class="muted small" id="pool-route-sum"></span></div>
+        <p class="muted small">Each PC runs the whole model. A request runs on the PC that holds its conversation, else
+          on an idle one; a PC whose context window is too small for it is skipped. When the others cannot be reached,
+          this PC answers on its own and keeps looking for them. Give every PC the same pool secret and list the others
+          here, on each PC.</p>
+        <div class="table-wrap">
+          <table class="st-table pool-table">
+            <thead><tr><th>Address</th><th>PC</th><th>GPU</th><th>State</th><th class="num">Context</th><th>Use</th><th></th></tr></thead>
+            <tbody id="pool-route-peers"></tbody>
+          </table>
+        </div>
+        <form class="add-row" id="pool-route-add">
+          <input class="st-input" id="pool-route-addr" placeholder="the other PC's web app, e.g. 192.168.1.20 or laptop:8080" autocomplete="off">
+          <button class="st-btn st-btn--secondary" type="submit">Add PC</button>
+        </form>
+        <div class="st-field">
+          <span class="st-label">Found on your network</span>
+          <div class="found" id="pool-route-found"><span class="muted small">Looking&hellip;</span></div>
+        </div>
+        <div class="pool-inline">
+          <div class="st-field">
+            <span class="st-label">Primary</span>
+            <div class="toggle-row"><span>This PC is the primary</span><button class="st-toggle" id="pool-primary"
+              type="button" role="switch" aria-checked="false" aria-label="This PC is the primary"></button></div>
+            <span class="muted small">A new conversation goes to the primary when it is idle (then to the PC it
+              arrived at). Set it on one PC.</span>
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="pool-move">Move a busy PC's conversation <output>tokens</output></label>
+            <input class="st-input" id="pool-move" type="number" min="0" step="1000">
+            <span class="muted small">When a conversation's PC is busy and another is idle, it moves only if the other
+              would read at most this many tokens again (0: never). A long chat waits for its own PC instead.</span>
+          </div>
+        </div>
+        <dl class="facts" id="pool-route-stats"></dl>
+      </div>
+
+      <div class="st-card" id="pool-coord-card" hidden>
+        <div class="req-head"><span class="card-title">Workers</span><span class="muted small">in layer order: the first
+          worker runs the layers right after this PC's</span></div>
+        <div class="table-wrap">
+          <table class="st-table pool-table">
+            <thead><tr><th>Worker</th><th>PC</th><th>GPU</th><th>State</th><th class="num">Layers</th><th>Use</th><th></th></tr></thead>
+            <tbody id="pool-peers"><tr><td colspan="7" class="muted">No workers yet: add one below, or pick one the
+              network shows.</td></tr></tbody>
+          </table>
+        </div>
+        <form class="add-row" id="pool-add">
+          <input class="st-input" id="pool-add-addr" placeholder="worker address, e.g. 192.168.1.20 or laptop:7701" autocomplete="off">
+          <button class="st-btn st-btn--secondary" type="submit">Add worker</button>
+        </form>
+        <div class="st-field">
+          <span class="st-label">Found on your network</span>
+          <div class="found" id="pool-found"><span class="muted small">Looking&hellip;</span></div>
+        </div>
+        <div class="pool-inline">
+          <div class="st-field">
+            <span class="st-label">Where the layers are split <output id="pool-split-out"></output></span>
+            <div class="seg seg--2" id="pool-split-mode" role="radiogroup" aria-label="Split">
+              <button type="button" role="radio" data-v="auto">Automatic</button>
+              <button type="button" role="radio" data-v="manual">Manual</button>
+            </div>
+            <input class="st-input" id="pool-split" placeholder="first layer of each worker, e.g. 30 or 16,32" hidden>
+            <span class="muted small">Automatic weighs each PC's free VRAM, RAM and GPU speed.</span>
+          </div>
+          <div class="st-field">
+            <span class="st-label">Network precision</span>
+            <div class="seg seg--3" id="pool-wire" role="radiogroup" aria-label="Network precision">
+              <button type="button" role="radio" data-v="f32">Exact</button>
+              <button type="button" role="radio" data-v="f16">f16</button>
+              <button type="button" role="radio" data-v="bf16">bf16</button>
+            </div>
+            <span class="muted small">Exact sends 32-bit rows, so the answers match one PC's exactly. f16 halves the
+              bytes, for slow networks.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="st-card" id="pool-worker-card" hidden>
+        <div class="req-head"><span class="card-title">Worker</span><span class="muted small" id="pool-worker-sum"></span></div>
+        <dl class="facts" id="pool-worker"></dl>
+        <p class="muted small">The chat on this PC is off while it is a worker: open the coordinator's page to chat.
+          Windows asks once to let <code>strata.exe</code> through the firewall: allow it on private networks.</p>
+      </div>
+
+      <div class="pool-actions">
+        <span class="muted small" id="pool-dirty"></span>
+        <button class="st-btn st-btn--secondary" id="pool-restart" type="button">
+          <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-refresh"/></svg>Restart engine</button>
+        <button class="st-btn st-btn--primary" id="pool-apply" type="button">Apply</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
@@ -219,5 +391,6 @@
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/app.js"></script>
+<script src="web/pool.js"></script>
 </body>
 </html>
