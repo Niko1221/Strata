@@ -53,6 +53,12 @@ public:
     /// up, and the wait moves to the next prefill's entry (or `prefill_barrier`).  Off by default: the wait sits
     /// at the end, today's behaviour.
     void set_prefill_async(bool on) { prefill_async_ = on; }
+    /// Fase 9 (opt-in `--draft-chain-batch`): the round stops waiting between the chain's steps - the round
+    /// graph and ALL the step graphs launch back to back and ONE wait reads the whole chain's drafts (the
+    /// min-p cut then reads the mapped probabilities after that wait; a step past the cut only leaves a dead
+    /// write in a ring cell the chain rewrites when it reaches it again).  Off by default: the wait sits
+    /// between the steps, today's behaviour.
+    void set_chain_batch(bool on) { chain_batch_ = on; }
     /// Waits for a queued async prompt fill (a no-op with nothing pending): the first round of the decode must
     /// start against a finished prompt K/V.
     bool prefill_barrier(std::string& err);
@@ -140,6 +146,7 @@ private:
     int max_drafts_ = 1 << 30;
     bool prefill_async_ = false;   ///< Fase 8: the prompt fill queues and the wait moves to the next entry
     bool pf_pending_ = false;      ///< Fase 8: an enqueued prompt fill the barrier has not drained yet
+    bool chain_batch_ = false;     ///< Fase 9: the chain's step graphs launch back to back (one wait per round)
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;

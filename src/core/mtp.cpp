@@ -948,6 +948,49 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     h_row_[0] = a;
     h_row_[1] = 0;
+    const int cap = std::min(max_t_ - 1, max_drafts_);
+    // Fase 9 (opt-in --draft-chain-batch): the chain's steps no longer wait on the host's cut.  Nothing a
+    // step reads comes from the host between the steps: mtp_select leaves the next step's residual and token
+    // in Rin_[0] / tok_[0], and every step's cell (p + a + j) is known before any launch - so the round graph
+    // and ALL the step graphs launch back to back and ONE wait reads the whole chain.  The min-p cut then
+    // reads the mapped probabilities - the same rule as the per-step loop below (the count of drafts whose
+    // probability and every one before it reaches min_p); drafts past the cut are zeroed, and such a step
+    // writes only cells whose ring slots the chain rewrites when it reaches them again.  The graphs are
+    // captured BEFORE the round's launch: a stream cannot capture while it is executing.
+    if (chain_batch_) {
+        for (int j = 1; j < cap; ++j) put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+        for (int j = 1; j < cap; ++j)
+            if (!capture_step(j, cp, err)) return false;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        for (int j = 1; j < cap; ++j)
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
+                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        drafts[0] = ((volatile int32_t*) h_out_)[0];
+        float pj = ((volatile float*) h_prob_)[0];
+        if (probs) probs[0] = pj;
+        int n = 1;
+        for (int j = 1; j < cap && pj >= min_p; ++j) {
+            drafts[j] = ((volatile int32_t*) h_out_)[j];
+            pj = ((volatile float*) h_prob_)[j];
+            if (probs) probs[j] = pj;
+            ++n;
+        }
+        for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
+        if (n_drafts) *n_drafts = n;
+        ms_draft += ms_since(t0);
+        ++rounds;
+        return true;
+    }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess ||
         cudaStreamSynchronize(cs_) != cudaSuccess) {
