@@ -659,6 +659,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(qsa_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_parity COMMAND qsa_parity --selftest)
 
+  # the QSA top-k the engine dispatches against the original kernel: identical ids on both sides of the register
+  # kernel's reach, with tied and with equal scores (synthetic, no model)
+  add_executable(qsa_topk_parity src/kernels/qsa_topk_parity.cpp)
+  target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+
   # ---- P2.S4: the PLE n-gram hash, the IQ4_NL table read, and the PLE block ----
   # `ngram.cpp` is host-only but lives in `strata_kernels` because `ple.cu` shares its geometry constants, and
   # splitting them across two libraries would only add a layer.
