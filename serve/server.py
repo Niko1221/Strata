@@ -34,6 +34,7 @@ import re
 import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -123,11 +124,38 @@ class GpuBusy(RuntimeError):
 
 
 ENGINE_REQUEST = re.compile(
-    r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+ read in (?P<read>[\d.]+) ms \((?P<pp>[\d.]+) tok/s\), "
+    # "+ 12288 of 98179 read": a request cancelled while its prompt was read (#471)
+    r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+(?: of \d+)? read in (?P<read>[\d.]+) ms "
+    r"\((?P<pp>[\d.]+) tok/s\), "
     r"(?P<gen>\d+) generated in (?P<gen_ms>[\d.]+) ms \((?P<tg>[\d.]+) tok/s\)")
 
 
 _echoing: set[str] = set()      # the logs echo_requests already follows (restart() runs StrataEngine.__init__ again)
+
+DRAFT_HEAD_FAIL = "the draft head does not fit"
+DRAFT_HEAD_HINT = ("a smaller draft vocabulary needs less VRAM: --draft-vocab cyrillic (English, code and the Cyrillic "
+                   "script) or --draft-vocab en (English and code, ~215 MiB less than the default). Start once with "
+                   "it - START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
+                   "keeps it; or a smaller --context in setup.")
+
+
+def start_failure_hint(log: str | None, offset: int) -> str:
+    """#474: what to change when the engine stopped at the start because the MTP draft head did not fit the VRAM
+    left: the engine's own `strata mtp:` lines after that failure (0.1.36+: what it needs, what is free, the smaller
+    subsets), else the same advice in words for an older engine.  "" for any other failure: the log says why."""
+    if not log:
+        return ""
+    try:
+        with open(log, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+    if DRAFT_HEAD_FAIL not in text:
+        return ""
+    said = [x.strip()[len("strata mtp: "):] for x in text.splitlines()
+            if x.strip().startswith("strata mtp: ") and ("draft head over" in x or "hint:" in x)]
+    return ". mtp: " + DRAFT_HEAD_FAIL + ". " + (" ".join(said) if said else "Hint: " + DRAFT_HEAD_HINT)
 
 
 def echo_requests(log_path: str, offset: int) -> None:
@@ -236,6 +264,7 @@ class StrataEngine:
         self.unloaded = False            # `ended` stays True until READY (below): not alive while starting (#344)
         self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
         loading = threading.Event()                     # set once READY: the narrator below stops
+        log_start = os.path.getsize(log) if log else 0  # where this start's lines begin (start_failure_hint)
         if log:
             threading.Thread(target=narrate_start, args=(log, os.path.getsize(log), args, loading),
                              daemon=True).start()
@@ -259,7 +288,8 @@ class StrataEngine:
                 break
         loading.set()
         if self.max_context <= 0:
-            raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
+            raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else "") +
+                               start_failure_hint(log, log_start))
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
         if self.info.get("engine"):
@@ -338,6 +368,8 @@ class StrataEngine:
             self.last.update(hits=int(f[9]), lookups=int(f[10]))
         if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
             self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
+        if len(f) >= 15:                                  # #471 (engine 0.1.36+): the prompt tokens actually read
+            self.last.update(prompt_read=int(f[14]))
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -630,6 +662,44 @@ def engine_args(cfg: dict) -> list[str]:
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
     if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
         args.append("--split-skip-if-fits")
+    return learned_profile_args(cfg, args)
+
+
+def profile_shape(path: str) -> tuple[int, int] | None:
+    """An expert profile's (layers, experts per layer), from its header (tools/make_profile.py's format), or None
+    when the file is missing, is not one or is shorter than the pairs its header promises."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            size = os.fstat(f.fileno()).st_size
+    except OSError:
+        return None
+    if len(head) < 24 or head[:4] != b"STRP":
+        return None
+    _, nl, ne, _, n = struct.unpack("<5I", head[4:])
+    return (nl, ne) if size >= 24 + 4 * n else None
+
+
+def learned_profile_args(cfg: dict, args: list[str]) -> list[str]:
+    """#477 (opt-in): "expert_profile_save": "<path>" in the config has the engine (0.1.36+) save what its adaptive
+    tier learned there - on QUIT and every "expert_profile_save_every" minutes (10 by default, 0 = at QUIT only) -
+    and the next start begins from it instead of the config's --expert-profile, when it is a profile of the same
+    model (its header's layers and experts match); otherwise from the config's own, as before.  A relative path is
+    the engine's (the config's "cwd").  Without the key, the arguments are the config's, unchanged."""
+    save = cfg.get("expert_profile_save")
+    if not isinstance(save, str) or not save.strip() or "--expert-profile-save" in args:
+        return args
+    args = args + ["--expert-profile-save", save]
+    every = cfg.get("expert_profile_save_every")
+    if isinstance(every, (int, float)) and not isinstance(every, bool) and every >= 0:
+        args += ["--expert-profile-save-every", str(every)]
+    if "--expert-profile" in args[:-1]:
+        i = args.index("--expert-profile") + 1
+        here = cfg.get("cwd") or "."
+        learned = profile_shape(save if os.path.isabs(save) else os.path.join(here, save))
+        base = profile_shape(args[i] if os.path.isabs(args[i]) else os.path.join(here, args[i]))
+        if learned is not None and learned == base:
+            args[i] = save
     return args
 
 
@@ -1329,11 +1399,14 @@ class Service:
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                            seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
-                                "prompt_tokens": len(ids), "reused": last.get("reused"), "output_tokens": n,
+                                "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                # the request's whole prompt, and the tokens read of it (None: an older engine)
+                                "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
@@ -1345,7 +1418,7 @@ class Service:
                                 "drafts_accepted": last.get("drafts_accepted")})
                             t = self.totals
                             t["requests"] += 1
-                            t["prompt_tokens"] += len(ids)
+                            t["prompt_tokens"] += seen
                             t["reused"] += last.get("reused") or 0
                             t["output_tokens"] += n
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
@@ -1354,7 +1427,7 @@ class Service:
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                                timings = request_timings(len(ids), n, last)
+                                timings = request_timings(seen, n, last)
                                 self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
@@ -1376,6 +1449,17 @@ class Service:
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                        "timings": timings}
+
+
+def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
+    """#471: the prompt tokens a request got through - all of them, unless the engine's DONE line says a cancel stopped
+    its prompt read part-way (then the reused ones plus those read).  /metrics' history and totals count these, so a
+    cancelled read is neither recorded as the whole prompt nor given a rate from tokens it never read.  An engine
+    before 0.1.36 does not say (no `prompt_read`): the whole prompt, as before."""
+    read = last.get("prompt_read")
+    if read is None or last.get("finish") != "cancel":
+        return prompt_tokens
+    return min(prompt_tokens, int(last.get("reused") or 0) + int(read))
 
 
 def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | None:

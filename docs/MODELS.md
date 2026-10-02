@@ -24,7 +24,7 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 
 | Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
 | --- | ---: | ---: | ---: |
-| **Q2_0** | 93 tokens/s | 74 tokens/s | 2,170 tokens/s |
+| **Q2_0** | 94 tokens/s | 76 tokens/s | 2,650 tokens/s |
 | **IQ2_XS** | 79 tokens/s | 63 tokens/s | 2,090 tokens/s |
 | **IQ3_XXS** | 62 tokens/s | 49 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |

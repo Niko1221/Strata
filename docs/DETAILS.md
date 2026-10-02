@@ -19,6 +19,15 @@ RTX 5070 **12 GB**, Ryzen 5 7600 (6 cores), 64 GB DDR5-5200, Windows, engine 0.1
 MTP speculative decoding on. "262K" is the model's full context window (a 259,943-token prompt). The IQ2_XS row was
 measured with Swift 1.5's IQ2_XS, which runs at the original's speed.
 
+**Engine 0.1.36 (#136), the same PC:** Q2_0's prompt experts run on fused int8 tensor-core kernels (RTX 30 and newer):
+4K 1,294 -> 1,570, 32K 2,170 -> 2,653, 128K 2,123 -> 2,468 tokens/s (+16-22%), as close to an FP16 reference as the
+previous kernels (closer at 32K: teacher-forced KL 0.009 vs 0.012). The decode path's block selection and greedy
+argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previous kernels; the same tokens): Q2_0 output at 4K 89 -> 93.5, at 128K
+64.5 -> 76.4 tokens/s. `STRATA_PF_FUSED=0` keeps the previous prompt kernels (byte-identical answers to 0.1.35);
+`STRATA_PF_FUSED=1` also runs the native IQ packs' fused kernels (opt-in: IQ2_XS prompts +12% at 4K, +3% at 32K, the
+IQ3 packs about even); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
+below are 0.1.26's.
+
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
@@ -98,7 +107,10 @@ English/code subset from before (40,525 ids, ~110 MiB less VRAM, English answers
 almost no drafts). `--draft-vocab cyrillic` takes the English/code subset plus the whole Cyrillic script (58,963
 ids): the shipped subsets hold 142 of the vocabulary's 18,580 Cyrillic tokens, so Ukrainian or Russian answers got
 1.4 tokens a round; with it 2.1, and 83 -> 109 tokens/s (RTX 5090, the NVFP4 fork), English unchanged.
-`tools/draft_vocab.py` builds and inspects subsets.
+`tools/draft_vocab.py` builds and inspects subsets. When the start stops with "the draft head does not fit" (a
+12 GB card with a long context, #474), the engine says how much the head needs, how much VRAM is free and which
+smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
+14 GB (only a suggestion: nothing changes unless you pass it).
 
 **Low-RAM mode (engine 0.1.26, chosen by setup):** normally all of a model's experts are copied into RAM (23-50 GB,
 pinned) and the GPU holds a copy of the most-used ones. On a PC whose RAM cannot hold them beside the system (the
@@ -400,6 +412,17 @@ are on; it is started again first, as at a start - so their VRAM and RAM go stra
 the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere. Measured on an RTX 5060 Ti
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
+
+**Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
+cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
+With `"expert_profile_save": "expert-profile-learned.bin"` in `strata-<model>.json` the engine saves that as a
+profile - the experts in VRAM first, then the routing it counted since the start, then the shipped order - on a
+clean exit and every 10 minutes between requests (`"expert_profile_save_every": 5` for another interval, `0` for
+exit only), written to a temporary file and renamed, so a crash never leaves half a file. The next start begins from
+it instead of the config's `--expert-profile` when it is a profile of the same model (else from the config's, as
+before). A relative path is in the Strata folder; one file per model, and a profile per project works the same way
+(point the key at another file). The file is a fingerprint of what you used the model for: it stays on your PC.
+Without the key nothing is counted or written. Setup rewrites the config when run again: add the key again then.
 
 ---
 
