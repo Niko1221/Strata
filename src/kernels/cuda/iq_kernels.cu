@@ -475,8 +475,12 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
+// Q4_K (12) is in BOTH lists: it is the gate/up of Unsloth's UD-Q4_K_XL, and the DOWN of Ornith-1.5's
+// architecture-aware AD-Q4_K-IQ4_XS quant (gate/up IQ4_XS, down Q4_K).  The down kernel uses the same
+// Fmt<12>::dot through row_dot; the only reason it was gate/up-only was that no supported checkpoint had a
+// Q4_K down before.  An Ornith expert's FF width (512) is a whole number of Q4_K's 256-value blocks.
 #define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(8)
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(8)
+#define STRATA_D_FMTS(X) X(12) X(20) X(23) X(42) X(7) X(8)
 #define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(8)
 
 __device__ __forceinline__ float warp_sum(float v) {

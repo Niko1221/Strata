@@ -46,7 +46,9 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+// Runtime so the same parity harness can check another model's expert geometry (Ornith-1.5 is 2048/512):
+// `STRATA_PARITY_H` / `STRATA_PARITY_FF`, defaulting to this repository's Qwen3.8 expert geometry.
+int64_t H = 2560, FF = 640;
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
@@ -542,6 +544,9 @@ int main(int argc, char** argv) {
     int failures = 0;
     cudaStream_t s;
     cudaStreamCreate(&s);
+    if (const char* h = std::getenv("STRATA_PARITY_H")) H = std::atoll(h);
+    if (const char* f = std::getenv("STRATA_PARITY_FF")) FF = std::atoll(f);
+    if (H <= 0 || FF <= 0) { std::fprintf(stderr, "bad STRATA_PARITY_H/FF\n"); return 2; }
     const std::string mode = argv[1];
     if (mode == "--q5_1-min") {
         failures += check_q5_1_min(s);
