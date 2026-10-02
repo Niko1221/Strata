@@ -115,7 +115,36 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
 }
+
+// Recopy the partial page and the indexer's moving spare row. Completed
+// pages/rows strictly before the first rewritten token remain identical.
+template<class Sizes>
+std::array<uint64_t, 5> kept_bytes(int64_t cells, int64_t page_size, const Sizes& sizes, const ModelGeometry& g,
+                                   int64_t unchanged_tokens, bool index) {
+    const int64_t whole_cells = (unchanged_tokens / page_size) * page_size;
+    std::array<uint64_t, 5> kept{};
+    for (size_t i = 0; i < kept.size(); ++i)
+        kept[i] = i == 4 ? (index ? uint64_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
+                         : cells ? (uint64_t(sizes[i]) / uint64_t(cells)) * uint64_t(whole_cells) : 0;
+    return kept;
+}
 } // namespace
+
+bool conversation_kv_extent(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
+                            ConversationKvExtent& extent, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    extent = {l.format, l.cells, g.n_head_kv, g.head_dim, l.page_size, l.pooled_rows, g.idx_key_dim,
+              {l.data, l.value_data, l.scales, l.value_scales, l.pooled}};
+    return true;
+}
+
+std::array<uint64_t, 5> conversation_kv_kept(const ConversationKvExtent& extent, const ModelGeometry& g,
+                                             int64_t unchanged_tokens, bool index) {
+    return kept_bytes(extent.cells, extent.page_size, extent.sizes, g, unchanged_tokens, index);
+}
+
+std::array<void*, 5> conversation_kv_buffers(const QsaState& st) { return pools(st); }
 
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                                    int64_t upto, bool index, size_t& bytes, std::string& error) {
@@ -150,7 +179,6 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         error = "conversation snapshot: invalid unchanged prefix";
         return false;
     }
-    const int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
     image.format = l.format;
     image.cells = l.cells;
     image.heads = g.n_head_kv;
@@ -161,11 +189,9 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     const auto src = pools(st);
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto kept = kept_bytes(l.cells, l.page_size, sizes, g, unchanged_tokens, index);
     for (size_t i = 0; i < dst.size(); ++i) {
-        // Recopy the partial page and the indexer's moving spare row. Completed
-        // pages/rows strictly before the first rewritten token remain identical.
-        const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
-                                  : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
+        const size_t keep = kept[i];
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
         if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
@@ -206,6 +232,10 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    return conversation_kv_restored(st, g, upto, error);
+}
+
+bool conversation_kv_restored(const QsaState& st, const ModelGeometry& g, int64_t upto, std::string& error) {
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);

@@ -151,6 +151,39 @@ def verify_admission(results, budget_mib, floor_mib):
     verify_pressure(equivalent, budget_mib, oversized=True)
 
 
+def verify_disk(results, log_text):
+    """Disk parking: every A turn after a switch is restored from disk and matches the never-parked baseline token
+    for token and byte for byte; the second park of A wrote only its delta; the rewind restored a checkpoint."""
+    baseline, candidate = results['baseline'], results['candidate']
+    require([r['name'] for r in baseline] == ['A', 'A+', 'A++'], 'incomplete baseline')
+    require([r['name'] for r in candidate] == ['A', 'B', 'A+', 'B-again', 'A++', 'N', 'A++-again'],
+            'incomplete candidate')
+    state_keys = set(STATE_KEYS)
+    for record in baseline + candidate:
+        require(bool(record['ids']), 'missing generated tokens')
+        require(record['finish'] in ('length', 'stop'), 'request did not finish normally')
+        require(state_keys <= record['state'].keys(), 'incomplete state fingerprint')
+    by_name = {r['name']: r for r in candidate}
+    for name, again in (('A', 'A'), ('A+', 'A+'), ('A++', 'A++'), ('A++', 'A++-again')):
+        base = next(r for r in baseline if r['name'] == name)
+        require(base['ids'] == by_name[again]['ids'], f'{again} output differs from the baseline')
+        require(base['state'] == by_name[again]['state'], f'{again} state differs from the baseline')
+    require(by_name['A+']['reused'] > 0 and by_name['A++']['reused'] > 0, 'A was not restored after B')
+    require(by_name['A++-again']['reused'] > 0, 'the rewind did not restore anything')
+    parks = re.findall(r'conversation disk: parked (\S+): (\d+) tokens in [\d.]+ ms, wrote ([\d.]+) MiB, kept ([\d.]+) MiB',
+                       log_text)
+    restores = re.findall(r'conversation disk: restored (\S+): (\d+) tokens \((live|checkpoint)\)', log_text)
+    a_parks = [p for p in parks if p[0] == 'a']
+    require(len(a_parks) == 3, f'expected three parks of A, saw {len(a_parks)}')
+    require(float(a_parks[0][3]) == 0.0, 'the first park of A kept bytes it never wrote')
+    require(float(a_parks[1][3]) > 0.0 and float(a_parks[2][3]) > 0.0, 'a later park of A rewrote everything')
+    require([r[0] for r in restores] == ['a', 'b', 'a', 'a'], f'unexpected restores {restores}')
+    require(restores[-1][2] == 'checkpoint', 'the rewind did not resume from a checkpoint')
+    require('conversation disk: parked n' not in log_text and 'conversation disk: parked :' not in log_text,
+            'a request without an id was parked')
+    results['disk'] = {'parks': parks, 'restores': restores}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--config', type=Path, required=True)
@@ -158,12 +191,14 @@ def main():
     ap.add_argument('--output', type=Path, required=True, help='new private directory; existing paths refused')
     ap.add_argument('--cache-mib', type=int, default=8192)
     ap.add_argument('--paragraphs', type=int, default=128)
-    ap.add_argument('--scenario', choices=('reuse', 'pressure', 'oversized', 'exchange', 'admission'), default='reuse',
+    ap.add_argument('--scenario', choices=('reuse', 'pressure', 'oversized', 'exchange', 'admission', 'disk'),
+                    default='reuse',
                     help='pressure requires snapshots fitting individually but not together; oversized requires none to fit')
     ap.add_argument('--min-free-mib', type=int, default=2560,
                     help='physical RAM floor; for admission denial choose a value above available system RAM')
     ap.add_argument('--spec', type=int, default=1, choices=range(1, 9),
                     help='decode window cap; 1 uses engine --spec 2 --mtp-max-t 1 for native IQ packs')
+    ap.add_argument('--disk-dir', type=Path, help='disk scenario: the --conversation-disk-dir to park in')
     ap.add_argument('--run', action='store_true')
     a = ap.parse_args()
     if a.cache_mib <= 0 or a.paragraphs < 1 or not 0 <= a.min_free_mib <= (2**63 - 1) // (1024 * 1024):
@@ -193,17 +228,33 @@ def main():
         log = a.output / f'{label}.log'
         args = engine_args(cfg, budget, a.spec)
         args += ['--conversation-cache-min-free-mib', str(a.min_free_mib)]
+        if a.scenario == 'disk' and label == 'candidate':
+            args += ['--conversation-disk-dir', str(a.disk_dir)]
         engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
         results['engine_info'][label] = dict(engine.info)
         records = []
-        def generate(ids, count, name):
-            out = [t for t in engine.generate(ids, count, {'temperature': 0}, threading.Event()) if t is not None]
+        def generate(ids, count, name, conv=None):
+            sampling = {'temperature': 0, **({'strata_conversation': conv} if conv else {})}
+            out = [t for t in engine.generate(ids, count, sampling, threading.Event()) if t is not None]
             records.append({'name': name, 'ids': out, **engine.last})
             return out
         try:
             # One output token leaves exactly A's prompt as the live prefix,
             # avoiding the pre-existing accepted-draft output-cap overshoot.
-            if a.scenario in ('pressure', 'oversized', 'admission'):
+            if a.scenario == 'disk':
+                head = generate(A, 1, 'A', 'a')
+                cont = A + head + suffix
+                if label == 'candidate':
+                    generate(B, 1, 'B', 'b')
+                more = generate(cont, 8, 'A+', 'a')
+                cont2 = cont + more + suffix
+                if label == 'candidate':
+                    generate(B, 1, 'B-again', 'b')
+                generate(cont2, 8, 'A++', 'a')
+                if label == 'candidate':
+                    generate(C, 1, 'N')   # no id: parks A, is never parked itself
+                    generate(cont2, 8, 'A++-again', 'a')   # A's live end is past this prompt: a checkpoint
+            elif a.scenario in ('pressure', 'oversized', 'admission'):
                 generate(A, 1, 'A')
                 generate(B, 1, 'B')
                 generate(C, 1, 'C')
@@ -224,7 +275,9 @@ def main():
         for record, fingerprint in zip(records, hashes):
             record['state'] = fingerprint
         results[label] = records
-        if label == 'candidate' and a.scenario != 'reuse':
+        if label == 'candidate' and a.scenario == 'disk':
+            disk_log = log.read_text(encoding='utf-8')
+        elif label == 'candidate' and a.scenario != 'reuse':
             log_text = log.read_text(encoding='utf-8')
             parks = re.findall(r'conversation cache: parked \d+ tokens .*?parked=(\d+) bytes=(\d+) evictions=(\d+)(?: snapshot_bytes=(\d+))?', log_text)
             results['pressure'] = {
@@ -235,7 +288,11 @@ def main():
     (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
     if a.scenario == 'pressure':
         print(pressure_budget_hint(results, a.cache_mib), flush=True)
-    if a.scenario == 'admission':
+    if a.scenario == 'disk':
+        verify_disk(results, disk_log)
+        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        print('PASS: disk parking A/B/A, delta parks, checkpoint rewind, byte-exact main-model state')
+    elif a.scenario == 'admission':
         verify_admission(results, a.cache_mib, a.min_free_mib)
         print('PASS: physical-memory admission denial, output and byte-exact main-model state')
     elif a.scenario == 'exchange':

@@ -16,6 +16,7 @@
 
 #include "strata/core/device.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/conversation_disk.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
@@ -405,6 +406,10 @@ struct Options {
     int64_t conversation_cache_mib = 0; // opt-in host RAM for independent conversations
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
+    /// --serve: park conversations on disk under this directory instead of in RAM, keyed by the request's `conv=` id
+    /// (see conversation_disk.hpp); empty = off.  Replaces the RAM cache when set.
+    std::string conversation_disk_dir;
+    int64_t conversation_disk_gib = 32;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
@@ -515,6 +520,9 @@ void usage() {
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
                  "  --conversation-cache-min-free-mib N  --serve: physical RAM floor when parking (default 2560)\n"
+                 "  --conversation-disk-dir DIR  --serve: park conversations with a conv= id on disk in DIR instead of\n"
+                 "                       in RAM; requests without an id are not parked (replaces the RAM cache)\n"
+                 "  --conversation-disk-gib N  --serve: disk budget for parked conversations (default 32)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
@@ -1245,6 +1253,8 @@ int main(int argc, char** argv) {
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
+        else if (a == "--conversation-disk-dir") o.conversation_disk_dir = next("--conversation-disk-dir");
+        else if (a == "--conversation-disk-gib") o.conversation_disk_gib = std::max(1LL, std::atoll(next("--conversation-disk-gib")));
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -1347,6 +1357,13 @@ int main(int argc, char** argv) {
     }
     strata::core::set_coupled_draft(o.coupled_draft);
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
+    if (o.serve && !o.conversation_disk_dir.empty() && o.prompt_cache == 0)
+        std::fprintf(stderr, "strata serve: warning: disk parking is disabled by --prompt-cache 0\n");
+    if (o.serve && !o.conversation_disk_dir.empty() && o.conversation_cache_mib > 0) {
+        std::fprintf(stderr, "strata serve: --conversation-disk-dir replaces the RAM conversation cache; ignoring "
+                             "--conversation-cache-mib\n");
+        o.conversation_cache_mib = 0;
+    }
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
@@ -4628,6 +4645,38 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // ---- disk parking (--conversation-disk-dir): `live_conv` is the id of the conversation the session holds, and
+        // `disk_unchanged` how many of its leading tokens still have byte-identical K/V in that id's files - set when it
+        // was parked or restored, lowered to where each request starts rewriting the session.  A park then writes only
+        // the K/V past it.
+        strata::core::ConversationDisk disk;
+        if (o.prompt_cache > 0 && !o.conversation_disk_dir.empty()) {
+            if (!disk.open(o.conversation_disk_dir, (uint64_t) o.conversation_disk_gib << 30, err)) {
+                std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata serve: conversation disk: parking in %s (budget %lld GiB)\n",
+                         o.conversation_disk_dir.c_str(), (long long) o.conversation_disk_gib);
+        }
+        std::string live_conv;
+        int64_t disk_unchanged = 0;
+        auto park_disk = [&]() {
+            if (!disk.enabled() || live_conv.empty() || !live_ok || live.empty()) return;
+            const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
+            strata::core::ConversationDisk::Stats st;
+            const auto t0 = Clock::now();
+            if (!disk.park(live_conv, view, park_stages, g, mtp.kv_state(), disk_unchanged, st, err)) {
+                std::fprintf(stderr, "strata serve: conversation disk: skip parking %s (%s)\n", live_conv.c_str(),
+                             err.c_str());
+                err.clear();   // a miss, not a request error
+                return;
+            }
+            disk_unchanged = (int64_t) live.size();
+            std::fprintf(stderr, "strata serve: conversation disk: parked %s: %zu tokens in %.1f ms, wrote %.1f MiB, "
+                                 "kept %.1f MiB; parked=%zu on_disk=%.1f GiB evicted=%zu\n",
+                         live_conv.c_str(), live.size(), std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                         st.written / 1048576.0, st.kept / 1048576.0, disk.size(), st.on_disk / 1073741824.0, st.evicted);
+        };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
         // mid-read reports as read, instead of the whole prompt
@@ -5079,6 +5128,7 @@ int main(int argc, char** argv) {
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            std::string req_conv;   // conv=ID: the client's conversation id, what disk parking keys on (none = not parked)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -5095,6 +5145,7 @@ int main(int argc, char** argv) {
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "conv") req_conv = tok.substr(eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -5266,6 +5317,29 @@ int main(int argc, char** argv) {
                         from_live = false;
                     }
             }
+            // Disk parking: another conversation (or none) holds the session, or it is in between after a failed request.
+            const bool switching = disk.enabled() && (req_conv != live_conv || !live_ok);
+            strata::core::ConversationDisk::Match on_disk;
+            std::optional<strata::core::SavedConversation> from_disk;
+            if (switching && !req_conv.empty() && want_cvec == cvec_cached) {
+                on_disk = disk.best(req_conv, ids, req_imgs, want_cvec);
+                if (on_disk.tokens > resume) {
+                    const auto t0 = Clock::now();
+                    from_disk.emplace();
+                    if (!disk.load(req_conv, park_stages, g, mtp.kv_state(), *from_disk, err)) {
+                        std::fprintf(stderr, "strata serve: conversation disk: discard %s (%s)\n", req_conv.c_str(),
+                                     err.c_str());
+                        disk.drop(req_conv);
+                        from_disk.reset();
+                        err.clear();
+                    } else {
+                        std::fprintf(stderr, "strata serve: conversation disk: loaded %s's running state in %.1f ms\n",
+                                     req_conv.c_str(), std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    }
+                }
+            }
+            // the outgoing conversation goes to disk before anything overwrites it (the session is only read)
+            if (disk.enabled() && req_conv != live_conv) park_disk();
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > resume) incoming.emplace(conversations.take(parked.index));
@@ -5316,6 +5390,41 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            bool restored_from_disk = false;
+            if (from_disk) {
+                const auto t0 = Clock::now();
+                uint64_t bytes = 0;
+                const auto r = disk.restore(req_conv, *from_disk, park_stages, g, mtp.kv_state(), bytes, err);
+                if (r == strata::core::ConversationRestore::restored) {
+                    live = std::move(from_disk->live.ids);
+                    live_imgs = std::move(from_disk->live.imgs);
+                    checks = std::move(from_disk->checkpoints);
+                    cvec_cached = from_disk->cvec;
+                    resume = on_disk.tokens;
+                    from_live = on_disk.live;
+                    disk_unchanged = (int64_t) live.size();
+                    restored_from_disk = true;
+                    std::fprintf(stderr, "strata serve: conversation disk: restored %s: %lld tokens (%s), %.1f MiB in "
+                                         "%.1f ms\n", req_conv.c_str(), (long long) resume, from_live ? "live" : "checkpoint",
+                                 bytes / 1048576.0, std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                } else {
+                    std::fprintf(stderr, "strata serve: conversation disk: restoring %s failed (%s)%s\n", req_conv.c_str(),
+                                 err.c_str(), r == strata::core::ConversationRestore::transfer_failed
+                                                  ? "; reading the prompt from the start" : "");
+                    disk.drop(req_conv);
+                    err.clear();
+                    if (r == strata::core::ConversationRestore::transfer_failed) {   // the session is partly written
+                        resume = 0;
+                        from_live = false;
+                        checks.clear();
+                    }
+                }
+                from_disk.reset();
+            }
+            if (disk.enabled()) {
+                if (!restored_from_disk && req_conv != live_conv) disk_unchanged = 0;
+                live_conv = req_conv;
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -5379,6 +5488,7 @@ int main(int argc, char** argv) {
             mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
             conversations.limit_reuse(read_from);
+            disk_unchanged = std::min(disk_unchanged, read_from);
             pp_total = n;
             pp_from = read_from;
             pp_reached = read_from;

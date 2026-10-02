@@ -333,16 +333,21 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     return true;
 }
 
-bool conversation_snapshot_validate(const SavedConversation& image, const ConversationStages& stages,
-                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
+bool conversation_snapshot_validate_state(const SavedConversation& image, const ConversationStages& stages,
+                                          const ModelGeometry& g, std::string& error) {
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
     // an image holds one carve's running state and K/V per stage: same layer ranges or nothing
     if (image.layer_lo != stages[0].ss->layer_lo || image.layer_hi != stages[0].ss->layer_hi)
         return fail(error, "snapshot from another session layer range");
     const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, stages, g, error) ||
-        !conversation_checkpoint_validate(image.live, *stages[0].ss, g, error) ||
-        !parts_validate(image.live, stages, g, error)) return false;
+    return view_validate(view, stages, g, error) &&
+           conversation_checkpoint_validate(image.live, *stages[0].ss, g, error) &&
+           parts_validate(image.live, stages, g, error);
+}
+
+bool conversation_snapshot_validate(const SavedConversation& image, const ConversationStages& stages,
+                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
+    if (!conversation_snapshot_validate_state(image, stages, g, error)) return false;
     if (image.kv.size() != total_owned(stages) + 1) return fail(error, "invalid K/V layer count");
     const int64_t upto = (int64_t) image.live.ids.size();
     size_t entry = 0;
@@ -350,6 +355,43 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Conver
         for (size_t j = 0; j < owned_qsa(*stages[i].ss); ++j)
             if (!conversation_kv_validate(image.kv[entry++], owned(*stages[i].ss, j), g, upto, true, error)) return false;
     return conversation_kv_validate(image.kv.back(), draft, g, upto, false, error);
+}
+
+std::vector<ConversationKvEntry> conversation_kv_entries(const ConversationStages& stages, const QsaState& draft) {
+    std::vector<ConversationKvEntry> entries;
+    for (const auto& st : stages)
+        for (size_t j = 0; j < owned_qsa(*st.ss); ++j) entries.push_back({&owned(*st.ss, j), st.dev, true});
+    entries.push_back({&draft, stages.back().dev, false});   // the drafter lives on the last stage
+    return entries;
+}
+
+bool conversation_live_save(SavedConversation& image, const ConversationView& view, const ConversationStages& stages,
+                            const ModelGeometry& g, std::string& error) {
+    if (!view_validate(view, stages, g, error)) return false;
+    SavedConversation captured;
+    captured.geometry = geometry_key(g);
+    captured.layer_lo = stages[0].ss->layer_lo; captured.layer_hi = stages[0].ss->layer_hi;
+    captured.live.ids = view.ids; captured.live.imgs = view.images; captured.cvec = view.cvec;
+    for (size_t i = 0; i < stages.size(); ++i) {   // each stage drained on its own device first, as in the save
+        const OnDevice on(stages[i].dev);
+        if (!sync(error)) return false;
+        ConversationCheckpoint& part = i == 0 ? captured.live : captured.live.stage_parts.emplace_back();
+        if (i != 0) { part.ids = captured.live.ids; part.imgs = captured.live.imgs; }
+        if (!conversation_checkpoint_save(part, *stages[i].ss, g, error)) return false;
+    }
+    image = std::move(captured);
+    return true;
+}
+
+bool conversation_live_restore(const ConversationCheckpoint& live, const ConversationStages& stages,
+                               const ModelGeometry& g, std::string& error) {
+    for (size_t i = 0; i < stages.size(); ++i) {
+        const OnDevice on(stages[i].dev);
+        if (!sync(error)) return false;
+        if (!conversation_checkpoint_restore(i == 0 ? live : live.stage_parts[i - 1], *stages[i].ss, g, error))
+            return false;
+    }
+    return true;
 }
 
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, const ConversationStages& stages,
