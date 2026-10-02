@@ -402,6 +402,10 @@ struct Options {
     /// `--main-device != --draft-device`: the queued copy reads the verifier's mapped window (on one GPU the
     /// device window is overwritten by the very next run).
     bool draft_prefill_parallel = false;
+    /// Fase 9 (hetero multi-GPU), opt-in: the draft round's chain graphs launch back to back and ONE wait
+    /// reads the whole chain - the min-p cut reads the mapped probabilities after it instead of waiting
+    /// between the steps.  Works with or without the roles (it changes only the drafter's own stream).
+    bool draft_chain_batch = false;
     /// Fase 10 (hetero multi-GPU), opt-in: pick the roles from the capability records and behave as if the
     /// flags came in - MAIN keeps today's default ordinal, DRAFT takes the remaining device with the most free
     /// bytes.  Explicit flags still win (the pick runs only when none was given).
@@ -601,6 +605,10 @@ void usage() {
                  "                       drafter's stream and the wait moves to the next prefill's entry -\n"
                  "                       the main model's next chunk computes while the drafter catches up.\n"
                  "                       Needs the roles (--main-device != --draft-device).\n"
+                 "  --draft-chain-batch  Fase 9 (hetero multi-GPU): the draft round's chain graphs\n"
+                 "                       launch back to back and ONE wait reads the whole chain; the\n"
+                 "                       min-p cut reads the mapped probabilities after it.  Works\n"
+                 "                       with or without the roles.\n"
                  "  --auto-roles  Fase 10 (hetero multi-GPU): pick the roles from the capability records -\n"
                  "                       MAIN = the default ordinal, DRAFT = the remaining GPU with the most\n"
                  "                       free bytes. Needs two GPUs (and --mtp, as the roles always do).\n"
@@ -1258,6 +1266,7 @@ int main(int argc, char** argv) {
         else if (a == "--main-device") o.main_device = std::atoi(next("--main-device"));
         else if (a == "--draft-device") o.draft_device = std::atoi(next("--draft-device"));
         else if (a == "--draft-prefill-parallel") o.draft_prefill_parallel = true;
+        else if (a == "--draft-chain-batch") o.draft_chain_batch = true;
         else if (a == "--auto-roles") o.auto_roles = 1;
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
@@ -4671,6 +4680,7 @@ int main(int argc, char** argv) {
         // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill - a no-op without the flag (the mode sits
         // on the drafter; the binding and the prompt loop below stay unchanged when it is off)
         mtp.set_prefill_async(o.draft_prefill_parallel);
+        mtp.set_chain_batch(o.draft_chain_batch);   // Fase 9: the chain batching (a no-op without --draft-chain-batch)
         // Fase 3 gate: with the DRAFT role on another GPU the window crosses as the verifier's mapped mirror -
         // no peer pair needed (measured on the rig: EnablePeerAccess deadlocks, a replay reading the other
         // device without it faults); a same-device run keeps the device pointer
@@ -6589,6 +6599,7 @@ int main(int argc, char** argv) {
         }
         // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill (see the serve path)
         mtp.set_prefill_async(o.draft_prefill_parallel);
+        mtp.set_chain_batch(o.draft_chain_batch);   // Fase 9: the chain batching (a no-op without --draft-chain-batch)
         mem_mark("the verifier and the drafter's binding");
         // Fase 11 (hetero multi-GPU): the role plan's VRAM accounting, per device right after the binding - the
         // verifier and its pools live on the MAIN device, the drafter's weights, state and buffers (and its
