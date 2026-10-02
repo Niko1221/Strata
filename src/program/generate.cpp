@@ -3153,9 +3153,16 @@ int main(int argc, char** argv) {
     strata::core::HitFn hit_fn =
         (o.no_pool || o.expert_cache <= 0) ? nullptr : &strata::core::expert_hit_run;
     void* pool_user = o.no_pool ? nullptr : (void*) &drive;
-    std::fprintf(stderr, "strata generate: %d expert-pool workers%s%s\n", pool.workers(),
+    // PR #500: which arm the intermediate activation quantization runs - across the pool, or on the host alone -
+    // and the task count below which it stays on the host.  "The engine adapts to the machine it is on" is only
+    // true if the engine says which adaptation it took.
+    const char* q_arm = o.no_pool ? ""
+                        : pool.parallel_quant()
+                              ? " (parallel intermediate quantization)"
+                              : " (sequential intermediate quantization: STRATA_POOL_PARALLEL_QUANT=0)";
+    std::fprintf(stderr, "strata generate: %d expert-pool workers%s%s%s\n", pool.workers(),
                  pool.host_works() ? " + the host thread" : "",
-                 o.no_pool ? " (UNUSED: --no-pool)" : "");
+                 o.no_pool ? " (UNUSED: --no-pool)" : "", q_arm);
 
     // **THE MISALIGNMENT WARNING THAT STOOD HERE IS GONE, BECAUSE THE MISALIGNMENT IS FIXED.**
     //

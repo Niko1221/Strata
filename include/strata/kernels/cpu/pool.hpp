@@ -30,6 +30,7 @@
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <memory>
@@ -155,9 +156,51 @@ public:
     /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).
     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
     static constexpr int kMaxSplitMulti = 96;
+
+    // ---- PR #500: THE INTERMEDIATE QUANTIZATION AS A PHASE OF ITS OWN (drain mode 7).
+    //
+    // Between the gate/up phase and the down phase of a multi-token layer, every token's intermediate `ff[t]`
+    // must be quantized into `a2[t]` (legacy Q8_1 / `act_quant_any`) or `hq[t]` (a native pack's `vec_dot_type`).
+    // That used to be a nested host loop with every worker spinning on the park, because it cannot be folded
+    // into the gate/up phase: an expert's rows are split across tasks, so `ff[e][t]` is incomplete until ALL
+    // of phase 5's tasks have finished.  The barrier is required; running the work on ONE thread while the
+    // others sit still is not.
+    //
+    // So the host and the workers that already claim whole experts - the same `head_`/`done_` protocol, the same
+    // workers, the same pinning - claim quantization tasks instead.  One task is one (expert, token) pair of
+    // 640 floats: `ff[t]` is read-only for the phase and the task writes only its own `a2[t]`/`hq[t]`, so no
+    // two tasks touch the same bytes and no lock or barrier beyond the phase's own is needed.
+    //
+    // WHAT IT IS WORTH, AND WHERE IT IS NOT.  A phase costs two park barriers; a task is one 640-element
+    // quantization (0.169 us alone, bench below).  Measured on the 12-core Ryzen 9 7900 this was written on, 11
+    // workers + the host, as the ratio of the two arms' phase times (`ms_multi_q`, best of 40, median of three
+    // runs - `pool_quant_test --bench` prints the whole table and the spread):
+    //
+    //     tasks      1     2     4     6     8    12    16    24    32    48    64    96
+    //     faster  0.27x 0.5x  0.9x  0.9x  1.15x 1.2x  1.3x  1.45x 1.7x  1.8x  2.0x  2.05x
+    //
+    // End to end it is the same story: on the IQ3_S pack with --spec 4 (26 CPU experts a layer, 13xx tasks a
+    // round) the engine's own report went from `pool multi quantize 0.457` to `0.280 ms/round` over eight runs -
+    // 1.6x on this step, 0.18% of a ~100 ms/round decode, with byte-identical generated tokens in both arms.
+    // Small because the step is only ~0.7% of the pool's work, and the pool is the dominant cost; real,
+    // repeatable, and it scales with the task count.  It LOSES below about eight tasks, where the barrier costs
+    // more than the work it distributes; `quant_min_tasks()` is that crossing, measured rather than guessed.  A
+    // smaller pool crosses over earlier (6-8 tasks at 6 workers, 2-3 at 2), so one flat threshold is the
+    // conservative side of every pool size measured.  `STRATA_POOL_PARALLEL_QUANT=0` runs the sequential loop at
+    // every size: the A/B arm, and it changes nothing else.
+    bool parallel_quant() const { return parallel_quant_; }
+    /// The task count below which the host runs the quantization alone.  The native (ggml) path uses the same
+    /// number: its task is one pass over the same 640 floats.  `STRATA_POOL_QUANT_MIN_TASKS` overrides it (a test
+    /// knob for the measurement above, like `STRATA_POOL_SPIN_US`).
+    int quant_min_tasks() const { return quant_min_tasks_; }
+    /// One (expert, token) pair is one task, so a batch has at most this many.
+    static constexpr int kMaxQuantTasks = kMaxSplitMulti * MAXT;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
     int64_t multi_bytes = 0;
+    /// PR #500: how many intermediate-quantization phases ran across the pool, and how many tasks they carried.
+    /// Host-thread only, like `ms_multi_q`; the test reads them to check WHICH arm ran instead of assuming it.
+    int64_t quant_phases = 0, quant_tasks = 0;
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
     /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to
@@ -195,6 +238,17 @@ private:
     void run_phase(int mode, int n_tasks);
     /// Claim the next job of batch `epoch`, or -1 (that batch is exhausted, or it is not the current one).
     int claim(uint32_t epoch);
+    /// PR #500: fill the quantization phase's task table from `mjobs_[0..n)`, and return the task count.  A
+    /// running count per expert instead of a list of pairs: the task index alone says which pair it is (see
+    /// `quant_expert_of`), so the token path allocates nothing and the host writes n+1 ints.
+    int prepare_quant_tasks(int n);
+    /// PR #500: quantize the intermediates of `mjobs_[0..n)` - mode 7 across the pool and the host, or the
+    /// sequential host loop below `quant_min_tasks` / with `STRATA_POOL_PARALLEL_QUANT=0`.
+    void run_quant(int n);
+    /// The expert of quantization task `i` - the last one whose running count is not past it.
+    int quant_expert_of(int i) const {
+        return (int) (std::upper_bound(quant_start_, quant_start_ + quant_experts_ + 1, i) - quant_start_) - 1;
+    }
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
     uint32_t begin_batch(int n);
     /// The host's waits, bounded by `kStall`.
@@ -254,7 +308,7 @@ private:
         ActQ a2;
     };
     std::vector<SplitBuf> split_;
-    // run_split_multi state: mode 3 = gate/up row parts, 4 = down row parts
+    // run_split_multi state: mode 3 = gate/up row parts, 4 = down row parts, 7 = intermediate quantization
     ExpertJobMulti* mjobs_ = nullptr;
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
     int mtasks_ = 1;        // equal row ranges the phase is cut into
@@ -263,6 +317,12 @@ private:
         ActQ a2[MAXT];
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };
+    // mode 7's task table: `quant_start_[e]` is how many tasks experts 0..e-1 own, so task `i` belongs to
+    // expert `e` with `quant_start_[e] <= i < quant_start_[e+1]` and is its token `i - quant_start_[e]`.
+    int quant_start_[kMaxSplitMulti + 1] = {};
+    int quant_experts_ = 0;   // experts in the current table (its entries are 0..quant_experts_)
+    bool parallel_quant_ = true;      // STRATA_POOL_PARALLEL_QUANT=0: the sequential host loop
+    int quant_min_tasks_ = 8;         // STRATA_POOL_QUANT_MIN_TASKS: the measured crossing above
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;

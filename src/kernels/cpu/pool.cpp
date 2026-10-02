@@ -346,6 +346,12 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     : host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+    // PR #500: the A/B switch for the intermediate quantization, and the threshold behind it.  Read once, at
+    // construction, with the workers not yet started - the value cannot change while a request is running.
+    if (const char* e = std::getenv("STRATA_POOL_PARALLEL_QUANT"))
+        parallel_quant_ = std::atoi(e) != 0;
+    if (const char* e = std::getenv("STRATA_POOL_QUANT_MIN_TASKS"))   // a test knob for the measurement below
+        quant_min_tasks_ = (std::max)(1, std::atoi(e));
     if (n_workers > 0) {
         n_ = n_workers;
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
@@ -532,6 +538,15 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
+        } else if (mode_ == 7) {
+            // PR #500: one intermediate activation quantization - see the note in the header.  Every task
+            // writes its own `a2[t]`/`hq[t]` and reads `ff[t]` of the (expert, token) pair that owns it.
+            const int qe = quant_expert_of((int) i);
+            const int qt = (int) i - quant_start_[qe];
+            SplitBufMulti& sb = split_multi_[(size_t) qe];
+            if (nfmt_ == nullptr) act_quant_q8_1(sb.ff[qt], FF, sb.a2[qt]);
+            else if (nfmt_->d_type == 42) act_quant_any(sb.ff[qt], FF, sb.a2[qt]);
+            else native_quant_h(*nfmt_, sb.ff[qt], sb.hq[qt]);
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows
             const int per = mode_ == 5 ? FF : H;
@@ -621,6 +636,50 @@ void ExpertPool::run_split(ExpertJob* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+int ExpertPool::prepare_quant_tasks(int n) {
+    // One running count per expert rather than a list of (expert, token) pairs: a task's index is enough to find
+    // its own pair, so the host writes n+1 ints here instead of one entry per task, and nothing allocates.
+    if (n < 0 || n > kMaxSplitMulti) {
+        std::fprintf(stderr, "strata: expert pool quantization phase of %d experts is out of range\n", n);
+        std::abort();
+    }
+    quant_start_[0] = 0;
+    for (int e = 0; e < n; ++e) {
+        // The table is one entry per expert, so a job wider than MAXT would write past it - and would already have
+        // written past the job's own `act`/`out` arrays before reaching here.  Say so rather than corrupt both.
+        if (mjobs_[e].nt < 0 || mjobs_[e].nt > MAXT) {
+            std::fprintf(stderr, "strata: expert pool job %d carries %d tokens (MAXT is %d)\n", e, mjobs_[e].nt,
+                         MAXT);
+            std::abort();
+        }
+        quant_start_[e + 1] = quant_start_[e] + mjobs_[e].nt;
+    }
+    quant_experts_ = n;
+    return quant_start_[n];
+}
+
+void ExpertPool::run_quant(int n) {
+    // PR #500.  The intermediate quantization of a multi-token layer, as a phase of its own (drain mode 7)
+    // across the pool AND the host, or - below the threshold, or with STRATA_POOL_PARALLEL_QUANT=0 - the
+    // sequential host loop this replaces.  Both arms run the same function for the same (expert, token) pair
+    // with the same arguments, so the results are bitwise equal; only which thread runs it changes.
+    const int tasks = prepare_quant_tasks(n);
+    if (tasks == 0) return;
+    if (parallel_quant_ && tasks >= quant_min_tasks_) {
+        ++quant_phases;
+        quant_tasks += tasks;
+        run_phase(7, tasks);
+        return;
+    }
+    for (int e = 0; e < n; ++e)
+        for (int t = 0; t < mjobs_[e].nt; ++t) {
+            SplitBufMulti& sb = split_multi_[(size_t) e];
+            if (nfmt_ == nullptr) act_quant_q8_1(sb.ff[t], FF, sb.a2[t]);
+            else if (nfmt_->d_type == 42) act_quant_any(sb.ff[t], FF, sb.a2[t]);
+            else native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
+        }
+}
+
 void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     if (n <= 0) return;
     if (n > kMaxSplitMulti || expert_oracle_q8_0_enabled()) {
@@ -640,14 +699,13 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     mjobs_ = jobs;
+    nfmt_ = nullptr;   // a canonical (Q2_0 pack) layer: the legacy quantization in mode 7
     const int threads = n_ + (host_works_ ? 1 : 0);
     mtasks_ = 3 * threads;
     mrows_ = (int64_t) n * FF;
     run_phase(3, mtasks_);
     const auto t1 = std::chrono::steady_clock::now();
-    for (int e = 0; e < n; ++e)
-        for (int t = 0; t < jobs[e].nt; ++t)
-            act_quant_q8_1(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+    run_quant(n);
     const auto t2 = std::chrono::steady_clock::now();
     mrows_ = (int64_t) n * H;
     run_phase(4, mtasks_);
@@ -674,10 +732,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        for (int e = 0; e < nb; ++e)
-            for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (f.d_type == 42) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
-                else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+        run_quant(nb);
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * H;
         run_phase(6, mtasks_);

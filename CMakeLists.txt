@@ -1019,6 +1019,13 @@ if(STRATA_BUILD_TESTS)
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # PR #500: the intermediate activation quantization as a phase of the pool (mode 7), against the sequential
+  # loop it replaces and against a serial reference, bit for bit.  The native cases need ggml-cpu; its include
+  # directories come with `strata_kernels_cpu`.
+  add_executable(pool_quant_test src/kernels/cpu/pool_quant_test.cpp)
+  target_link_libraries(pool_quant_test PRIVATE strata_kernels_cpu)
+  add_test(NAME pool_quant_test COMMAND pool_quant_test)
+  set_tests_properties(pool_quant_test PROPERTIES TIMEOUT 900)
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(pool_topology_test src/kernels/cpu/pool_topology_test.cpp)
