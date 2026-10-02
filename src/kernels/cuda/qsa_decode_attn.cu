@@ -145,10 +145,14 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
     part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
     part_l += (size_t) blockIdx.z * (size_t) scratch_stride;
-    __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads
+    __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads (dead once the scores are done)
     __shared__ float sp[G][CHUNK];                // scores
-    __shared__ __align__(16) float spt[CHUNK][G]; // probabilities, cell-major: the value loop reads one cell's 12 as three float4
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
+    // probabilities, cell-major: the value loop reads one cell's 12 as three float4.  They are first written after the
+    // __syncthreads that ends the score phase, the last reader of sq, so they share its storage (64 x 12 of its 256 x 12
+    // floats) and the block's shared memory stays what it was before the cell-major layout.
+    float (*const spt)[G] = reinterpret_cast<float (*)[G]>(&sq[0][0]);
+    static_assert(CHUNK * G <= G * HD, "spt must fit in sq");
     const int n_ids = __ldg(step + kStepWidth);
     const int chunk = blockIdx.x, kvh = blockIdx.y;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
