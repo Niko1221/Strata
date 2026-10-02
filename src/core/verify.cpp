@@ -180,7 +180,7 @@ Verifier::~Verifier() {
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (arena_) cudaFree(arena_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_};
+                     h_flagA_, h_plan_, h_flagB_, h_Rmirror_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -263,6 +263,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    if (mirror_R_ && !mapped((size_t) T * (size_t) HC * (size_t) N * 4, (void**) &h_Rmirror_, (void**) &m_Rmirror_)) {
+        err = "verify: the R mirror's mapped staging allocation failed";
+        return false;
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -1180,6 +1184,15 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    if (h_Rmirror_ != nullptr) {   // hetero multi-GPU: the drafter on its device reads this alias (zero-copy)
+        if (cudaMemcpyAsync(h_Rmirror_, R_, (size_t) T * (size_t) g.hc * (size_t) g.n_embd * sizeof(float),
+                            cudaMemcpyDeviceToHost, cs_) != cudaSuccess ||
+            cudaStreamSynchronize(cs_) != cudaSuccess) {
+            cudaGetLastError();
+            err = "verify: the final residual could not be mirrored to the host";
+            return false;
+        }
+    }
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {

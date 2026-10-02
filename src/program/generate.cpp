@@ -4328,8 +4328,13 @@ int main(int argc, char** argv) {
                           " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
             std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
         }
+        // Fase 3 gate: with the DRAFT role on another GPU the window crosses as the verifier's mapped mirror -
+        // no peer pair needed (measured on the rig: EnablePeerAccess deadlocks, a replay reading the other
+        // device without it faults); a same-device run keeps the device pointer
+        if (o.main_device != o.draft_device) ver.set_R_mirror(true);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err) ||
-            !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head, ver.final_R_all(), err)) {
+            !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
+                      ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
@@ -5187,7 +5192,8 @@ int main(int argc, char** argv) {
                     }();
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
-                    if (!ver.commit(T, e) || !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e)) return false;
+                    const float* prefill_R = ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all();
+                    if (!ver.commit(T, e) || !mtp.prefill(prefill_R, nxt.data(), T, q, e)) return false;
                     q += T;
                 }
                 // the batched prompt path (other streams), checkpoints and snapshots may follow: the last commit first
@@ -6120,12 +6126,14 @@ int main(int argc, char** argv) {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        // Fase 3 gate: the mapped mirror for a remote DRAFT role (see the serve path)
+        if (o.main_device != o.draft_device) ver.set_R_mirror(true);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
-        if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
+        if (use_mtp && !mtp.bind(wt, &native_head, ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

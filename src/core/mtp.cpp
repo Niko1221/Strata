@@ -60,6 +60,16 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
+// Fase 3 gate (hetero multi-GPU): the hand-off window may be the verifier's mapped host mirror - under unified
+// addressing its pointer is legal to READ from any device (zero-copy) and its attributes say Host, while the
+// same-device window is the verifier's device arena
+bool window_src_on_host(const float* p) {
+    if (p == nullptr) return false;
+    cudaPointerAttributes a{};
+    if (cudaPointerGetAttributes(&a, p) != cudaSuccess) { cudaGetLastError(); return false; }
+    return a.type == cudaMemoryTypeHost;
+}
+
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head;
@@ -240,7 +250,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaPointerAttributes attr{};
         if (cudaPointerGetAttributes(&attr, share.cos_tab) != cudaSuccess) { cudaGetLastError(); return; }
         if (attr.type != cudaMemoryTypeDevice || (int) attr.device == (int) device_) return;
-        float* from = (float*) attr.devicePointer;
+        // UVA: the raw pointers are the valid cross-device addresses; attrs from a foreign context
+        // give a nil devicePointer here (measured), which is what made the copies 'invalid argument'
+        float* from = share.cos_tab;
         const int64_t rows = max_cells * (s.n_rot / 2);
         float* my_cos = nullptr, *my_sin = nullptr;
         if (cudaMalloc(&my_cos, (size_t) rows * sizeof(float)) != cudaSuccess) { cudaGetLastError(); return; }
@@ -251,11 +263,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         }
         cudaGetLastError();   // a leftover error must not fail this pair of copies
         const cudaError_t a = cudaMemcpy(my_cos, from, (size_t) rows * sizeof(float), cudaMemcpyDeviceToDevice);
-        // attr's device pointer for sin_tab: read its own attributes (the K/V pools are arena-carved one after
-        // another, but no layout rule is assumed)
-        cudaPointerAttributes attr2{};
-        if (cudaPointerGetAttributes(&attr2, share.sin_tab) != cudaSuccess) { cudaGetLastError(); attr2.devicePointer = share.sin_tab; }
-        const cudaError_t b = cudaMemcpy(my_sin, (float*) attr2.devicePointer, (size_t) rows * sizeof(float),
+        const cudaError_t b = cudaMemcpy(my_sin, share.sin_tab, (size_t) rows * sizeof(float),
                                          cudaMemcpyDeviceToDevice);
         cudaGetLastError();   // ditto before the sync
         const cudaError_t sync_e = cudaDeviceSynchronize();
@@ -789,6 +797,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
+    const bool r_host = window_src_on_host(R_rows);   // the mapped mirror: an explicit Host copy, no peer needed
     // cells the window can never reach again need no K/V
     const int64_t first_needed = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
     // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
@@ -835,8 +844,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             if (cudaMemcpyAsync(tok_, d_tk + c, (size_t) T * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(step_, d_stp + c * 4, (size_t) T * 16, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                                cs_) != cudaSuccess ||
+                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                r_host ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
                 err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
@@ -862,8 +871,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             h_step_[t * 4 + 3] = (int32_t) (cell + 1);
             for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
         }
-        if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                            cs_) != cudaSuccess ||
+        if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                            r_host ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
             cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess ||
             cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
@@ -933,9 +942,10 @@ bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t c
     const OnDevice on_device(device_);
     // row 0 is the real pair; rows 1.. repeat it and only write cells the next round overwrites
     const int64_t HCN = g_->hc * g_->n_embd;
+    const bool win_host = window_src_on_host(window_R_);   // the mapped mirror: an explicit Host write
     for (int t = 0; t < T; ++t)
         if (cudaMemcpy((void*) (window_R_ + (size_t) t * HCN), R_row, (size_t) HCN * sizeof(float),
-                       cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                       win_host ? cudaMemcpyDeviceToHost : cudaMemcpyDeviceToDevice) != cudaSuccess) {
             err = "mtp: staging the first residual failed";
             return false;
         }
