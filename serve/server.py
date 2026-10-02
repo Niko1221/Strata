@@ -612,6 +612,24 @@ class StrataEngine:
             pass
         return EngineSilent(f"{what}; the server ended the engine")
 
+    def session_file(self, action: str, path: str) -> dict:
+        """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
+        -> {"tokens", "bytes", "ms"}; ValueError with the engine's reason when it refuses the file."""
+        try:
+            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        while True:
+            line = self.lines.get()
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip())
+            if line.startswith(("SAVED ", "RESTORED ")):
+                f = line.split()
+                return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while), then terminate, then kill, each given 20 s.  Raises EngineStuck when it still runs after all three."""
@@ -953,6 +971,7 @@ class Service:
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
+        self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
@@ -995,6 +1014,37 @@ class Service:
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
+        """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
+        to or from a file in slot_save_path.  -> (HTTP status, body)."""
+        def error(code, message):
+            return code, {"error": {"code": code, "message": message,
+                                    "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if not self.slot_save_path or not hasattr(self.engine, "session_file"):
+            return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
+        if slot != "0":
+            return error(400, "this server has one slot: 0")
+        if action not in ("save", "restore"):
+            return error(400, "action must be save or restore")
+        if (not isinstance(filename, str) or not filename or filename in (".", "..") or "/" in filename
+                or "\\" in filename or any(ord(c) < 32 for c in filename)):
+            return error(400, "filename must be a plain file name inside the slot save path")
+        path = os.path.join(self.slot_save_path, filename)
+        if action == "restore" and not os.path.isfile(path):
+            return error(404, f"no saved session named {filename}")
+        with self.fifo:
+            if not self.loaded():
+                return error(503, "the model is not loaded")
+            try:
+                r = self.engine.session_file(action, path)
+            except ValueError as e:
+                return error(400, str(e))
+        if action == "save":
+            return 200, {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
+                         "timings": {"save_ms": r["ms"]}}
+        return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
+                     "timings": {"restore_ms": r["ms"]}}
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -2229,6 +2279,9 @@ def make_handler(svc: Service):
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
                 return
+            # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
+            if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
+                return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
                     r = svc.unload()
@@ -2274,7 +2327,15 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     self.record = svc.begin_request(path, req)
-                if path == "/v1/chat/completions":
+                if path.startswith("/slots/"):
+                    query = parse_qs(self.path.partition("?")[2])
+                    try:
+                        code, body = svc.slot_action(path[len("/slots/"):], (query.get("action") or [""])[0],
+                                                     req.get("filename"))
+                    except EngineDied as e:
+                        code, body = 500, {"error": {"code": 500, "message": str(e), "type": "server_error"}}
+                    self._json(code, body)
+                elif path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
@@ -2865,6 +2926,9 @@ def main() -> int:
                          "\"min_free_vram_mib\" in the config; default: always load)")
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
+    ap.add_argument("--slot-save-path", default=None, metavar="DIR",
+                    help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
+                         "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
@@ -2973,6 +3037,10 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    svc.slot_save_path = a.slot_save_path or cfg.get("slot_save_path") or None
+    if svc.slot_save_path:
+        os.makedirs(svc.slot_save_path, exist_ok=True)
+        print(f"[strata] slot save/restore on: {svc.slot_save_path}", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
