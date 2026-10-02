@@ -16,7 +16,8 @@ records the model, the architecture, the artifacts, what is implemented and veri
 | Qwen35 forward pass: GDN, full attention, MoE, ordinary-residual trunk | done, host tests + runs on the real model |
 | GGUF loader + quantized matvec (ggml-cpu vec_dot for the projections) | done, loads the 20 GB artifact |
 | Session/serve wiring, so `run3.sh` executes the model | done, `run3.sh` serves it |
-| gfx1101 kernels for the new layers (the current pass is host CPU; ~6.6 tok/s) | **not implemented** |
+| GPU dense tier (dense projections through `native_mmvq`, `STRATA_QWEN35_GPU=1`) | started, opt-in, not yet a win |
+| Device-resident GPU execution of the Qwen35 layers (the path to 50-70 tok/s) | **not implemented** |
 | External Qwen3.6 MTP backend and speculative rollback | **not implemented** |
 
 The layer math and the artifact contract are proven; the loader and the serve integration are what stand

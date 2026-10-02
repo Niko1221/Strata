@@ -203,6 +203,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "strata-qwen35: %lld layers, %lld wide, %lld experts top-%lld, vocab %lld, eos %lld\n",
                  (long long) g.n_layers, (long long) g.n_embd, (long long) g.n_expert,
                  (long long) g.n_expert_used, (long long) g.n_vocab, (long long) w.eos_token);
+    // The GPU dense tier (OPT-IN, STRATA_QWEN35_GPU=1): uploads the dense projections to VRAM and routes
+    // their matvecs through native_mmvq.  It is NOT the default because it copies the activation in and the
+    // result out per matvec (a sync each), and routed experts stay on ggml-cpu: measured 0.7 tok/s versus the
+    // CPU path's 10, so it is a building block for device-resident execution, not a usable tier yet.
+    {
+        const char* e = std::getenv("STRATA_QWEN35_GPU");
+        if (e != nullptr && std::atoi(e) == 1) {
+            std::string gerr;
+            if (q::qwen35_gpu_init(gerr) && q::qwen35_gpu_upload(w, gerr)) {
+                std::fprintf(stderr, "strata-qwen35: GPU dense tier: %.2f GiB in VRAM\n",
+                             (double) q::qwen35_gpu_dense_bytes() / (1024.0 * 1024.0 * 1024.0));
+            } else {
+                std::fprintf(stderr, "strata-qwen35: GPU dense tier unavailable (%s); using ggml-cpu\n", gerr.c_str());
+            }
+        }
+    }
     if (check_only) { std::printf("check ok\n"); return 0; }
     if (serve) return run_serve(w, g, max_context > 0 ? max_context : g.context_length);
     if (tokens.empty()) { std::fprintf(stderr, "strata-qwen35: --tokens is required without --serve\n"); return 2; }

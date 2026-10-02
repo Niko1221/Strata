@@ -16,6 +16,7 @@ namespace strata::qwen35 {
 // The quantized hooks.  Null in the float-only library (the unit tests); installed by qwen35_enable_ggml().
 QuantMatvecFn g_quant_matvec = nullptr;
 RowDequantFn g_row_dequant = nullptr;
+GpuMatvecFn g_gpu_matvec = nullptr;
 
 Mat mat_row(const Mat& m, int64_t i) {
     Mat r = m;
@@ -39,6 +40,7 @@ void no_quant(int) {
 
 void matvec(const Mat& m, const float* x, float* y) {
     if (m.n_out <= 0) return;
+    if (m.dev && g_gpu_matvec && g_gpu_matvec(m, x, y)) return;
     if (m.type == 0) {
         for (int64_t o = 0; o < m.n_out; ++o) {
             const float* row = (const float*) m.data + o * m.n_in;

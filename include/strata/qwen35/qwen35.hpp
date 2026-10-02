@@ -30,10 +30,11 @@ using core::Qwen35Geometry;
 
 /// One GGUF weight matrix, ROW-MAJOR with the OUTPUT row contiguous (`n_in` values per row, `n_out` rows).
 struct Mat {
-    const void* data = nullptr;
-    int type = 0;               ///< ggml type id; 0 = F32 rows
+    const void* data = nullptr;   ///< host (mmapped GGUF) blocks
+    const void* dev = nullptr;    ///< the same blocks in VRAM, when the GPU backend uploaded them
+    int type = 0;                 ///< ggml type id; 0 = F32 rows
     int64_t n_in = 0, n_out = 0;
-    size_t row_bytes = 0;       ///< bytes per output row (set by the loader; computed for F32 here)
+    size_t row_bytes = 0;         ///< bytes per output row (set by the loader; computed for F32 here)
     bool empty() const { return data == nullptr; }
 };
 
@@ -47,6 +48,10 @@ void matvec(const Mat& m, const float* x, float* y);
 
 using QuantMatvecFn = void (*)(int type, const void* w, int64_t n_in, int64_t n_out, const float* x, float* y);
 extern QuantMatvecFn g_quant_matvec;
+/// GPU (HIP/CUDA) dense matvec.  Return true when it handled `m` (its `dev` pointer is set); `matvec` falls
+/// back to `g_quant_matvec` otherwise.  Installed by qwen35_gpu_upload.
+using GpuMatvecFn = bool (*)(const Mat& m, const float* x, float* y);
+extern GpuMatvecFn g_gpu_matvec;
 /// Dequantize one row of a quantized matrix to `n_in` floats.
 using RowDequantFn = void (*)(int type, const void* row, int64_t n, float* out);
 extern RowDequantFn g_row_dequant;
@@ -192,5 +197,11 @@ void trunk_forward(const Qwen35Geometry& g, const TrunkWeights& w, TrunkState& s
 /// Build the trunk weights from an Ornith/Qwen35MoE GGUF (mmapped; no copy, no dequantization).  Runs the
 /// architecture guard first, so a malformed artifact fails here with a tensor-naming error.
 bool load_trunk(const std::string& path, Qwen35Geometry& g, TrunkWeights& w, std::string& err);
+
+/// GPU backend (src/qwen35/qwen35_gpu.cu): create the stream, then upload every DENSE matvec to VRAM and
+/// install the matvec hook.  Routed experts are not uploaded (the whole set is ~28 GB) and stay on ggml-cpu.
+bool qwen35_gpu_init(std::string& err);
+bool qwen35_gpu_upload(TrunkWeights& w, std::string& err);
+uint64_t qwen35_gpu_dense_bytes();
 
 }  // namespace strata::qwen35
