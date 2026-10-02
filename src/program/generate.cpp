@@ -3083,6 +3083,16 @@ int main(int argc, char** argv) {
         }
         return 0;
     };
+    if (std::getenv("STRATA_PREFILL_MEMORY_REPORT")) {
+        for (int64_t chunk : {512, 1024, 2048, 4096, 6144, 8192}) {
+            const auto bytes = strata::prefill::Prefill::bytes_needed(g, ss, chunk);
+            const auto slots = lend_slots(chunk);
+            std::fprintf(stderr, "strata prefill memory: chunk=%lld scratch_bytes=%llu "
+                                 "cache_bytes=%lld lend_slots=%lld fits=%d\n",
+                         (long long) chunk, (unsigned long long) bytes, (long long) xcache.bytes(),
+                         (long long) slots, (int) (slots + 128 <= xcache.slots()));
+        }
+    }
     if (o.serve) {
         if (o.spec < 2 || o.mtp.empty() || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {

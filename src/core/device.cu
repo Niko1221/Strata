@@ -24,6 +24,20 @@ __global__ void poison_kernel(float* p, uint64_t n_floats) {
     if (i < n_floats) p[i] = __int_as_float(0x7fc00000);
 }
 
+#if defined(STRATA_USE_HIP)
+// gcnArchName is the plain arch plus optional features ("gfx1101", "gfx1101:xnack-:sramecc-"), so the
+// arch is whatever precedes the first ':'.  Kept in step with STRATA_HIP_SUPPORTED_ARCHS in
+// cmake/hip_backend.cmake: a card that compiles but was never run is exactly the failure mode a
+// carried binary should trip on, so this list stays as narrow as the tested one.
+bool hip_arch_supported(const char* gcn_arch_name) {
+    static constexpr const char* kSupported[] = {"gfx1100", "gfx1101"};
+    for (const char* arch : kSupported) {
+        if (std::strncmp(gcn_arch_name, arch, std::strlen(arch)) == 0) return true;
+    }
+    return false;
+}
+#endif
+
 }  // namespace
 
 DeviceInfo device_info(int ordinal) {
@@ -31,7 +45,7 @@ DeviceInfo device_info(int ordinal) {
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
 #if defined(STRATA_USE_HIP)
-        throw CudaError("no HIP device is present; this backend targets gfx1100 wave32", -1);
+        throw CudaError("no HIP device is present; this backend targets RDNA3 wave32 (gfx1100, gfx1101)", -1);
 #else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
@@ -64,10 +78,14 @@ DeviceInfo device_info(int ordinal) {
     // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  Compiling for a
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
-    // backend is validated on gfx1100 (wave32) only.
+    // backend runs on RDNA3 wave32 parts: gfx1100 (RX 7900 series, the validated reference) and gfx1101
+    // (RX 7700/7800 XT class).  Wave size is checked, not assumed - a wave64 build of the same arch
+    // would silently change every kernel's lane indexing.
 #if defined(STRATA_USE_HIP)
-    if (std::strncmp(p.gcnArchName, "gfx1100", 7) != 0 || p.warpSize != 32) {
-        throw CudaError("HIP backend requires validated gfx1100 wave32 hardware", -1);
+    if (!hip_arch_supported(p.gcnArchName) || p.warpSize != 32) {
+        throw CudaError(std::string("HIP backend needs an RDNA3 wave32 GPU (gfx1100 or gfx1101); this device reports ") +
+                            p.gcnArchName + " with wave" + std::to_string(p.warpSize),
+                        -1);
     }
 #else
     if (d.cc_major * 10 + d.cc_minor < 75) {

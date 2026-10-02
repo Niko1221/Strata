@@ -1,7 +1,8 @@
-# Experimental AMD HIP backend (gfx1100)
+# Experimental AMD HIP backend (RDNA3: gfx1100, gfx1101)
 
-This is a manual Linux source build for the RX 7900 XTX. It is opt-in; the
-NVIDIA installer and CUDA build remain the default. Other AMD architectures,
+This is a manual Linux source build for RDNA3 wave32 desktop cards: the RX 7900 XT / XTX (gfx1100),
+which is the validated reference, and the RX 7700 / 7800 XT class (gfx1101). It is opt-in; the
+NVIDIA installer and CUDA build remain the default. Other AMD architectures (RDNA2, RDNA4, APUs),
 wave64, Windows HIP, and mixed AMD/NVIDIA execution are outside this contribution.
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
@@ -42,7 +43,7 @@ table. VRAM occupancy alone is not a throughput measurement.
 cmake -S . -B build-hip \
   -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1100
+  -DCMAKE_HIP_ARCHITECTURES=gfx1100     # or gfx1101; setup.py passes the arch of the card it found
 cmake --build build-hip --target strata -j2
 ```
 

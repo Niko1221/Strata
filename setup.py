@@ -701,13 +701,15 @@ def cuda_lib_dirs():
 
 
 # ------------------------------------------------------------------------------------------------ AMD (experimental)
-# The RX 7900 XT / XTX (gfx1100) on Linux, through the HIP backend (docs/AMD_HIP.md).  There is no ready-made AMD
-# engine: ROCm comes from AMD's TheRock Python wheels into .venv (no sudo; a system ROCm in /opt/rocm is used when it
-# has hipcc and hipBLAS) and the engine is compiled here.  One GPU, no images yet.
+# RDNA3 wave32 cards on Linux - the RX 7900 XT / XTX (gfx1100, the validated reference) and the RX 7700 / 7800 XT
+# class (gfx1101) - through the HIP backend (docs/AMD_HIP.md).  There is no ready-made AMD engine: ROCm comes from
+# AMD's TheRock Python wheels into .venv (no sudo; a system ROCm in /opt/rocm is used when it has hipcc and hipBLAS)
+# and the engine is compiled here.  One GPU, no images yet.
 ROCM_INDEX = os.environ.get("STRATA_ROCM_INDEX", "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/")
 ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
-AMD_ARCHS = ("gfx1100",)
-AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)"}   # when sysfs has no product name
+AMD_ARCHS = ("gfx1100", "gfx1101")        # wave32 RDNA3; cmake/hip_backend.cmake keeps the same list
+AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",             # when sysfs has no product name
+             "gfx1101": "AMD Radeon RX 7700 / 7800 XT class (gfx1101)"}
 
 
 def amd_gpus():
@@ -747,8 +749,8 @@ def amd_gpus():
 
 def amd_problem(g):
     if g["arch"] not in AMD_ARCHS:
-        return (f"not supported - Strata's AMD backend runs on the RX 7900 XT / XTX ({', '.join(AMD_ARCHS)}) only, "
-                f"this is {g['arch']}")
+        return (f"not supported - Strata's AMD backend runs on RDNA3 wave32 cards "
+                f"({', '.join(AMD_ARCHS)}) only, this is {g['arch']}")
     return None
 
 

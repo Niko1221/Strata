@@ -1,12 +1,22 @@
-# Opt-in HIP configuration. Strata's CUDA-shaped kernels currently target RDNA3 gfx1100 wave32.
+# Opt-in HIP configuration. Strata's CUDA-shaped kernels target RDNA3 wave32.
 # CMake/compiler discovery stays machine-independent; pass CMAKE_HIP_COMPILER when it is not on PATH.
+
+# The RDNA3 parts Strata is built and run for. All of them are wave32 with a 64 KiB LDS budget per CU, so
+# the kernels' tile sizes carry over; what differs between them is CU count and clocks, i.e. throughput.
+# Adding a part means compiling for it and running the device tests on it (tests/hip, HIP_DEVICE_TESTS).
+set(STRATA_HIP_SUPPORTED_ARCHS gfx1100 gfx1101 CACHE STRING "HIP architectures Strata supports")
+
 if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
   set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture")
 endif()
-if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx1100")
-  message(FATAL_ERROR
-    "Strata HIP currently supports only gfx1100 wave32; CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
-endif()
+
+# One entry per arch; a feature suffix (gfx1101:xnack-) is Strata's own spelling and is not accepted here.
+foreach(_strata_hip_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
+  if(NOT _strata_hip_arch IN_LIST STRATA_HIP_SUPPORTED_ARCHS)
+    message(FATAL_ERROR
+      "Strata HIP supports '${STRATA_HIP_SUPPORTED_ARCHS}' (wave32); CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
+  endif()
+endforeach()
 
 enable_language(HIP)
 find_package(hip CONFIG REQUIRED)
@@ -35,6 +45,12 @@ target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1)
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
+if(UNIX AND NOT APPLE)
+  # Export the interposed HIP APIs from each executable, including to BLAS DSOs.
+  target_sources(strata_hip_runtime INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src/core/hip_budget.cpp")
+  target_link_libraries(strata_hip_runtime INTERFACE ${CMAKE_DL_LIBS})
+  target_link_options(strata_hip_runtime INTERFACE "-Wl,--export-dynamic")
+endif()
 foreach(_language IN ITEMS CXX HIP)
   target_compile_options(strata_hip_runtime INTERFACE
     "$<$<COMPILE_LANGUAGE:${_language}>:-include>"

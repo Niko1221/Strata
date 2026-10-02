@@ -1,0 +1,16 @@
+{
+  "head": "d6708a4aae15b4860000d54c8af9e84d684bce09",
+  "context": 131072,
+  "ceiling_mib": 10240,
+  "remaining_gates": [
+    "near-limit fresh/cached requests",
+    "final tuned process audit",
+    "cancellation/recovery",
+    "runtime image packaging"
+  ],
+  "binaries": {
+    "build-discover-candidate/strata": "ff03454c4812ac3fe20f7bdce61b27e400abb6a09dbfc3d7b8fa2aa18ff75d25",
+    "build-discover-control/build/strata": "8d2a6e8fc6222bd686dc863276779e150b2e80f343e26ebeae399c43ef05acc6",
+    "build-discover-gfx1100/strata": "46b77f9e16b1f4ebc3196d22908f081d72fb5491ff916905aeb00b74c3e6254a"
+  }
+}

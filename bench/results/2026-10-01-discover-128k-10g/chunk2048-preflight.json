@@ -1,0 +1,16 @@
+{
+  "context": 131072,
+  "ceiling_mib": 10240,
+  "tracked_cap_mib": 8960,
+  "runtime_reserve_mib": 1024,
+  "slack_mib": 256,
+  "pre_cache_tracked_mib": 6556.375,
+  "later_explicit_allowance_mib": 768,
+  "cache_cap_mib": 1635.625,
+  "later_observed_mib": 80,
+  "prefill_2048_bytes": 1280477952,
+  "borrowing": "scratch replaces cache contents; allocation does not grow",
+  "tracked_estimate_mib": 8272.0,
+  "physical_total_mib": 12272,
+  "reason": "larger cache admitted under ledger; later reserve remains substantially above observed verifier/metadata allocations; preserve 128 hot slots; runtime overhead and slack remain untouched"
+}

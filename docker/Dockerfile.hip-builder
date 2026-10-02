@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.7
+# strata-hip-builder: the toolchain that compiles the Strata engine for one AMD gfx target.
+#
+#   docker build -f docker/Dockerfile.hip-builder -t strata-hip-builder:gfx1101 .
+#   docker run --rm -v "$PWD":/src -v strata-ccache-gfx1101:/ccache strata-hip-builder:gfx1101 gfx1101
+#
+# It only installs the toolchain - the source is bind-mounted at /src by ./build.sh, so editing C++
+# never rebuilds this image.  A *-complete* base is required: hipBLASLt's development files (which
+# CMake's find_package(hipblaslt) needs for the tuned GEMM path) are not in the plain dev tag.
+#
+# Base tag: 7.2.x matches the reference host's ROCm 7.2.4 userland and the same KFD series, and this
+# image's rocBLAS ships gfx1101 Tensile kernels (verified: 96 kernel objects, including the int8 dot
+# ones the quantised kernels use).  See docs/DOCKER_GFX1101_PLAN.md Part B.
+ARG ROCM_BASE=rocm/dev-ubuntu-24.04:7.2.1-complete
+FROM ${ROCM_BASE} AS strata-hip-builder
+
+ARG STRATA_HIP_ARCH=gfx1101
+ARG STRATA_VERSION=0.1.29
+LABEL org.opencontainers.image.title="strata-hip-builder" \
+      org.opencontainers.image.description="Strata HIP engine builder (ROCm, wave32 RDNA3)" \
+      org.opencontainers.image.version="${STRATA_VERSION}" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git cmake ninja-build ccache python3 python3-pip \
+      ca-certificates libnuma1 file xz-utils
+
+COPY docker/build-engine.sh /usr/local/bin/build-engine.sh
+RUN chmod 0755 /usr/local/bin/build-engine.sh && mkdir -p /src /ccache
+
+ENV STRATA_HIP_ARCH=${STRATA_HIP_ARCH} \
+    CCACHE_DIR=/ccache \
+    CCACHE_MAXSIZE=4G \
+    HIP_PLATFORM=amd HIP_COMPILER=clang HIP_RUNTIME=rocclr
+
+# Fail the image build, not a 20-minute compile, when the toolchain is not what we think it is.
+# The probe is a real compile for the target arch.  `offload-arch` cannot be used here: it reports
+# *attached* GPUs and a build container has no /dev/kfd, so it exits 1 ("Failed to get device count").
+# The image's ENV PATH carries no ROCm entry for a non-login shell, hence the explicit PATH.
+RUN set -eux; \
+    export PATH="/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH"; \
+    command -v hipcc; hipcc --version | tail -2; \
+    cmake --version | head -1; ninja --version; ccache --version | head -1; \
+    ls /opt/rocm/lib/cmake | grep -iE '^hipblas' ; \
+    test -d /opt/rocm/lib/rocblas/library; \
+    printf '%s\n' "rocBLAS kernel objects for ${STRATA_HIP_ARCH}: $(ls /opt/rocm/lib/rocblas/library | grep -c "gfx[0-9]*${STRATA_HIP_ARCH#gfx}")"; \
+    printf '#include <hip/hip_runtime.h>\n__global__ void probe(float* x){ x[threadIdx.x] = 1.0f; }\n' > /tmp/probe.hip; \
+    hipcc --offload-arch="${STRATA_HIP_ARCH}" -c /tmp/probe.hip -o /tmp/probe.o; \
+    printf '#include <hip/hip_runtime.h>\n__global__ void probe(int* x){ x[0] = __builtin_amdgcn_sudot4(1,threadIdx.x,1,threadIdx.x,0,0); }\n' > /tmp/probe_dot4.hip; \
+    hipcc --offload-arch="${STRATA_HIP_ARCH}" -c /tmp/probe_dot4.hip -o /tmp/probe_dot4.o; \
+    echo "toolchain compiles HIP (and RDNA3 dot4) for ${STRATA_HIP_ARCH}"
+
+WORKDIR /src
+ENTRYPOINT ["/usr/local/bin/build-engine.sh"]
+CMD ["gfx1101"]

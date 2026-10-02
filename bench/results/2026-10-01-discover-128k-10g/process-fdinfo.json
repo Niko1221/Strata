@@ -1,0 +1,9 @@
+[
+  {
+    "pid": 8,
+    "cmd": "/src/build-discover-control/build/strata --serve --pack /work/packs/iq3_xxs --native /hf-cache/models--ISTA-DASLab--Qwen3.8-Flash-Next-GSQ-RCO-GGUF/snapshots/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf /hf-cache/models--ISTA-DASLab--Qwen3.8-Flash-Next-GSQ-RCO-GGUF/snapshots/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --mmap-experts --expert-profile /src/data/expert-profile.bin --expert-cache 512 --vram-reserve-mib 1024 --prefill 512 --max-context 131072 --kv int8 --pool-workers 23 --adapt-every 0 --pcie-frac 0 --mtp /work/mtp/rt --spec 4 --spec-min-p 0.5 ",
+    "fdinfo": [
+      "pos:\t0\nflags:\t02100002\nmnt_id:\t7260\nino:\t13\ndrm-driver:\tamdgpu\ndrm-client-id:\t23858\ndrm-pdev:\t0000:03:00.0\npasid:\t23857\ndrm-total-cpu:\t395256 KiB\ndrm-shared-cpu:\t0\ndrm-resident-cpu:\t0\ndrm-purgeable-cpu:\t0\ndrm-total-gtt:\t8280 KiB\ndrm-shared-gtt:\t0\ndrm-resident-gtt:\t8268 KiB\ndrm-purgeable-gtt:\t0\ndrm-total-vram:\t8308184 KiB\ndrm-shared-vram:\t0\ndrm-resident-vram:\t8308184 KiB\ndrm-purgeable-vram:\t0\ndrm-total-gds:\t0\ndrm-shared-gds:\t0\ndrm-resident-gds:\t0\ndrm-purgeable-gds:\t0\ndrm-total-gws:\t0\ndrm-shared-gws:\t0\ndrm-resident-gws:\t0\ndrm-purgeable-gws:\t0\ndrm-total-oa:\t0\ndrm-shared-oa:\t0\ndrm-resident-oa:\t0\ndrm-purgeable-oa:\t0\ndrm-total-doorbell:\t0\ndrm-shared-doorbell:\t0\ndrm-resident-doorbell:\t0\ndrm-purgeable-doorbell:\t0\ndrm-total-mmioremap:\t0\ndrm-shared-mmioremap:\t0\ndrm-resident-mmioremap:\t0\ndrm-purgeable-mmioremap:\t0\ndrm-memory-vram:\t8308184 KiB\ndrm-memory-gtt: \t8268 KiB\ndrm-memory-cpu: \t0 KiB\namd-evicted-vram:\t0 KiB\namd-requested-vram:\t8308184 KiB\namd-requested-gtt:\t8280 KiB\n"
+    ]
+  }
+]

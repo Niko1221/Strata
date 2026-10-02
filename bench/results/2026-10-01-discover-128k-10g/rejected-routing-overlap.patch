@@ -1,0 +1,86 @@
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index bdfd9e7..052915d 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -305,6 +305,7 @@ struct Prefill::Impl {
+     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
+     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
+     cudaEvent_t copied[RING_MAX] = {}, used[RING_MAX] = {};
++    cudaEvent_t routed = nullptr;
+     bool stage_live[RING_MAX] = {};
+     // PLE
+     float* ple_emb = nullptr;
+@@ -379,6 +380,7 @@ Prefill::~Prefill() {
+         if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty()) cudaFreeHost(impl_->ple_emb_host[b]);
+     }
+     if (impl_->copy) cudaStreamDestroy(impl_->copy);
++    if (impl_->routed) cudaEventDestroy(impl_->routed);
+     if (impl_->grp_host) cudaFreeHost(impl_->grp_host);
+     for (void* p : impl_->owned) cudaFree(p);
+ }
+@@ -494,6 +496,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
+     m.T_max = chunk;
+     m.borrowed = borrow != nullptr;
+     bool ok = true;
++    if (cudaEventCreateWithFlags(&m.routed, cudaEventDisableTiming) != cudaSuccess) ok = false;
+     // one-time: events, the stager, the host buffers (for the largest chunk), the identity page table
+     for (int i = 0; i < RING_MAX; ++i) {
+         if (cudaEventCreateWithFlags(&m.copied[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
+@@ -913,13 +916,16 @@ struct PfTimer {
+     // every recorded mark has completed (the stream was synchronized): charge the gaps, keep the last mark
+     void fold() {
+         if (!on || used < 2) return;
++        size_t folded = 0;
+         for (size_t i = 0; i + 1 < used; ++i) {
++            if (cudaEventQuery(ev[i + 1]) != cudaSuccess) break;
+             float t = 0.0f;
+             if (cudaEventElapsedTime(&t, ev[i], ev[i + 1]) == cudaSuccess) ms[ph[i]] += t;
++            ++folded;
+         }
+-        std::swap(ev[0], ev[used - 1]);
+-        std::swap(ph[0], ph[used - 1]);
+-        used = 1;
++        std::rotate(ev.begin(), ev.begin() + folded, ev.begin() + used);
++        std::rotate(ph.begin(), ph.begin() + folded, ph.begin() + used);
++        used -= folded; // retain pending marks when only the router event has completed
+     }
+     ~PfTimer() {
+         for (cudaEvent_t e : ev) cudaEventDestroy(e);
+@@ -1492,6 +1498,20 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
+                     pt.mark(kPfRouter, cs);
+                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err)) return false;
+                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
++                    static const bool group_overlap = [] {
++                        const char* v = std::getenv("STRATA_PREFILL_GROUP_OVERLAP");
++                        return v && std::atoi(v) != 0;
++                    }();
++                    const bool grp_mapped = m.grp_host != nullptr;
++                    auto publish_ids = [&] {
++                        if (grp_mapped) copy_i32(m.grp_dev, m.ids, T * K, m.cs);
++                        else cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4,
++                                             cudaMemcpyDeviceToHost, m.cs);
++                    };
++                    if (group_overlap) {
++                        publish_ids();
++                        cudaEventRecord(m.routed, m.cs);
++                    }
+                     // the shared expert and its scalar gate
+                     if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err)) return false;
+                     if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err)) return false;
+@@ -1503,13 +1523,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
+                     pt.mark(kPfHostGroup, cs);
+                     // (the sync below also orders this layer's writes of slot/src/bounds after the previous
+                     // layer's kernels that read them)
+-                    const bool grp_mapped = m.grp_host != nullptr;
+                     int32_t* ids_h = grp_mapped ? m.grp_host : m.ids_host.data();
+                     int32_t* slot_h = grp_mapped ? m.grp_host + m.grp_tk : m.slot_host.data();
+                     int32_t* src_h = grp_mapped ? m.grp_host + 2 * m.grp_tk : m.src_host.data();
+-                    if (grp_mapped) copy_i32(m.grp_dev, m.ids, T * K, m.cs);
+-                    else cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
+-                    cudaStreamSynchronize(m.cs);
++                    const cudaError_t grouped = group_overlap ? cudaEventSynchronize(m.routed)
++                        : (publish_ids(), cudaStreamSynchronize(m.cs));
++                    if (grouped != cudaSuccess) { err = "prefill: router publication failed"; return false; }
+                     pt.fold();
+                     std::fill(m.cnt.begin(), m.cnt.end(), 0);
+                     for (int64_t i = 0; i < T * K; ++i) {

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -91,6 +92,23 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
                  beta);
     }
     HIP_CHECK(hipStreamSynchronize(stream));
+    // Repeated beta=0 calls exercise descriptor-cache hits without changing the
+    // mathematical result. Include host launch overhead and completion time.
+    if (beta == 0.0f) {
+        constexpr int repeats = 200;
+        const auto start = std::chrono::steady_clock::now();
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            if (bf16) gemm.bf16((const uint16_t*) dx.p, (const uint16_t*) dw.p,
+                               (float*) dy.p + output_offset, t, n, k, ldy, beta);
+            else gemm.f16((const uint16_t*) dx.p, (const uint16_t*) dw.p,
+                          (float*) dy.p + output_offset, t, n, k, ldy, beta);
+        }
+        HIP_CHECK(hipStreamSynchronize(stream));
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count() / repeats;
+        std::printf("repeated dtype=%s T=%d host_and_device_ms=%.6f calls=%d\n",
+                    bf16 ? "bf16" : "f16", t, ms, repeats);
+    }
 
     std::vector<float> got(initial.size()), ref(initial.size());
     HIP_CHECK(hipMemcpy(got.data(), dy.p, got.size() * sizeof(float), hipMemcpyDeviceToHost));
@@ -181,6 +199,11 @@ int main() {
         ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 48, 1.0f, 102);
         ok &= run_case(gemm, blas, stream, false, 4096, 512, 2560, 512, 0, 0.0f, 103);
         ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 7, 1.0f, 104);
+        // Second exact call reuses descriptors; final differing beta/stride
+        // cases above exercise separate keys and fallback support checks.
+        ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 105);
+        ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 0, 0.0f, 106);
+        ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 0, 0.0f, 107);
         HIPBLAS_CHECK(hipblasDestroy(blas));
     }
     HIP_CHECK(hipStreamDestroy(stream));

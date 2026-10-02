@@ -1,0 +1,65 @@
+# Docker build context for the Strata HIP images.
+#
+# The engine binary does NOT come through this context: build.sh passes ./build-hip as a named
+# build context ("engine"), so the runtime image can COPY --from=engine strata without any of the
+# build tree being uploaded here.
+
+# VCS / local tooling
+.git/
+.gitignore
+.gitattributes
+.amanda/
+.amanda
+amanda/
+.pi/
+
+# Python environment and downloaded data (hundreds of GB; never belongs in an image)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/
+model/
+packs/
+pack/
+mtp/
+engine/
+dist/
+logs/
+Strata-data/
+*.gguf
+*.bin.gz
+
+# Build trees. build-hip/ is excluded on purpose: it arrives as the "engine" named context.
+build/
+build*/
+build-vision*/
+build-vision.bat
+build-strata.bat
+third_party/llama.cpp/
+third_party/*.zip
+*.o
+*.obj
+*.so
+*.a
+*.hsaco
+*.exe
+
+# Runtime output and captures
+*.log
+*.done
+*.nsys-rep
+*.sqlite
+*.npz
+*.occ1
+td.log
+strata-*.json
+run-*.sh
+run-*.bat
+
+# Bench artifacts
+bench/micro/*.exe
+bench/micro/*.obj
+bench/micro/*.bin
+bench/micro/*.dll
+bench/micro/*.txt

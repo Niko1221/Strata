@@ -1,0 +1,99 @@
+diff --git a/src/prefill/gemm.cu b/src/prefill/gemm.cu
+index 4742d42..ac1df69 100644
+--- a/src/prefill/gemm.cu
++++ b/src/prefill/gemm.cu
+@@ -57,10 +57,12 @@ struct HipLtCallKey {
+     }
+ };
+ 
++struct HipLtDescriptors;
+ struct HipLtCachedAlgo {
+     bool supported = false;
+     hipblasLtMatmulAlgo_t algo{};
+     size_t workspace_bytes = 0;
++    std::shared_ptr<HipLtDescriptors> descriptors;
+ };
+ 
+ struct HipLtState {
+@@ -84,6 +86,7 @@ struct HipLtState {
+                              std::get<1>(shape), std::get<2>(shape), std::get<3>(shape), std::get<4>(shape));
+             }
+         }
++        cache.clear(); // descriptors belong to this handle/device
+         if (handle) hipblasLtDestroy(handle);
+     }
+ };
+@@ -163,6 +166,9 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
+     const HipLtCallKey key{type, t, n, k, ldy, beta_bits};
+     const auto cached = state.cache.find(key);
+     if (cached != state.cache.end()) return cached->second;
++    // Tail chunk sizes must not grow a server's descriptor/algorithm cache forever.
++    constexpr size_t max_cached_shapes = 512;
++    if (state.cache.size() >= max_cached_shapes) return {};
+ 
+     HipLtCachedAlgo resolved;
+     const bool verbose = std::getenv("STRATA_HIPBLASLT_VERBOSE") != nullptr;
+@@ -175,9 +181,9 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
+         return state.cache.emplace(key, resolved).first->second;
+     }
+ 
+-    HipLtDescriptors desc;
++    auto desc = std::make_shared<HipLtDescriptors>();
+     const hipDataType input_type = type == strata::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
+-    if (!desc.init(input_type, t, n, k, ldy)) {
++    if (!desc->init(input_type, t, n, k, ldy)) {
+         return state.cache.emplace(key, resolved).first->second;
+     }
+ 
+@@ -196,7 +202,7 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
+     const float alpha = 1.0f;
+     size_t required_workspace = 0;
+     auto algo = candidates.front().algo;
+-    if (hipblaslt_ext::matmulIsAlgoSupported(state.handle, desc.op, &alpha, desc.a, desc.b, &beta, desc.c, desc.c,
++    if (hipblaslt_ext::matmulIsAlgoSupported(state.handle, desc->op, &alpha, desc->a, desc->b, &beta, desc->c, desc->c,
+                                              algo, required_workspace) != HIPBLAS_STATUS_SUCCESS) {
+         if (verbose) {
+             std::fprintf(stderr, "prefill gemm: Lt fallback; solution %d rejects actual T=%d N=%d K=%d ldy=%d beta=%.9g\n",
+@@ -208,6 +214,7 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
+     resolved.supported = true;
+     resolved.algo = algo;
+     resolved.workspace_bytes = required_workspace;
++    resolved.descriptors = std::move(desc);
+     if (verbose) {
+         std::fprintf(stderr,
+                      "prefill gemm: Lt solution=%d dtype=%s T=%d N=%d K=%d ldy=%d beta=%.9g workspace=%zu\n",
+@@ -228,12 +235,12 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
+     const auto resolved = resolve_hipblaslt_algo(*state, type, (int) t, (int) n, (int) k, (int) ldy, beta);
+     if (!resolved.supported) {
+         ++state->fallbacks;
+-        state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
++        if (state->fallback_shapes.size() < 512) state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+         return false;
+     }
+     if (resolved.workspace_bytes > state->workspace_bytes) {
+         ++state->fallbacks;
+-        state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
++        if (state->fallback_shapes.size() < 512) state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+         if (std::getenv("STRATA_HIPBLASLT_VERBOSE")) {
+             std::fprintf(stderr, "prefill gemm: Lt fallback; solution needs %zu workspace bytes, have %zu\n",
+                          resolved.workspace_bytes, state->workspace_bytes);
+@@ -241,9 +248,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
+         return false;
+     }
+ 
+-    HipLtDescriptors desc;
+-    const hipDataType input_type = type == strata::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
+-    if (!desc.init(input_type, (int) t, (int) n, (int) k, (int) ldy)) return false;
++    const HipLtDescriptors& desc = *resolved.descriptors;
+     const float alpha = 1.0f;
+     const hipblasStatus_t status = hipblasLtMatmul(state->handle, desc.op, &alpha, w, desc.a, x, desc.b, &beta, y,
+                                                    desc.c, y, desc.c, &resolved.algo, state->workspace,
+@@ -264,7 +269,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
+     auto cached = mutable_state->cache.find(HipLtCallKey{type, (int) t, (int) n, (int) k, (int) ldy, beta_bits});
+     if (cached != mutable_state->cache.end()) cached->second.supported = false;
+     ++mutable_state->fallbacks;
+-    mutable_state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
++    if (mutable_state->fallback_shapes.size() < 512) mutable_state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+     return false;
+ }
+ #endif

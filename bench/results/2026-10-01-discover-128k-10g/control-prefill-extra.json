@@ -1,0 +1,89 @@
+[
+  {
+    "label": "control",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 1.0621650039975066,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 833.0,
+      "prefill_tps": 18.0,
+      "generated": 2.0,
+      "decode_ms": 221.0,
+      "decode_tps": 9.0
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "control",
+    "kind": "fresh",
+    "trial": 5,
+    "wall_s": 35.95377981101046,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 29262.0,
+      "prefill_tps": 143.9,
+      "generated": 128.0,
+      "decode_ms": 6680.0,
+      "decode_tps": 19.2
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single input parameter `x`. Each function `ruleN` (where `N` is an integer from 0 to 139) checks if the input `x` is strictly equal to its index `N`; if true, it returns `x + (N + 1)`, effectively incrementing the input by one more than its index. If the input `x` is not equal to `N`, the function returns `x - N`,"
+    }
+  },
+  {
+    "label": "control",
+    "kind": "followup",
+    "trial": 5,
+    "wall_s": 8.809217956004431,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4338.0,
+      "fresh": 113.0,
+      "prefill_ms": 1968.0,
+      "prefill_tps": 57.4,
+      "generated": 128.0,
+      "decode_ms": 6830.0,
+      "decode_tps": 18.7
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4338
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the strict integer equality check `x === N`, which fails for any input that is not exactly the index `N`, including negative integers, zero (for `rule0`), or non-integer types like strings or floats. For example, `rule0(-1)` returns `-1 - 0 = -1`, while `rule0(\"0\")` returns `\"0\" - 0 = 0` due to JavaScript's type coercion in subtraction, but `rule0(\"0\") === 0` is false, so it takes the `else` branch. The smallest useful regression test is"
+    }
+  }
+]

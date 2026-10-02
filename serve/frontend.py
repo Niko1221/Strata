@@ -64,6 +64,32 @@ IMAGE_PARTS = ("image_url", "input_image", "image")
 EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
           "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh", "maximum": "xhigh"}
 
+# A deployment can declare the reasoning level a request that names none should get, from the run
+# config (serve/server.py sets it at startup).  Same shape as the config's `sampling` block: it fills
+# a field the request leaves out, and the request's own value always wins.  Unset keeps today's
+# behaviour, which is the chat template's own default (xhigh for this model's template).
+_DEFAULT_EFFORT = None
+
+
+def default_effort(value=None):
+    """Set (or read) the deployment default reasoning level.  Validates through EFFORT so a typo
+    refuses at startup rather than 400-ing every request later."""
+    global _DEFAULT_EFFORT
+    if value is not None:
+        key = str(value).strip().lower()
+        if key not in EFFORT:
+            raise ValueError(f"unknown default reasoning effort {value!r}: use none, low, medium or high")
+        _DEFAULT_EFFORT = key
+    return _DEFAULT_EFFORT
+
+
+def named_effort(req: dict) -> object:
+    """The effort a client actually asked for, or the deployment default when it asked for none.
+    '' and null mean 'not specified' here, matching how the fields arrive from various clients."""
+    reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
+    given = req.get("reasoning_effort") or reasoning.get("effort")
+    return given if given not in (None, "") else _DEFAULT_EFFORT
+
 
 def effort_kwargs(value) -> dict:
     """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400, not a crash."""
@@ -162,8 +188,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
              for t in req.get("tools") or []] or None
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
-    reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
-    kwargs.update(effort_kwargs(req.get("reasoning_effort") or reasoning.get("effort")))
+    kwargs.update(effort_kwargs(named_effort(req)))
     # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
     for k, v in (req.get("chat_template_kwargs") or {}).items():
         if k == "enable_thinking" and not v:
@@ -219,6 +244,8 @@ def anthropic_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dic
         kwargs.update(effort_kwargs(effort))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
         kwargs.update(budget_effort(thinking["budget_tokens"]))
+    elif _DEFAULT_EFFORT is not None:      # named nothing: the deployment's level, not the template's
+        kwargs.update(effort_kwargs(_DEFAULT_EFFORT))
     return _late_system_to_user(messages), tools, kwargs
 
 
@@ -330,6 +357,63 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     return ToolCall(name=name, arguments=args)
 
 
+class _CallBoundary:
+    """Walk call structure once, keeping only a possible delimiter prefix.
+
+    A parameter terminator is structural only when its follower is structural;
+    literal closing tags inside a value never end the call. Positions returned
+    by feed are relative to that delta, including the closing call tag.
+    """
+    def __init__(self):
+        self.state, self.prefix = "start", ""
+
+    def _match(self, ch, tags):
+        self.prefix += ch
+        while self.prefix and not any(tag.startswith(self.prefix) for tag in tags):
+            self.prefix = self.prefix[1:]
+        for tag in tags:
+            if self.prefix == tag:
+                self.prefix = ""
+                return tag
+        return None
+
+    def feed(self, text):
+        for index, ch in enumerate(text):
+            state = self.state
+            if state in ("header", "parameter_header"):
+                if ch == ">":
+                    self.state = "between" if state == "header" else "value"
+            elif state == "value":
+                if self._match(ch, (PARAM_END,)):
+                    self.state = "after_parameter"
+            elif state == "fallback":
+                if self._match(ch, (CALL_END,)):
+                    return index + 1
+            else:
+                if not self.prefix and ch.isspace():
+                    continue
+                self.prefix += ch
+                tags = {"start": ("<function=",),
+                        "between": ("<parameter=", FUNC_END),
+                        "after_parameter": ("<parameter=", FUNC_END),
+                        "after_function": (CALL_END,)}[state]
+                if self.prefix in tags:
+                    tag, self.prefix = self.prefix, ""
+                    if tag == CALL_END:
+                        return index + 1
+                    self.state = {"<function=": "header", "<parameter=": "parameter_header",
+                                  FUNC_END: "after_function"}[tag]
+                elif not any(tag.startswith(self.prefix) for tag in tags):
+                    literal, self.prefix = self.prefix, ""
+                    self.state = "value" if state == "after_parameter" else "fallback"
+                    for char in literal:
+                        if self._match(char, (PARAM_END,) if self.state == "value" else (CALL_END,)):
+                            if self.state == "fallback":
+                                return index + 1
+                            self.state = "after_parameter"
+        return None
+
+
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
@@ -353,6 +437,9 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.raw_parts = []
+        self.call_parts = []
+        self.boundary = _CallBoundary()
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -426,8 +513,13 @@ class OutputParser:
             elif self.ss == "raw":
                 end = param_end(rest)
                 if end < 0:
+                    safe = rest.find(PARAM_END) if end == -2 else len(rest) - self._hold(rest, (PARAM_END,))
+                    if safe > 0:
+                        self.raw_parts.append(rest[:safe])
+                        self.sp += safe
                     return out
-                value = rest[:end]
+                value = "".join(self.raw_parts) + rest[:end]
+                self.raw_parts.clear()
                 if value.startswith("\n"):
                     value = value[1:]
                 if value.endswith("\n"):
@@ -451,7 +543,7 @@ class OutputParser:
         if self.ss == "str":
             tail += '"'
         elif self.ss == "raw":
-            tail += json.dumps(self.buf[self.sp:].strip("\n"))
+            tail += json.dumps(("".join(self.raw_parts) + self.buf[self.sp:]).strip("\n"))
         tail += "}"
         out.append(Event("tool_args", tail, call=self.scall))
         self.ss = "done"
@@ -467,8 +559,13 @@ class OutputParser:
         return best
 
     def feed(self, delta: str) -> list[Event]:
-        self.buf += delta
         out: list[Event] = []
+        if self.state == "call":
+            events, delta = self._feed_call(delta)
+            out.extend(events)
+            if delta is None:
+                return out
+        self.buf += delta
         while True:
             if self.state == "reasoning":
                 i = self.buf.find(THINK_END)
@@ -504,27 +601,38 @@ class OutputParser:
                     out.append(Event("content", self.buf[:i].rstrip("\n")))
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
-            else:
-                i = call_end(self.buf)
-                if self.stream_tools:
-                    if i >= 0:
-                        whole, self.buf = self.buf, self.buf[:i]     # scan only the body
-                        out += self._scan()
-                        out += self._close_scan()
-                        self.buf = whole
-                    else:
-                        out += self._scan()
-                if i < 0:
+                fragment, self.buf = self.buf, ""
+                events, remaining = self._feed_call(fragment)
+                out.extend(events)
+                if remaining is None:
                     return out
-                body = self.buf[:i]
-                self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
-                if self.scall is not None:
-                    call.id = self.scall.id
-                out.append(Event("tool_call", call=call))
-                self._reset_scan()
-                self.state, self.lead = "content", True
+                self.buf = remaining
+
+    def _feed_call(self, delta):
+        end = self.boundary.feed(delta)
+        fragment = delta if end is None else delta[:end]
+        self.call_parts.append(fragment)
+        out = []
+        if self.stream_tools:
+            self.buf += fragment
+            if end is not None:
+                self.buf = self.buf[:-len(CALL_END)]
+            out += self._scan()
+            self.buf, self.sp = self.buf[self.sp:], 0
+        if end is None:
+            return out, None
+        body = "".join(self.call_parts)[:-len(CALL_END)]
+        if self.stream_tools:
+            out += self._close_scan()
+        name = body.strip()[len("<function="):].split(">", 1)[0]
+        call = parse_tool_call(body, self.schemas.get(name))
+        if self.scall is not None:
+            call.id = self.scall.id
+        out.append(Event("tool_call", call=call))
+        self.buf = ""
+        self._reset_scan()
+        self.state, self.lead = "content", True
+        return out, delta[end:]
 
     def finish(self) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content)."""
@@ -541,4 +649,7 @@ class OutputParser:
             text = self.buf if self.state != "call" else CALL_START + self.buf
             out.append(Event(kind, text))
             self.buf = ""
+        elif self.state == "call" and self.call_parts:
+            out.append(Event("content", CALL_START + "".join(self.call_parts)))
+            self._reset_scan()
         return out

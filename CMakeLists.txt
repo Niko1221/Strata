@@ -157,6 +157,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
 
   add_executable(strata-device src/core/device_main.cpp)
   target_link_libraries(strata-device PRIVATE strata_core)
+  if(STRATA_ENABLE_HIP AND STRATA_BUILD_TESTS AND UNIX AND NOT APPLE)
+    add_executable(hip_device_budget tests/hip/device_budget.cpp)
+    target_link_libraries(hip_device_budget PRIVATE strata_hip_runtime)
+    add_test(NAME hip_device_budget COMMAND hip_device_budget)
+    set_tests_properties(hip_device_budget PROPERTIES ENVIRONMENT "STRATA_VRAM_BUDGET_MIB=10240")
+  endif()
 
   add_executable(strata-load src/core/load_main.cpp)
   target_link_libraries(strata-load PRIVATE strata_core strata_kernels)
@@ -235,8 +241,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON
   if(STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN)
     add_executable(qsa_prompt_attn_parity src/kernels/qsa_prompt_attn_parity.cpp)
-    target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-    target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
+    # The project's GPU-target variables, not CUDA::cudart: on the HIP backend the runtime is
+    # strata_hip_runtime (which also -includes the CUDA compatibility header) and there is no CUDA
+    # toolkit include dir at all.  Every other GPU target in this file already does this.
+    target_include_directories(qsa_prompt_attn_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   endif()
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/ggml)
   target_include_directories(strata_kernels PRIVATE third_party/ggml)
@@ -602,6 +611,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
+  add_executable(device_budget_test src/platform/device_budget_test.cpp)
+  target_include_directories(device_budget_test PRIVATE include)
+  add_test(NAME device_budget_test COMMAND device_budget_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
@@ -778,6 +790,11 @@ if(STRATA_BUILD_TESTS)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(pool_topology_test src/kernels/cpu/pool_topology_test.cpp)
+    target_link_libraries(pool_topology_test PRIVATE strata_kernels_cpu)
+    add_test(NAME pool_topology_test COMMAND pool_topology_test)
+  endif()
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)
   add_test(NAME pool_stress COMMAND pool_stress 20)

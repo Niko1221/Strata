@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            images_of, openai_to_messages)
+                            default_effort, images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 
@@ -1701,6 +1701,14 @@ def main() -> int:
                                          "the config)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if cfg.get("reasoning_effort") is not None:
+        # The level a request that names none gets (the container sets it to match the client profile).
+        # Refuses to start on a typo, exactly like the `sampling` block: a bad value here would otherwise
+        # show up as every answer reasoning at the template's own level and nobody noticing.
+        try:
+            default_effort(cfg["reasoning_effort"])
+        except ValueError as e:
+            ap.error(str(e))
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can

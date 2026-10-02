@@ -23,6 +23,8 @@ def main():
     p.add_argument('--engine-log', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--label', required=True)
+    p.add_argument('--trials', type=int, default=4)
+    p.add_argument('--start-trial', type=int, default=1)
     args = p.parse_args()
     results = []
 
@@ -63,7 +65,8 @@ def main():
         return choice['message']
 
     request([{'role': 'user', 'content': 'Reply READY.'}], 'warmup', 0)
-    for trial, n in enumerate((140, 280, 140, 280), 1):
+    for trial in range(args.start_trial, args.start_trial + args.trials):
+        n = 140 if trial % 2 else 280
         code = '\n'.join(f'export function rule{i}(x) {{ return x === {i} ? x + {i+1} : x - {i}; }}' for i in range(n))
         messages = [{'role': 'user', 'content': f'CASE {trial}: Review this source and describe its behavior precisely in a paragraph.\n' + code}]
         reply = request(messages, 'fresh', trial)

@@ -1,0 +1,89 @@
+[
+  {
+    "label": "physical-workers",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.6086984889989253,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 445.0,
+      "prefill_tps": 33.7,
+      "generated": 2.0,
+      "decode_ms": 155.0,
+      "decode_tps": 12.9
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "physical-workers",
+    "kind": "fresh",
+    "trial": 5,
+    "wall_s": 37.71137444197666,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 33480.0,
+      "prefill_tps": 125.7,
+      "generated": 128.0,
+      "decode_ms": 4218.0,
+      "decode_tps": 30.3
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single input parameter `x`. Each function follows a consistent pattern: it checks if the input `x` is strictly equal to the integer value corresponding to the function's index (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x` incremented by the index plus one (e.g., `x + 6` for `rule5`); if the condition is false, it returns `"
+    }
+  },
+  {
+    "label": "physical-workers",
+    "kind": "followup",
+    "trial": 5,
+    "wall_s": 7.5704800999956205,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 3300.0,
+      "prefill_tps": 75.2,
+      "generated": 128.0,
+      "decode_ms": 4262.0,
+      "decode_tps": 30.0
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the strict integer equality check (`x === n`) within each function, which creates a discontinuity in behavior: for any input `x` equal to the function's index `n`, the output is `x + n + 1`, whereas for any other input, the output is `x - n`. This means the function is not a simple linear transformation but a piecewise function with a single \"spike\" at the index value. For example, `rule5(5)` returns `11` (`5 + 6`), while `rule5(4)` returns `-1` (`"
+    }
+  }
+]

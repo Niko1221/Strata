@@ -1,0 +1,21 @@
+{
+ "budget_mib": 10240,
+ "tolerance": 0.0,
+ "limit_mib": 10240,
+ "limit_bytes": 10737418240,
+ "others_mib": 0,
+ "judged": "raw_card_total",
+ "peak_mib": 9691.9609375,
+ "peak_strata_share_mib": 9691.9609375,
+ "mean_mib": 9675.3,
+ "min_mib": 5055.27734375,
+ "samples": 6441,
+ "device_total_mib": 12272.0,
+ "window_seconds": 325.7,
+ "arch": "gfx1101",
+ "verdict": "PASS",
+ "breaches": [],
+ "attribution": "fixed subtraction is an estimate; raw card total is conservative",
+ "engine_note": null,
+ "measured_at": "2026-10-01T16:59:47-0400"
+}

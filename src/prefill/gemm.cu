@@ -163,6 +163,8 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
     const HipLtCallKey key{type, t, n, k, ldy, beta_bits};
     const auto cached = state.cache.find(key);
     if (cached != state.cache.end()) return cached->second;
+    // Bound server metadata for arbitrarily many tail shapes, including failures.
+    if (state.cache.size() >= 512) return {};
 
     HipLtCachedAlgo resolved;
     const bool verbose = std::getenv("STRATA_HIPBLASLT_VERBOSE") != nullptr;
@@ -228,12 +230,12 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
     const auto resolved = resolve_hipblaslt_algo(*state, type, (int) t, (int) n, (int) k, (int) ldy, beta);
     if (!resolved.supported) {
         ++state->fallbacks;
-        state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+        if (state->fallback_shapes.size() < 512) state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
         return false;
     }
     if (resolved.workspace_bytes > state->workspace_bytes) {
         ++state->fallbacks;
-        state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+        if (state->fallback_shapes.size() < 512) state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
         if (std::getenv("STRATA_HIPBLASLT_VERBOSE")) {
             std::fprintf(stderr, "prefill gemm: Lt fallback; solution needs %zu workspace bytes, have %zu\n",
                          resolved.workspace_bytes, state->workspace_bytes);
@@ -264,7 +266,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
     auto cached = mutable_state->cache.find(HipLtCallKey{type, (int) t, (int) n, (int) k, (int) ldy, beta_bits});
     if (cached != mutable_state->cache.end()) cached->second.supported = false;
     ++mutable_state->fallbacks;
-    mutable_state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
+    if (mutable_state->fallback_shapes.size() < 512) mutable_state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
     return false;
 }
 #endif
