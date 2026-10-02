@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -1801,6 +1802,33 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
 
+    def test_the_conversation_cache_fields_come_from_the_first_pass(self):
+        # the wrap-up pass continues the request's own conversation (from live or its turn checkpoint), so its DONE
+        # says "no switch": the row's switch, restore and reused prompt are the first pass's; slots, bytes and
+        # evictions are the cache after the last pass
+        engine = self.engine
+        # the wrap-up pass's prompt is the request's plus the thinking so far, so its reused can exceed the prompt
+        passes = [{"switched": 1, "restored": 1, "parked": 3, "parked_bytes": 300, "evictions": 0, "reused": 0},
+                  {"switched": 0, "restored": 0, "parked": 4, "parked_bytes": 400, "evictions": 1, "reused": 9999}]
+        inner = engine.generate
+
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            try:
+                yield from inner(ids, max_new, sampling, cancel, embeddings)
+            finally:
+                engine.last = {"generated": 1, "prompt_tokens": len(ids), "prompt_ms": 1.0, "decode_ms": 1.0,
+                               "finish": "stop", **passes[len(engine.prompts) - 1]}
+
+        engine.generate = generate
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(len(engine.prompts), 2)
+        entry = self.svc.metrics()["requests"][0]
+        self.assertEqual((entry["switched"], entry["restored"]), (1, 1))
+        self.assertEqual((entry["parked"], entry["parked_bytes"], entry["evictions"]), (4, 400, 1))
+        self.assertEqual(entry["reused"], 0)                     # a cold request, not the wrap-up's continuation
+        self.assertEqual(self.svc.metrics()["conversation_cache"]["reused_pct"], 0.0)
+
     def test_anthropic_stream(self):
         from serve.server import REASONING_WRAP_UP
         code, raw = self.post("/v1/messages", {"model": "m", "max_tokens": 400, "stream": True,
@@ -2327,6 +2355,299 @@ class LostStep(unittest.TestCase):
 
     def test_stop_never_acknowledged(self):
         self.run_mode("stop", stream=False)
+
+
+class ConversationCacheFields(unittest.TestCase):
+    """The conversation cache's numbers on the engine's DONE line (appended after #471's prompt tokens read), and the
+    request history that keeps them for the Monitor."""
+
+    OLD = "DONE 3 900 40.0 20.0 stop 1 2 800 9 10 0 0 0.0 100"                  # 0.1.36: 14 values
+    NEW = OLD + " 1 0 3 7340032000 2"                                           # + switched restored parked bytes evictions
+
+    def parse(self, line):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine._parse_done(line)
+        return engine.last
+
+    def ask(self, engine):
+        tok = ByteTokenizer()
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}).encode()
+            urllib.request.urlopen(urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions", data=data,
+                headers={"Content-Type": "application/json"}), timeout=10).read()
+            return svc.metrics()["requests"][0]
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_an_older_engine_line_has_no_cache_fields(self):
+        last = self.parse(self.OLD)
+        self.assertEqual(last["reused"], 800)
+        for key in ("switched", "restored", "parked", "parked_bytes", "evictions"):
+            self.assertNotIn(key, last)
+
+    def test_the_new_fields_are_read(self):
+        last = self.parse(self.NEW)
+        self.assertEqual((last["switched"], last["restored"], last["parked"], last["parked_bytes"], last["evictions"]),
+                         (1, 0, 3, 7340032000, 2))
+        self.assertEqual(last["file_mb"], 0.0)                                   # the earlier fields stay where they were
+        self.assertEqual(last["prompt_read"], 100)
+
+    def test_the_history_keeps_them(self):
+        class CacheEngine(ClockedEngine):
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                try:
+                    yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+                finally:
+                    self.last = {**self.last, "switched": 1, "restored": 0, "parked": 2, "parked_bytes": 5,
+                                 "evictions": 0}
+
+        entry = self.ask(CacheEngine(ByteTokenizer(), "</think>\n\nok", max_context=CTX))
+        self.assertEqual((entry["switched"], entry["restored"], entry["parked"], entry["parked_bytes"],
+                          entry["evictions"]), (1, 0, 2, 5, 0))
+
+    def test_the_history_row_reaches_the_summary(self):
+        # Service.run's row and the summary must agree on the fields, or the Monitor block stays empty
+        class CacheEngine(ClockedEngine):
+            info = {"conversation_cache_mib": 1024, "conversation_cache_slots": 4}
+
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                try:
+                    yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+                finally:
+                    self.last = {**self.last, "switched": 1, "restored": 1, "parked": 2, "parked_bytes": 5,
+                                 "evictions": 0}
+
+        tok = ByteTokenizer()
+        svc = Service(CacheEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}).encode()
+            urllib.request.urlopen(urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions", data=data,
+                headers={"Content-Type": "application/json"}), timeout=10).read()
+            block = svc.metrics()["conversation_cache"]
+            self.assertEqual((block["requests"], block["hits"], block["parked"]), (1, 1, 2))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_queued_request_without_done_does_not_take_the_previous_one(self):
+        # R2 waits for the engine while R1 runs; R1's DONE must not become R2's when R2 itself ends without one
+        tok = ByteTokenizer()
+        started, release = threading.Event(), threading.Event()
+
+        class TwoEngine(MockEngine):
+            calls = 0
+
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                TwoEngine.calls += 1
+                if TwoEngine.calls == 1:
+                    started.set()
+                    release.wait(10)
+                    yield tok.encode("ok")[0]
+                    self.last = {"generated": 1, "prompt_tokens": len(ids), "prompt_ms": 1.0, "decode_ms": 1.0,
+                                 "finish": "stop", "reused": 0, "switched": 1, "restored": 1, "parked": 3,
+                                 "parked_bytes": 300, "evictions": 0}
+                    return
+                raise ValueError("the engine reported an error")
+                yield  # unreachable: makes this a generator like StrataEngine.generate
+
+        svc = Service(TwoEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions"
+
+        def ask():
+            data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}).encode()
+            try:
+                urllib.request.urlopen(urllib.request.Request(url, data=data, headers={
+                    "Content-Type": "application/json"}), timeout=20).read()
+            except urllib.error.HTTPError:
+                pass
+        try:
+            r1 = threading.Thread(target=ask)
+            r1.start()
+            self.assertTrue(started.wait(10))
+            r2 = threading.Thread(target=ask)
+            r2.start()
+            deadline = time.time() + 10
+            while svc.status.get("queued", 0) < 1 and time.time() < deadline:   # R2 waits behind R1
+                time.sleep(0.02)
+            release.set()
+            r1.join(20)
+            r2.join(20)
+            rows = svc.metrics()["requests"]                                     # newest first
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[1]["restored"], 1)                             # R1
+            self.assertIsNone(rows[0]["switched"])                               # R2 had no DONE of its own
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_request_without_done_keeps_none(self):
+        entry = self.ask(MockEngine(ByteTokenizer(), "</think>\n\nok", max_context=CTX))
+        for key in ("switched", "restored", "parked", "parked_bytes", "evictions"):
+            self.assertIsNone(entry[key])
+
+
+class MonitorCacheWindow(unittest.TestCase):
+    """How many of the last requests the Monitor's conversation cache bars sum up: --monitor-cache-window, else
+    "monitor_cache_window" in the config, else 20; never more than the history keeps."""
+
+    def test_default_argument_and_config(self):
+        from serve.server import monitor_cache_window
+        self.assertEqual(monitor_cache_window(None, {}), 20)
+        self.assertEqual(monitor_cache_window(None, {"monitor_cache_window": 50}), 50)
+        self.assertEqual(monitor_cache_window(10, {"monitor_cache_window": 50}), 10)   # the argument wins
+
+    def test_out_of_range_or_not_a_whole_number_is_refused(self):
+        from serve.server import HISTORY_KEPT, monitor_cache_window
+        self.assertEqual(monitor_cache_window(HISTORY_KEPT, {}), HISTORY_KEPT)
+        self.assertEqual(monitor_cache_window(1, {}), 1)
+        for bad in (0, -1, HISTORY_KEPT + 1):
+            with self.subTest(bad=bad), self.assertRaises(ValueError) as e:
+                monitor_cache_window(bad, {})
+            self.assertIn(f"1 to {HISTORY_KEPT}", str(e.exception))
+        for bad in ("20", 2.5, True):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                monitor_cache_window(None, {"monitor_cache_window": bad})
+        # like the other config keys: null is absent, a whole number written as 20.0 is 20
+        self.assertEqual(monitor_cache_window(None, {"monitor_cache_window": None}), 20)
+        self.assertEqual(monitor_cache_window(None, {"monitor_cache_window": 50.0}), 50)
+        self.assertIs(type(monitor_cache_window(None, {"monitor_cache_window": 50.0})), int)
+
+    def test_the_option_reaches_the_service(self):
+        import serve.server as server
+        seen = {}
+
+        class Started(Exception):
+            pass
+
+        def fake_serve(svc, host="127.0.0.1", port=8095):   # main() is done setting svc up: stop before serving
+            seen["svc"] = svc
+            raise Started
+
+        argv = ["server.py", "--engine", "mock", "--port", "0", "--monitor-cache-window", "50"]
+        with unittest.mock.patch.object(server, "serve", fake_serve), unittest.mock.patch.object(sys, "argv", argv):
+            with self.assertRaises(Started):
+                server.main()
+        self.assertEqual(seen["svc"].cache_window, 50)
+
+    def test_the_history_keeps_as_many_as_the_window_allows(self):
+        from serve.server import HISTORY_KEPT
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertEqual(svc.history.maxlen, HISTORY_KEPT)
+        self.assertEqual(svc.cache_window, 20)
+
+
+def cache_entry(prompt=1000, reused=0, switched=0, restored=0, parked=1, parked_bytes=100, evictions=0):
+    return {"prompt_tokens": prompt, "reused": reused, "switched": switched, "restored": restored, "parked": parked,
+            "parked_bytes": parked_bytes, "evictions": evictions}
+
+
+class ConversationCacheSummary(unittest.TestCase):
+    """GET /metrics' conversation_cache block: over the newest `window` requests that have the engine's cache fields."""
+
+    INFO = {"conversation_cache_mib": 16384, "conversation_cache_slots": 8}
+
+    def summary(self, history, info=None, window=20, epoch=0, loaded=True):
+        from serve.server import conversation_cache_summary
+        history = [{"engine_epoch": epoch, **h} for h in history]
+        return conversation_cache_summary(history, self.INFO if info is None else info, window, epoch=epoch,
+                                          loaded=loaded)
+
+    def test_the_numbers(self):
+        hist = [cache_entry(reused=0, switched=1, restored=0, parked=1, evictions=0),      # a new conversation: a miss
+                cache_entry(reused=900, switched=0, parked=1),                             # a continuation: not counted
+                cache_entry(reused=950, switched=1, restored=1, parked=2, parked_bytes=300, evictions=1)]   # a hit
+        s = self.summary(hist)
+        self.assertEqual((s["enabled"], s["window"], s["requests"]), (True, 20, 3))
+        self.assertAlmostEqual(s["reused_pct"], 100 * 1850 / 3000)
+        self.assertEqual((s["switches"], s["hits"]), (2, 1))
+        self.assertAlmostEqual(s["hit_pct"], 50.0)
+        self.assertEqual((s["parked"], s["parked_bytes"], s["evictions"]), (2, 300, 1))      # the newest request's
+        self.assertEqual((s["slots"], s["budget_bytes"]), (8, 16384 * 1048576))
+
+    def test_a_restore_without_a_switch_is_no_hit(self):
+        s = self.summary([cache_entry(switched=0, restored=1), cache_entry(switched=1, restored=0)])
+        self.assertEqual((s["switches"], s["hits"]), (1, 0))
+
+    def test_only_the_newest_window_counts(self):
+        hist = [cache_entry(switched=1, restored=0)] * 5 + [cache_entry(switched=1, restored=1)] * 3   # oldest first
+        s = self.summary(hist, window=3)
+        self.assertEqual((s["requests"], s["switches"], s["hits"]), (3, 3, 3))
+
+    def test_a_history_shorter_than_the_window(self):
+        s = self.summary([cache_entry(switched=1, restored=1)], window=20)
+        self.assertEqual((s["window"], s["requests"]), (20, 1))
+
+    def test_no_switch_has_no_hit_rate(self):
+        s = self.summary([cache_entry(reused=900, switched=0)])
+        self.assertEqual(s["switches"], 0)
+        self.assertIsNone(s["hit_pct"])
+
+    def test_reused_beyond_the_prompt_is_capped_and_none_is_skipped(self):
+        s = self.summary([cache_entry(prompt=100, reused=150), {**cache_entry(prompt=100), "reused": None}])
+        self.assertAlmostEqual(s["reused_pct"], 100.0)
+
+    def test_requests_without_the_fields_do_not_count(self):
+        old = {"prompt_tokens": 1000, "reused": 0, "switched": None, "restored": None, "parked": None,
+               "parked_bytes": None, "evictions": None}
+        s = self.summary([old, old])
+        self.assertTrue(s["enabled"])
+        self.assertEqual(s["requests"], 0)
+        for key in ("reused_pct", "switches", "hits", "hit_pct", "parked", "parked_bytes", "evictions"):
+            self.assertIsNone(s[key], key)
+
+    def test_off_when_the_engine_has_no_budget_or_no_slots(self):
+        for info in ({}, {"conversation_cache_mib": 0, "conversation_cache_slots": 8},
+                     {"conversation_cache_mib": 8192, "conversation_cache_slots": 0}):
+            with self.subTest(info=info):
+                self.assertFalse(self.summary([cache_entry(switched=1)], info=info)["enabled"])
+
+    def test_a_restarted_engine_starts_a_new_epoch(self):
+        tok = ByteTokenizer()
+
+        class Restartable(MockEngine):
+            up = False
+
+            def alive(self):
+                return self.up
+
+            def restart(self):
+                self.up = True
+
+        svc = Service(Restartable(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        epoch = svc.engine_epoch
+        svc.ensure_loaded()                       # dead: started again, a new process
+        self.assertEqual(svc.engine_epoch, epoch + 1)
+        svc.ensure_loaded()                       # alive: nothing to do, the same process
+        self.assertEqual(svc.engine_epoch, epoch + 1)
+
+    def test_the_gauges_belong_to_the_running_engine(self):
+        # parked, bytes and evictions describe one engine process: after a restart they are the old process's
+        old = {**cache_entry(switched=1, restored=1, parked=4, parked_bytes=400, evictions=1), "engine_epoch": 1}
+        s = self.summary([old], epoch=2)
+        self.assertEqual((s["parked"], s["parked_bytes"], s["evictions"]), (None, None, None))
+        self.assertEqual(s["hits"], 1)                                          # the window still counts it
+        s = self.summary([{**old, "engine_epoch": 2}], epoch=2)
+        self.assertEqual(s["parked"], 4)
+        s = self.summary([{**old, "engine_epoch": 2}], epoch=2, loaded=False)   # unloaded: nothing is parked
+        self.assertEqual((s["parked"], s["parked_bytes"], s["evictions"]), (None, None, None))
+
+    def test_metrics_carries_the_block(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.engine.info = dict(self.INFO)
+        svc.cache_window = 7
+        svc.history.append({**cache_entry(switched=1, restored=1), "time": 0})
+        block = svc.metrics()["conversation_cache"]
+        self.assertEqual((block["enabled"], block["window"], block["hits"]), (True, 7, 1))
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Iterable, Iterator, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +77,9 @@ ENGINE_SILENCE_S = 300.0
 PP_CHUNK_MAX = 32768
 PP_FLOOR_TOK_S = 50.0
 PP_SLACK = 3.0
+HISTORY_KEPT = 500          # the last finished requests GET /metrics keeps (the Monitor's table, its cache bars)
+# the conversation cache's fields on the DONE line, in their order after #471's prompt tokens read (f[15] on)
+CACHE_FIELDS = ("switched", "restored", "parked", "parked_bytes", "evictions")
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -296,6 +299,10 @@ class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
 
+    The DONE line's fields after the finish reason, each group appended so an older server reads the rest: drafts
+    accepted and offered, reused prompt tokens, expert hits and lookups, RAM/file blobs and file MB, and the
+    conversation cache: switched, restored, parked, parked bytes, evictions.
+
     Per-request sampling rides the same line as engine-side keys between max_new and the ids
     (`temperature=F top_p=F top_k=N seed=N`, the engine's own spelling).  An absent temperature keeps the
     engine's default, which is greedy; `temperature=0` means the same thing, so it is not forwarded.
@@ -443,6 +450,9 @@ class StrataEngine:
             self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
         if len(f) >= 15:                                  # #471 (engine 0.1.36+): the prompt tokens actually read
             self.last.update(prompt_read=int(f[14]))
+        if len(f) >= 15 + len(CACHE_FIELDS):              # the conversation cache: switched to another conversation,
+            # restored from a parked one, its slots and bytes in use, evictions so far
+            self.last.update(zip(CACHE_FIELDS, (int(x) for x in f[15:15 + len(CACHE_FIELDS)])))
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -972,7 +982,9 @@ class Service:
         self.api_monitor = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
-        self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
+        self.history = collections.deque(maxlen=HISTORY_KEPT)   # the last finished requests, newest last (/metrics)
+        self.cache_window = 20                          # the Monitor's conversation cache bars: over the last N of them
+        self.engine_epoch = 0                           # +1 at every engine (re)start: whose parked slots a row shows
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
@@ -1087,6 +1099,7 @@ class Service:
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
         self.engine.restart()
+        self.engine_epoch += 1                          # a new process: the old one's parked conversations are gone
         print("[strata] the engine is running again", flush=True)
 
     def _say_died(self, e: Exception) -> None:
@@ -1292,7 +1305,10 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
-                "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
+                "requests_kept": len(hist), "totals": totals,
+                "conversation_cache": conversation_cache_summary(hist, engine, self.cache_window,
+                                                                 epoch=self.engine_epoch, loaded=self.loaded()),
+                "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
@@ -1444,6 +1460,8 @@ class Service:
         engine_last0 = getattr(self.engine, "last", None)
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
+        first_pass = None           # the first pass's switch/restore/reused: a thinking-budget wrap-up pass continues
+        #                             the request's own conversation (from live or its turn checkpoint)
         with self.status_lock:
             self.status["queued"] += 1
         try:
@@ -1463,6 +1481,9 @@ class Service:
                         self.last_request_at = time.time()
                         self.rate.clear()               # the previous request's samples must not leak into this one
                     before = getattr(self.engine, "last", None)
+                    # the identity token again, now that this request holds the engine: read before the fifo, a
+                    # request queued behind another one would take that one's DONE when its own never comes
+                    engine_last0 = before
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     while True:
@@ -1517,6 +1538,9 @@ class Service:
                                 self._say_died(e)
                                 if not leaving and not cancel.is_set():
                                     raise
+                            done = getattr(self.engine, "last", None)
+                            if first_pass is None and done is not engine_last0 and isinstance(done, dict):
+                                first_pass = {k: done.get(k) for k in ("switched", "restored", "reused")}
                         if not wrap or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -1550,6 +1574,9 @@ class Service:
                             # disconnect)
                             last = dict(getattr(self.engine, "last", {}) or {}) \
                                 if getattr(self.engine, "last", None) is not engine_last0 else {}
+                            # the Monitor's row: a budget wrap-up pass continues the request's own conversation,
+                            # so its switch, restore and reused prompt are the first pass's (the totals keep theirs)
+                            row = {**last, **first_pass} if last and first_pass else last
                             started = self.status.get("started", time.time())
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
@@ -1559,7 +1586,7 @@ class Service:
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
-                                "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                "prompt_tokens": seen, "reused": row.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "engine_generated": last.get("generated"),
@@ -1570,7 +1597,8 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                **{k: row.get(k) for k in CACHE_FIELDS}, "engine_epoch": self.engine_epoch})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
@@ -2827,6 +2855,46 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     return out
 
 
+def monitor_cache_window(arg: int | float | None, cfg: dict) -> int:
+    """How many of the last requests the Monitor's conversation cache bars sum up: --monitor-cache-window, else
+    "monitor_cache_window" in the config (null is absent, 20.0 is 20, as for the other keys), else 20."""
+    n = arg if arg is not None else cfg.get("monitor_cache_window")
+    if n is None:
+        n = 20
+    if isinstance(n, float) and n.is_integer():
+        n = int(n)
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= HISTORY_KEPT:
+        raise ValueError(f"monitor_cache_window must be a whole number from 1 to {HISTORY_KEPT} (got {n!r})")
+    return n
+
+
+def conversation_cache_summary(history: Iterable[dict], info: dict, window: int, epoch: int = 0,
+                               loaded: bool = True) -> dict:
+    """The Monitor's conversation cache bars: over the newest `window` requests that carry the engine's cache fields
+    (an older engine, or a request that ended without a DONE line, has none).  A hit is a request that switched to
+    another conversation and was restored from a parked snapshot.  Parked, bytes and evictions describe the running
+    engine process: only a request of the current `epoch` gives them, and none while the model is not loaded."""
+    mib = int(info.get("conversation_cache_mib") or 0)
+    slots = int(info.get("conversation_cache_slots") or 0)
+    recent = [h for h in list(history)[::-1][:window] if all(h.get(k) is not None for k in CACHE_FIELDS)]
+    out = {"enabled": mib > 0 and slots > 0, "window": window, "requests": len(recent), "reused_pct": None,
+           "switches": None, "hits": None, "hit_pct": None, "parked": None, "parked_bytes": None, "evictions": None,
+           "slots": slots, "budget_bytes": mib * 1048576}
+    if not recent:
+        return out
+    counted = [h for h in recent if h.get("reused") is not None and h.get("prompt_tokens")]
+    prompt = sum(h["prompt_tokens"] for h in counted)
+    if prompt:
+        out["reused_pct"] = 100 * sum(min(h["reused"], h["prompt_tokens"]) for h in counted) / prompt
+    out["switches"] = sum(1 for h in recent if h["switched"])
+    out["hits"] = sum(1 for h in recent if h["switched"] and h["restored"])
+    out["hit_pct"] = 100 * out["hits"] / out["switches"] if out["switches"] else None
+    newest = recent[0]
+    if loaded and newest.get("engine_epoch") == epoch:
+        out.update(parked=newest["parked"], parked_bytes=newest["parked_bytes"], evictions=newest["evictions"])
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
@@ -2865,8 +2933,15 @@ def main() -> int:
                          "\"min_free_vram_mib\" in the config; default: always load)")
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
+    ap.add_argument("--monitor-cache-window", type=int, default=None, metavar="N",
+                    help=f"how many of the last requests the Monitor's conversation cache bars sum up (1 to "
+                         f"{HISTORY_KEPT}; also \"monitor_cache_window\" in the config; default: 20)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    try:                                                # before the minutes of loading: a bad value stops here
+        cache_window = monitor_cache_window(a.monitor_cache_window, cfg)
+    except ValueError as e:
+        ap.error(str(e))
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -2977,6 +3052,7 @@ def main() -> int:
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
     svc.anthropic_think_unasked = mode == "model"
+    svc.cache_window = cache_window
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:
             svc.reasoning_budget_tokens = cfg["reasoning_budget_tokens"]
