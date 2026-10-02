@@ -199,15 +199,32 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         return (uint8_t*) map + kSharedArenaHeaderBytes;
     }
 
-    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
-    if (p != MAP_FAILED) {
-        got = PageBacking::LargePages;
-        note = "hugetlb 2 MB pages";
-        return p;
+    // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
+    // here too, so the large-page path can be compared without changing the pool or rebooting.
+    if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
+        note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
+    } else {
+        void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
+        if (p != MAP_FAILED) {
+            got = PageBacking::LargePages;
+            note = "hugetlb 2 MB pages";
+            return p;
+        }
+        // MAP_HUGETLB is all-or-nothing: a pool smaller than the mapping fails exactly like an absent
+        // one, and the old message guessed "no hugetlb pool configured" either way. Name the shortfall:
+        // how many 2 MiB pages the mapping needs against what vm.nr_hugepages actually holds.
+        const unsigned long long need = ((unsigned long long) bytes + (1ull << 21) - 1) / (1ull << 21);
+        unsigned long long pool = 0;
+        bool have_pool = false;
+        if (std::FILE* f = std::fopen("/proc/sys/vm/nr_hugepages", "r")) {
+            have_pool = std::fscanf(f, "%llu", &pool) == 1;
+            std::fclose(f);
+        }
+        note = "MAP_HUGETLB unavailable (needed " + std::to_string(need) + " 2 MiB pages, vm.nr_hugepages=" +
+               (have_pool ? std::to_string(pool) : std::string("?")) + "); using 4 KB pages";
     }
-    note = "MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages";
-    p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     got = PageBacking::NormalPages;
     return p == MAP_FAILED ? nullptr : p;
 #endif
