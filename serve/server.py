@@ -227,6 +227,11 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        opts = dict(zip(args, args[1:]))
+        # the conversation cache (--conversation-cache-mib), from the engine's CACHE lines (Monitor tab)
+        self.conversations = {"budget_mib": int(opts.get("--conversation-cache-mib") or 0),
+                              "slots": int(opts.get("--conversation-cache-slots") or 4), "reported": False,
+                              "live_tokens": 0, "bytes": 0, "evictions": 0, "superseded": 0, "parked": []}
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -273,10 +278,25 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         for line in proc.stdout:
+            if line.startswith("CACHE "):               # not a request's line: the Monitor reads it any time
+                self._parse_cache(line)
+                continue
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
         lines.put(None)
+
+    def _parse_cache(self, line: str):
+        """CACHE <live tokens> <parked bytes> <evictions> <superseded> [<tokens>:<bytes> ...], least recently active
+        parked conversation first."""
+        f = line.split()
+        try:
+            parked = [{"tokens": int(t), "bytes": int(b)} for t, b in (x.split(":") for x in f[5:])]
+            self.conversations = {**self.conversations, "reported": True, "live_tokens": int(f[1]),
+                                  "bytes": int(f[2]), "evictions": int(f[3]), "superseded": int(f[4]),
+                                  "parked": parked}
+        except (ValueError, IndexError):
+            pass
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -1073,7 +1093,9 @@ class Service:
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
-        return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
+        conv = getattr(self.engine, "conversations", None)
+        return {"engine": engine, "live": live, "conversations": conv if isinstance(conv, dict) else None,
+                "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}

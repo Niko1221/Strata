@@ -4308,6 +4308,19 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // CACHE <live tokens> <parked bytes> <evictions> <superseded> [<tokens>:<bytes> ...]: the conversation cache
+        // for the Monitor, the parked conversations least recently active first; after READY and after every DONE
+        // (a server that does not know the line skips it)
+        auto report_cache = [&] {
+            if (!conversations.enabled()) return;
+            std::string s = "CACHE " + std::to_string(live_ok ? live.size() : 0) + " " +
+                            std::to_string(conversations.bytes()) + " " + std::to_string(conversations.evictions()) +
+                            " " + std::to_string(conversations.superseded());
+            for (const auto& e : conversations.entries())
+                s += " " + std::to_string(e.live.ids.size()) + ":" + std::to_string(e.bytes());
+            std::printf("%s\n", s.c_str());
+            std::fflush(stdout);
+        };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         Clock::time_point pp_t0 = Clock::now();
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
@@ -4672,6 +4685,7 @@ int main(int argc, char** argv) {
         bool mrope_identity = true;
         std::vector<float> img_rows;
         std::vector<const float*> row_ptr;
+        report_cache();
         while (next_line(line)) {
             if (line == "QUIT") break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
@@ -5572,6 +5586,7 @@ int main(int argc, char** argv) {
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6);
             std::fflush(stdout);
+            report_cache();
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             const int64_t fresh = n - resume;
             std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %lld read in %.0f ms (%.1f tok/s), "

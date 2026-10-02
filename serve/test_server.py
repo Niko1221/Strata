@@ -735,6 +735,28 @@ class LiveRate(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/metrics", timeout=10) as r:
             return json.loads(r.read())
 
+    def test_conversation_cache_lines(self):
+        import io
+        import queue
+        from types import SimpleNamespace
+        engine = StrataEngine("strata", ["--conversation-cache-mib", "8192", "--conversation-cache-slots", "4"],
+                              lazy=True)
+        self.assertEqual(engine.conversations["budget_mib"], 8192)
+        self.assertFalse(engine.conversations["reported"])
+        # CACHE lines never reach a request's queue; the last one wins, and a malformed one changes nothing
+        engine.proc = SimpleNamespace(stdout=io.StringIO("CACHE 0 0 0 0\nT 5\nCACHE 2107 3000 1 2 31216:1300 2074:400\n"
+                                                          "CACHE x\n"))
+        engine.lines = queue.Queue()
+        engine._pump()
+        self.assertEqual(engine.lines.get_nowait(), "T 5\n")
+        self.assertIsNone(engine.lines.get_nowait())
+        c = engine.conversations
+        self.assertTrue(c["reported"])
+        self.assertEqual((c["live_tokens"], c["bytes"], c["evictions"], c["superseded"]), (2107, 3000, 1, 2))
+        self.assertEqual(c["parked"], [{"tokens": 31216, "bytes": 1300}, {"tokens": 2074, "bytes": 400}])
+        self.svc.engine = engine
+        self.assertEqual(self.metrics()["conversations"]["parked"][1]["tokens"], 2074)
+
     def test_prefill_rate_excludes_cached_tokens(self):
         import io
         import queue
