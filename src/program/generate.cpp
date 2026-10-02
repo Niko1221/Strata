@@ -23,6 +23,7 @@
 #include "strata/core/pinned.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/peer_experts.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -295,6 +296,16 @@ struct Options {
     /// to them.  Measured at 256 slots: **1781 of 60000 = 2.97%**, against **21.4%** for 8 slots per layer and
     /// **70.4%** for 64, from `Memory/cache_allocation.py` on the same run's routing.  Off by default.
     bool expert_cache_per_layer = false;
+    /// Multi-GPU: a second expert tier on CUDA device `peer_device` (-1 = off), `peer_reserve_mib` left free
+    /// there, `peer_slots` caps its size (0 = as many as fit), `peer_adapt_swaps` per adaptive round
+    /// (-1 = adapt_swaps).
+    int peer_device = -1;
+    int peer_reserve_mib = 600;
+    int64_t peer_slots = 0;
+    int peer_adapt_swaps = -1;
+    /// the prompt path's rows per layer the peer computes: -1 = half of chunk x top-k, 0 = the prompt path stays on
+    /// the primary
+    int64_t peer_prefill_rows = -1;
     /// The PLE gather's prefetch, as an A/B arm.  The gather measured 2.10-2.61 ms/token because its sixteen
     /// row reads are sixteen SEPARATE page faults into a 26.8 GB mapping; see `ple_prefetch_enable`.
     bool no_ple_prefetch = false;
@@ -1217,6 +1228,11 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-swaps") o.adapt_swaps = std::atoi(next("--adapt-swaps"));
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
+        else if (a == "--peer-device") o.peer_device = std::atoi(next("--peer-device"));
+        else if (a == "--peer-reserve-mib") o.peer_reserve_mib = std::atoi(next("--peer-reserve-mib"));
+        else if (a == "--peer-slots") o.peer_slots = std::atoll(next("--peer-slots"));
+        else if (a == "--peer-adapt-swaps") o.peer_adapt_swaps = std::atoi(next("--peer-adapt-swaps"));
+        else if (a == "--peer-prefill-rows") o.peer_prefill_rows = std::atoll(next("--peer-prefill-rows"));
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--expert-profile-save") o.expert_profile_save = next("--expert-profile-save");
@@ -1266,6 +1282,7 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::set_coupled_draft(o.coupled_draft);
+    strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
@@ -2267,6 +2284,36 @@ int main(int argc, char** argv) {
         // file).  `--expert-cache 0` used to take the count the profile was built for; the profile now ranks
         // every pair (issue #46: a card that holds more than the old 8,000 used to stop there), so it means auto.
         if (o.expert_cache == 0) o.expert_cache = -1;
+        // Multi-GPU: STRATA_PEER_HOT=<f> gives the peer card a share f of the HOT pairs, so both cards
+        // compute routed experts every layer (the primary alone did ~25 of ~30 per layer-window).  Of the first
+        // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
+        // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
+        // not hold, in order) gets them first.
+        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+            const char* ph = std::getenv("STRATA_PEER_HOT");
+            const double f = ph ? std::atof(ph) : 0.45;
+            const char* pa = std::getenv("STRATA_PEER_HOT_AT");
+            const size_t at = std::min(profile.size(), (size_t) (pa ? std::atoll(pa) : 8700));
+            if (f > 0.0 && f < 1.0 && at > 0) {
+                std::vector<std::pair<int32_t, int32_t>> keep, moved;
+                for (size_t r = 0; r < at; ++r) {
+                    const bool to_peer = (int64_t) ((double) (r + 1) * f) > (int64_t) ((double) r * f);
+                    (to_peer ? moved : keep).push_back(profile[r]);
+                }
+                const size_t n_moved = moved.size();
+                // the primary's share continues with the ranks after `at` until it is full; then the moved ones
+                std::vector<std::pair<int32_t, int32_t>> out;
+                out.reserve(profile.size());
+                out.insert(out.end(), keep.begin(), keep.end());
+                const size_t fill = std::min(profile.size(), at + n_moved);   // what the primary still takes
+                out.insert(out.end(), profile.begin() + (long) at, profile.begin() + (long) fill);
+                out.insert(out.end(), moved.begin(), moved.end());
+                out.insert(out.end(), profile.begin() + (long) fill, profile.end());
+                profile.swap(out);
+                std::fprintf(stderr, "strata generate: STRATA_PEER_HOT %.2f: %zu of the first %zu ranked pairs moved "
+                                     "behind rank %zu (the peer's)\n", f, n_moved, at, fill);
+            }
+        }
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
@@ -3037,9 +3084,29 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
+    strata::core::PeerExperts peer;
+    if (o.peer_device >= 1) {
+        if (profile.empty() || srcp == nullptr || o.expert_cache <= 0) {
+            std::fprintf(stderr, "strata generate: --peer-device needs --expert-profile and the expert cache\n");
+            return 1;
+        }
+        const auto tp0 = Clock::now();
+        if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
+                       err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: peer GPU %d: %lld experts, %.2f GiB (filled in %.1f s); with the primary's "
+                             "%lld that is %lld of %lld on the GPUs\n", o.peer_device, (long long) peer.resident(), peer.gib(),
+                     std::chrono::duration<double>(Clock::now() - tp0).count(), (long long) xcache.slots(),
+                     (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
+    }
+
     Drive drive;
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+    drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
     drive.d.pool = &pool;
@@ -4162,6 +4229,13 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
+        if (peer.valid() && o.peer_prefill_rows != 0) {
+            const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
+            if (!sp.set_peer(&peer, rows, err)) {
+                std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
+                err.clear();
+            }
+        }
         mem_mark("the head and the prompt path");
         // #340: STRATA_SPLIT_SMALL_OWN=S (tokens): on a layer split, every stage that borrows keeps the slots for an
         // S-token chunk's buffers for the whole session (0.1.29's own buffers, carved from the tail of its cache):
@@ -4536,6 +4610,7 @@ int main(int argc, char** argv) {
             }
         };
         auto apply_pending = [&](bool wait) {
+            if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
             else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
@@ -4562,7 +4637,7 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e))) cand.emplace_back(u[e], e); }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
@@ -4606,6 +4681,16 @@ int main(int argc, char** argv) {
             // #477: the routing counted since the start (each count adds up to 1 / (1 - 0.7) over its decays: the
             // sum is proportional to the routing itself) - only with --expert-profile-save, else `heat` is empty
             for (size_t i = 0; i < heat.size(); ++i) heat[i] += (double) drive.d.usage[i];
+            if (peer.valid()) {                   // multi-GPU: the peer takes the next most-routed CPU misses
+                std::vector<int32_t> r0 = host_res;
+                for (const auto& [i, slot] : pending) r0[(size_t) i] = slot;   // swapped into the primary already
+                std::string perr;
+                if (!peer.adapt(drive.d.usage.data(), r0.data(),
+                                o.peer_adapt_swaps >= 0 ? o.peer_adapt_swaps : o.adapt_swaps, perr)) {
+                    std::fprintf(stderr, "strata serve: %s\n", perr.c_str());
+                    return false;
+                }
+            }
             for (float& v : drive.d.usage) v *= 0.7f;
             return true;
         };
