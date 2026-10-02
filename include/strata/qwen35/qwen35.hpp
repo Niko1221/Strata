@@ -8,10 +8,10 @@
 //   * ggml/src/ggml-cpu/ops.cpp       (ggml_compute_forward_gated_delta_net_one_chunk, the exact recurrence)
 // and the numbers are validated against them, stage by stage, by the tests beside it.
 //
-// Weight pointers are ROW-MAJOR with the OUTPUT row contiguous, i.e. GGUF's own layout: for a tensor of GGUF
-// shape [ne0, ne1], a row `o` of `ne1` outputs occupies `ne0` contiguous floats at `w + o*ne0`.  Every helper
-// below takes `n_in` and `n_out` and follows that convention, so a caller can hand over the mmapped GGUF
-// blocks once decoding is added.
+// **THE WEIGHTS STAY QUANTIZED.**  A `Mat` is a GGUF tensor: raw blocks, a ggml type id and its shape.  A
+// type of 0 is plain F32 (what the unit tests use); any other type is decoded by ggml-cpu's own type traits
+// (`qwen35_ggml.cpp`), so an IQ4_XS or Q4_K row means exactly what it means in llama.cpp.  Dequantizing the
+// 35B model to float would not fit and is never done.
 #pragma once
 
 #include "strata/core/qwen35.hpp"
@@ -25,38 +25,64 @@ namespace strata::qwen35 {
 
 using core::Qwen35Geometry;
 
+// ---------------------------------------------------------------- a weight matrix
+
+/// One GGUF weight matrix, ROW-MAJOR with the OUTPUT row contiguous (`n_in` values per row, `n_out` rows).
+struct Mat {
+    const void* data = nullptr;
+    int type = 0;               ///< ggml type id; 0 = F32 rows
+    int64_t n_in = 0, n_out = 0;
+    size_t row_bytes = 0;       ///< bytes per output row (set by the loader; computed for F32 here)
+    bool empty() const { return data == nullptr; }
+};
+
+/// A 1-row view of `m` (the GDN's per-head beta/alpha projections).
+Mat mat_row(const Mat& m, int64_t i);
+/// `sum_i row(m, 0)[i] * x[i]`.
+float mat_dot(const Mat& m, const float* x);
+/// `y[o] = sum_i m[o][i] * x[i]`.  Type 0 is a plain float dot; every other type goes through
+/// `g_quant_matvec`, which the ggml-backed build installs with `qwen35_enable_ggml()`.
+void matvec(const Mat& m, const float* x, float* y);
+
+using QuantMatvecFn = void (*)(int type, const void* w, int64_t n_in, int64_t n_out, const float* x, float* y);
+extern QuantMatvecFn g_quant_matvec;
+/// Dequantize one row of a quantized matrix to `n_in` floats.
+using RowDequantFn = void (*)(int type, const void* row, int64_t n, float* out);
+extern RowDequantFn g_row_dequant;
+/// Dequantize row `row` of `m` to `m.n_in` floats (F32 is a plain copy).
+void dequant_row(const Mat& m, int64_t row, float* out);
+/// Install the ggml-cpu-backed quantized matvec (src/qwen35/qwen35_ggml.cpp).  Idempotent.
+void qwen35_enable_ggml();
+
 // ---------------------------------------------------------------- primitives
 
-/// y = x * w / sqrt(mean(x^2) + eps), the `LLM_NORM_RMS` every Qwen35 block uses.  `w` may be null (no weight).
+/// y = x * w / sqrt(mean(x^2) + eps), the `LLM_NORM_RMS` every Qwen35 block uses.  `w` may be null.
 void rms_norm(const float* x, const float* w, int64_t n, float eps, float* y);
 /// The GDN's l2 norm: x / sqrt(sum(x^2) + eps) (llama.cpp's `build_gdn_l2_norm`).
 void l2_norm(const float* x, int64_t n, float eps, float* y);
-/// y[o] = sum_i W[i,o] * x[i]; a plain matvec, the reference the quantized path must reproduce.
-void matvec(const float* w, const float* x, int64_t n_in, int64_t n_out, float* y);
 inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
 inline float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 inline float softplus(float x) { return std::log1p(std::exp(x)); }
 
 // ---------------------------------------------------------------- one GDN layer
 
-/// The recurrent layer's weights, in GGUF order.  `ssm_conv` is [conv_channels, d_conv] (GGUF [d_conv, conv_channels]):
-/// channel `c`'s `d_conv` taps occupy `ssm_conv + c*d_conv`.
+/// The recurrent layer's weights.  `ssm_conv` is channel-major: channel `c`'s `d_conv` taps occupy
+/// `ssm_conv + c*d_conv`; it stays F32 (the artifact ships it F32).
 struct GdnLayerWeights {
     const float* attn_norm = nullptr;    // [n_embd]
-    const float* wqkv = nullptr;         // rows: qkv_dim, each n_embd
-    const float* wgate = nullptr;        // rows: value_dim, each n_embd
+    Mat wqkv;                            // qkv_dim rows, n_embd in
+    Mat wgate;                           // value_dim rows, n_embd in
     const float* ssm_conv = nullptr;     // channel-major: d_conv taps per channel
     const float* ssm_dt = nullptr;       // [v_heads]
     const float* ssm_a = nullptr;        // [v_heads]
-    const float* ssm_beta = nullptr;     // rows: v_heads, each n_embd
-    const float* ssm_alpha = nullptr;    // rows: v_heads, each n_embd
+    Mat ssm_beta;                        // v_heads rows, n_embd in
+    Mat ssm_alpha;                       // v_heads rows, n_embd in
     const float* ssm_norm = nullptr;     // [head_v_dim]
-    const float* ssm_out = nullptr;      // rows: n_embd, each value_dim
+    Mat ssm_out;                         // n_embd rows, value_dim in
 };
 
 /// The layer's persistent state.  `conv` is [d_conv-1, conv_channels] oldest-first; `rec` is
-/// [v_heads][S_v][S_v] with the element (j, i) at `rec + h*S*S + j*S + i`, the transposed layout the ggml
-/// kernel uses (`s_out[j*S_v + i] = S[i][j]`).
+/// [v_heads][S_v][S_v] with element (j, i) at `rec + h*S*S + j*S + i` (the ggml kernel's transposed layout).
 struct GdnState {
     std::vector<float> conv;
     std::vector<float> rec;
@@ -78,15 +104,14 @@ void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, 
 
 struct AttnLayerWeights {
     const float* attn_norm = nullptr;    // [n_embd]
-    const float* wq = nullptr;           // rows: 2*n_head*head_dim (q | gate per head), each n_embd
-    const float* wk = nullptr;           // rows: n_head_kv*head_dim
-    const float* wv = nullptr;           // rows: n_head_kv*head_dim
-    const float* wo = nullptr;           // rows: n_embd, each n_head*head_dim
+    Mat wq;                              // 2*n_head*head_dim rows (q | gate per head), n_embd in
+    Mat wk;                              // n_head_kv*head_dim rows
+    Mat wv;                              // n_head_kv*head_dim rows
+    Mat wo;                              // n_embd rows, n_head*head_dim in
     const float* q_norm = nullptr;       // [head_dim]
     const float* k_norm = nullptr;       // [head_dim]
 };
 
-/// Per-layer KV cache.  `k`/`v` are [max_cells][n_head_kv*head_dim] (one contiguous head block per KV head).
 struct AttnState {
     std::vector<float> k, v;
     int64_t n = 0;
@@ -99,49 +124,45 @@ struct AttnState {
     void zero() { std::fill(k.begin(), k.end(), 0.0f); std::fill(v.begin(), v.end(), 0.0f); n = 0; }
 };
 
-/// NEOX partial RoPE on one head vector in place (llama.cpp's `GGML_ROPE_TYPE_NEOX`: rotate the pairs
-/// `(v[k], v[k + n_rot/2])` for `k < n_rot/2`, theta_k = pos * base^(-2k/n_rot)).
+/// NEOX partial RoPE on one head vector in place.
 void rope_neox(float* v, int64_t head_dim, int64_t n_rot, float base, int64_t pos);
-
 /// One token through one full-attention layer: `x` -> `out`, appending to `st`.
 void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& st, const float* x, float* out);
 
 // ---------------------------------------------------------------- one MoE block
 
-/// One routed expert's three matrices, each output-row-major.
 struct ExpertWeights {
-    const float* gate = nullptr;   // rows: n_ff_exp, each n_embd
-    const float* up = nullptr;     // rows: n_ff_exp, each n_embd
-    const float* down = nullptr;   // rows: n_embd, each n_ff_exp
+    Mat gate;   // n_ff_exp rows, n_embd in
+    Mat up;     // n_ff_exp rows, n_embd in
+    Mat down;   // n_embd rows, n_ff_exp in
 };
 
 struct MoeLayerWeights {
-    const float* gate_inp = nullptr;       // rows: n_expert, each n_embd (F32 in the artifact)
-    const float* gate_shexp = nullptr;     // rows: n_ff_shexp, each n_embd
-    const float* up_shexp = nullptr;       // rows: n_ff_shexp, each n_embd
-    const float* down_shexp = nullptr;     // rows: n_embd, each n_ff_shexp
-    const float* gate_inp_shexp = nullptr; // [n_embd]
+    const float* gate_inp = nullptr;       // [n_expert][n_embd], F32
+    Mat gate_shexp;                        // n_ff_shexp rows, n_embd in
+    Mat up_shexp;
+    Mat down_shexp;                        // n_embd rows, n_ff_shexp in
+    const float* gate_inp_shexp = nullptr; // [n_embd], F32
     const ExpertWeights* experts = nullptr;  // [n_expert]
 };
 
-/// The block: softmax over ALL experts, top-k, renormalize, silu-gated experts, gated shared expert.
 void moe_layer(const Qwen35Geometry& g, const MoeLayerWeights& w, const float* x, float* out);
 
 // ---------------------------------------------------------------- the trunk
 
-/// All 40 layers' weights.  `gdn[l]` is used when `g.is_recurrent(l)`, `attn[l]` otherwise; `moe[l]` always.
 struct TrunkWeights {
-    const float* token_embd = nullptr;   // rows: n_vocab, each n_embd
+    Mat token_embd;                      // n_vocab rows, n_embd in (a row is one token's embedding)
     const float* output_norm = nullptr;  // [n_embd]
-    const float* output = nullptr;       // rows: n_vocab, each n_embd
-    const float* attn_norm = nullptr;        // [n_layers][n_embd], row-major
-    const float* post_attn_norm = nullptr;   // [n_layers][n_embd]
+    Mat output;                          // n_vocab rows, n_embd in
+    std::vector<const float*> attn_norm;       // per layer, [n_embd]
+    std::vector<const float*> post_attn_norm;  // per layer, [n_embd]
     std::vector<GdnLayerWeights> gdn;
     std::vector<AttnLayerWeights> attn;
     std::vector<MoeLayerWeights> moe;
+    /// The expert weight storage the `moe[l].experts` arrays point into (one entry per routed expert).
+    std::vector<std::vector<ExpertWeights>> expert_store;
 };
 
-/// Persistent per-sequence state: one GDN state per recurrent layer, one KV cache per attention layer.
 struct TrunkState {
     std::vector<GdnState> gdn;
     std::vector<AttnState> attn;
@@ -149,19 +170,23 @@ struct TrunkState {
         gdn.assign((size_t) g.n_layers, {});
         attn.assign((size_t) g.n_layers, {});
         for (int64_t l = 0; l < g.n_layers; ++l) {
-            if (g.is_recurrent(l)) gdn[l].resize(g);
-            else attn[l].resize(g.context_length, g);
+            if (g.is_recurrent(l)) gdn[(size_t) l].resize(g);
+            else attn[(size_t) l].resize(g.context_length, g);
         }
     }
     void zero(const Qwen35Geometry& g) {
         for (int64_t l = 0; l < g.n_layers; ++l) {
-            if (g.is_recurrent(l)) gdn[l].zero();
-            else attn[l].zero();
+            if (g.is_recurrent(l)) gdn[(size_t) l].zero();
+            else attn[(size_t) l].zero();
         }
     }
 };
 
-/// `token` through the whole trunk at sequence position `pos` (the KV/cache position).  `logits` is n_vocab.
+/// `token` through the whole trunk at the state's current position.  `logits` is n_vocab floats.
 void trunk_forward(const Qwen35Geometry& g, const TrunkWeights& w, TrunkState& st, int64_t token, float* logits);
+
+/// Build the trunk weights from an Ornith/Qwen35MoE GGUF (mmapped; no copy, no dequantization).  Runs the
+/// architecture guard first, so a malformed artifact fails here with a tensor-naming error.
+bool load_trunk(const std::string& path, Qwen35Geometry& g, TrunkWeights& w, std::string& err);
 
 }  // namespace strata::qwen35

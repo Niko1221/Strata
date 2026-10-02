@@ -1,14 +1,63 @@
-// src/qwen35/qwen35.cpp - the Qwen35MoE forward pass, reference (float) implementation.
+// src/qwen35/qwen35.cpp - the Qwen35MoE forward pass.
 //
-// Every op is checked by src/qwen35/gdn_test.cpp against an independent implementation, and the end goal is
-// parity against llama.cpp's own CPU ops (ggml_compute_forward_gated_delta_net_one_chunk is the source of the
-// recurrence here).  Correctness first: this is plain float, no quantized types yet.
+// Plain float for the non-quantized path; a `Mat` of any other ggml type is decoded by `g_quant_matvec`, which
+// the ggml-backed build installs (src/qwen35/qwen35_ggml.cpp).  Every op is checked by the tests beside this
+// file against an independent implementation, and the target is parity with llama.cpp's own CPU ops.
 #include "strata/qwen35/qwen35.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace strata::qwen35 {
+
+// The quantized hooks.  Null in the float-only library (the unit tests); installed by qwen35_enable_ggml().
+QuantMatvecFn g_quant_matvec = nullptr;
+RowDequantFn g_row_dequant = nullptr;
+
+Mat mat_row(const Mat& m, int64_t i) {
+    Mat r = m;
+    r.data = (const uint8_t*) m.data + (size_t) i * m.row_bytes;
+    r.n_out = 1;
+    return r;
+}
+
+float mat_dot(const Mat& m, const float* x) {
+    float y = 0.0f;
+    matvec(m, x, &y);
+    return y;
+}
+
+namespace {
+void no_quant(int) {
+    std::fprintf(stderr, "qwen35: a quantized weight was used, but this build has no ggml type traits\n");
+    std::exit(1);
+}
+}  // namespace
+
+void matvec(const Mat& m, const float* x, float* y) {
+    if (m.n_out <= 0) return;
+    if (m.type == 0) {
+        for (int64_t o = 0; o < m.n_out; ++o) {
+            const float* row = (const float*) m.data + o * m.n_in;
+            double s = 0.0;
+            for (int64_t i = 0; i < m.n_in; ++i) s += (double) row[i] * x[i];
+            y[o] = (float) s;
+        }
+        return;
+    }
+    if (!g_quant_matvec) no_quant(m.type);
+    g_quant_matvec(m.type, m.data, m.n_in, m.n_out, x, y);
+}
+
+void dequant_row(const Mat& m, int64_t row, float* out) {
+    const uint8_t* p = (const uint8_t*) m.data + (size_t) row * m.row_bytes;
+    if (m.type == 0) { std::memcpy(out, p, (size_t) m.n_in * sizeof(float)); return; }
+    if (!g_row_dequant) no_quant(m.type);
+    g_row_dequant(m.type, p, m.n_in, out);
+}
 
 void rms_norm(const float* x, const float* w, int64_t n, float eps, float* y) {
     double ss = 0.0;
@@ -24,47 +73,31 @@ void l2_norm(const float* x, int64_t n, float eps, float* y) {
     for (int64_t i = 0; i < n; ++i) y[i] = x[i] * r;
 }
 
-void matvec(const float* w, const float* x, int64_t n_in, int64_t n_out, float* y) {
-    for (int64_t o = 0; o < n_out; ++o) {
-        const float* row = w + o * n_in;
-        double s = 0.0;
-        for (int64_t i = 0; i < n_in; ++i) s += (double) row[i] * x[i];
-        y[o] = (float) s;
-    }
-}
-
 void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, const float* x, float* out) {
     const int64_t H = g.n_embd;
     const int64_t d_conv = g.ssm_conv_kernel;
-    const int64_t Hk = g.ssm_groups;         // key heads
-    const int64_t Hv = g.ssm_dt_rank;        // value heads
-    const int64_t S = g.ssm_state;           // head_k_dim == head_v_dim
+    const int64_t Hk = g.ssm_groups;
+    const int64_t Hv = g.ssm_dt_rank;
+    const int64_t S = g.ssm_state;
     const int64_t key_dim = g.key_dim();
     const int64_t value_dim = g.value_dim();
     const int64_t qkv_dim = g.qkv_dim();
     const int64_t C = g.conv_channels();
     const float eps = g.rms_eps;
 
-    // 1. normalize the residual input, then the four projections (qkv, z, beta, alpha).
     std::vector<float> xn((size_t) H);
     rms_norm(x, w.attn_norm, H, eps, xn.data());
 
     std::vector<float> qkv((size_t) qkv_dim), z((size_t) value_dim);
     std::vector<float> beta((size_t) Hv), alpha((size_t) Hv), gate((size_t) Hv);
-    matvec(w.wqkv, xn.data(), H, qkv_dim, qkv.data());
-    matvec(w.wgate, xn.data(), H, value_dim, z.data());
+    matvec(w.wqkv, xn.data(), qkv.data());
+    matvec(w.wgate, xn.data(), z.data());
     for (int64_t h = 0; h < Hv; ++h) {
-        const float* rb = w.ssm_beta + h * H;
-        const float* ra = w.ssm_alpha + h * H;
-        double ab = 0.0, aa = 0.0;
-        for (int64_t i = 0; i < H; ++i) { ab += (double) rb[i] * xn[(size_t) i]; aa += (double) ra[i] * xn[(size_t) i]; }
-        beta[(size_t) h] = sigmoid((float) ab);
-        alpha[(size_t) h] = (float) aa + w.ssm_dt[h];
+        beta[(size_t) h] = sigmoid(mat_dot(mat_row(w.ssm_beta, h), xn.data()));
+        alpha[(size_t) h] = mat_dot(mat_row(w.ssm_alpha, h), xn.data()) + w.ssm_dt[h];
         gate[(size_t) h] = softplus(alpha[(size_t) h]) * w.ssm_a[h];
     }
 
-    // 2. depthwise conv over [conv_state | qkv] and SiLU on the whole conv output.  Tap j of channel c is
-    //    ssm_conv[c*d_conv + j]; j = d_conv-1 is the NEW frame, 0..d_conv-2 the history oldest-first.
     std::vector<float> h((size_t) C);
     for (int64_t c = 0; c < C; ++c) {
         const float* taps = w.ssm_conv + c * d_conv;
@@ -72,13 +105,11 @@ void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, 
         for (int64_t j = 0; j < d_conv - 1; ++j) s += (double) st.conv[(size_t) (j * C + c)] * taps[j];
         h[(size_t) c] = silu((float) s);
     }
-    // The new state is the last d_conv-1 frames of [history | qkv].
     for (int64_t j = 0; j + 1 < d_conv - 1; ++j)
         std::memcpy(&st.conv[(size_t) (j * C)], &st.conv[(size_t) ((j + 1) * C)], (size_t) C * sizeof(float));
     if (d_conv >= 2)
         std::memcpy(&st.conv[(size_t) ((d_conv - 2) * C)], qkv.data(), (size_t) C * sizeof(float));
 
-    // 3. split q | k | v, l2-normalise q and k per head (v is NOT normalised).
     std::vector<float> qn((size_t) key_dim), kn((size_t) key_dim);
     const float* qh = h.data();
     const float* kh = h.data() + key_dim;
@@ -88,12 +119,10 @@ void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, 
         l2_norm(kh + hh * S, S, eps, kn.data() + hh * S);
     }
 
-    // 4. the recurrence, per value head, in ggml's transposed state layout: M[j*S + i] = S[i][j].
     const float scale = 1.0f / std::sqrt((float) S);
-    std::vector<float> o((size_t) value_dim);
-    std::vector<float> delta((size_t) S);
+    std::vector<float> o((size_t) value_dim), delta((size_t) S);
     for (int64_t hv = 0; hv < Hv; ++hv) {
-        const int64_t hk = hv % Hk;                 // the CPU kernel's `iq1 = iv1 % neq1`
+        const int64_t hk = hv % Hk;
         const float* qd = qn.data() + hk * S;
         const float* kd = kn.data() + hk * S;
         const float* vd = vh + hv * S;
@@ -112,14 +141,12 @@ void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, 
         }
     }
 
-    // 5. gated RMS norm: rms_norm(o, ssm_norm) * silu(z), then the output projection.
-    std::vector<float> y((size_t) value_dim);
-    std::vector<float> tmp((size_t) S);
+    std::vector<float> y((size_t) value_dim), tmp((size_t) S);
     for (int64_t hv = 0; hv < Hv; ++hv) {
         rms_norm(o.data() + hv * S, w.ssm_norm, S, eps, tmp.data());
         for (int64_t j = 0; j < S; ++j) y[(size_t) (hv * S + j)] = tmp[(size_t) j] * silu(z[(size_t) (hv * S + j)]);
     }
-    matvec(w.ssm_out, y.data(), value_dim, H, out);
+    matvec(w.ssm_out, y.data(), out);
 }
 
 void rope_neox(float* v, int64_t head_dim, int64_t n_rot, float base, int64_t pos) {
@@ -149,11 +176,10 @@ void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& s
     rms_norm(x, w.attn_norm, H, eps, xn.data());
 
     std::vector<float> qfull((size_t) 2 * Nh * D), kf((size_t) kv), vf((size_t) kv);
-    matvec(w.wq, xn.data(), H, 2 * Nh * D, qfull.data());
-    matvec(w.wk, xn.data(), H, kv, kf.data());
-    matvec(w.wv, xn.data(), H, kv, vf.data());
+    matvec(w.wq, xn.data(), qfull.data());
+    matvec(w.wk, xn.data(), kf.data());
+    matvec(w.wv, xn.data(), vf.data());
 
-    // q and k each get a per-head RMS norm; the second half of every q head is the output gate.
     for (int64_t h = 0; h < Nh; ++h) {
         float* qh = qfull.data() + h * 2 * D;
         rms_norm(qh, w.q_norm, D, eps, qh);
@@ -165,20 +191,16 @@ void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& s
         rope_neox(kh, D, g.rope_dim, (float) g.rope_freq_base, pos);
     }
 
-    // append K/V
     std::memcpy(&st.k[(size_t) pos * kv], kf.data(), (size_t) kv * sizeof(float));
     std::memcpy(&st.v[(size_t) pos * kv], vf.data(), (size_t) kv * sizeof(float));
     st.n += 1;
 
-    // dense causal attention over [0, pos].
-    std::vector<float> qh((size_t) D), attn((size_t) D), o((size_t) Nh * D);
+    std::vector<float> attn((size_t) D), o((size_t) Nh * D);
     std::vector<float> scores((size_t) (pos + 1));
     for (int64_t h = 0; h < Nh; ++h) {
         const int64_t hkv = h / ratio;
         const float* q = qfull.data() + h * 2 * D;
         const float* gate = q + D;
-        const float* kbase = st.k.data() + hkv * D;
-        const float* vbase = st.v.data() + hkv * D;
         float mx = -INFINITY;
         for (int64_t j = 0; j <= pos; ++j) {
             double s = 0.0;
@@ -195,9 +217,8 @@ void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& s
             for (int64_t d = 0; d < D; ++d) attn[(size_t) d] += p * st.v[(size_t) j * kv + hkv * D + d];
         }
         for (int64_t d = 0; d < D; ++d) o[(size_t) (h * D + d)] = attn[(size_t) d] * sigmoid(gate[d]);
-        (void) kbase; (void) vbase; (void) qh;
     }
-    matvec(w.wo, o.data(), Nh * D, H, out);
+    matvec(w.wo, o.data(), out);
 }
 
 namespace {
@@ -215,7 +236,12 @@ void moe_layer(const Qwen35Geometry& g, const MoeLayerWeights& w, const float* x
     const int64_t F = g.n_ff_exp, Fs = g.n_ff_shexp;
 
     std::vector<float> logits((size_t) E);
-    matvec(w.gate_inp, x, H, E, logits.data());
+    for (int64_t e = 0; e < E; ++e) {
+        const float* row = w.gate_inp + e * H;
+        double s = 0.0;
+        for (int64_t i = 0; i < H; ++i) s += (double) row[i] * x[i];
+        logits[(size_t) e] = (float) s;
+    }
     std::vector<float> probs = logits;
     softmax_inplace(probs);
 
@@ -232,19 +258,18 @@ void moe_layer(const Qwen35Geometry& g, const MoeLayerWeights& w, const float* x
     for (int64_t i = 0; i < K; ++i) {
         const ExpertWeights& ew = w.experts[idx[(size_t) i]];
         std::vector<float> gg((size_t) F), uu((size_t) F);
-        matvec(ew.gate, x, H, F, gg.data());
-        matvec(ew.up, x, H, F, uu.data());
+        matvec(ew.gate, x, gg.data());
+        matvec(ew.up, x, uu.data());
         for (int64_t f = 0; f < F; ++f) h[(size_t) f] = silu(gg[(size_t) f]) * uu[(size_t) f];
-        matvec(ew.down, h.data(), F, H, y.data());
+        matvec(ew.down, h.data(), y.data());
         for (int64_t d = 0; d < H; ++d) acc[(size_t) d] += wts[(size_t) i] * y[(size_t) d];
     }
 
-    // shared expert, scaled by its sigmoid gate
     std::vector<float> sg((size_t) Fs), su((size_t) Fs), sh((size_t) Fs), sy((size_t) H);
-    matvec(w.gate_shexp, x, H, Fs, sg.data());
-    matvec(w.up_shexp, x, H, Fs, su.data());
+    matvec(w.gate_shexp, x, sg.data());
+    matvec(w.up_shexp, x, su.data());
     for (int64_t f = 0; f < Fs; ++f) sh[(size_t) f] = silu(sg[(size_t) f]) * su[(size_t) f];
-    matvec(w.down_shexp, sh.data(), Fs, H, sy.data());
+    matvec(w.down_shexp, sh.data(), sy.data());
     double gs = 0.0;
     for (int64_t i = 0; i < H; ++i) gs += (double) w.gate_inp_shexp[i] * x[i];
     const float sgate = sigmoid((float) gs);
@@ -254,10 +279,10 @@ void moe_layer(const Qwen35Geometry& g, const MoeLayerWeights& w, const float* x
 void trunk_forward(const Qwen35Geometry& g, const TrunkWeights& w, TrunkState& st, int64_t token, float* logits) {
     const int64_t H = g.n_embd;
     std::vector<float> x((size_t) H), xn((size_t) H), a((size_t) H), m((size_t) H);
-    std::memcpy(x.data(), w.token_embd + (size_t) token * H, (size_t) H * sizeof(float));
+    dequant_row(w.token_embd, token, x.data());
     for (int64_t l = 0; l < g.n_layers; ++l) {
-        const float* an = w.attn_norm + (size_t) l * H;
-        const float* pn = w.post_attn_norm + (size_t) l * H;
+        const float* an = w.attn_norm[(size_t) l];
+        const float* pn = w.post_attn_norm[(size_t) l];
         rms_norm(x.data(), an, H, g.rms_eps, xn.data());
         if (g.is_recurrent(l)) gdn_layer(g, w.gdn[(size_t) l], st.gdn[(size_t) l], xn.data(), a.data());
         else attn_layer(g, w.attn[(size_t) l], st.attn[(size_t) l], xn.data(), a.data());
@@ -267,7 +292,7 @@ void trunk_forward(const Qwen35Geometry& g, const TrunkWeights& w, TrunkState& s
         for (int64_t i = 0; i < H; ++i) x[(size_t) i] += m[(size_t) i];
     }
     rms_norm(x.data(), w.output_norm, H, g.rms_eps, xn.data());
-    matvec(w.output, xn.data(), H, g.n_vocab, logits);
+    matvec(w.output, xn.data(), logits);
 }
 
 }  // namespace strata::qwen35

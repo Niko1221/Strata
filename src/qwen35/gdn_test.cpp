@@ -25,11 +25,25 @@ static void check(bool ok, const char* what) {
 
 namespace {
 
+q::Mat fmat(const std::vector<float>& v, int64_t nin, int64_t nout) {
+    return {v.data(), 0, nin, nout, (size_t) nin * sizeof(float)};
+}
+
 struct Weights {
     std::vector<float> attn_norm, wqkv, wgate, ssm_conv, ssm_dt, ssm_a, ssm_beta, ssm_alpha, ssm_norm, ssm_out;
-    q::GdnLayerWeights view() const {
-        return {attn_norm.data(), wqkv.data(), wgate.data(), ssm_conv.data(), ssm_dt.data(), ssm_a.data(),
-                ssm_beta.data(), ssm_alpha.data(), ssm_norm.data(), ssm_out.data()};
+    q::GdnLayerWeights view(const strata::core::Qwen35Geometry& g) const {
+        q::GdnLayerWeights w;
+        w.attn_norm = attn_norm.data();
+        w.wqkv = fmat(wqkv, g.n_embd, g.qkv_dim());
+        w.wgate = fmat(wgate, g.n_embd, g.value_dim());
+        w.ssm_conv = ssm_conv.data();
+        w.ssm_dt = ssm_dt.data();
+        w.ssm_a = ssm_a.data();
+        w.ssm_beta = fmat(ssm_beta, g.n_embd, g.ssm_dt_rank);
+        w.ssm_alpha = fmat(ssm_alpha, g.n_embd, g.ssm_dt_rank);
+        w.ssm_norm = ssm_norm.data();
+        w.ssm_out = fmat(ssm_out, g.value_dim(), g.n_embd);
+        return w;
     }
 };
 
@@ -159,7 +173,7 @@ int main() {
 
     std::mt19937 rng(12345);
     Weights w = make_weights(g, rng);
-    q::GdnLayerWeights vw = w.view();
+    q::GdnLayerWeights vw = w.view(g);
 
     // One token, fresh state.
     {
