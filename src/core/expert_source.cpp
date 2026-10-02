@@ -1721,13 +1721,30 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const bool plan_published =
         d.plan != nullptr && d.plan->publish != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap;
     const auto c1 = std::chrono::steady_clock::now();
-    if (native && lay.fmt[(size_t) d.layers].gu_type == 42)   // a native Q2_0 pack: the Q2_0 kernels' activations
-        for (int64_t t = 0; t < n_tok; ++t) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
-    else if (native)
+    // Quantize only the tokens the CPU must compute.  A token whose every routed expert is kind >= 0 (a
+    // device-planned all-resident group, or a plain all-hit token) has no job and its activation is never
+    // read - and for an all-resident group the doorbell does NOT publish x, so its row is stale and must
+    // not be touched (a NaN there would hit the scalar quantizer's float->int cast).  kind[] is final now:
+    // the plan branch or its fallback filled every entry, then the remote stages marked theirs.
+    auto token_needs_act = [&](int64_t t) {
+        for (int64_t j = 0; j < k; ++j)
+            if (kind[(size_t) t * (size_t) k + (size_t) j] < 0) return true;
+        return false;
+    };
+    // Each branch is a BLOCK: a dangling `else` would bind to the inner `if (token_needs_act(t))` and run the
+    // wrong quantizer for the layer's format (the compiler warns; the build is the check).
+    if (native && lay.fmt[(size_t) d.layers].gu_type == 42) {   // a native Q2_0 pack: the Q2_0 kernels' activations
         for (int64_t t = 0; t < n_tok; ++t)
-            native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * H, d.nact_multi.data() + (size_t) t * kNativeActBytes);
-    else
-        for (int64_t t = 0; t < n_tok; ++t) act_quant_q8_1(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+            if (token_needs_act(t)) act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+    } else if (native) {
+        for (int64_t t = 0; t < n_tok; ++t)
+            if (token_needs_act(t))
+                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * H,
+                                 d.nact_multi.data() + (size_t) t * kNativeActBytes);
+    } else {
+        for (int64_t t = 0; t < n_tok; ++t)
+            if (token_needs_act(t)) act_quant_q8_1(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+    }
     const auto c2 = std::chrono::steady_clock::now();
     {   // CS-T: the experts the CPU computes, fetched together (the GGUF in place reads them on several threads)
         static thread_local std::vector<int64_t> miss;
@@ -1782,8 +1799,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
     const auto c3 = std::chrono::steady_clock::now();
     pt("run", njobs);
-    if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
-    else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+    // An all-resident group (E-6's device-planned groups above, or a plain all-hit layer) has no CPU jobs:
+    // skip the zero-job publish+park barrier entirely - usage counts, the counters and the remote stages
+    // above/below are unaffected, and nothing is computed for a batch of zero.
+    if (njobs > 0) {
+        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+        else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+    }
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r)

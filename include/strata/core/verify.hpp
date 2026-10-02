@@ -70,6 +70,8 @@ public:
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
+    /// Set before capture. Keep the host payload when a pool consumer reads every activation row.
+    void require_host_activations(bool v) { require_host_activations_ = v; }
 
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
@@ -163,7 +165,8 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
-    uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
+    bool require_host_activations_ = true;  ///< Full host payload unless the pool consumer permits omission.
+    uint32_t* skip_ = nullptr;             ///< Device-plan completion ring for each group.
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
     const float* hand_in_ = nullptr;

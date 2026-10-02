@@ -682,7 +682,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                           plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
                           (uint32_t) ((l - lb_) * G + grp + 1), cs);
         doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
-                         m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
+                         m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs,
+                         device_plan_ && !require_host_activations_ ? skip_ + grp : nullptr,
+                         (uint32_t) ((l - lb_) * G + grp + 1));
         stamp(l, 17, grp);
         {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
@@ -710,10 +712,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
-        if (strata::kernels::cpu::expert_layout().native)
-            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
-        else
-            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+        // The grouped hits' activation rows are quantized in post(l, 0) below, once per layer, because that
+        // node is reached only after both groups' pre have written `mixed` (the loop order after pre()).
         stamp(l, 18, grp);
         return true;
     };
@@ -721,6 +721,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---------------------------------------------------------------- post(l, group): experts, combine
     auto post = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
+        // The window's activation rows for the grouped hits: quantized once per layer in group 0's post,
+        // reached only after both groups' pre wrote `mixed` (see pre()); the per-group calls it replaces
+        // wrote disjoint rows, so the saving is one launch per layer, not work.
+        if (grp == 0) {
+            if (strata::kernels::cpu::expert_layout().native)
+                quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
+            else
+                quantize_q8_0_scaled(mixed_, hit_xq_, hit_xs_, (int64_t) T * N, cs);
+        }
         const uint32_t ring = (uint32_t) ((l - lb_) * G + grp + 1);
         const int64_t cap = (int64_t) n * K, capx = (int64_t) max_t_ * K;
         int32_t* pl = plan_ + (size_t) grp * (size_t) (plan_i32_ + 16);
@@ -1103,6 +1112,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
+        // E-6: the pool still runs for a device-planned (all-resident) group - the doorbell published its
+        // ids/weights (the x payload is skipped), so usage counts, cache-hit counters and the plan stay the
+        // host's; the group just builds no jobs (see expert_pool_dispatch_multi) and post()'s OR-skip waits
+        // use the device plan.  The gates are the seq ring above and the flag raises below, as always.
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);

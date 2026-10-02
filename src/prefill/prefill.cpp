@@ -433,7 +433,7 @@ uint64_t qsa_set_bytes(size_t T, int64_t cap, int64_t max_blocks, int64_t sel_ba
 // Step 2b: which layers' experts go through MMQ (both weight types covered; the Strata Q2_0 pack always - its blob
 // is converted to GGUF Q2_0 blocks on the gather), whether any layer keeps the FP16 path (IQ1_M), and the largest
 // gate/up and down matrices a group buffer slot holds.  STRATA_PREFILL_MMQ=0: the FP16 path everywhere (the A/B).
-constexpr int MMQ_GROUP = 16;                  // experts per MMQ launch (the gather is per expert, as blobs arrive)
+constexpr int GROUPS = 16;                 // experts per MMQ launch (the gather is per expert, as blobs arrive)
 // MMQ reads up to one 256-value tile past a matrix's last row when the row length is not a multiple of it (the down
 // product: 640 values).  Those bytes meet zero activations, which is harmless only if they decode to finite numbers -
 // llama.cpp zero-pads after every tensor, and so does a group buffer: this many zeroed bytes follow its last expert.
@@ -469,9 +469,11 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert) {
     Alloc a; a.count_only = true; bool ok = true;
     a.take<float>(T * n_expert, ok); a.take<float>(T * K, ok); a.take<int32_t>(T * K, ok); a.take<int32_t>(T * K, ok);
     a.take<int32_t>(T * K, ok);
-    if (mp.fallback) a.take<uint16_t>(T * K * N, ok);
-    a.take<float>(T * K * 1280, ok);
-    if (mp.fallback) a.take<uint16_t>(T * K * 640, ok);
+    // FP16 path: Xs holds one expert's T rows, gathered per expert before its GEMMs.
+    if (mp.fallback) a.take<uint16_t>(T * N, ok);
+    // GU spans T*K under MMQ; the FP16 path consumes one expert's T rows at offset 0 before the next runs.
+    a.take<float>((mp.any ? T * K : T) * 1280, ok);
+    if (mp.fallback) a.take<uint16_t>(T * 640, ok);
     a.take<float>(T * K * N, ok); a.take<float>(T * 640, ok);
     a.take<float>(T * 640, ok); a.take<uint16_t>(T * 640, ok); a.take<float>(T * N, ok); a.take<float>(T, ok);
     if (mp.any) {
@@ -481,7 +483,7 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert) {
     }
     return a.used;
 }
-}
+}  // namespace
 
 bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
@@ -531,7 +533,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.steps_host.resize(T * strata::kernels::kStepCount);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
     {
-        const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
+        const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / GROUPS + 2));
         const char* gc = std::getenv("STRATA_GROUP_COPY");
         if (m.grp_n < need && !(gc && gc[0] == '1')) {
             if (m.grp_host) cudaFreeHost(m.grp_host);
@@ -635,9 +637,10 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.logits = c.take<float>(T * m.g->n_expert, ok); m.w = c.take<float>(T * K, ok); m.ids = c.take<int32_t>(T * K, ok);
         m.slot_dev = c.take<int32_t>(T * K, ok); m.src_dev = c.take<int32_t>(T * K, ok);
         const MmqPlan& mp = mmq_plan();
-        m.Xs = mp.fallback ? c.take<uint16_t>(T * K * N, ok) : nullptr;
-        m.GU = c.take<float>(T * K * 1280, ok);
-        m.Hh = mp.fallback ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
+        m.Xs = mp.fallback ? c.take<uint16_t>(T * N, ok) : nullptr;
+        // FP16 path: GU/Hh are one expert's rows at offset 0, overwritten each expert (see moe_set_bytes).
+        m.GU = c.take<float>((mp.any ? T * K : T) * 1280, ok);
+        m.Hh = mp.fallback ? c.take<uint16_t>(T * 640, ok) : nullptr;
         m.Dm = c.take<float>(T * K * N, ok);
         m.sgate = c.take<float>(T * 640, ok); m.sup = c.take<float>(T * 640, ok); m.sh_h = c.take<uint16_t>(T * 640, ok);
         m.shared = c.take<float>(T * N, ok); m.sg = c.take<float>(T, ok);
@@ -651,10 +654,11 @@ bool Prefill::carve(size_t T, void* alloc) {
     for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
+        const int G = GROUPS;
         m.ids_identity = o.take<int32_t>(T * K, ok);
-        m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2)), ok);
-        m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
-        m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / G + 2)), ok);
+        m.grp_gu = o.take<uint8_t>((size_t) G * mp.gu_max + MMQ_TAIL, ok);
+        m.grp_d = o.take<uint8_t>((size_t) G * mp.d_max + MMQ_TAIL, ok);
         // (written at every run's start, not here: when serving, these are live expert-cache slots until a request
         // lends them - a write now would corrupt a resident expert)
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
@@ -868,9 +872,9 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
-        o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2)), ok);
-        o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
-        o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / GROUPS + 2)), ok);
+        o.take<uint8_t>(GROUPS * mp.gu_max + MMQ_TAIL, ok);
+        o.take<uint8_t>(GROUPS * mp.d_max + MMQ_TAIL, ok);
     }
     for (int i = 0; i < ring_slots(T); ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
     f(T * N);
@@ -1583,14 +1587,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
                         // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones (down
                         // reads the group's own quantized H)
-                        const size_t n = order.size(), ng = (n + MMQ_GROUP - 1) / MMQ_GROUP;
-                        m.bounds_host.resize(n + 1 + ng * (MMQ_GROUP + 1));
+                        const size_t n = order.size(), ng = (n + GROUPS - 1) / GROUPS;
+                        m.bounds_host.resize(n + 1 + ng * (GROUPS + 1));
                         for (size_t j = 0; j < n; ++j) m.bounds_host[j] = m.off[(size_t) order[j]];
                         m.bounds_host[n] = (int32_t) (T * K);
                         for (size_t g = 0; g < ng; ++g)
-                            for (size_t i = 0; i <= MMQ_GROUP; ++i)
-                                m.bounds_host[n + 1 + g * (MMQ_GROUP + 1) + i] =
-                                    m.bounds_host[std::min(n, g * MMQ_GROUP + i)] - m.bounds_host[g * MMQ_GROUP];
+                            for (size_t i = 0; i <= (size_t) GROUPS; ++i)
+                                m.bounds_host[n + 1 + g * (GROUPS + 1) + i] =
+                                    m.bounds_host[std::min(n, g * GROUPS + i)] - m.bounds_host[g * GROUPS];
                         if (grp_mapped) {
                             int32_t* bh = m.grp_host + 3 * m.grp_tk;
                             std::memcpy(bh, m.bounds_host.data(), m.bounds_host.size() * 4);
@@ -1599,8 +1603,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             cudaMemcpyAsync(m.bounds_dev, m.bounds_host.data(), m.bounds_host.size() * 4,
                                             cudaMemcpyHostToDevice, m.cs);
                         }
-                    } else {
-                        gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
                     }
                     // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
                     int stage_next = 0;
@@ -1661,7 +1663,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         pt.mark(kPfDequant, cs);
                         if (use_mmq) {
                             // gather the expert into its group slot (GGUF blocks, unchanged or converted)
-                            const size_t q = j % MMQ_GROUP;
+                            const size_t q = j % GROUPS;
                             if (lay.native) {
                                 const auto& f = lay.fmt[(size_t) l];
                                 mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
@@ -1670,9 +1672,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                 mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
                             }
                             if (slot >= 0) cudaEventRecord(m.used[slot], m.cs);
-                            if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
+                            if (q + 1 < GROUPS && j + 1 < order.size()) return true;
                             // the group's products: gate/up, swiglu, the group's H to q8_1, down
-                            const size_t j0 = j - q, g = j0 / MMQ_GROUP, n = order.size();
+                            const size_t j0 = j - q, g = j0 / GROUPS, n = order.size();
                             const int ngx = (int) (q + 1);
                             const int64_t r0 = m.bounds_host[j0], nr = m.bounds_host[j + 1] - r0;
                             int64_t maxr = 0;
@@ -1691,7 +1693,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs);
                             mmq::Product dn;
                             dn.w = m.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
-                            dn.n = ngx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + n + 1 + g * (MMQ_GROUP + 1);
+                            dn.n = ngx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + n + 1 + g * (GROUPS + 1);
                             dn.ids = m.ids_identity; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = m.Dm + r0 * N;
                             dn.ld_dst = N;
                             m.mmq_ctx->run(dn, m.cs);
@@ -1710,10 +1712,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         if (slot >= 0) cudaEventRecord(m.used[slot], m.cs);
                         const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                         pt.mark(kPfGemmGU, cs);
-                        m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
-                        swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                        // FP16 path: one expert at a time - gather its ne rows (contiguous src_dev[o0..o0+ne)
+                        // tokens, distinct per token) into T*N Xs, compute GU/Hh at offset 0, land Dm at o0.
+                        gather_rows16(m.mixed_h, m.src_dev + o0, m.Xs, ne, N, m.cs);
+                        m.gemm.f16(m.Xs, m.dq_gu[q], m.GU, ne, 1280, N);
+                        swiglu_interleaved(m.GU, m.Hh, ne, m.cs);
                         pt.mark(kPfGemmD, cs);
-                        m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                        m.gemm.f16(m.Hh, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                         return true;
                     };
                     if (!stream_all) {
@@ -1776,7 +1781,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             for (float v : h) c += !std::isfinite(v);
                             return c;
                         };
-                        const int64_t bgu = bad(m.GU, T * K * 1280), bdm = bad(m.Dm, T * K * N), bbo = bad(m.bo, T * N);
+                        // GU's extent: a group's rows under the compact MMQ dispatch (group below K), T*K under
+                        // the absolute one, T in the all-FP16 path; H exists only under MMQ (the same group rows).
+                        const MmqPlan& dmp = mmq_plan();
+                        const int64_t bgu = bad(m.GU, (dmp.any ? T * K : T) * 1280), bdm = bad(m.Dm, T * K * N), bbo = bad(m.bo, T * N);
                         const int64_t bh = m.H ? bad(m.H, T * K * 640) : -1;
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {

@@ -84,10 +84,21 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err, 
     return true;
 }
 
+/// The owned-layer range filter: a `blk.N.*` tensor whose layer N lies outside [lo, hi) (hi < 0 = no bound)
+/// is not a stage's own weight and is compacted away, metadata only, exactly like a skipped name.  Non-layer
+/// tensors (token_embd, output, the head) are never filtered.
+bool layer_out_of_range(const std::string& name, int64_t lo, int64_t hi) {
+    if (name.rfind("blk.", 0) != 0 || (lo <= 0 && hi < 0)) return false;
+    int64_t n = 0;
+    size_t p = 4;
+    for (; p < name.size() && name[p] >= '0' && name[p] <= '9'; ++p) n = n * 10 + (int64_t) (name[p] - '0');
+    if (p == 4 || p >= name.size() || name[p] != '.') return false;   // no layer number after "blk."
+    return n < lo || (hi >= 0 && n >= hi);
+}
 }  // namespace
 
 bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                             const std::set<std::string>* skip) {
+                             const std::set<std::string>* skip, int64_t layer_lo, int64_t layer_hi) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "cannot open " + path; return false; }
@@ -95,6 +106,7 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
     out = 0;
     uint64_t pool = 0, compact = 0;
     int align = 0;
+    const bool compacting = skip != nullptr || layer_lo > 0 || layer_hi >= 0;
     while (std::fgets(line, sizeof line, f)) {
         if (line[0] == '#') {
             unsigned long long p = 0;
@@ -102,24 +114,25 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3) { pool = p; align = a; }
             continue;
         }
-        if (skip == nullptr) continue;
+        if (!compacting) continue;
         char name[256] = {0};
         unsigned long long dst_bytes = 0, dummy = 0;
         int i1 = 0, i2 = 0;
         if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
             continue;
-        if (skip->count(name)) continue;
+        if (layer_out_of_range(name, layer_lo, layer_hi)) continue;
+        if (skip != nullptr && skip->count(name)) continue;
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
         compact += (dst_bytes + a - 1) / a * a;
     }
     std::fclose(f);
     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
-    out = skip ? compact : pool;
+    out = compacting ? compact : pool;
     return true;
 }
 
 bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-                       const std::set<std::string>* skip) {
+                       const std::set<std::string>* skip, int64_t layer_lo, int64_t layer_hi) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* idx = std::fopen(path.c_str(), "rb");
     if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
@@ -169,11 +182,13 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
     // alignment; skipped rows keep their metadata and get no bytes.
     std::vector<bool> skipped(rows.size(), false);
-    if (skip != nullptr) {
+    const bool compacting = skip != nullptr || layer_lo > 0 || layer_hi >= 0;
+    if (compacting) {
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
         uint64_t at = 0;
         for (size_t i = 0; i < rows.size(); ++i) {
-            if (skip->count(rows[i].name)) { skipped[i] = true; continue; }
+            if (layer_out_of_range(rows[i].name, layer_lo, layer_hi)) { skipped[i] = true; continue; }
+            if (skip != nullptr && skip->count(rows[i].name)) { skipped[i] = true; continue; }
             rows[i].dst_off = at;
             at += (rows[i].dst_bytes + a - 1) / a * a;
         }

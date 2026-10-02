@@ -1,0 +1,142 @@
+[
+  {
+    "label": "ring-wrap",
+    "metric": {
+      "projection": null,
+      "time": 1790911939.913976,
+      "duration_s": 48.8,
+      "finish": "length",
+      "prompt_tokens": 53510,
+      "reused": 0,
+      "output_tokens": 256,
+      "engine_generated": 256,
+      "prompt_ms": 44581.6,
+      "decode_ms": 4239.0,
+      "decode_tok_s": 60.4,
+      "hit_rate": 0.987,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0
+    },
+    "usage": {
+      "prompt_tokens": 53510,
+      "completion_tokens": 256,
+      "total_tokens": 53766,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "reasoning_content": "We need answer user's request. User provided a long repeated text with tag [state-migration-ring-boundary-20261001]. Need infer task? They likely want something? The prompt is just repeated paragraph many times. Maybe they expect us to process? Need respond likely summarize? Need analyze. The user message: \"[state-migration-ring-boundary-20261001]\n\nThe compute layer interleaves ... repeated many times.\" There is no explicit question. Could be a test of handling repeated text? Need maybe identify state migration ring boundary? Maybe they want output? We need produce final answer. Need decide. Could be asking to extract something? The tag suggests maybe a benchmark with state migration ring boundary. The content describes compute layer interleaves prompt pass and token pass, experts, quantized kernels, SSD lookup table, helper model guesses next few words while big model checks them all at once. This sounds speculative LLM inference optimization: prompt pass chunked, token pass, MoE experts, SSD lookup table, speculative decoding? Maybe they want answer to hidden question? The repeated text maybe noise. Need maybe respond with concise summary or ask clarification? But likely expected to answer based on text: maybe \"What is the"
+    },
+    "sha256": "41de66a8f2bf103d7984f36a304a6631f0d06ae9f784912d35268e57d0e20fab"
+  },
+  {
+    "label": "checkpoint-resume",
+    "metric": {
+      "projection": null,
+      "time": 1790911989.0111616,
+      "duration_s": 11.1,
+      "finish": "length",
+      "prompt_tokens": 53517,
+      "reused": 49152,
+      "output_tokens": 128,
+      "engine_generated": 128,
+      "prompt_ms": 8811.5,
+      "decode_ms": 2291.5,
+      "decode_tok_s": 55.9,
+      "hit_rate": 0.987,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0
+    },
+    "usage": {
+      "prompt_tokens": 53517,
+      "completion_tokens": 128,
+      "total_tokens": 53645,
+      "prompt_tokens_details": {
+        "cached_tokens": 49152
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "reasoning_content": "We need answer user's request. User provided a long repeated paragraph about compute layer interleaves passes, MoE-like, SSD lookup, helper model speculative decoding, hardware sharing. Then asks: \"Give one further engineering recommendation.\" Need likely concise. Need maybe identify typo \"borrows\"? But request asks one further engineering recommendation. Need provide one recommendation. Need maybe based on described system. Need final only. Need think in English. Need maybe recommend: add a persistent hot-expert cache with eviction based on token frequency and layer dependency, or prefetch next layer experts asynchronously. Need one further engineering recommendation. Could be: implement a bounded, pinned"
+    },
+    "sha256": "03a96394fb856210251c3d5b2b856831ee50e2b82cd83151308d3fdae6edff89"
+  },
+  {
+    "label": "vision",
+    "metric": {
+      "projection": null,
+      "time": 1790912000.169696,
+      "duration_s": 1.5,
+      "finish": "stop",
+      "prompt_tokens": 78,
+      "reused": 0,
+      "output_tokens": 46,
+      "engine_generated": 46,
+      "prompt_ms": 997.4,
+      "decode_ms": 483.9,
+      "decode_tok_s": 95.1,
+      "hit_rate": 0.944,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0
+    },
+    "usage": {
+      "prompt_tokens": 78,
+      "completion_tokens": 46,
+      "total_tokens": 124,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "Red",
+      "reasoning_content": "We need answer user's question: \"What is the main color of this image? Answer with one color word.\" Image is solid red. Need final one word: Red. Ensure only one color word.\n"
+    },
+    "sha256": "cd817e034b96ffa0db8058c87b41b514ebe9edf083310d5be84d58cb6843e87f"
+  },
+  {
+    "label": "vision-long",
+    "metric": {
+      "projection": null,
+      "time": 1790912001.6781082,
+      "duration_s": 8.4,
+      "finish": "stop",
+      "prompt_tokens": 3428,
+      "reused": 0,
+      "output_tokens": 65,
+      "engine_generated": 65,
+      "prompt_ms": 7338.4,
+      "decode_ms": 1044.7,
+      "decode_tok_s": 62.2,
+      "hit_rate": 0.974,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0
+    },
+    "usage": {
+      "prompt_tokens": 3428,
+      "completion_tokens": 65,
+      "total_tokens": 3493,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "red",
+      "reasoning_content": "We need answer user's question: \"What is the main color of this image? Answer with one color word.\" There is an image likely red square. Need final one color word. Need maybe analyze. The prompt includes repeated text irrelevant. Image shows red. Answer: red. Ensure one word.\n"
+    },
+    "sha256": "dc51e5ec87aefc115870dd5ee113e5b539e78e1f5e7de91775104bb7a5694d38"
+  }
+]

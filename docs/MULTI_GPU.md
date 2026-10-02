@@ -81,8 +81,10 @@ Otherwise, later cards keep their own startup shares.
 
 ## What each card holds
 
-- **every card**: a copy of the dense weights (~3.4 GB for the Coder), its own session state (the KV cache of the full
-  context), its verify window and its prompt-path buffers, and an expert cache for its layers filled from the profile;
+- **every card**: the canonical weights and native dense projections of its OWN layers (an explicit split
+  loads only those; auto placements keep the full tables), its own session state
+  (the KV cache of the full context), its verify window and its prompt-path buffers, and an expert cache for
+  its layers filled from the profile;
 - **the last card**: also the output head and the draft layer (~0.8 GB);
 - **host RAM**: the expert arena once, shared by all cards (the CPU pool computes whatever no card holds).
 

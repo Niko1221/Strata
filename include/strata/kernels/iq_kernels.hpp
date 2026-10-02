@@ -63,5 +63,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 /// bitwise the same results.  Set before graph capture; captured graphs keep the kernels they captured.
 void iq_set_old_kernels(bool old);
 bool iq_old_kernels();
+/// The row-pair variant of the grouped expert kernels (STRATA_EXPERT_PAIR=1 at startup): one warp computes
+/// the (gate r, up r) / (down r, down r+1) row pair - half the warps of the single-row kernels, with the
+/// two rows reading the same activation chunks (register sharing is a compiler CSE question, timed by
+/// iq_multi_parity --bench).  Per row the lane's chunk sequence, the format's apply sequence and the
+/// `warp_sum` are exactly the single-row kernels', so every output is bitwise theirs.  Set before graph
+/// capture like `iq_set_old_kernels`; captured graphs keep what they captured.
+void iq_set_pair_kernels(bool pair);
+bool iq_pair_kernels();
+
 
 }  // namespace strata::kernels

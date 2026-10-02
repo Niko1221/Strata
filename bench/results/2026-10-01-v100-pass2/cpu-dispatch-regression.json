@@ -1,0 +1,15 @@
+{
+  "scenario": "A mixed CPU dispatch batch contains one all-resident signaling-NaN activation row and one finite CPU-miss activation row.",
+  "before": [
+    {"manifest": "q2_0.txt", "exit_code": 1, "failure": "native gu42/d42: the all-resident signaling-NaN row raised FE_INVALID"},
+    {"manifest": "iq2_xs.txt", "exit_code": 1, "failure": "native gu22/d42: the all-resident signaling-NaN row raised FE_INVALID"}
+  ],
+  "after": {
+    "command": "ctest --test-dir build -R '^expert_dispatch_gate_test_' --output-on-failure",
+    "passed_tests": ["expert_dispatch_gate_test_q2", "expert_dispatch_gate_test_iq"],
+    "native_formats": [[42, 42], [22, 42], [16, 42], [29, 42]],
+    "checked": ["No FE_INVALID from the all-resident activation row", "Finite and nonzero CPU-miss output", "Bit-exact mixed-batch and isolated-miss output", "Exact dispatch counters"]
+  },
+  "packed_arm": "Skipped: this CPU does not support AVX-512-VNNI. The native arms ran.",
+  "control_method": "Link the current fixture to the baseline expert_source.cpp object before the current engine archive. Use the same compiler and linker options as the CMake target."
+}
