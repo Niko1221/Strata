@@ -606,6 +606,12 @@ public:
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF: `native` is the
     /// --native shard, and native_experts.txt names the other shards beside it (per layer, or per role in v4).
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// POOL: load only the experts of layers [lb, le) - a pool node holds its own range in RAM, which is what
+    /// lets PCs whose RAM could not hold the whole model run it together.  `blob` of any other layer is null (nothing
+    /// asks: the node's pool, cache and prompt path only touch its own layers).  Set before `open`.
+    void set_layer_range(int64_t lb, int64_t le) { range_lb_ = lb; range_le_ = le; }
+    /// the bytes actually held in RAM (the range's, or the whole layout's)
+    uint64_t held_bytes() const { return held_bytes_; }
     void close();
 
     bool mapped() const { return base_ != nullptr; }
@@ -641,6 +647,9 @@ private:
     double load_copy_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
     std::string gguf_;
+    int64_t range_lb_ = 0, range_le_ = -1;   ///< POOL: the layers held (-1: to the last)
+    uint64_t range_off_ = 0;                 ///< the layout offset of layer range_lb_ (base_ is biased by it)
+    uint64_t held_bytes_ = 0;
 };
 
 /// Plan v0.3 P6: checks native_experts.txt's GGUF spans against the files, before anything is read: each layer's

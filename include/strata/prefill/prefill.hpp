@@ -113,9 +113,22 @@ public:
         stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
     }
 
+    /// POOL coordinator: the layers after this stage run on other PCs.  Called (on a thread, like a local next
+    /// stage, so this stage reads chunk c + 1 meanwhile) with the chunk's rows on the host (pinned, T x hc*n_embd),
+    /// its tokens, T and its first position; it sends them to the workers, gets the final rows back and does what
+    /// `on_chunk` does on a last stage.  Set before `init`, instead of a `next` stage.
+    std::function<bool(const float* rows_host, const int64_t* tokens, int64_t T, int64_t pos0, std::string& err)>
+        remote_next;
+    /// POOL worker: this stage's input rows for the next `run` (host, pinned, T x hc*n_embd).
+    void set_hand_in(const float* rows_host) { hand_in_ = rows_host; }
+    /// POOL worker: a stage that may end before the last layer but has no next stage - its rows go to
+    /// `on_chunk` (and from there back over the network).  Set before `init`.
+    void set_headless(bool on) { headless_ = on; }
+
 private:
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
+    bool headless_ = false;             ///< POOL worker: rows to on_chunk even before the last layer
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)

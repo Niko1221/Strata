@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -19,12 +20,16 @@ public:
     ~NativeDense();
     NativeDense(const NativeDense&) = delete;
     NativeDense& operator=(const NativeDense&) = delete;
+    /// `skip`: names not to upload (POOL: the layers another PC runs); they are still validated.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-              bool include_ple_key = false);
+              bool include_ple_key = false, const std::set<std::string>* skip = nullptr);
     /// Plan v0.3 P1: the canonical tensor names `load` would serve natively from these shards (eligible name,
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
                              std::set<std::string>& out, std::string& err);
+    /// POOL: the device bytes `load` would upload for each served name (to price a node's layer range).
+    static bool served_bytes(const std::vector<std::string>& shards, bool include_ple_key,
+                             std::map<std::string, uint64_t>& out, std::string& err);
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.

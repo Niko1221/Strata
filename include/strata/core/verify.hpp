@@ -51,6 +51,22 @@ struct VerifyHits {
     int64_t blob = 0;
 };
 
+/// POOL: the rest of the model on other PCs.  A verifier whose stage ends before the last layer and has a
+/// link (set_link) hands its window to the link instead of a local next stage: the link sends the hand-off rows to
+/// the pool's workers, gets the final residual back and runs the head, the sampler and the draft layer's binding
+/// here (strata/pool/link.hpp).  `run` is called after this stage's hand-off is complete in its host buffer.
+class StageLink {
+public:
+    virtual ~StageLink() = default;
+    virtual bool run(int T, const int32_t* tokens, int64_t pos0, int32_t* out, std::string& err) = 0;
+    virtual bool commit(int n_keep, std::string& err) = 0;
+    /// The final residual of the last window, (T, hc*n_embd) on this device (the drafter reads it).
+    virtual const float* final_R_all() const = 0;
+    virtual void set_sampling(const strata::kernels::SamplerParams& sp) = 0;
+    virtual void set_history(const int32_t* history, int history_len) = 0;
+    virtual void set_head_sampling(bool on) = 0;
+};
+
 class Verifier {
 public:
     Verifier() = default;
@@ -83,6 +99,7 @@ public:
     void set_sampling(const strata::kernels::SamplerParams& sp) {
         sampling_ = sp;   // row t of a window at pos0 draws Philox(seed, pos0 + t): see run()
         if (next_) next_->set_sampling(sp);
+        if (link_) link_->set_sampling(sp);
     }
 
     /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
@@ -95,11 +112,16 @@ public:
         hist_d_ = history;
         hist_len_ = history_len;
         if (next_) next_->set_history(history, history_len);
+        if (link_) link_->set_history(history, history_len);
     }
     /// Off: `run` skips the request's head sampling and `out` is the recorded greedy pick.  For windows whose
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
-    void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
+    void set_head_sampling(bool on) {
+        head_sampling_ = on;
+        if (next_) next_->set_head_sampling(on);
+        if (link_) link_->set_head_sampling(on);
+    }
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
@@ -116,6 +138,11 @@ public:
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
+    /// POOL: the rest of the window runs elsewhere (see StageLink).  Set before the first `run`.
+    void set_link(StageLink* link) { link_ = link; }
+    /// POOL worker: no head even when this stage ends at the last layer - the window's final residual goes to
+    /// `handoff_out` (R already holds the last layer's write) and the coordinator runs the head.  Before `init`.
+    void set_headless(bool on) { headless_ = on; }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
@@ -139,7 +166,7 @@ public:
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
-    const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    const float* final_R_all() const { return next_ ? next_->final_R_all() : link_ ? link_->final_R_all() : R_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -181,6 +208,8 @@ private:
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
+    StageLink* link_ = nullptr;          ///< POOL: the remote rest of the model
+    bool headless_ = false;              ///< POOL worker: hand off instead of running the head
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
