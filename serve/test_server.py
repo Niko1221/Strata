@@ -261,6 +261,33 @@ class ImageMarkers(unittest.TestCase):
                     self.assertEqual("<|vision_start|>" in inside, not isinstance(result, str))
                     self.assertEqual("<|vision_start|>" in prompt.split("</tool_response>", 1)[1], bool(extra))
             svc.embeddings.path.unlink(missing_ok=True)
+        # a tool's picture the server cannot read is a note, not a 400 (the client resends it every turn); the user's
+        # own picture still fails
+        class Refusing(self.FakeVision):
+            def encode(self, source):
+                if "bad" in str(source):
+                    raise ValueError("this image format needs Pillow")
+                return super().encode(source)
+        good = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        bad = {"type": "image", "source": {"type": "url", "url": "http://x/bad.webp"}}
+        tool_msgs = [{"role": "user", "content": "look"}, call,
+                     {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [bad, good]}]}]
+        with tempfile.TemporaryDirectory() as d:
+            for vision, n, note in ((None, 0, "[image omitted: this server has no image encoder]"),
+                                    (Refusing(d), 3, "[image omitted: this image format needs Pillow]")):
+                with self.subTest(vision=vision is not None):
+                    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                                  ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+                    m, _, _ = anthropic_to_messages({"messages": tool_msgs})
+                    ids, _, _ = svc.prepare(m, None, {})
+                    self.assertEqual(ids.count(pad), n)
+                    self.assertIn(note, tok.decode(ids))
+                    if svc.embeddings.path:
+                        svc.embeddings.path.unlink(missing_ok=True)
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+            m, _, _ = anthropic_to_messages({"messages": [{"role": "user", "content": [good]}]})
+            with self.assertRaises(ValueError):
+                svc.prepare(m, None, {})
         # a text-only tool result renders exactly as before: one string
         msgs = [{"role": "user", "content": "q"}, call,
                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "r"}]}]}]
