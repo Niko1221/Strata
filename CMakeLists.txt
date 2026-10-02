@@ -164,6 +164,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
+  # the Qwen35MoE / Ornith architecture guard: a synthetic qwen35moe header, then one deliberate break at a
+  # time (wrong architecture, wrong shape, missing tensor, crossing layer families, Qwen4Exp-only tensors,
+  # wrong type, missing metadata, inconsistent lengths).  No model, no GPU, no ggml.
+  add_executable(qwen35_layout_test src/core/qwen35_layout_test.cpp src/core/qwen35.cpp)
+  target_link_libraries(qwen35_layout_test PRIVATE strata_artifact)
+  add_test(NAME qwen35_layout_test COMMAND qwen35_layout_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -180,7 +186,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/core/qwen35.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -962,9 +968,10 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
-    if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    if(STRATA_BUILD_TESTS)
       # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
-      # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float
+      # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float.  These
+      # pass on HIP too (validated on gfx1101), so they are not CUDA-only.
       foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0)
         string(REPLACE "/" "_" _name "${_pair}")
         add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
@@ -976,6 +983,12 @@ if(STRATA_NATIVE_EXPERTS)
       # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run
       add_test(NAME native_expert_parity_refuses_q6_K COMMAND native_expert_parity --synthetic q6_K/q8_0)
       set_tests_properties(native_expert_parity_refuses_q6_K PROPERTIES WILL_FAIL TRUE)
+      # Ornith-1.5's AD-Q4_K-IQ4_XS expert geometry: IQ4_XS gate/up, Q4_K down, at 2048/512.  Q4_K was admitted as
+      # a grouped DOWN format for this model only; this test is what proves the down kernel at that geometry.
+      add_test(NAME native_expert_parity_ornith_iq4_xs_q4_K
+               COMMAND ${CMAKE_COMMAND} -E env STRATA_PARITY_H=2048 STRATA_PARITY_FF=512
+                       $<TARGET_FILE:native_expert_parity> --synthetic iq4_xs/q4_K)
+      set_tests_properties(native_expert_parity_ornith_iq4_xs_q4_K PROPERTIES TIMEOUT 120)
     endif()
   endif()
   # #296's real-weight checks (OrcaRouter Q4_K_S files; docs/ORCA_Q4_K_S.md) - test programs, not part of a release
