@@ -178,7 +178,13 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                     raise ValueError("tool_calls must be a list of objects (each with a \"function\" object)")
                 args = fn.get("arguments")
                 if isinstance(args, str):               # the template requires a mapping, not a JSON string
-                    args = json.loads(args) if args.strip() else {}
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except (ValueError, json.JSONDecodeError):
+                        # Lossy history fallback: if a previous turn had malformed or cut-off tool call arguments,
+                        # preserve the raw unparsed string under key 'raw' so the template still renders cleanly
+                        # rather than aborting the entire request.
+                        args = {"raw": args}
                 calls.append({"function": {"name": fn.get("name"), "arguments": args or {}}})
             out["tool_calls"] = calls
         messages.append(out)
