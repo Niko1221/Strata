@@ -383,6 +383,10 @@ struct Options {
     /// `--main-device != --draft-device`: the queued copy reads the verifier's mapped window (on one GPU the
     /// device window is overwritten by the very next run).
     bool draft_prefill_parallel = false;
+    /// Fase 10 (hetero multi-GPU), opt-in: pick the roles from the capability records and behave as if the
+    /// flags came in - MAIN keeps today's default ordinal, DRAFT takes the remaining device with the most free
+    /// bytes.  Explicit flags still win (the pick runs only when none was given).
+    int auto_roles = 0;
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -565,6 +569,9 @@ void usage() {
                  "                       drafter's stream and the wait moves to the next prefill's entry -\n"
                  "                       the main model's next chunk computes while the drafter catches up.\n"
                  "                       Needs the roles (--main-device != --draft-device).\n"
+                 "  --auto-roles  Fase 10 (hetero multi-GPU): pick the roles from the capability records -\n"
+                 "                       MAIN = the default ordinal, DRAFT = the remaining GPU with the most\n"
+                 "                       free bytes. Needs two GPUs (and --mtp, as the roles always do).\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1166,6 +1173,7 @@ int main(int argc, char** argv) {
         else if (a == "--main-device") o.main_device = std::atoi(next("--main-device"));
         else if (a == "--draft-device") o.draft_device = std::atoi(next("--draft-device"));
         else if (a == "--draft-prefill-parallel") o.draft_prefill_parallel = true;
+        else if (a == "--auto-roles") o.auto_roles = 1;
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -1345,6 +1353,32 @@ int main(int argc, char** argv) {
     if (o.draft_prefill_parallel && o.main_device < 0 && o.draft_device < 0) {
         std::fprintf(stderr, "strata generate: --draft-prefill-parallel is a hetero multi-GPU mode: it needs the roles, --main-device != --draft-device\n");
         return 2;
+    }
+    // Fase 10 (hetero multi-GPU): the auto pick.  The records are the Fase 2 view (strata-device prints it);
+    // the rules (docs/HETERO_MGPU_PLAN.md): the main keeps ordinal 0, the draft takes the remaining device
+    // with the most free bytes, and fewer than two visible cards refuse - the drafter needs a device that is
+    // not the main's.  An explicit --main-device/--draft-device wins; the pick only runs when none was given.
+    if (o.auto_roles && o.main_device < 0 && o.draft_device < 0) {
+        std::vector<strata::core::DeviceCaps> auto_cards;
+        try {
+            auto_cards = strata::core::device_caps();
+        } catch (...) {
+            cudaGetLastError();   // the count query failed: the roles' own validation reports what it can below
+        }
+        if (auto_cards.size() < 2) {
+            std::fprintf(stderr, "strata generate: --auto-roles needs at least two visible GPUs (%zu found): the drafter must sit on a device that is not the main's\n",
+                         auto_cards.size());
+            return 2;
+        }
+        int best = -1;
+        uint64_t best_free = 0;
+        for (const auto& c : auto_cards)
+            if (c.ordinal != 0 && c.free_bytes > best_free) { best_free = c.free_bytes; best = c.ordinal; }
+        o.main_device = 0;
+        o.draft_device = best >= 0 ? best : 1;   // no free-bytes record survived the query: fall back to ordinal 1
+        std::fprintf(stderr, "strata generate: --auto-roles picked: MAIN %d (the engine's default ordinal), DRAFT %d (%s, %llu MiB free)\n",
+                     o.main_device, o.draft_device, auto_cards[(size_t) o.draft_device].name.c_str(),
+                     (unsigned long long) (auto_cards[(size_t) o.draft_device].free_bytes / (1024ull * 1024ull)));
     }
     if (o.main_device >= 0 || o.draft_device >= 0) {
         int n_dev = 1;
