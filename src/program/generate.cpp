@@ -3683,6 +3683,13 @@ int main(int argc, char** argv) {
     // Plan v0.3 P4: with a PROFILE-filled cache the residency is static, so the hit decision moves onto the
     // device and the token graph keeps it.  (A cache filled on demand still needs the per-layer host path.)
     std::vector<int32_t> host_res;
+    // The residency table is read by kernels on non-blocking streams, which do not wait for the legacy stream a plain
+    // cudaMemcpy runs on, and a pageable copy can return before its DMA has landed: each upload waits for its own copy
+    // (the current device's legacy stream - nothing else).
+    auto res_put = [&host_res](int32_t* dst) -> cudaError_t {
+        const cudaError_t e = cudaMemcpy(dst, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+        return e != cudaSuccess ? e : cudaStreamSynchronize(cudaStreamLegacy);
+    };
     int32_t* d_res = nullptr;
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
@@ -3699,7 +3706,7 @@ int main(int argc, char** argv) {
             }
         if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
             cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
-            cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+            res_put(d_res) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
             return 1;
         }
@@ -3708,7 +3715,7 @@ int main(int argc, char** argv) {
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
             if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-                cudaMemcpy(st->d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) !=
+                res_put(st->d_res) !=
                     cudaSuccess) {
                 std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n", st->dev);
                 return 1;
@@ -4242,10 +4249,10 @@ int main(int argc, char** argv) {
             }
             if (evicted > 0) {
                 if (d_res != nullptr)
-                    cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                    res_put(d_res);
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
-                    cudaMemcpy(st->d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                    res_put(st->d_res);
                 }
             }
         }
@@ -4578,10 +4585,10 @@ int main(int argc, char** argv) {
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
         auto res_upload = [&]() {
             if (d_res != nullptr)
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                res_put(d_res);
             for (auto& st : stages) {
                 const strata::core::OnDevice on(st->dev);
-                cudaMemcpy(st->d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                res_put(st->d_res);
             }
         };
         auto apply_pending = [&](bool wait) {
@@ -5860,7 +5867,7 @@ int main(int argc, char** argv) {
                         lent.emplace_back((int32_t) i, host_res[i]);
                         host_res[i] = strata::core::kNotResident;
                     }
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                res_put(d_res);
                 borrow = xcache.device_slot(first);
                 borrow_bytes = xcache.slot_offsets() ? (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[first])
                                                      : (uint64_t) k * (uint64_t) blob;
@@ -5911,7 +5918,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
                 return 1;
             }
-            cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+            res_put(d_res);
             std::fprintf(stderr, "strata generate: %zu lent slots refilled in %.1f ms\n", lent.size(),
                          std::chrono::duration<double, std::milli>(Clock::now() - tr).count());
         }
@@ -6223,7 +6230,7 @@ int main(int argc, char** argv) {
             for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
             pending.clear();
             if (d_res != nullptr)
-                cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                res_put(d_res);
         };
         // Plan v0.3 P6: the VRAM tier follows the conversation.  Candidates are missing experts routed at least
         // twice (decayed); each is paired with its layer's least-routed resident expert and swapped when it was
