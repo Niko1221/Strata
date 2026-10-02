@@ -117,6 +117,40 @@ class GpuLists(unittest.TestCase):
                 else:
                     setup.os.environ["ROCM_PATH"] = old
 
+    def test_runtime_only_system_rocm_falls_back_to_the_wheels(self):
+        """#446: a system ROCm 7 with hipcc and libhipblas but no HIP development files (no hip-lang CMake package, no
+        hip_runtime.h) is not used for the build: a warning says what is missing and the wheels path follows (here
+        it stops at the two-family check, which only the wheels path makes); with the files it is used as before."""
+        said = []
+        setup.say = lambda msg="": said.append(msg)          # tearDown puts the real one back
+        with tempfile.TemporaryDirectory() as d:
+            sysroot = Path(d)
+            for rel, text in (("bin/hipcc", ""), ("lib/libhipblas.so.3", ""),
+                              ("include/rocm-core/rocm_version.h",
+                               "#define ROCM_VERSION_MAJOR 7\n#define ROCM_VERSION_MINOR 14\n")):
+                (sysroot / rel).parent.mkdir(parents=True, exist_ok=True)
+                (sysroot / rel).write_text(text)
+            with mock.patch.dict(setup.os.environ, {"ROCM_PATH": d}):
+                with self.assertRaises(SystemExit):
+                    setup.rocm_root(["gfx1100", "gfx1201"])
+                self.assertIn(f"the ROCm in {sysroot} has no HIP development files (lib/cmake/hip-lang/hip-lang-"
+                              "config.cmake, include/hip/hip_runtime.h): using AMD's wheels", "\n".join(said))
+                self.assertIn("two GPU families", "\n".join(said))
+                for lib in ("lib64", "lib"):                 # either place CMake looks
+                    with self.subTest(lib=lib):
+                        cfg = sysroot / lib / "cmake/hip-lang/hip-lang-config.cmake"
+                        cfg.parent.mkdir(parents=True, exist_ok=True)
+                        cfg.write_text("")
+                        said.clear()
+                        with self.assertRaises(SystemExit):
+                            setup.rocm_root(["gfx1100", "gfx1201"])
+                        self.assertIn("(include/hip/hip_runtime.h)", "\n".join(said))
+                        (sysroot / "include/hip").mkdir(parents=True, exist_ok=True)
+                        (sysroot / "include/hip/hip_runtime.h").write_text("")
+                        self.assertEqual(setup.rocm_root(["gfx1100", "gfx1201"]), (sysroot, [str(sysroot / "lib")]))
+                        cfg.unlink()
+                        (sysroot / "include/hip/hip_runtime.h").unlink()
+
     def test_build_for_every_arch(self):
         """build_engine_hip compiles for the set of the chosen cards' archs and records it in BUILD.json."""
         calls = {}
@@ -309,6 +343,33 @@ class WindowsHipVision(unittest.TestCase):
             self.assertEqual(setup.hip_vision("yes"), "none")
         with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
             self.assertEqual(setup.hip_vision("cpu"), "cpu")
+
+
+class HipRuntimeBesideExe(unittest.TestCase):
+    """#468 #461: the bundled HIP runtime (and amd_comgr) goes next to strata.exe, so an AMD driver's System32 copy is
+    not found first; rocBLAS and the rest stay in rocm/bin."""
+
+    def test_copies_only_the_runtime(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            rb = eng / "rocm" / "bin"
+            rb.mkdir(parents=True)
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "lib_dirs": ["rocm/bin"]}))
+            for n, data in (("amdhip64_7.dll", b"hip-3686"), ("amd_comgr.dll", b"comgr"), ("rocblas.dll", b"blas")):
+                (rb / n).write_bytes(data)
+            setup.hip_runtime_beside_exe(eng)
+            self.assertEqual((eng / "amdhip64_7.dll").read_bytes(), b"hip-3686")
+            self.assertEqual((eng / "amd_comgr.dll").read_bytes(), b"comgr")
+            self.assertFalse((eng / "rocblas.dll").exists())          # finds its kernels relative to rocm/bin
+            (rb / "amdhip64_7.dll").write_bytes(b"hip-3690-newer")    # a newer zip: replaced on the next start
+            setup.hip_runtime_beside_exe(eng)
+            self.assertEqual((eng / "amdhip64_7.dll").read_bytes(), b"hip-3690-newer")
+
+    def test_no_rocm_bin_is_a_no_op(self):
+        with tempfile.TemporaryDirectory() as d:
+            setup.hip_runtime_beside_exe(Path(d))                   # no BUILD.json (a CUDA or Linux engine)
+            self.assertEqual(list(Path(d).iterdir()), [])
 
 
 if __name__ == "__main__":

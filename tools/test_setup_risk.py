@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -133,6 +134,53 @@ class Context(unittest.TestCase):
         self.assertEqual(arg(cfg, "--max-context"), "262144")
         self.assertIn("Kept as you chose", out)
         self.assertTrue(started.called)
+
+
+class BrokenEarlierConfig(unittest.TestCase):
+    """#459: a new copy of Strata set up like an earlier install skips an earlier config that does not parse (an
+    empty strata-*.json crashed START-HERE with JSONDecodeError) and goes on as a fresh install; configs are written
+    whole (a temporary file moved over the old one)."""
+    RAM64, GPU32 = PROFILES["64GB-1x32GB"]
+
+    def setup_with(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            for i, (name, text) in enumerate(files):                  # in order, oldest first
+                (Path(d) / name).write_text(text, encoding="utf-8")
+                os.utime(Path(d) / name, (1_700_000_000 + i, 1_700_000_000 + i))
+            return install(self.RAM64, self.GPU32, [], extra=[
+                mock.patch.object(setup, "other_installs", lambda settings: [Path(d)]),
+                mock.patch.object(setup, "start", mock.Mock(return_value=0))])
+
+    def test_an_empty_config_is_skipped(self):
+        for text, why in (("", "the file is empty"), ("{\"args\": [", "not valid JSON"), ("[1]", "not a JSON object")):
+            with self.subTest(text=text):
+                code, out, cfg, _ = self.setup_with([("strata-iq3_s.json", text)])
+                self.assertEqual(code, 0, out)
+                self.assertIn("skipped the earlier config ", out)
+                self.assertIn(f"strata-iq3_s.json ({why}): setting this copy up without it", out)
+                self.assertNotIn("Found your earlier install", out)
+                self.assertIsNotNone(cfg)                                # the fresh install's config
+
+    def test_the_newest_readable_config_is_used(self):
+        good = json.dumps({"args": ["--max-context", "262144", "--kv", "int8"], "port": 8080})
+        code, out, cfg, _ = self.setup_with([("strata-iq3_s.json", good), ("strata-q2_0.json", "")])
+        self.assertEqual(code, 0, out)
+        self.assertIn("strata-q2_0.json (the file is empty)", out)
+        self.assertIn("Found your earlier install", out)
+        self.assertIn("(iq3_s)", out)
+        self.assertEqual(arg(cfg, "--max-context"), "262144")
+
+    def test_write_config_leaves_no_partial_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-iq3_s.json"
+            p.write_text("old", encoding="utf-8")
+            setup.write_config(p, {"args": ["--kv", "int8"]})
+            self.assertEqual(p.read_text(encoding="utf-8"), json.dumps({"args": ["--kv", "int8"]}, indent=1))
+            self.assertEqual([f.name for f in Path(d).iterdir()], ["strata-iq3_s.json"])   # no .tmp left
+            with mock.patch.object(Path, "write_text", side_effect=OSError(28, "No space left on device")):
+                with self.assertRaises(OSError):
+                    setup.write_config(p, {"args": []})
+            self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"args": ["--kv", "int8"]})   # kept whole
 
 
 class LowRamGpus(unittest.TestCase):
@@ -275,6 +323,42 @@ class SmallCard(unittest.TestCase):
         code, out, cfg, _ = install(63.7, self.FOUND, ["--family", "qwen", "--model", "Q2_0", "--no-start"])
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], 0)                                   # one card: as before
+
+
+class SplitShortCard(unittest.TestCase):
+    """#448: a second card too small to lend a split's prompt chunk: the first card alone recommended, the pair kept
+    when named."""
+    FOUND = [card(0, "NVIDIA RTX PRO 4500 Blackwell", 31.8, "120"), card(1, "NVIDIA GeForce RTX 3080", 10.0, "86")]
+
+    def test_rule(self):
+        self.assertEqual([g["index"] for g in setup.split_short(self.FOUND)], [1])
+        self.assertEqual(setup.split_short(PROFILES["32GB-2x24GB"][1]), [])
+        self.assertEqual(setup.split_short(PROFILES["47GB-2x16GB"][1]), [])
+        eights = [card(i, "NVIDIA GeForce RTX 3070", 8.0, "86") for i in range(2)]
+        self.assertEqual(setup.split_short(eights), [])                   # neither card alone reads more
+
+    def test_yes_takes_the_first_card(self):
+        code, out, cfg, _ = install(127.8, self.FOUND, ["--family", "qwen", "--model", "Q2_0", "--no-start"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], 0)
+        self.assertIn("too small to lend a split its prompt buffers", out)
+
+    def test_named_pair_is_kept(self):
+        code, out, cfg, _ = install(127.8, self.FOUND, ["--family", "qwen", "--model", "Q2_0", "--no-start",
+                                                        "--gpus", "0,1"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 1])
+
+    def test_offer_together_defaults_to_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            with mock.patch.object(setup, "gpus", lambda: self.FOUND), \
+                    mock.patch.object(setup, "engine_runs_on", lambda g: True):
+                code, out, asked = run(setup.offer_together, p, {"args": ["--mmap-experts"]}, True)
+            cfg = json.loads(p.read_text())
+        self.assertIsNone(code, out)
+        self.assertNotIn("gpu", cfg)
+        self.assertIn("#448", out)
 
 
 class RamFloor(unittest.TestCase):

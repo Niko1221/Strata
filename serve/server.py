@@ -765,7 +765,8 @@ class Service:
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0}
+                       "prompt_ms": 0.0, "decode_ms": 0.0,
+                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -1338,7 +1339,10 @@ class Service:
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                                 if n and last.get("generated") and last.get("decode_ms") else None,
                                 "hit_rate": hit_rate, "ram_blobs": last.get("ram_blobs"),
-                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb")})
+                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
+                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                                "drafts_offered": last.get("drafts_offered"),
+                                "drafts_accepted": last.get("drafts_accepted")})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += len(ids)
@@ -1346,6 +1350,8 @@ class Service:
                             t["output_tokens"] += n
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
                             t["decode_ms"] += last.get("decode_ms") or 0.0
+                            t["drafts_offered"] += last.get("drafts_offered") or 0
+                            t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
                                 timings = request_timings(len(ids), n, last)

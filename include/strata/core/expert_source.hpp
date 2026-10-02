@@ -421,6 +421,10 @@ public:
     /// CS-T, `budget_bytes` > 0 (`--resident-budget-gib`): only as many of those experts as fit `budget_bytes`, taken
     /// in `rank` order (the expert profile: the hottest after the GPU cache's), are copied; the rest stay on the
     /// mapped files (the SSD tier).  No lend region then (a lent slot's expert is read from the files).
+    /// #467: `budget_bytes` = `kResidentWhatFits` is that path sized by the RAM alone (available minus the headroom
+    /// and the #403 margin) - the soft --resident-experts mode's second try when the whole complement does not fit;
+    /// false when not even one expert fits.  On Windows the mapped experts leave the working set before any reading.
+    static constexpr uint64_t kResidentWhatFits = ~0ull;
     bool pin_cache_complement(
         const ExpertCache& cache, std::string& err, bool pin = true,
         const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,

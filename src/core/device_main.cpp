@@ -9,6 +9,12 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 static std::string human(uint64_t b) {
     char buf[64];
@@ -68,6 +74,13 @@ int main(int argc, char** argv) {
         std::printf("  multiprocessors     %d\n", d.multi_processor_count);
         std::printf("  VRAM total / free   %s / %s\n", human(d.total_bytes).c_str(), human(d.free_bytes).c_str());
         std::printf("  driver / runtime    %d / %d\n", d.driver_version, d.runtime_version);
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+        // #468 #461: which HIP runtime this process loaded - the one beside the exe, or an AMD driver's System32 copy
+        if (HMODULE h = GetModuleHandleA("amdhip64_7.dll")) {
+            char path[MAX_PATH] = {};
+            if (GetModuleFileNameA(h, path, MAX_PATH) > 0) std::printf("  HIP runtime         %s\n", path);
+        }
+#endif
 
         // The planner's view against the card's.  A plan that does not fit in what is actually FREE is the
         // failure this print exists to make visible at startup rather than at token 4000.
