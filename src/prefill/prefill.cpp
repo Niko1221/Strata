@@ -53,6 +53,7 @@ Context::Context() {}
 Context::~Context() {}
 void Context::run(const Product&, void*) {}
 void gather_native(const void*, const void*, size_t, const void*, size_t, void*, void*, void*) {}
+void gather_native_batch(const GatherBatch&, size_t, size_t, void*) {}
 void gather_strata_q2(const uint8_t*, void*, void*, void*) {}
 void swiglu(const float*, float*, int64_t, int64_t, bool, void*) {}
 void iota(int32_t*, int64_t, void*) {}
@@ -1668,12 +1669,51 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         m.stager->start(std::move(js));
                     }
                     StagerDone stager_done{stream_all ? nullptr : m.stager.get()};
+                    // The group's gathers in one launch (mmq::gather_native_batch) instead of one per expert: they
+                    // wait in `gb` until the group's products need them.  A ring slot an expert waits in is given
+                    // back (its `used` event, and on the streamed walk the issuer's `consumed`) only once its gather
+                    // has been launched, so the copy engine never refills a slot that is still to be read; a slot the
+                    // staging ring wants back first (!stream_all, 8 slots) launches what is waiting.
+                    // STRATA_PREFILL_GATHER_ONE=1: one launch per expert, as before (A/B).
+                    static_assert(MMQ_GROUP <= mmq::kGatherMax, "a group's gathers fit one batch");
+                    static const bool gather_one = std::getenv("STRATA_PREFILL_GATHER_ONE") != nullptr;
+                    const bool batch_gather = use_mmq && lay.native && !gather_one &&
+                                              (!stream_all || m.ring > 2 * mmq::kGatherMax);
+                    mmq::GatherBatch gb;
+                    int gb_slot[mmq::kGatherMax];
+                    size_t gb_k = 0;            // the streamed walk: how far the deferred give-back reaches
+                    bool gb_k_pending = false;
+                    auto flush_gather = [&]() {
+                        if (gb.n == 0) return;
+                        mmq::gather_native_batch(gb, mmq_gub / 2, mmq_db, m.cs);
+                        for (int i = 0; i < gb.n; ++i)
+                            if (gb_slot[i] >= 0) cudaEventRecord(m.used[gb_slot[i]], m.cs);
+                        gb.n = 0;
+                        if (gb_k_pending) {
+                            consumed = gb_k;
+                            give_back(consumed);
+                            gb_k_pending = false;
+                        }
+                    };
+                    // the streamed walk's give-back: deferred while a gather is waiting, so `consumed` never passes a
+                    // slot that is still to be read
+                    auto walked = [&](size_t k_now) {
+                        if (gb.n > 0) {
+                            gb_k = k_now;
+                            gb_k_pending = true;
+                        } else {
+                            consumed = k_now;
+                            give_back(consumed);
+                        }
+                    };
                     auto stage_one = [&](size_t j) -> bool {
                         const int32_t e = order[j];
                         const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                         if (resident) return true;
                         const int sl = stage_next;
                         stage_next = (stage_next + 1) % STAGE;
+                        for (int i = 0; i < gb.n; ++i)   // the slot's last expert is still to be gathered: launch it
+                            if (gb_slot[i] == sl) { flush_gather(); break; }
                         const auto th = Clock::now();
                         const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                         const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
@@ -1705,15 +1745,28 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         if (use_mmq) {
                             // gather the expert into its group slot (GGUF blocks, unchanged or converted)
                             const size_t q = j % MMQ_GROUP;
-                            if (lay.native) {
+                            if (batch_gather) {
                                 const auto& f = lay.fmt[(size_t) l];
-                                mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
-                                                   mmq_db, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                const int i = gb.n++;
+                                gb.gate[i] = blob_dev;
+                                gb.up[i] = blob_dev + f.up_off;
+                                gb.down[i] = blob_dev + f.down_off;
+                                gb.gu_dst[i] = m.grp_gu + q * mmq_gub;
+                                gb.d_dst[i] = m.grp_d + q * mmq_db;
+                                gb_slot[i] = slot;
+                                if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
+                                flush_gather();
                             } else {
-                                mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                if (lay.native) {
+                                    const auto& f = lay.fmt[(size_t) l];
+                                    mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
+                                                       mmq_db, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                } else {
+                                    mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                }
+                                if (slot >= 0) cudaEventRecord(m.used[slot], m.cs);
+                                if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
                             }
-                            if (slot >= 0) cudaEventRecord(m.used[slot], m.cs);
-                            if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
                             // the group's products: gate/up, swiglu, the group's H to q8_1, down
                             const size_t j0 = j - q, g = j0 / MMQ_GROUP, n = order.size();
                             const int ngx = (int) (q + 1);
@@ -1785,8 +1838,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         auto release_to = [&](int32_t e_stop) {
                             while (k < kend && seq[k].e < e_stop) {
                                 cudaEventRecord(m.used[k % (size_t) m.ring], m.cs);
-                                consumed = ++k;
-                                give_back(consumed);
+                                walked(++k);
                             }
                         };
                         for (size_t j = 0; j < order.size(); ++j) {
@@ -1798,8 +1850,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                 wait_issued(k);
                                 cudaStreamWaitEvent(m.cs, m.copied[sl], 0);
                                 if (!compute(j, m.stage_dev[sl], sl)) return false;
-                                consumed = ++k;
-                                give_back(consumed);
+                                walked(++k);
                             } else {
                                 ++stats_.experts_resident;
                                 if (!compute(j, m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]), -1)) return false;

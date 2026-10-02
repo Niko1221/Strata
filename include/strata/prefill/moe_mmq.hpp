@@ -60,6 +60,20 @@ private:
 /// slot: gate rows then up rows at `gu_dst`, down at `d_dst`.
 void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const void* down, size_t d_bytes,
                    void* gu_dst, void* d_dst, void* stream);
+/// `gather_native` for up to kGatherMax experts of one layer (same sizes) in ONE launch.  The prompt path gathers
+/// every routed expert of every layer of every chunk - ~22,000 per chunk - and one launch each cost ~23 us of launch
+/// and event overhead for ~2 us of copying (STRATA_PREFILL_TIMING's "dequant", 22-42% of the prompt path's GPU
+/// time).  The same bytes land in the same places, so the products are bitwise those of the per-expert gather.
+constexpr int kGatherMax = 16;
+struct GatherBatch {
+    int n = 0;
+    const void* gate[kGatherMax] = {};
+    const void* up[kGatherMax] = {};
+    const void* down[kGatherMax] = {};
+    void* gu_dst[kGatherMax] = {};
+    void* d_dst[kGatherMax] = {};
+};
+void gather_native_batch(const GatherBatch& b, size_t gu_half_bytes, size_t d_bytes, void* stream);
 /// A Strata-pack Q2_0 expert blob (codes and fp16 scales in separate planes, gate/up rows interleaved) into GGUF
 /// Q2_0 blocks: gate/up [1280, 2560] at `gu_dst` (rows stay interleaved), down [2560, 640] at `d_dst`.  Same values.
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream);

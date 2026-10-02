@@ -29,6 +29,14 @@ __global__ void copy16_kernel(const uint4* __restrict__ a, int64_t na, const uin
     else if (i < na + nb) ab_dst[i] = b[i - na];
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
+// gather_native_batch: expert blockIdx.y of the batch, the same element layout as copy16_kernel
+__global__ void copy16_batch_kernel(GatherBatch g, int64_t na, int64_t nc) {
+    const int e = (int) blockIdx.y;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < na) ((uint4*) g.gu_dst[e])[i] = ((const uint4*) g.gate[e])[i];
+    else if (i < 2 * na) ((uint4*) g.gu_dst[e])[i] = ((const uint4*) g.up[e])[i - na];
+    else if (i < 2 * na + nc) ((uint4*) g.d_dst[e])[i - 2 * na] = ((const uint4*) g.down[e])[i - 2 * na];
+}
 __global__ void copy1_kernel(const uint8_t* __restrict__ a, int64_t na, const uint8_t* __restrict__ b, int64_t nb,
                              uint8_t* __restrict__ ab_dst, const uint8_t* __restrict__ c, int64_t nc, uint8_t* __restrict__ c_dst) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -180,6 +188,22 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
                                                          (uint8_t*) gu_dst, (const uint8_t*) down, nc, (uint8_t*) d_dst);
     }
     ck(cudaGetLastError(), "gather_native");
+}
+
+void gather_native_batch(const GatherBatch& b, size_t gu_half_bytes, size_t d_bytes, void* stream) {
+    if (b.n <= 0) return;
+    bool a16 = (gu_half_bytes | d_bytes) % 16 == 0;
+    for (int e = 0; e < b.n && a16; ++e)
+        a16 = ((uintptr_t) b.gate[e] | (uintptr_t) b.up[e] | (uintptr_t) b.down[e] | (uintptr_t) b.gu_dst[e] |
+               (uintptr_t) b.d_dst[e]) % 16 == 0;
+    if (!a16) {   // a blob off 16-byte alignment: the per-expert kernels, as before
+        for (int e = 0; e < b.n; ++e)
+            gather_native(b.gate[e], b.up[e], gu_half_bytes, b.down[e], d_bytes, b.gu_dst[e], b.d_dst[e], stream);
+        return;
+    }
+    const int64_t na = (int64_t) gu_half_bytes / 16, nc = (int64_t) d_bytes / 16;
+    copy16_batch_kernel<<<dim3(blocks(2 * na + nc), (unsigned) b.n), 256, 0, (cudaStream_t) stream>>>(b, na, nc);
+    ck(cudaGetLastError(), "gather_native_batch");
 }
 
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
