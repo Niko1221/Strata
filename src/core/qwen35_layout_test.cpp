@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
 
     // With a path, validate a REAL artifact header instead of the synthetic cases below.  The header alone is
     // enough (tensor data is never read), so this runs against an ~11 MB prefix of the 20 GB file:
-    //   python tools/ornith_inspect.py --repo ... --file ... --out-raw /tmp/ornith-header.gguf
+    //   python tools/ornith_inspect.py --repo ... --file ... --out layout.txt --header-out /tmp/ornith-header.gguf
     if (argc > 1) {
         std::string err;
         Qwen35Geometry g;
