@@ -24,6 +24,15 @@ __pycache__/
 *.npz
 *.occ1
 td.log
+/.lavish/
+
+# Local editor/backup churn (setup and tuning keep .bak/.orig/.tuned side files)
+*.bak
+*.orig
+*.tuned
+
+# Ad-hoc root-level bench run artifacts (durable results live under bench/results/)
+bench-*.json
 
 # created by setup.py on the user's machine
 /.venv/

@@ -6,6 +6,11 @@ NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
 <a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
+<p align="center">
+  <a href="sermon-on-the-mount.html">Sermon on the Mount voxel diorama</a> ·
+  <a href="voxel-world/index.html">Strata voxel wilderness</a>
+</p>
+<sub>Two more self-contained voxel worlds written by Strata's model.</sub>
 
 Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** - a large, smart AI model that
 normally needs a server - on a normal PC. It chats, writes code, reads pictures and works with your apps and coding

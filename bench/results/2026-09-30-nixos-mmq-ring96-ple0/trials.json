@@ -1,0 +1,263 @@
+[
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.469667290977668,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 329.0,
+      "prefill_tps": 45.5,
+      "generated": 2.0,
+      "decode_ms": 137.0,
+      "decode_tps": 14.6
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "fresh",
+    "trial": 1,
+    "wall_s": 11.332962921005674,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 6918.0,
+      "prefill_tps": 608.5,
+      "generated": 128.0,
+      "decode_ms": 4406.0,
+      "decode_tps": 29.1
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of 140 exported functions, named `rule0` through `rule139`, each of which accepts a single numeric argument `x` and applies a conditional transformation based on a specific constant value associated with the function's name. For any given function `ruleN`, if the input `x` is strictly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. This pattern creates a set of specialized arithmetic operations where the \"true\" branch adds an incrementally larger offset (starting from 1 for `"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "followup",
+    "trial": 1,
+    "wall_s": 6.005146149953362,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1759.0,
+      "prefill_tps": 141.0,
+      "generated": 128.0,
+      "decode_ms": 4236.0,
+      "decode_tps": 30.2
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact match condition** (`x === N`), which acts as a critical switch between two distinct arithmetic behaviors: an additive branch (`x + N + 1`) and a subtractive branch (`x - N`). This boundary is significant because it defines the precise integer where the function's output jumps discontinuously. For example, in `rule0`, the input `0` triggers the additive path (`0 + 1 = 1`), while the input `1` triggers the subtractive path (`1 - 0 = 1`). Although the outputs coincide at this specific boundary for `rule"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "fresh",
+    "trial": 2,
+    "wall_s": 19.533140369981993,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 14863.0,
+      "prefill_tps": 594.1,
+      "generated": 128.0,
+      "decode_ms": 4654.0,
+      "decode_tps": 27.5
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported functions, named sequentially from `rule0` to `rule279`, each of which accepts a single numeric argument `x` and implements a specific conditional arithmetic transformation. For any given function `ruleN`, the logic checks if the input `x` is strictly equal to the integer `N`; if this condition is true, the function returns `x + (N + 1)`, effectively adding the next consecutive integer to the input. If the condition is false, the function returns `x - N`, subtracting the function's index from the input value. Consequently"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "followup",
+    "trial": 2,
+    "wall_s": 5.472694395983126,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8957.0,
+      "fresh": 114.0,
+      "prefill_ms": 1179.0,
+      "prefill_tps": 96.7,
+      "generated": 128.0,
+      "decode_ms": 4273.0,
+      "decode_tps": 30.0
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8957
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gatekeeper for the \"special\" branch (`x + N + 1`) versus the \"default\" branch (`x - N`). This creates a discontinuity in the function's behavior: for `ruleN`, the output jumps from `N - N = 0` (when `x = N - 1`) to `N + N + 1 = 2N + 1` (when `x = N`), and then drops back to `N + 1 - N = 1"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "fresh",
+    "trial": 3,
+    "wall_s": 11.18402777198935,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 6801.0,
+      "prefill_tps": 619.0,
+      "generated": 128.0,
+      "decode_ms": 4374.0,
+      "decode_tps": 29.3
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of 140 exported functions, named `rule0` through `rule139`, each of which accepts a single numeric argument `x` and applies a conditional transformation based on a specific integer constant associated with the function's name. For any given function `ruleN`, if the input `x` is strictly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. This pattern creates a set of specialized arithmetic operations where the \"true\" branch adds an incrementally larger value (starting from 1 for `"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "followup",
+    "trial": 3,
+    "wall_s": 6.513771624013316,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1732.0,
+      "prefill_tps": 143.2,
+      "generated": 128.0,
+      "decode_ms": 4770.0,
+      "decode_tps": 26.8
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gate for the \"special\" branch (`x + N + 1`) versus the \"default\" branch (`x - N`). This creates a discontinuity in the function's behavior: for `ruleN`, the output jumps from `N - N = 0` (if `x` were slightly less than `N`, e.g., `N-1`) to `N + N + 1 = 2N + 1` at `x = N`, and then drops to `N - N"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "fresh",
+    "trial": 4,
+    "wall_s": 19.510581206006464,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 16219.0,
+      "prefill_tps": 544.4,
+      "generated": 128.0,
+      "decode_ms": 3275.0,
+      "decode_tps": 39.1
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of exported functions named `rule0` through `rule279`, each accepting a single numeric argument `x` and returning a modified value based on a specific conditional logic. For any given function `ruleN`, if the input `x` is strictly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. This pattern creates a set of specialized transformation rules where the \"true\" branch adds an offset of `N+1` to the input, while the \"false\" branch subtracts the index `N`"
+    }
+  },
+  {
+    "label": "NixOS 7900 XT 16G / 5700X3D / ROCm 7.10 / mmap+resident / PLE_BATCH=0",
+    "kind": "followup",
+    "trial": 4,
+    "wall_s": 4.637361695000436,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8958.0,
+      "fresh": 113.0,
+      "prefill_ms": 957.0,
+      "prefill_tps": 118.1,
+      "generated": 128.0,
+      "decode_ms": 3663.0,
+      "decode_tps": 34.9
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8958
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as a strict gatekeeper for the \"special\" branch. For any function `ruleN`, the behavior changes drastically only when `x` is exactly equal to `N`. For example, in `rule0`, if `x` is `0`, it returns `1` (`0 + 1`); if `x` is `1`, it returns `1` (`1 - 0`). This creates a collision where different inputs can produce the same output, but more importantly, it highlights that the function is **not"
+    }
+  }
+]
