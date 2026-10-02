@@ -147,6 +147,8 @@ if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ "${STRATA_ALLOW_HSA_OVERRIDE:-0}"
 fi
 
 # ---------------------------------------------------------------- the image
+# build.sh tags every build with the commit hash AND the moving -latest tag; use -latest so a
+# rebuild is picked up without touching this script.
 if [ -z "$IMAGE" ]; then
   for cand in "strata-hip:${ARCH}-latest" "strata-hip:${ARCH}"; do
     if docker image inspect "$cand" >/dev/null 2>&1; then IMAGE="$cand"; break; fi
@@ -155,6 +157,8 @@ fi
 if [ -z "$IMAGE" ]; then
   die "no strata-hip image for $ARCH. Build it:  ./build.sh   (takes 10-25 minutes the first time)"
 fi
+IMAGE_ID="$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null | cut -c8-19)"
+log "image: $IMAGE (sha256:${IMAGE_ID:-unknown})"
 NAME="${NAME:-strata-${ARCH}}"
 [ "$FRESH" = 1 ] && [ "$DRY" != 1 ] && docker rm -f "$NAME" >/dev/null 2>&1 || true
 
