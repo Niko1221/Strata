@@ -27,7 +27,7 @@ CFG_B=$STRATA/strata-b.json
 CFG_C=$STRATA/strata-c.json
 PY=$STRATA/.venv/bin/python
 BACKUP=$STRATA/engine/strata.0.1.18.bak
-HUGEPAGES=17408   # 34 GiB of 2 MB pages: covers the 33.97 GiB arena
+HUGEPAGES=22528   # 44 GiB of 2 MB pages: covers the 39.97 GiB arena (all-or-nothing MAP_HUGETLB)
 
 say() { printf '\n=== %s ===\n' "$*"; }
 
