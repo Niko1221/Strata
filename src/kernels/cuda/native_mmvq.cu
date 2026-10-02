@@ -24,6 +24,7 @@
 // SOFTWARE.
 
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_fp16.h>
@@ -165,8 +166,8 @@ __device__ __forceinline__ float q5_q8_dot_impl(
         const int vh1i = ((vh[1] >> i) << 4) & 0x10101010;
         const int v0i = vl0i | vh0i;
         const int v1i = vl1i | vh1i;
-        const int dot1 = __dp4a(v0i, u[2 * i], __dp4a(v1i, u[2 * i + 1], 0));
-        const int dot2 = __dp4a(0x01010101, u[2 * i], __dp4a(0x01010101, u[2 * i + 1], 0));
+        const int dot1 = STRATA_DP4A(v0i, u[2 * i], STRATA_DP4A(v1i, u[2 * i + 1], 0));
+        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i], STRATA_DP4A(0x01010101, u[2 * i + 1], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -274,8 +275,8 @@ __device__ __forceinline__ float q2_q8_dot(const Q20Block* __restrict__ w,
         const int qo = __byte_perm(0x020100ff, 0x020100ff, q >> 2);
         const int qx = __byte_perm(qe, qo, 0x5140);
         const int qy = __byte_perm(qe, qo, 0x7362);
-        sumi = __dp4a(u, qx, sumi);
-        sumi = __dp4a(v, qy, sumi);
+        sumi = STRATA_DP4A(u, qx, sumi);
+        sumi = STRATA_DP4A(v, qy, sumi);
     }
     const float d8 = __low2float(chunk->ds);
     return d2 * d8 * sumi;
@@ -348,7 +349,7 @@ __device__ __forceinline__ float q3_q8_dot_impl(int vl, int vh, const int* __res
         const int vil = (vl >> (2 * i)) & 0x03030303;
         const int vih = ((vh >> i) << 2) & 0x04040404;
         const int vi = __vsubss4(vil, vih);
-        sumf += d8[i] * (__dp4a(vi, u[i], 0) * sc);
+        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
     }
     return d3 * sumf;
 }
@@ -441,8 +442,8 @@ __device__ __forceinline__ float iq4_xs_q8_dot(const IQ4XSBlock* __restrict__ w,
         const int2 v = iq4_table_lookup(aux_q4);
         const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
         const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-        sumi = __dp4a(v.x, u0, sumi);
-        sumi = __dp4a(v.y, u1, sumi);
+        sumi = STRATA_DP4A(v.x, u0, sumi);
+        sumi = STRATA_DP4A(v.y, u1, sumi);
     }
     const int ls = ((w->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0f) |
                    (((w->scales_h >> (iqs / 2)) & 0x03) << 4);
@@ -501,8 +502,8 @@ __device__ __forceinline__ float q4_q8_dot_impl(
     for (int i = 0; i < 2; ++i) {
         const int v0i = (v[0] >> (4 * i)) & 0x0f0f0f0f;
         const int v1i = (v[1] >> (4 * i)) & 0x0f0f0f0f;
-        const int dot1 = __dp4a(v1i, u[2 * i + 1], __dp4a(v0i, u[2 * i], 0));
-        const int dot2 = __dp4a(0x01010101, u[2 * i + 1], __dp4a(0x01010101, u[2 * i], 0));
+        const int dot1 = STRATA_DP4A(v1i, u[2 * i + 1], STRATA_DP4A(v0i, u[2 * i], 0));
+        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i + 1], STRATA_DP4A(0x01010101, u[2 * i], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -599,7 +600,7 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
         const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
         const int vi = __vsubss4(vil | vih, 0x20202020);
-        sumf += d8[i] * (__dp4a(vi, u[i], 0) * sc);
+        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
     }
     return d * sumf;
 }
@@ -671,8 +672,8 @@ __device__ __forceinline__ float small_q8_dot(const Q40Block* __restrict__ w,
         const int v = load_int_b2(w->qs, iqs + i);
         const int vi0 = (v >> 0) & 0x0f0f0f0f;
         const int vi1 = (v >> 4) & 0x0f0f0f0f;
-        sumi = __dp4a(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
-        sumi = __dp4a(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const float2 ds = __half22float2(x->ds);
     const float d = w->d;
@@ -691,13 +692,13 @@ __device__ __forceinline__ float small_q8_dot(const Q50Block* __restrict__ w,
         vi0 |= (vh << 11) & 0x00001000;
         vi0 |= (vh << 18) & 0x00100000;
         vi0 |= (vh << 25) & 0x10000000;
-        sumi = __dp4a(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
         int vi1 = (vl >> 4) & 0x0f0f0f0f;
         vi1 |= (vh >> 12) & 0x00000010;
         vi1 |= (vh >> 5) & 0x00001000;
         vi1 |= (vh << 2) & 0x00100000;
         vi1 |= (vh << 9) & 0x10000000;
-        sumi = __dp4a(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const float2 ds = __half22float2(x->ds);
     const float d = w->d;
@@ -711,7 +712,7 @@ __device__ __forceinline__ float small_q8_dot(const Q80Block* __restrict__ w,
     for (int i = 0; i < 2; ++i) {
         const int v = load_int_b2(w->qs, iqs + i);
         const int u = reinterpret_cast<const int*>(x->qs)[iqs + i];
-        sumi = __dp4a(v, u, sumi);
+        sumi = STRATA_DP4A(v, u, sumi);
     }
     const float d0 = w->d;
     const float d1 = __low2float(x->ds);
@@ -725,8 +726,8 @@ __device__ __forceinline__ float small_q8_dot(const IQ4NLBlock* __restrict__ w,
 #pragma unroll
     for (int i = 0; i < 2; ++i) {
         const int2 v = iq4_table_lookup(load_int_b2(w->qs, iqs + i));
-        sumi = __dp4a(v.x, q8[i], sumi);
-        sumi = __dp4a(v.y, q8[i + 4], sumi);
+        sumi = STRATA_DP4A(v.x, q8[i], sumi);
+        sumi = STRATA_DP4A(v.y, q8[i + 4], sumi);
     }
     const float d = __half2float(w->d) * __low2float(x->ds);
     return d * sumi;
@@ -890,8 +891,8 @@ struct Q20Traits {
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            sumi = __dp4a(q8[j * 2], r.qx[j], sumi);
-            sumi = __dp4a(q8[j * 2 + 1], r.qy[j], sumi);
+            sumi = STRATA_DP4A(q8[j * 2], r.qx[j], sumi);
+            sumi = STRATA_DP4A(q8[j * 2 + 1], r.qy[j], sumi);
         }
         const float d8 = __low2float(chunk->ds);
         return r.d2 * d8 * sumi;
@@ -969,8 +970,8 @@ struct IQ4XSTraits {
         for (int j = 0; j < 4; ++j) {
             const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
             const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-            sumi = __dp4a(r.v[j].x, u0, sumi);
-            sumi = __dp4a(r.v[j].y, u1, sumi);
+            sumi = STRATA_DP4A(r.v[j].x, u0, sumi);
+            sumi = STRATA_DP4A(r.v[j].y, u1, sumi);
         }
         sumi *= r.ls - 32;
         const float d = r.dw * __low2float(x[iqs / 4].ds);
@@ -1438,7 +1439,7 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 }
 
 bool native_mmvq_supported(int ggml_type) noexcept {
-    return ggml_type == 2 || ggml_type == 6 || ggml_type == 8 || ggml_type == 11 ||
+    return ggml_type == 2 || ggml_type == 6 || ggml_type == 7 || ggml_type == 8 || ggml_type == 11 ||
            ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 20 ||
            ggml_type == 23 || ggml_type == 42 || ggml_type == 16 || ggml_type == 17 || ggml_type == 18 ||
            ggml_type == 21 || ggml_type == 22 || ggml_type == 29;
@@ -1449,6 +1450,7 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
     switch (ggml_type) {
     case 2: block_elems = 32; block_bytes = 18; break;
     case 6: block_elems = 32; block_bytes = 22; break;
+    case 7: block_elems = 32; block_bytes = 24; break;
     case 8: block_elems = 32; block_bytes = 34; break;
     case 20: block_elems = 32; block_bytes = 18; break;
     case 11: block_elems = 256; block_bytes = 110; break;
@@ -1475,6 +1477,7 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     switch (ggml_type) {
     case 2: native_q4_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 6: native_q5_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 7: iq_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 8: native_q8_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 20: native_iq4_nl_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 11: native_q3_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;

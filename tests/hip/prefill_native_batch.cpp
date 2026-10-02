@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/rope_scaling.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,8 @@ constexpr int BLOCK = 4;
 constexpr int EMB = 2560;
 constexpr int IQ4_NL = 20;
 constexpr float EPS = 1e-6f;
+// the indexer's rope: plain (no scaling) over the base this test was written for
+const strata::kernels::RopeScaling ROPE = [] { strata::kernels::RopeScaling r; r.freq_base = 10000.0; return r; }();
 
 struct IndexState {
     float *tail = nullptr, *dead = nullptr, *pooled = nullptr;
@@ -87,15 +90,15 @@ bool qsa_case(cudaStream_t stream, int64_t max_cells, int64_t pos0, int64_t T, s
     for (int64_t p = 0; p < pos0 + T; ++p) {
         CHECK(cudaMemcpyAsync(pos_d, positions.data() + p, sizeof(int32_t), cudaMemcpyHostToDevice, stream));
         strata::kernels::native_qsa_indexer_append(raw_d + p * IDX, pos_d, 0, gamma_d, EPS, sb,
-                                                   shapes, max_cells, 10000.0f, stream);
+                                                   shapes, max_cells, ROPE, stream);
         if (p < pos0) {
             CHECK(cudaMemcpyAsync(pos_d, positions.data() + p, sizeof(int32_t), cudaMemcpyHostToDevice, stream));
             strata::kernels::native_qsa_indexer_append(raw_d + p * IDX, pos_d, 0, gamma_d, EPS, bb,
-                                                       shapes, max_cells, 10000.0f, stream);
+                                                       shapes, max_cells, ROPE, stream);
         }
     }
     strata::kernels::native_qsa_indexer_append_batch(raw_d + pos0 * IDX, T, pos0, 0, gamma_d, EPS,
-                                                      bb, shapes, max_cells, 10000.0f, stream);
+                                                      bb, shapes, max_cells, ROPE, stream);
     CHECK(cudaStreamSynchronize(stream));
 
     const size_t tail_n = (BLOCK - 1) * IDX, dead_n = IDX;
@@ -146,12 +149,12 @@ bool qsa_chunks_case(cudaStream_t stream, std::mt19937& rng, int64_t max_cells,
     for (int p = 0; p < total; ++p) {
         CHECK(cudaMemcpyAsync(pos_d, positions.data() + p, sizeof(int32_t), cudaMemcpyHostToDevice, stream));
         strata::kernels::native_qsa_indexer_append(raw_d + (size_t) p * IDX, pos_d, 0, gamma_d, EPS, sb,
-                                                   shapes, max_cells, 10000.0f, stream);
+                                                   shapes, max_cells, ROPE, stream);
     }
     strata::kernels::native_qsa_indexer_append_batch(raw_d, first, 0, 0, gamma_d, EPS, cb, shapes,
-                                                      max_cells, 10000.0f, stream);
+                                                      max_cells, ROPE, stream);
     strata::kernels::native_qsa_indexer_append_batch(raw_d + (size_t) first * IDX, second, first, 0,
-                                                      gamma_d, EPS, cb, shapes, max_cells, 10000.0f, stream);
+                                                      gamma_d, EPS, cb, shapes, max_cells, ROPE, stream);
     CHECK(cudaStreamSynchronize(stream));
     const size_t tail_n = (BLOCK - 1) * IDX, pooled_n = (size_t) (max_cells / BLOCK + 1) * IDX;
     std::vector<float> st(tail_n), ct(tail_n), sd(IDX), cd(IDX), sp(pooled_n), cp(pooled_n);

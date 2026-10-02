@@ -1,6 +1,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_bfloat16.h>
+#include "../../include/strata/kernels/bf16_bits.hpp"
 #include <hip/hip_version.h>
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
@@ -99,7 +100,7 @@ std::string config_hex(const hipblasLtMatmulAlgo_t &algo) {
     return o.str();
 }
 uint16_t input_bits(float x, bool bf16) {
-    if (bf16) return hip_bfloat16(x).data;
+    if (bf16) return strata::kernels::bf16_from_f32(x);
     const __half half = __float2half_rn(x);
     uint16_t bits = 0;
     std::memcpy(&bits, &half, sizeof(bits));

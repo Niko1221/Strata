@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
@@ -105,6 +106,14 @@ MtpDrafter::~MtpDrafter() {
     if (pf_dev_) cudaFree(pf_dev_);
     for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
+    for (auto& e : round_exec_c_) if (e) cudaGraphExecDestroy(e);
+    for (auto& e : step_exec_c_) if (e) cudaGraphExecDestroy(e);
+    if (cparams_) cudaFree(cparams_);
+    if (cring_) cudaFree(cring_);
+    if (dinv_) cudaFree(dinv_);
+    if (cscratch_) cudaFree(cscratch_);
+    if (h_cparams_) cudaFreeHost(h_cparams_);
+    if (h_chist_) cudaFreeHost(h_chist_);
     if (cs_) cudaStreamDestroy(cs_);
     if (dense_) cudaFree(dense_);
     if (experts_) cudaFree(experts_);
@@ -196,7 +205,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
 
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const strata::kernels::QsaShapes s = shapes_of(g);
-    const int64_t max_cells = ss.qsa_states[0].max_cells;
+    const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
     // KV streaming: the drafter only reads its last `window` cells, so with streaming on its K/V is a ring of the
     // window (plus the cells a round writes ahead of its queries) over a host copy, refilled on a resume. The host copy
     // is pinned after the expert arena has pinned what it could: if it does not fit, the K/V stays whole in VRAM.
@@ -209,7 +218,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
-    if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[0], ring) == 0) {
+    if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
         if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
         std::fprintf(stderr, "strata mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
         cudaGetLastError();
@@ -218,7 +227,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         ring = -1;   // fully resident
         sb = qsa_state_bytes(g, max_cells, false, ring);
         if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
-        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[0], ring) == 0) { err = "mtp: state init failed"; return false; }
+        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
@@ -302,7 +311,65 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
             if (size >= 4 && size % 4 == 0) bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
         }
     }
+    // coupled draft sampling (STRATA_SPEC_COUPLED=1 only): an upper bound - the id -> subset map, the penalty ring,
+    // the split scratch (64 lists of 64 entries at most) and the parameters
+    if (coupled_draft_env() && cparams_ == nullptr)
+        bytes += (uint64_t) n_vocab * 4 + (uint64_t) (kCoupledHistCap + max_t_) * 4 + 64ull * 64ull * 8ull + 4096;
     return bytes;
+}
+
+bool MtpDrafter::setup_coupled(std::string& err) {
+    const int64_t nv = dhead_ != nullptr ? n_dvocab_ : n_vocab_;
+    const size_t scratch = strata::kernels::coupled_draft_scratch_bytes((int) nv);
+    if (scratch == 0) {
+        std::fprintf(stderr, "strata mtp: STRATA_SPEC_COUPLED: %lld draft logits are too wide for the coupled sampler; "
+                             "argmax drafts\n", (long long) nv);
+        return true;
+    }
+    const size_t ring = (size_t) (kCoupledHistCap + max_t_) * sizeof(int32_t);
+    if (cudaMalloc((void**) &cparams_, sizeof(strata::kernels::SamplerParams)) != cudaSuccess ||
+        cudaMalloc((void**) &cring_, ring) != cudaSuccess || cudaMalloc(&cscratch_, scratch) != cudaSuccess ||
+        !mapped(sizeof(strata::kernels::SamplerParams), (void**) &h_cparams_, (void**) &m_cparams_) ||
+        !mapped((size_t) kCoupledHistCap * sizeof(int32_t), (void**) &h_chist_, (void**) &m_chist_)) {
+        err = "mtp: the coupled draft sampler's buffers do not fit";
+        return false;
+    }
+    cudaMemset(cring_, 0xff, ring);   // -1: no token
+    std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
+    vram_ += sizeof(strata::kernels::SamplerParams) + ring + scratch;
+    if (dhead_ != nullptr) {   // token id -> subset index (-1: not in the draft head), for the penalties
+        std::vector<int32_t> sub((size_t) n_dvocab_), inv((size_t) n_vocab_, -1);
+        cudaMemcpy(sub.data(), dvocab_, sub.size() * sizeof(int32_t), cudaMemcpyDeviceToHost);
+        for (size_t i = 0; i < sub.size(); ++i)
+            if (sub[i] >= 0 && sub[i] < n_vocab_ && inv[(size_t) sub[i]] < 0) inv[(size_t) sub[i]] = (int32_t) i;
+        if (cudaMalloc((void**) &dinv_, inv.size() * sizeof(int32_t)) != cudaSuccess) {
+            err = "mtp: the coupled draft sampler's token map does not fit";
+            return false;
+        }
+        cudaMemcpy(dinv_, inv.data(), inv.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+        vram_ += inv.size() * sizeof(int32_t);
+    }
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = std::string("mtp: coupled setup: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    coupled_ok_ = true;
+    std::fprintf(stderr, "strata mtp: coupled draft sampling on (STRATA_SPEC_COUPLED): sampled requests draft with the "
+                         "target's chain and Philox draw over %lld tokens\n", (long long) nv);
+    return true;
+}
+
+void MtpDrafter::set_draft_sampling(const strata::kernels::SamplerParams& sp) {
+    coupled_active_ = coupled_ok_ && !sp.greedy && sp.temperature > 0.0f;
+    if (!coupled_active_) return;
+    *h_cparams_ = sp;   // read by the next round graph (after the previous one has synced)
+    std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
+}
+
+void MtpDrafter::set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next) {
+    if (!coupled_active_) return;
+    const int h = coupled_hist_len(h_cparams_->penalty_last_n, kCoupledHistCap);
+    coupled_hist_base(tail, n_tail, next, h, h_chist_ + (kCoupledHistCap - h));
 }
 
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
@@ -338,6 +405,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
         }
     }
+    if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
     return true;
 }
 
@@ -395,7 +463,7 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         // ---- attention: K/V into the layer's own cache, then (full) dense attention over every cell
         auto norm_rope = [&](float* data, const float* gamma, int rows, int cols, const int32_t* p) {
             native_qsa_rms_norm_weighted(data, gamma, data, cols, rows, EPS, cs);
-            if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, (float) qsa_freq_base(), p, cs);
+            if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), p, cs);
             else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st_.cos_tab, st_.sin_tab, p, cs);
         };
         native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
@@ -403,12 +471,15 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
-            if (st_.kv_q4) {   // Q4_0 KV (kv_q4.hpp): rotated K and V
+            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
                 fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
                 fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+            }
+            // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
+            if (st_.kv_q4)
                 kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                   vcur_ + t * NKV * HD, s, cs, &st_.host);
-            } else if (st_.kv_int8)
+            else if (st_.kv_int8)
                 kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
                                   kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
             else
@@ -425,12 +496,12 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
                 return false;
             }
             norm_rope(qc, f32("self_attn.q_norm.weight"), (int) NH, (int) HD, pos + t * NH);
-            if (st_.kv_q4) fwht256_inplace_cuda(qc, NH, cs);
+            if (st_.kv_rot) fwht256_inplace_cuda(qc, NH, cs);
         }
         const QsaAttnPools pools = qsa_attn_pools(st_);
         if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
         qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
-        if (st_.kv_q4) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
+        if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
         for (int t = 0; t < T; ++t)
             native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH, (int) HD, cs);
         native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
@@ -488,6 +559,13 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
         native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        if (coupled_rec_) {
+            // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
+            // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
+            coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
+                                 cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
+            return true;
+        }
         SamplerParams sp;
         sp.greedy = true;
         sp.temperature = 0.0f;
@@ -540,12 +618,15 @@ bool MtpDrafter::capture_prefill_dev(int T, std::string& err) {
     return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
 }
 
-bool MtpDrafter::capture_round(int T, std::string& err) {
-    if (round_exec_[T]) return true;
+bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
+    cudaGraphExec_t& exec = coupled ? round_exec_c_[T] : round_exec_[T];
+    if (exec) return true;
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
     bool ok = true;
+    // coupled: the request's chain and the penalty history's base, for this round's drafts
+    if (coupled) coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
     copy_i32_from_mapped(step_, m_step_, (int64_t) 2 * T * 4, cs_);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) 2 * T * g_->n_head, cs_);
@@ -560,25 +641,32 @@ bool MtpDrafter::capture_round(int T, std::string& err) {
     if (ok) {
         copy_i32_from_mapped(step_ + ra * 4, m_step_ + ra * 4, 4, cs_);
         copy_i32_from_mapped(pos_ + ra * g_->n_head, m_pos_ + ra * g_->n_head, g_->n_head, cs_);
+        coupled_rec_ = coupled;
+        coupled_j_ = 0;
         ok = record_forward(1, ra, cs_, err);
+        coupled_rec_ = false;
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, round_exec_[T], "round", err);
+    return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
 }
 
 // Chain step j (1..max_t-2): one row at the cell staged in step row `max_t + j - 1`, from the previous step's
 // residual and token (left in Rin_[0] / tok_[0] by mtp_select); draft j and its probability to the mapped outputs.
-bool MtpDrafter::capture_step(int j, std::string& err) {
-    if (step_exec_[j]) return true;
+bool MtpDrafter::capture_step(int j, bool coupled, std::string& err) {
+    cudaGraphExec_t& exec = coupled ? step_exec_c_[j] : step_exec_[j];
+    if (exec) return true;
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
     copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
     copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
+    coupled_rec_ = coupled;
+    coupled_j_ = j;
     bool ok = record_forward(1, row, cs_, err);
+    coupled_rec_ = false;
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, step_exec_[j], "step", err);
+    return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
 }
 
 void MtpDrafter::kv_restore(int64_t upto) {
@@ -684,7 +772,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
                        float* probs, float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
-    if (!capture_round(T, err)) return false;
+    const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
+    if (!capture_round(T, cp, err)) return false;
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {
@@ -698,11 +787,12 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         h_tok_[t] = tokens[t];
         put(t, p + t);
     }
-    put(2 * max_t_ - 1, p + a);
+    put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     h_row_[0] = a;
     h_row_[1] = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (cudaGraphLaunch(round_exec_[T], cs_) != cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
+    if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess ||
+        cudaStreamSynchronize(cs_) != cudaSuccess) {
         err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }
@@ -712,10 +802,11 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     int n = 1;
     // the chain continues while the last draft is likely enough to be verified
     for (int j = 1; j < std::min(max_t_ - 1, max_drafts_) && pj >= min_p; ++j) {
-        if (!capture_step(j, err)) return false;
-        put(max_t_ + j - 1, p + a + j);
+        if (!capture_step(j, cp, err)) return false;
+        put(max_t_ + j - 1, coupled_draft_cell(p, a, j));   // p + a + j; coupled: drawn at counter cell + 1
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (cudaGraphLaunch(step_exec_[j], cs_) != cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
+        if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess ||
+            cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }

@@ -1,22 +1,45 @@
-# Opt-in HIP configuration. Strata's CUDA-shaped kernels target RDNA3 wave32.
-# CMake/compiler discovery stays machine-independent; pass CMAKE_HIP_COMPILER when it is not on PATH.
-
-# The RDNA3 parts Strata is built and run for. All of them are wave32 with a 64 KiB LDS budget per CU, so
-# the kernels' tile sizes carry over; what differs between them is CU count and clocks, i.e. throughput.
-# Adding a part means compiling for it and running the device tests on it (tests/hip, HIP_DEVICE_TESTS).
-set(STRATA_HIP_SUPPORTED_ARCHS gfx1100 gfx1101 CACHE STRING "HIP architectures Strata supports")
-
+# Opt-in HIP configuration. Strata's CUDA-shaped kernels target wave32 RDNA2 / RDNA3 / RDNA4 (64 KiB LDS per
+# workgroup, a signed dot4 instruction). CMake/compiler discovery stays machine-independent; pass CMAKE_HIP_COMPILER when it
+# is not on PATH.
 if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
-  set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture")
+  set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture(s), e.g. gfx1100 or gfx1100;gfx1201")
 endif()
-
-# One entry per arch; a feature suffix (gfx1101:xnack-) is Strata's own spelling and is not accepted here.
-foreach(_strata_hip_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
-  if(NOT _strata_hip_arch IN_LIST STRATA_HIP_SUPPORTED_ARCHS)
-    message(FATAL_ERROR
-      "Strata HIP supports '${STRATA_HIP_SUPPORTED_ARCHS}' (wave32); CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
+# Validated on real cards: gfx1100 (RX 7900 XT / XTX) and gfx1201 (RX 9070 / 9070 XT, Radeon AI PRO R9700) by the
+# maintainers; gfx1101 (RX 7800 XT, #254) and gfx1200 (RX 9060 XT, #256) by their owners. gfx1102 (RX 7600) has the
+# same LDS limit and dot4 instruction and passed ctest (#192), but no model run has been reported yet. RDNA2 gfx1030 (RX 6800 / 6900) has the
+# same LDS limit and wave32 but an older dot4 instruction (v_dot4_i32_i8, hip_compat/intrinsics.hpp); a community
+# report ran it (#311), the maintainers have not.
+set(_strata_hip_validated gfx1100 gfx1201)
+set(_strata_hip_community gfx1101 gfx1200)
+set(_strata_hip_unvalidated gfx1102 gfx1030)
+# CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
+# spaces, which foreach(IN LISTS) would otherwise treat as one element.
+string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
+set(STRATA_HIP_ARCH_LIST "")
+foreach(_arch IN LISTS _strata_hip_norm)
+  if(_arch STREQUAL "")
+    continue()
   endif()
+  string(REGEX REPLACE ":.*$" "" _base "${_arch}")      # gfx1100:xnack- -> gfx1100
+  if(_base IN_LIST _strata_hip_validated)
+  elseif(_base IN_LIST _strata_hip_community)
+    message(STATUS "Strata HIP: ${_base} was validated by community reports (docs/AMD_HIP.md)")
+  elseif(_base IN_LIST _strata_hip_unvalidated)
+    message(WARNING "Strata HIP: ${_base} builds, but it is not validated on a real card yet; please report results")
+  else()
+    message(FATAL_ERROR
+      "Strata HIP supports wave32 gfx1100, gfx1101, gfx1200 and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "
+      "CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
+  endif()
+  list(APPEND STRATA_HIP_ARCH_LIST "${_base}")
 endforeach()
+list(REMOVE_DUPLICATES STRATA_HIP_ARCH_LIST)
+if(NOT STRATA_HIP_ARCH_LIST)
+  message(FATAL_ERROR "Strata HIP: CMAKE_HIP_ARCHITECTURES is empty")
+endif()
+# The compiled architectures reach the runtime device check (src/core/device.cu) as "gfx1100,gfx1201": a binary
+# carried to a card it has no code for stops at startup with a clear message instead of "invalid device function".
+string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 
 enable_language(HIP)
 find_package(hip CONFIG REQUIRED)
@@ -43,7 +66,7 @@ set(STRATA_HIP_COMPAT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/strata/hi
 add_library(strata_hip_runtime INTERFACE)
 target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1)
+target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA_HIP_ARCHS=\"${STRATA_HIP_ARCHS}\"")
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
 if(UNIX AND NOT APPLE)
   # Export the interposed HIP APIs from each executable, including to BLAS DSOs.
@@ -51,11 +74,19 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(strata_hip_runtime INTERFACE ${CMAKE_DL_LIBS})
   target_link_options(strata_hip_runtime INTERFACE "-Wl,--export-dynamic")
 endif()
-foreach(_language IN ITEMS CXX HIP)
+# The shim renames the CUDA runtime to HIP, force-included into every host and device source. On Windows the host
+# compiler is ROCm's clang++ too (tools/hip/build_windows.bat: CMake refuses to mix cl.exe with Clang HIP), which takes
+# -include like it does on Linux; an MSVC-style front end (cl / clang-cl) takes /FI instead. Forward slashes, so /FI
+# does not read the path's backslashes as escapes.
+file(TO_CMAKE_PATH "${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h" _strata_hip_force)
+if(MSVC)
+  target_compile_options(strata_hip_runtime INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:/FI${_strata_hip_force}>")
+else()
   target_compile_options(strata_hip_runtime INTERFACE
-    "$<$<COMPILE_LANGUAGE:${_language}>:-include>"
-    "$<$<COMPILE_LANGUAGE:${_language}>:${STRATA_HIP_COMPAT_INCLUDE_DIR}/cuda_runtime.h>")
-endforeach()
+    "$<$<COMPILE_LANGUAGE:CXX>:-include>" "$<$<COMPILE_LANGUAGE:CXX>:${_strata_hip_force}>")
+endif()
+target_compile_options(strata_hip_runtime INTERFACE
+  "$<$<COMPILE_LANGUAGE:HIP>:-include>" "$<$<COMPILE_LANGUAGE:HIP>:${_strata_hip_force}>")
 
 # CMake does not infer HIP from Strata's existing CUDA-shaped .cu suffixes.
 file(GLOB_RECURSE _strata_hip_sources CONFIGURE_DEPENDS
@@ -71,4 +102,4 @@ foreach(_source IN ITEMS tests/hip/intrinsics.cpp tests/hip/native_qsa_score.cpp
   endif()
 endforeach()
 
-message(STATUS "Strata: HIP enabled, arch ${CMAKE_HIP_ARCHITECTURES}")
+message(STATUS "Strata: HIP enabled, arch ${STRATA_HIP_ARCHS}")

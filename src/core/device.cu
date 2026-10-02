@@ -25,27 +25,120 @@ __global__ void poison_kernel(float* p, uint64_t n_floats) {
 }
 
 #if defined(STRATA_USE_HIP)
-// gcnArchName is the plain arch plus optional features ("gfx1101", "gfx1101:xnack-:sramecc-"), so the
-// arch is whatever precedes the first ':'.  Kept in step with STRATA_HIP_SUPPORTED_ARCHS in
-// cmake/hip_backend.cmake: a card that compiles but was never run is exactly the failure mode a
-// carried binary should trip on, so this list stays as narrow as the tested one.
-bool hip_arch_supported(const char* gcn_arch_name) {
-    static constexpr const char* kSupported[] = {"gfx1100", "gfx1101"};
-    for (const char* arch : kSupported) {
-        if (std::strncmp(gcn_arch_name, arch, std::strlen(arch)) == 0) return true;
+#if !defined(STRATA_HIP_ARCHS)
+#error "STRATA_HIP_ARCHS (the compiled HIP architectures) is set by cmake/hip_backend.cmake"
+#endif
+// "gfx1201:sramecc-:xnack-" -> "gfx1201"
+std::string base_arch(const char* gcn_arch_name) {
+    std::string arch(gcn_arch_name);
+    const size_t colon = arch.find(':');
+    if (colon != std::string::npos) arch.resize(colon);
+    return arch;
+}
+
+bool compiled_for(const std::string& arch) {
+    const std::string list = STRATA_HIP_ARCHS;
+    size_t a = 0;
+    while (a <= list.size()) {
+        size_t b = list.find(',', a);
+        if (b == std::string::npos) b = list.size();
+        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size()) return true;
+        a = b + 1;
     }
     return false;
+}
+
+std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
+    const std::string arch = base_arch(p.gcnArchName);
+    const std::string card = "GPU " + std::to_string(ordinal) + " (" + p.name + ", " + arch + ")";
+    if (!compiled_for(arch)) {
+        return card + " is not an architecture this Strata engine was compiled for (" + STRATA_HIP_ARCHS +
+               "); compile it for this card (./setup.sh --backend hip, or -DCMAKE_HIP_ARCHITECTURES=" + arch +
+               ", docs/AMD_HIP.md) or choose another GPU with HIP_VISIBLE_DEVICES";
+    }
+    if (p.warpSize != 32) {
+        return card + " runs wave" + std::to_string(p.warpSize) + "; Strata's HIP kernels need wave32";
+    }
+    return "";
 }
 #endif
 
 }  // namespace
+
+const char* compiled_gpu_archs() {
+#if defined(STRATA_USE_HIP)
+    return STRATA_HIP_ARCHS;
+#else
+    return "";
+#endif
+}
+
+int device_count() {
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess) {   // HIP without a usable device reports an error, not 0
+        cudaGetLastError();
+        return 0;
+    }
+    return count < 0 ? 0 : count;
+}
+
+bool device_summary(int ordinal, std::string& name, std::string& detail) {
+    cudaDeviceProp p{};
+    if (ordinal < 0 || ordinal >= device_count() || cudaGetDeviceProperties(&p, ordinal) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    char buf[160];
+#if defined(STRATA_USE_HIP)
+    std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
+                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
+#else
+    std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.major, p.minor,
+                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024));
+#endif
+    name = p.name;
+    detail = buf;
+    return true;
+}
+
+std::string gpu_arch_problem(int ordinal) {
+#if defined(STRATA_USE_HIP)
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
+        cudaGetLastError();
+        return "";
+    }
+    cudaDeviceProp p{};
+    if (cudaGetDeviceProperties(&p, ordinal) != cudaSuccess) {
+        cudaGetLastError();
+        return "";
+    }
+    return arch_problem(p, ordinal);
+#else
+    (void) ordinal;
+    return "";
+#endif
+}
+
+std::string device_code_error() {
+#if defined(STRATA_USE_HIP)
+    return "";   // gpu_arch_problem() checks the HIP architectures against STRATA_HIP_ARCHS, before this point
+#else
+    // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
+    cudaFuncAttributes a{};
+    const cudaError_t e = cudaFuncGetAttributes(&a, poison_kernel);
+    if (e == cudaSuccess) return {};
+    cudaGetLastError();
+    return cudaGetErrorString(e);
+#endif
+}
 
 DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
 #if defined(STRATA_USE_HIP)
-        throw CudaError("no HIP device is present; this backend targets RDNA3 wave32 (gfx1100, gfx1101)", -1);
+        throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
 #else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
@@ -78,20 +171,23 @@ DeviceInfo device_info(int ordinal) {
     // fp32-FMA fallback below sm_80, the tensor-core prompt kernels refuse and fall back).  Compiling for a
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
-    // backend runs on RDNA3 wave32 parts: gfx1100 (RX 7900 series, the validated reference) and gfx1101
-    // (RX 7700/7800 XT class).  Wave size is checked, not assumed - a wave64 build of the same arch
-    // would silently change every kernel's lane indexing.
+    // backend checks the card against the architectures the binary was compiled for (and wave32).
 #if defined(STRATA_USE_HIP)
-    if (!hip_arch_supported(p.gcnArchName) || p.warpSize != 32) {
-        throw CudaError(std::string("HIP backend needs an RDNA3 wave32 GPU (gfx1100 or gfx1101); this device reports ") +
-                            p.gcnArchName + " with wave" + std::to_string(p.warpSize),
-                        -1);
-    }
+    d.arch = base_arch(p.gcnArchName);
+    if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    if (d.cc_major * 10 + d.cc_minor < 75) {
+    // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
+    // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
+#if defined(STRATA_EXPERIMENTAL_SM60)
+    constexpr int kMinCc = 60;
+    const char* const kNeed = "6.0 or newer (this is the experimental Pascal / Volta build)";
+#else
+    constexpr int kMinCc = 75;
+    const char* const kNeed = "7.5 or newer (RTX 20 / 30 / 40 / 50 series)";
+#endif
+    if (d.cc_major * 10 + d.cc_minor < kMinCc) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) +
-                            "; Strata needs compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series)",
+                            "." + std::to_string(d.cc_minor) + "; Strata needs compute capability " + kNeed,
                         -1);
     }
 #endif

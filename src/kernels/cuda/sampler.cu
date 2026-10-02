@@ -19,6 +19,7 @@
 //   - `sampler_kernel` (`STRATA_OLD_SAMPLER=1`), the kernel of engine 0.1.20, kept as the reference.
 // The two new ones share `sampled_tail_warp` (top_p / min_p / temperature / draw on one warp).
 #include "strata/kernels/sampler.hpp"
+#include "strata/core/coupled_draft.hpp"
 
 #include <cuda_runtime.h>
 
@@ -357,8 +358,11 @@ __device__ __forceinline__ void warp_first(float& bv, int& bi) {
 /// the same argument, the sums in the same order, `cum += e / sum` with the same correctly rounded quotient - so
 /// the cut, the survivors and the pick are the same.  (`n_keep == 0`, reachable only with min_p > 1, which the
 /// callers clamp, read `sel_ids[-1]` in the old tail; it reads `sel_ids[0]` here.)
+/// kProb (the coupled draft only): lane 0 also writes the pick's probability under the final distribution to
+/// `*prob_out`.  The sampler's own calls take kProb = false, whose code is the tail above, unchanged.
+template <bool kProb = false>
 __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, int k, const SamplerParams& p, int t,
-                                  int* __restrict__ out, double* ex) {
+                                  int* __restrict__ out, double* ex, float* prob_out = nullptr) {
     const int lane = (int) (threadIdx.x & 31);
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
     int n_keep = k;
@@ -408,12 +412,14 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
     if (lane == 0) {
         const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
         double cum = 0.0;
-        int pick = sel_ids[n_keep > 0 ? n_keep - 1 : 0];
+        int pi = n_keep > 0 ? n_keep - 1 : 0;
+        int pick = sel_ids[pi];
         for (int i = 0; i < n_keep; ++i) {
             cum += ex[i];
-            if ((double) u < cum) { pick = sel_ids[i]; break; }
+            if ((double) u < cum) { pick = sel_ids[i]; pi = i; break; }
         }
         out[t] = pick;
+        if constexpr (kProb) *prob_out = n_keep > 0 ? (float) ex[pi] : 1.0f;
     }
 }
 
@@ -661,6 +667,89 @@ sampler_split_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vo
     sampled_tail_warp(sel_ids, sel_logit, k, p, t, out, ex);
 }
 
+// ---- COUPLED DRAFT SAMPLING (include/strata/core/coupled_draft.hpp): the MTP draft layer samples its draft with the
+// target's chain and the target's Philox draw.  Everything that varies per request or per round - the chain's
+// parameters, the seed, the counter (from the cell's step record), the penalty history - is read from DEVICE memory:
+// these kernels are captured into the drafter's round/step graphs.  One row, `nv` logits: the draft head's
+// vocabulary subset (rt/draft_vocab.bin) or the whole vocabulary; `sub_to_id` maps a subset index to its token id.
+
+/// The round's inputs: the request's SamplerParams and the history base (the last h slots before `cap`), from
+/// mapped host memory into the device copies the chain's kernels read.
+__global__ void coupled_stage_kernel(const SamplerParams* __restrict__ mp, const int* __restrict__ mh,
+                                     SamplerParams* __restrict__ dp, int* __restrict__ ring, int cap) {
+    const volatile int* s = (const volatile int*) mp;
+    int* d = (int*) dp;
+    for (int i = threadIdx.x; i < (int) (sizeof(SamplerParams) / sizeof(int)); i += blockDim.x) d[i] = s[i];
+    const int h = strata::core::coupled_hist_len(((const volatile SamplerParams*) mp)->penalty_last_n, cap);
+    const volatile int* vh = (const volatile int*) mh;
+    for (int i = cap - h + (int) threadIdx.x; i < cap; i += blockDim.x) ring[i] = vh[i];
+}
+
+/// The penalties, applied in place to the draft logits before the selection - the target applies the same
+/// `apply_penalties` to the same token with the same count over the same window before its own.  Draft j's window
+/// is the ring's [cap + j - h, cap + j): the base plus drafts 0 .. j-1.  A history token outside the draft head's
+/// subset has no logit here.  Each distinct token is penalised once: the entry whose `atomicOr` sets its bit does it.
+__global__ void coupled_penalize_kernel(float* __restrict__ logits, int nv, const int* __restrict__ id_to_sub,
+                                        int id_vocab, const SamplerParams* __restrict__ dp, const int* __restrict__ ring,
+                                        int cap, int j) {
+    const SamplerParams p = *dp;
+    const int h = strata::core::coupled_hist_len(p.penalty_last_n, cap);
+    if (h <= 0) return;
+    const int* hrow = ring + strata::core::coupled_hist_start(cap, j, h);
+    extern __shared__ unsigned int seen[];
+    const int words = (nv + 31) / 32;
+    for (int w = threadIdx.x; w < words; w += blockDim.x) seen[w] = 0u;
+    __syncthreads();
+    for (int i = threadIdx.x; i < h; i += blockDim.x) {
+        const int v = hrow[i];
+        if (v < 0 || v >= id_vocab) continue;
+        const int s = id_to_sub != nullptr ? id_to_sub[v] : v;
+        if (s < 0 || s >= nv) continue;
+        const unsigned bit = 1u << (s & 31);
+        if (atomicOr(&seen[s >> 5], bit) & bit) continue;
+        logits[s] = apply_penalties(logits[s], history_count(hrow, h, v), p);
+    }
+}
+
+/// The merge of `sampler_split_merge_kernel` (lists of `kpart` entries, the request's top_k taken from them), then
+/// `sampled_tail_warp` with the counter of the row that will verify this draft.  Lane 0 maps the pick to its token
+/// id, writes it and its probability, and appends it to the ring for the next draft's penalty window.
+__global__ void __launch_bounds__(32)
+coupled_merge_kernel(const int2* __restrict__ cand, int n_blocks, int nv, int kpart,
+                     const SamplerParams* __restrict__ dp, const int* __restrict__ step_rec,
+                     const int* __restrict__ sub_to_id, int* __restrict__ ring, int cap, int j, int* __restrict__ out_id,
+                     float* __restrict__ out_prob) {
+    const int lane = (int) threadIdx.x;
+    SamplerParams p = *dp;
+    p.counter = strata::core::coupled_draft_counter((int64_t) step_rec[0]);
+    const int k = sampled_k(p.top_k, nv);    // <= kpart: the first k of a union lie in the first k of each list
+    __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
+    __shared__ int sel_ids[kSelMax];
+    __shared__ float sel_logit[kSelMax];
+    __shared__ double ex[kSelMax];
+    __shared__ int pick[1];
+    __shared__ float prob[1];
+    for (int e = lane; e < n_blocks * kpart; e += 32) lists[e] = cand[e];
+    __syncwarp();
+    warp_merge_lists(lists, n_blocks, kpart, k, nv, [&](int i, float v, int id) {
+        if (lane == 0) { sel_ids[i] = id < nv ? id : 0; sel_logit[i] = v; }
+    });
+    __syncwarp();
+    if (p.greedy || p.temperature <= 0.0f) {   // never launched for greedy requests; the argmax, defensively
+        if (lane == 0) { pick[0] = sel_ids[0]; prob[0] = 1.0f; }
+    } else {
+        sampled_tail_warp<true>(sel_ids, sel_logit, k, p, 0, pick, ex, prob);
+    }
+    __syncwarp();
+    if (lane == 0) {
+        const int s = pick[0];
+        const int id = sub_to_id != nullptr ? sub_to_id[s] : s;
+        *out_id = id;
+        *out_prob = prob[0];
+        ring[cap + j] = id;
+    }
+}
+
 // Which sampled path runs, read once: `STRATA_OLD_SAMPLER=1` is `sampler_kernel` (engine 0.1.20),
 // `STRATA_SAMPLER_ONE_BLOCK=1` the one-block kernel; by default the split top_k wherever it applies.
 enum class SampledPath { Split, OneBlock, Old };
@@ -794,6 +883,51 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         std::exit(1);
     }
     if (stream == nullptr) cudaDeviceSynchronize();
+}
+
+namespace {
+int coupled_blocks(int nv) { return (nv + kSplitBlockSpan - 1) / kSplitBlockSpan; }
+int coupled_kpart(int nv) { return nv < kSelMax ? nv : kSelMax; }
+void coupled_check(const char* what) {
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "%s launch: %s\n", what, cudaGetErrorString(e));
+        std::exit(1);
+    }
+}
+}  // namespace
+
+size_t coupled_draft_scratch_bytes(int nv) {
+    if (nv <= 0 || coupled_blocks(nv) > kSplitMaxBlocks) return 0;
+    return (size_t) coupled_blocks(nv) * (size_t) kSelMax * sizeof(int2);
+}
+
+void coupled_draft_stage(const SamplerParams* mapped_params, const int32_t* mapped_hist, SamplerParams* params,
+                         int32_t* ring, int cap, void* stream) {
+    coupled_stage_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(mapped_params, mapped_hist, params, ring, cap);
+    coupled_check("coupled_draft_stage");
+}
+
+void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const int32_t* id_to_sub, int id_vocab,
+                          const SamplerParams* params, int32_t* ring, int cap, int j, const int32_t* step_rec,
+                          void* scratch, int32_t* out_id, float* out_prob, void* stream) {
+    const cudaStream_t s = (cudaStream_t) stream;
+    const int n_blocks = coupled_blocks(nv), kpart = coupled_kpart(nv);
+    if (nv <= 0 || n_blocks > kSplitMaxBlocks || scratch == nullptr) {
+        std::fprintf(stderr, "coupled_draft_sample: %d logits need scratch and at most %d blocks\n", nv, kSplitMaxBlocks);
+        std::exit(1);
+    }
+    coupled_penalize_kernel<<<1, 1024, (unsigned) ((nv + 31) / 32) * sizeof(unsigned), s>>>(logits, nv, id_to_sub,
+                                                                                           id_vocab, params, ring, cap, j);
+    coupled_check("coupled_penalize");
+    // the selection of the split sampler, unchanged: every 4,096-logit block's first `kpart` (the widest list,
+    // since the request's top_k is only known on the device), penalties already applied above
+    sampler_split_part_kernel<<<dim3((unsigned) n_blocks, 1u), kSplitWarps * 32, 0, s>>>(
+        logits, nv, nullptr, 0, SamplerParams{}, kpart, n_blocks, (int2*) scratch);
+    coupled_check("coupled_draft split part");
+    coupled_merge_kernel<<<1, 32, 0, s>>>((const int2*) scratch, n_blocks, nv, kpart, params, step_rec, sub_to_id, ring,
+                                          cap, j, out_id, out_prob);
+    coupled_check("coupled_draft merge");
 }
 
 }  // namespace strata::kernels

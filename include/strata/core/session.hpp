@@ -45,6 +45,20 @@ struct SessionState {
 
     float* R = nullptr;             ///< alias of `block.R`, named for what it means at this level
     int64_t k = 10;                 ///< experts per token
+
+    // **THE LAYER-RANGE CARVE (multi-GPU).**  A split stage's session used to carve state for ALL 48 layers
+    // (every QSA KV pool at max_cells, every GDN recurrence) while running only its slice - the same
+    // whole-model-sized-buffer disease the QSA chunked-prefill PR cured upstream.  A session now owns
+    // [layer_lo, layer_hi): `qsa_states`/`gdn_state` keep GLOBAL ordinal indexing, the arrays simply hold
+    // fewer rows, so per-layer consumers subtract `gdn_ord0`, and every old model-level `qsa_states[0]` use
+    // (the shared RoPE table, the prefill staging identity, the MTP rope borrow) reads `qsa_states[primary]`.
+    // A range with no QSA layer still carves ONE primary state so those model-level uses stay valid.
+    int64_t layer_lo = 0, layer_hi = 0;   ///< resolved by `session_init` (hi = n_layers for the full range)
+    int64_t qsa_ord0 = 0;                 ///< global QSA ordinal of the first allocated state
+    int64_t qsa_alloc = 0;                ///< allocated QSA states (>= 1 whenever the model has any)
+    int64_t gdn_ord0 = 0;                 ///< global GDN ordinal of `gdn_state` row 0
+    int64_t gdn_alloc = 0;                ///< allocated GDN rows
+    int qsa_primary() const { return (int) qsa_ord0; }
     /// The doorbell the host loop polls.  Null until a caller provides one - the engine runs without it, and
     /// neither `session_token` nor `session_replay` looks at it.
     const Doorbell* db = nullptr;
@@ -76,9 +90,18 @@ struct SessionState {
 /// Bytes for a whole session at `max_cells` of context.  Every layer's state is sized at once, because P2.T10
 /// requires ZERO token-path allocations - a `cudaMalloc` that happened on the first token of a longer sequence
 /// would satisfy every test here and fail that one.
-uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k);
-/// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.
-uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s);
+///
+/// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
+/// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
+/// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
+uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
+                       int64_t layer_hi = -1);
+/// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
+uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
+                      int64_t layer_lo = 0, int64_t layer_hi = -1);
+/// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
+/// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
+void session_release(SessionState& s);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);
@@ -207,7 +230,8 @@ struct SessionGraphs {
 /// replay re-reads every token - so the position is data, not an argument.  That is the whole reason rounds
 /// 211-214 moved the per-token counts into device buffers.
 bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionState& s, const float* parts,
-                     SessionGraphs& gr, std::string& err, bool split = false);
+                     SessionGraphs& gr, std::string& err, bool split = false, int64_t layer_lo = 0,
+                     int64_t layer_hi = -1);
 
 /// One token by REPLAYING the captured graphs.  Identical arithmetic to `session_token`; the only difference is
 /// that ~2,000 kernel launches become 48 graph launches.

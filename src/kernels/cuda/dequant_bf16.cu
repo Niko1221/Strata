@@ -67,6 +67,17 @@ __device__ __forceinline__ void group32(const uint8_t* row_blocks, int gi_in_row
             put(out, j, (float) (((b[6 + j] & 0x0F) | xh0) - 16) * d);
             put(out, j + 16, (float) (((b[6 + j] >> 4) | xh1) - 16) * d);
         }
+    } else if constexpr (TYPE == 7) {                              // Q5_1
+        const uint8_t* b = row_blocks + (size_t) gi_in_row * 24;
+        const float d = h2f(b), m = h2f(b + 2);
+        const uint32_t qh = (uint32_t) b[4] | ((uint32_t) b[5] << 8) |
+                            ((uint32_t) b[6] << 16) | ((uint32_t) b[7] << 24);
+        for (int j = 0; j < 16; ++j) {
+            const int xh0 = ((qh >> j) & 1) << 4;
+            const int xh1 = ((qh >> (j + 16)) & 1) << 4;
+            put(out, j, (float) ((b[8 + j] & 15) | xh0) * d + m);
+            put(out, j + 16, (float) ((b[8 + j] >> 4) | xh1) * d + m);
+        }
     } else if constexpr (TYPE == 8) {                              // Q8_0
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 34;
         const float d = h2f(b);
@@ -167,6 +178,7 @@ bool geometry(int type, int& block_elems, int& block_bytes) {
     switch (type) {
     case 2: block_elems = 32; block_bytes = 18; return true;
     case 6: block_elems = 32; block_bytes = 22; return true;
+    case 7: block_elems = 32; block_bytes = 24; return true;
     case 8: block_elems = 32; block_bytes = 34; return true;
     case 20: block_elems = 32; block_bytes = 18; return true;
     case 11: block_elems = 256; block_bytes = 110; return true;
@@ -195,6 +207,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     switch (type) {
     case 2: STRATA_DQ(2);
     case 6: STRATA_DQ(6);
+    case 7: STRATA_DQ(7);
     case 8: STRATA_DQ(8);
     case 11: STRATA_DQ(11);
     case 12: STRATA_DQ(12);

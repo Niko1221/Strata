@@ -43,8 +43,10 @@ now on; the answer is kept.
 **Not supported** (setup says so and names the cards that can be used instead):
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
-  own prompt buffers);
-- AMD and Intel GPUs, and a mix of NVIDIA with them.
+  own prompt buffers) - unless you name it with `--gpus`: then setup says the risk and asks (`--yes` with the named
+  cards goes ahead);
+- Intel GPUs, and a mix of NVIDIA and AMD cards. (AMD cards share a model among themselves: `./setup.sh --backend
+  hip --gpus 1,0`, see [AMD_HIP.md](AMD_HIP.md).)
 
 Or edit an existing config (`strata-*.json`), then restart:
 
@@ -52,6 +54,21 @@ Or edit an existing config (`strata-*.json`), then restart:
 "gpu": [0, 2],
 "layer_split": "auto"
 ```
+
+**Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
+(engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
+profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
+stays. On an R9700 32 GB + RX 9070 XT the R9700 holds all of the Coder's experts: with the flag 4K prompts read at
+1,776 tok/s instead of 1,244 (split) and decode runs at ~60 tok/s instead of ~51 (16K prompts ~5% slower than split).
+
+**Short prompts on a split (0.1.32, #340).** 0.1.30 gave each card's prompt path a loan from its own expert cache,
+refilled after every request; on cards that hold nearly all their experts that cost short prompts up to a third of
+their speed. 0.1.32 refills all cards at once, uses a smaller streaming ring on a split, and lets a card with free
+VRAM keep its own prompt buffers - the same output as 0.1.31, measured on an R9700 + RX 9070 XT: 2K prompts 993 ->
+1,265 tok/s, 16K 1,852 -> 1,950, decode unchanged. `STRATA_SPLIT_OWN=1` (opt-in) gives every card its own buffers:
+2K 1,450 and 16K 2,227 tok/s there, but a full card then keeps a different set of experts resident, so the output
+differs from the default's (stable and coherent); `STRATA_SPLIT_OWN=auto` does that only where the buffers are at
+most 12% of each card's VRAM.
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -94,8 +111,10 @@ into the card that owns the layer.
 - The prompt path has its own buffers on every card (1.5 GB each at the default 2048-token chunk; `--prefill 1024`
   halves that) instead of borrowing cache slots as one card does. An explicit `--expert-cache` on the first card is
   capped to leave room for them.
-- On Windows only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts, leaves WDDM refusing
-  allocations); the PCIe share covers those layers.
+- Under WDDM (Windows, and WSL2) only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts,
+  leaves WDDM refusing allocations); the rest streams through the pinned staging ring. A Linux driver has no such
+  limit, so there the whole arena is pinned (since 0.1.31; the cap cost a 4090 + 3060 split two thirds of its
+  prompt speed, #253). `STRATA_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on any OS.
 - Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
   Turing card runs the same kernels instead of the tensor-core prompt attention.
 

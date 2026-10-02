@@ -30,6 +30,7 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -60,6 +61,12 @@ public:
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
 
+    /// #267: raise every flag the window's spin kernels wait on past any ring (UINT32_MAX), so a window the GPU
+    /// cannot finish drains instead of staying resident, then wait up to `timeout_ms` for its streams.  For the
+    /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
+    /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
+    bool release_gpu_waits(int timeout_ms);
+
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
@@ -67,6 +74,9 @@ public:
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
+    /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
+    bool copy_logits(int t, float* host) const;
+    int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -109,6 +119,23 @@ public:
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
+    /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
+    /// the same stream and the drafter reads nothing it writes, so it overlaps the draft. Whoever reads or writes
+    /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
+    /// path, the end of a run) calls wait_commit() first.  STRATA_COMMIT_SYNC=1 keeps the wait.
+    static void set_commit_async(bool on);
+    /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
+    /// false with `err` when it failed.  Free when nothing is pending.
+    bool wait_commit(std::string& err);
+
+    /// Measurement hook (STRATA_LOGPOS): after run(), write one line per row t of the last window's head -
+    /// "pos target logprob top top_logprob hit extra_logprob target_logprob_without_extra" - where row t is the
+    /// distribution at pos0 + t, targets[t] is the token at pos0 + t + 1, extra_logprob is the log-probability of
+    /// `extra_id` in the same row, and the last column is the target's log-probability in that row renormalized
+    /// over every token but `extra_id` (both nan when they do not apply).  A layer split's earlier stage forwards
+    /// to the stage that holds the head.
+    bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
+                         std::string& err);
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
@@ -145,6 +172,7 @@ private:
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
+    std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
@@ -156,7 +184,8 @@ private:
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
-    static constexpr int kProfPer = 32;              // stamps per layer
+    static constexpr int kProfPer = 33;              // stamps per layer (32 left the hc-read second
+                                      // half's up-stamp at slot 32 = the next layer's slot 0: D8)
     bool prof_on_ = false;
     unsigned long long* prof_ = nullptr;              // device: n_layers * kProfPer + 4 stamps
     std::vector<unsigned long long> prof_h_;
@@ -191,6 +220,8 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
+    bool commit_pending_ = false;
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)

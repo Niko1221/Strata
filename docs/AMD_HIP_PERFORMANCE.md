@@ -34,9 +34,12 @@ GGUF/tokenizer/template, `--mmap-experts --resident-cpu-experts`, fixed ranked
 and `--vram-reserve-mib 1024`. Keep PLE on SSD.
 
 `--resident-cpu-experts` copies the complement of the static GPU cache to ordinary
-RAM. It requires mmap, a fixed expert profile, and disabled adaptation. It does
-not lock all data into RAM: temporary prefill borrowing and cache refill may
-still use the mapped fallback. Allocation needs sufficient available RAM;
+RAM. It requires mmap and a fixed expert profile. The slots the prompt path may
+borrow keep their experts in RAM too as far as the budget below allows (the rest
+use the mapped fallback while borrowed and for their refill), and adaptive swaps
+(`--adapt-every`) exchange experts between VRAM and the RAM copy without reading
+the file. The copy is pageable; `--resident-experts` (CUDA, chosen by setup)
+page-locks it and uses 4 GiB of headroom. Allocation needs sufficient available RAM;
 on Linux this option requires readable standard cgroup-v2 mounts. For each
 finite cgroup ancestor, the guard credits only `inactive_file` after subtracting
 `file_dirty` and `file_writeback`, capped by current usage; it remains bounded by

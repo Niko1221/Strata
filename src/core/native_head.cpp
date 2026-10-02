@@ -16,22 +16,21 @@ NativeHead::~NativeHead() {
     if (weights_) cudaFree(weights_);
 }
 
-bool NativeHead::load(const std::string& path, int64_t n_in, int64_t n_out, std::string& err) {
+bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
     if (loaded()) { err = "native head is already loaded"; return false; }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
         return false;
     }
     try {
-        strata::GgufFile gguf(path);
-        err = strata::check_architecture(gguf);
+        // The architecture is the metadata shard's; output.weight comes from whichever shard holds it (shard 2
+        // of Unsloth's UD-Q4_K_XL, whose shard 1 holds no tensor).  GgufModel refuses a duplicate across shards.
+        const strata::GgufModel model(shards);
+        err = strata::check_architecture(model.meta());
         if (!err.empty()) return false;
-        const strata::TensorInfo* tensor = nullptr;
-        for (const auto& candidate : gguf.tensors()) {
-            if (candidate.name != "output.weight") continue;
-            if (tensor) { err = "native head: duplicate output.weight"; return false; }
-            tensor = &candidate;
-        }
+        size_t at = 0;
+        const strata::TensorInfo* tensor = model.find("output.weight", &at);
+        const strata::GgufFile& gguf = model.shard(at);
         if (!tensor || !strata::kernels::native_mmvq_supported((int) tensor->type) || tensor->shape.size() != 2 ||
             tensor->shape[0] != (uint64_t) n_in || tensor->shape[1] != (uint64_t) n_out) {
             err = "native head: expected a natively supported output.weight with the canonical head dimensions";
@@ -106,20 +105,31 @@ NativeEmbed::~NativeEmbed() {
     else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
 }
 
-bool NativeEmbed::load(const std::string& path, int64_t n_embd, int64_t n_vocab, std::string& err) {
+bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err) {
     try {
-        strata::GgufFile gguf(path);
-        const strata::TensorInfo* t = nullptr;
-        for (const auto& c : gguf.tensors())
-            if (c.name == "token_embd.weight") t = &c;
+        const strata::GgufModel model(shards);
+        // --embd-gguf's one-tensor file (tools/embd_bf16_pack.py) says "strata-embd": only its tensor is checked
+        const strata::MetaValue* arch = model.meta().get("general.architecture");
+        err = arch != nullptr && arch->s == "strata-embd" ? std::string() : strata::check_architecture(model.meta());
+        if (!err.empty()) { err = "native embedding: " + err; return false; }
+        size_t at = 0;
+        const strata::TensorInfo* t = model.find("token_embd.weight", &at);
+        const strata::GgufFile& gguf = model.shard(at);
         if (!t || t->shape.size() != 2 || t->shape[0] != (uint64_t) n_embd || t->shape[1] != (uint64_t) n_vocab ||
-            !strata::kernels::iq_supported((int) t->type) || n_embd % 256) {
+            !strata::kernels::embed_type_supported((int) t->type) || n_embd % 256) {
             err = "native embedding: token_embd.weight is absent, of another shape, or of a type without a GPU "
                   "dequantizer";
             return false;
         }
         row_ = strata::kernels::iq_row_bytes((int) t->type, n_embd);
         bytes_ = (uint64_t) row_ * (uint64_t) n_vocab;
+        // the table is copied out of the mapping below: a truncated shard must be an error, not a read past EOF
+        if (!model.in_bounds(*t, at) || strata::tensor_payload_bytes(*t) != bytes_) {
+            err = "native embedding: token_embd.weight's payload is truncated or not " + std::to_string(bytes_) +
+                  " B (" + gguf.path() + ")";
+            bytes_ = 0;
+            return false;
+        }
         if (cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
             // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM
@@ -140,10 +150,31 @@ bool NativeEmbed::load(const std::string& path, int64_t n_embd, int64_t n_vocab,
         } else {
             std::memcpy(host_, gguf.tensor_data(*t), bytes_);
             void* d = nullptr;
+#if defined(STRATA_USE_HIP)
+            // #325: the Windows HIP stack can refuse the device alias of a mapped allocation (and, when it gives
+            // one, it is the host address itself - unified addressing; kernels read it correctly there, a
+            // device-to-device copy into it does not land: tests/hip/mapped_alias). The table is only gathered from,
+            // so without an alias it goes into VRAM like the unpinnable case above, instead of failing the start.
+            if (cudaHostGetDevicePointer(&d, host_, 0) != cudaSuccess || d == nullptr) {
+                cudaGetLastError();
+                d = nullptr;
+                if (cudaMalloc(&d, bytes_) != cudaSuccess ||
+                    cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+                    if (d) cudaFree(d);
+                    cudaGetLastError();
+                    err = "native embedding: no device alias for the mapped table, and no VRAM to copy it into";
+                    return false;
+                }
+                cudaFreeHost(host_);   // the destructor frees dev_ when host_ is null
+                host_ = nullptr;
+                std::fprintf(stderr, "strata: native embedding: no device alias for the mapped table, kept in VRAM\n");
+            }
+#else
             if (cudaHostGetDevicePointer(&d, host_, 0) != cudaSuccess) {
                 err = "native embedding: no device alias for the mapped table";
                 return false;
             }
+#endif
             dev_ = d;
         }
         type_ = (int) t->type;

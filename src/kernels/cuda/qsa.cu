@@ -40,6 +40,7 @@
 //    Every comparison still passed at any sane tolerance, the spare key landing 0.4 f32 ulp away; only a
 //    BIT-EXACT assertion plus a full-precision probe of the intermediate found it.  That is the strongest
 //    argument in this file for keeping both.
+#include "strata/core/emulate.hpp"
 #include "strata/kernels/qsa.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
@@ -184,10 +185,18 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
             ss = __dadd_rn(ss, __dmul_rn(v, v));
         }
         const double inv = __ddiv_rn(1.0, __dsqrt_rn(ss / (double) idx_dim + (double) eps));
-        dead[d] = (float) (p * inv * (double) w_k_norm[d]);
-        // rope at position 0 is the identity here (cos = 1, sin = 0 exactly), so no rotation is applied and
-        // the parity test asserts the value is bit-exact - which is what makes skipping it legitimate.
-        pooled[d] = dead[d];
+        float y = (float) (p * inv * (double) w_k_norm[d]);
+        // The spare rotates at position 0 - ALWAYS row 0 of the table, whatever `pos_base` is, as the native
+        // indexer's spare does.  At angle 0 the sine is exactly 0 in every scaling (sin(0) * mscale), so the
+        // pair rotation reduces to `v * cos_tab[pair]` with no partner element to read (and no barrier).
+        // Unscaled, row 0 is exactly (1, 0) and `v * 1.0f` is `v` bit for bit - today's value, which the
+        // parity test holds bit-exact.  Under YaRN row 0 is (mscale, 0): the rotated dims carry the magnitude
+        // correction exactly like every other pooled row and like the native kernel's spare (the unrotated
+        // dims pass through, as in the rotation of the completed blocks below).  Skipping the rotation here,
+        // as this kernel once did, left `dead` and `pooled[0]` the only unscaled keys of a scaled cache.
+        if (d < n_rot) y *= cos_tab[d % (n_rot / 2)];
+        dead[d] = y;
+        pooled[d] = y;
     }
 
     if (slot != r - 1) return;
@@ -665,6 +674,7 @@ void qsa_attend_step(const float* q, const uint16_t* k_scratch, const uint16_t* 
         int dev = 0, max_shared = 0;
         cudaGetDevice(&dev);
         cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+        max_shared = strata::smem_optin_of(max_shared);
         if ((int) smem > max_shared) {
             std::fprintf(stderr, "qsa: qsa_attend: max_ids %lld needs %zu B of shared, over the %d B limit\n",
                          (long long) max_ids, smem, max_shared);

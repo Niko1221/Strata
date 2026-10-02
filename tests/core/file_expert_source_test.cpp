@@ -7,6 +7,7 @@
 #include "ggml.h"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -206,6 +207,52 @@ void test_complement_plan() {
     require(!make_cache_complement_plan(2, 3, {0, 5}, {}, {}, offsets, bytes, error), "zero-size layer accepted");
 }
 
+void test_resident_lend_region() {
+    using namespace strata::core::detail;
+    // four slots (sizes 5, 3, 3, 5); the experts no slot holds take 10 bytes
+    const std::vector<uint64_t> slots{5, 3, 3, 5};
+    require(choose_resident_keep_from(slots, 10, 9, 1) == -1, "a base larger than the budget was accepted");
+    require(choose_resident_keep_from(slots, 10, 10, 1) == 4, "no room: the lend region must stay on the file");
+    require(choose_resident_keep_from(slots, 10, 15, 1) == 3, "the last slot fits and must be kept first");
+    require(choose_resident_keep_from(slots, 10, 17, 1) == 3, "a slot that does not fit ends the lend region's walk");
+    require(choose_resident_keep_from(slots, 10, 18, 1) == 2, "two slots fit");
+    require(choose_resident_keep_from(slots, 10, 100, 1) == 1, "the walk must stop at the lend region's first slot");
+    require(choose_resident_keep_from(slots, 10, 100, -1) == 4, "no lend region kept slots in RAM");
+    require(choose_resident_keep_from(slots, 10, 100, 9) == 4, "an out-of-range lend region kept slots in RAM");
+    require(choose_resident_keep_from({}, 0, 0, 0) == 0, "an empty cache");
+}
+
+void test_resident_exchange() {
+    using namespace strata::core;
+    using namespace strata::core::detail;
+    // 2 layers x 3 experts; the GPU holds (0,1) and (1,2): the compact copy holds the other four
+    std::vector<uint64_t> offsets;
+    uint64_t bytes = 0;
+    std::string error;
+    require(make_cache_complement_plan(2, 3, {3, 5}, {{0, 1}, {1, 2}}, {}, offsets, bytes, error), error);
+    const std::vector<uint64_t> before = offsets;
+    // (1,0) moves into the GPU, (1,2) leaves it: (1,2) takes (1,0)'s bytes' place
+    require(exchange_cache_complement(offsets, 3, 5), "a valid exchange was refused");
+    require(offsets[5] == before[3] && offsets[3] == kNoCacheComplement, "the exchange did not move the place");
+    for (size_t i : {0u, 1u, 2u, 4u}) require(offsets[i] == before[i], "an exchange touched another expert");
+    // the copy's size and its set of places are unchanged
+    std::vector<uint64_t> a, b;
+    for (uint64_t o : before) if (o != kNoCacheComplement) a.push_back(o);
+    for (uint64_t o : offsets) if (o != kNoCacheComplement) b.push_back(o);
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    require(a == b, "an exchange changed the compact copy's places");
+    const std::vector<uint64_t> after = offsets;
+    require(!exchange_cache_complement(offsets, 3, 0), "an `in` the copy does not hold was accepted");
+    require(!exchange_cache_complement(offsets, 0, 2), "an `out` the copy holds already was accepted");
+    require(!exchange_cache_complement(offsets, 0, 0), "a self-exchange was accepted");
+    require(!exchange_cache_complement(offsets, 0, 6), "an out-of-range `out` was accepted");
+    require(offsets == after, "a refused exchange changed the offsets");
+    // and back: the copy is again what the plan makes for the original placement
+    require(exchange_cache_complement(offsets, 5, 3), "the reverse exchange was refused");
+    require(offsets == before, "exchanging back did not restore the plan");
+}
+
 void test_cgroup_memory_budget() {
     using namespace strata::core::detail;
     constexpr uint64_t GiB = 1ull << 30;
@@ -246,6 +293,8 @@ void test_cgroup_memory_budget() {
 int main() {
     try {
         test_complement_plan();
+        test_resident_lend_region();
+        test_resident_exchange();
         test_cgroup_memory_budget();
         test_canonical_layout();
 #if defined(STRATA_NATIVE_EXPERTS)
