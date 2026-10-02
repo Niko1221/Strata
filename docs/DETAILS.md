@@ -397,11 +397,12 @@ Terminal chat: `.venv/bin/python chat.py`.
 ## Sharing the GPU with other programs (optional)
 
 By default the model stays loaded until you close Strata. On a PC that also games, renders or runs another model
-server, three server options (all off by default; also as keys in `strata-<model>.json`) give the VRAM back:
+server, four server options (all off by default; also as keys in `strata-<model>.json`) give the VRAM back:
 
 | Option | Config key | What it does |
 | --- | --- | --- |
 | `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again |
+| `--cache-release-idle 300` | `"cache_release_idle_s": 300` | give the expert cache's VRAM back after 300 s without requests and keep the model loaded; the next request takes it again in a few seconds (see below) |
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
 
@@ -412,6 +413,31 @@ are on; it is started again first, as at a start - so their VRAM and RAM go stra
 the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere. Measured on an RTX 5060 Ti
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
+
+**Give back only the expert cache (opt-in, #533):** the expert cache is most of the VRAM a MoE model takes, and it is
+only a copy: every expert is also in RAM. With `--expert-cache-release` in the engine's arguments the engine allocates
+the cache so that it can hand the memory back to the OS and take it again while the model, the context and the
+conversation cache stay loaded. `POST /cache/release` gives it back now and `POST /cache/refill` takes it again
+(`409` while a request is running, `400` when the engine cannot, e.g. without the engine option); a request that
+arrives while it is given back refills it first, so a client needs nothing but the usual requests. The server option
+`--cache-release-idle` adds the engine option itself and gives the cache back after that many seconds without
+requests. The cache keeps its address while it is given back, so the CUDA graphs and the experts' pointers stay valid
+and a refill copies the same experts back into the same slots.
+
+Measured on an RTX 3090 24 GB (Windows 11, driver 616.56) with a Qwen3.8-Flash-Next fine-tune at IQ2_XS, `--expert-cache auto`:
+
+| | |
+| --- | --- |
+| VRAM given back | 14.5 GiB (10,800 experts) in ~50 ms |
+| refill | 1.7-2.5 s from RAM; 0 of 10,800 slots differed from their RAM copy after 3 release/refill cycles (`STRATA_VERIFY_REFILL=1` checks every slot) |
+| a ComfyUI video render with the model loaded | 176 s with the cache in VRAM, 128 s with it given back |
+| decoding after a refill | ~72 tok/s (a 400-token answer) |
+
+Only the expert cache is given back: the dense weights, the KV cache and the engine's buffers stay (the card then
+held about 7 GiB, the desktop included). It works on NVIDIA (CUDA's virtual memory API); on AMD (HIP), with a layer
+split and in the resident RAM mode the engine says so and keeps the cache as before. Refill when the VRAM is free: on
+Windows a refill into a card another program still fills makes the driver move memory to shared system RAM, and
+decoding then ran at ~10-17 tok/s in the same setup until the other program let go.
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.

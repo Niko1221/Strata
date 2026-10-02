@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, EngineStuck, MockEngine, Service, StrataEngine, serve
+from serve.server import ByteTokenizer, EngineDied, EngineStuck, MockEngine, Service, StrataEngine, engine_args, serve
 
 
 class ResidentEngine(StrataEngine):
@@ -41,7 +41,16 @@ class ResidentEngine(StrataEngine):
         self.unloaded = True
 
     def generate(self, *args, **kwargs):
+        self.released = False                           # the engine refills its cache before a request
         yield from self.reply.generate(*args, **kwargs)
+
+    def cache_command(self, cmd, timeout=120.0):
+        self.cache_commands = getattr(self, "cache_commands", []) + [cmd]
+        if cmd == "RELEASE":
+            self.released = True
+            return {"status": "released", "experts": 10800, "freed_mib": 14835, "ms": 50.0}
+        self.released = False
+        return {"status": "refilled", "experts": 10800, "ms": 1800.0}
 
 
 class Lifecycle(unittest.TestCase):
@@ -164,6 +173,40 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.request("/v1/unload", {})[0], 409)
         self.assertEqual(self.engine.closes, 0)
         self.assertEqual(self.request("/v1/load", {}, {"Content-Type": "text/plain"})[0], 415)
+
+    def test_cache_release_and_refill(self):
+        self.assertEqual(self.request("/cache/release", {}), (200, {"status": "not loaded"}))
+        self.engine.loaded = True
+        with self.svc.fifo:
+            self.assertEqual(self.request("/cache/release", {})[0], 409)
+        code, r = self.request("/cache/release", {})
+        self.assertEqual((code, r["status"], r["freed_mib"]), (200, "released", 14835))
+        self.assertEqual(self.request("/cache/refill", {})[1]["status"], "refilled")
+        self.assertEqual(self.engine.cache_commands, ["RELEASE", "REFILL"])
+        self.assertTrue(self.engine.loaded)             # the model stays loaded throughout
+        self.engine.cache_command = mock.Mock(side_effect=ValueError("not with a layer split"))
+        code, r = self.request("/cache/release", {})
+        self.assertEqual(code, 400)
+        self.assertIn("layer split", r["error"]["message"])
+
+    def test_idle_cache_release_waits_for_quiet(self):
+        self.engine.loaded = True
+        self.svc.last_request_at = time.time()
+        self.assertEqual(self.svc.cache("release", idle_for=60)["status"], "busy")
+        self.assertFalse(getattr(self.engine, "released", False))
+        self.svc.last_request_at = time.time() - 61
+        self.assertEqual(self.svc.cache("release", idle_for=60)["status"], "released")
+        self.assertIsNotNone(self.svc.cache_released_at)
+        chat = {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 32, "reasoning_effort": "none"}
+        self.assertEqual(self.request("/v1/chat/completions", chat)[0], 200)
+        self.assertFalse(self.engine.released)
+        self.assertGreaterEqual(self.svc.last_request_at, self.svc.cache_released_at)
+
+    def test_idle_cache_release_turns_the_engine_flag_on(self):
+        self.assertIn("--expert-cache-release", engine_args({"args": ["--pack", "p"], "cache_release_idle_s": 300}))
+        self.assertNotIn("--expert-cache-release", engine_args({"args": ["--pack", "p"]}))
+        once = engine_args({"args": ["--expert-cache-release"], "cache_release_idle_s": 300})
+        self.assertEqual(once.count("--expert-cache-release"), 1)
 
 
 if __name__ == "__main__":

@@ -150,6 +150,19 @@ public:
     bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
     bool sync_queued(std::string& err);
 
+    /// Before open(): back the slot arena with CUDA virtual memory, so release_memory()/restore_memory() can give the
+    /// VRAM back and take it again AT THE SAME DEVICE ADDRESS.  Off by default (plain cudaMalloc, unchanged).
+    void set_releasable(bool on) { releasable_ = on; }
+    /// True when the arena was allocated releasable (the device supports VMM and set_releasable(true) was called).
+    bool can_release() const { return vmm_; }
+    bool released() const { return released_; }
+    /// Unmaps and frees the arena's physical memory; the address range stays reserved, slot_of() and the residency
+    /// table are untouched.  The caller makes sure nothing reads the slots until restore_memory() succeeds.
+    bool release_memory(std::string& err);
+    /// Maps new physical memory at the same address.  The slot CONTENTS are undefined afterwards: the caller refills.
+    /// On failure the cache stays released and err says why (e.g. the VRAM is still in use by another program).
+    bool restore_memory(std::string& err);
+
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
     /// THE CACHE HOLDS THE EXPERT IT CLAIMS TO.**  A slot table that is right about indices and wrong about
     /// bytes produces a plausible token, which is exactly the failure this project has paid for most often.
@@ -177,6 +190,16 @@ private:
     bool per_layer_ = false;
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
+    /// --expert-cache-release: the VMM arena (CUDA only; a plain cudaMalloc when the device has no VMM).
+    bool releasable_ = false;
+    bool vmm_ = false;
+    bool released_ = false;
+    uint64_t vmm_handle_ = 0;
+    uint64_t vmm_bytes_ = 0;
+    int vmm_device_ = 0;
+    bool vmm_alloc(uint64_t bytes, std::string& err);
+    bool vmm_map(std::string& err);
+    void vmm_free();
     int64_t admitted_ = 0;
 };
 

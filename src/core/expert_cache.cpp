@@ -2,6 +2,9 @@
 #include "strata/core/expert_cache.hpp"
 
 #include <cuda_runtime.h>
+#if !defined(STRATA_USE_HIP)
+#include <cuda.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -158,6 +161,164 @@ bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
 }
 #endif
 
+// --expert-cache-release: the VMM arena.  The device address is baked into the captured graphs, so the range is
+// reserved once and only its PHYSICAL memory is unmapped (release_memory) and remapped (restore_memory) - the
+// address never changes, so nothing that points at a slot has to be rebuilt.
+bool ExpertCache::vmm_alloc(uint64_t bytes, std::string& err) {
+#if defined(STRATA_USE_HIP)
+    (void) bytes;
+    err = "ExpertCache: a releasable cache needs CUDA";
+    return false;
+#else
+    if (cudaGetDevice(&vmm_device_) != cudaSuccess) {
+        err = "ExpertCache: cudaGetDevice failed";
+        return false;
+    }
+    CUdevice cu_dev;
+    if (cuDeviceGet(&cu_dev, vmm_device_) != CUDA_SUCCESS) {
+        err = "ExpertCache: cuDeviceGet failed";
+        return false;
+    }
+    int supported = 0;
+    if (cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, cu_dev) !=
+        CUDA_SUCCESS ||
+        supported == 0) {
+        err = "ExpertCache: the device does not support CUDA virtual memory management";
+        return false;
+    }
+    CUmemAllocationProp prop = {};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = vmm_device_;
+    size_t gran = 0;
+    if (cuMemGetAllocationGranularity(&gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || gran == 0) {
+        err = "ExpertCache: cuMemGetAllocationGranularity failed";
+        return false;
+    }
+    vmm_bytes_ = (bytes + gran - 1) / gran * gran;
+    CUdeviceptr ptr = 0;
+    if (cuMemAddressReserve(&ptr, vmm_bytes_, 0, 0, 0) != CUDA_SUCCESS) {
+        err = "ExpertCache: cuMemAddressReserve failed";
+        return false;
+    }
+    base_ = (uint8_t*) ptr;
+    if (!vmm_map(err)) {
+        (void) cuMemAddressFree(ptr, vmm_bytes_);
+        base_ = nullptr;
+        return false;
+    }
+    vmm_ = true;
+    released_ = false;
+    return true;
+#endif
+}
+
+#if !defined(STRATA_USE_HIP)
+namespace {
+// cuGetErrorString hands the text back through an out-parameter (and leaves it null for an unknown code)
+const char* cu_err(CUresult r) {
+    const char* s = nullptr;
+    return cuGetErrorString(r, &s) == CUDA_SUCCESS && s != nullptr ? s : "unknown CUDA driver error";
+}
+}  // namespace
+#endif
+
+#if !defined(STRATA_USE_HIP)
+bool ExpertCache::vmm_map(std::string& err) {
+    CUmemAllocationProp prop = {};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = vmm_device_;
+    CUmemGenericAllocationHandle h = 0;
+    CUresult r = cuMemCreate(&h, vmm_bytes_, &prop, 0);
+    if (r != CUDA_SUCCESS) {
+        err = std::string("ExpertCache: cuMemCreate failed (") + std::to_string((int) r) + "): " + cu_err(r);
+        return false;
+    }
+    r = cuMemMap((CUdeviceptr) base_, vmm_bytes_, 0, h, 0);
+    if (r != CUDA_SUCCESS) {
+        (void) cuMemRelease(h);
+        err = std::string("ExpertCache: cuMemMap failed (") + std::to_string((int) r) + "): " + cu_err(r);
+        return false;
+    }
+    CUmemAccessDesc acc = {};
+    acc.location = prop.location;
+    acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    r = cuMemSetAccess((CUdeviceptr) base_, vmm_bytes_, &acc, 1);
+    if (r != CUDA_SUCCESS) {
+        (void) cuMemUnmap((CUdeviceptr) base_, vmm_bytes_);
+        (void) cuMemRelease(h);
+        err = std::string("ExpertCache: cuMemSetAccess failed (") + std::to_string((int) r) + "): " + cu_err(r);
+        return false;
+    }
+    vmm_handle_ = (uint64_t) h;
+    return true;
+}
+#endif
+
+void ExpertCache::vmm_free() {
+#if !defined(STRATA_USE_HIP)
+    if (!vmm_) return;
+    (void) cudaDeviceSynchronize();
+    if (!released_) {
+        (void) cuMemUnmap((CUdeviceptr) base_, vmm_bytes_);
+        (void) cuMemRelease((CUmemGenericAllocationHandle) vmm_handle_);
+    }
+    (void) cuMemAddressFree((CUdeviceptr) base_, vmm_bytes_);
+#endif
+    base_ = nullptr;
+    vmm_ = false;
+    released_ = false;
+    vmm_handle_ = 0;
+    vmm_bytes_ = 0;
+}
+
+bool ExpertCache::release_memory(std::string& err) {
+    if (!vmm_) {
+        err = "ExpertCache: not releasable (start the engine with --expert-cache-release)";
+        return false;
+    }
+    if (released_) return true;
+#if !defined(STRATA_USE_HIP)
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "ExpertCache: cudaDeviceSynchronize failed before the release";
+        return false;
+    }
+    CUresult r = cuMemUnmap((CUdeviceptr) base_, vmm_bytes_);
+    if (r != CUDA_SUCCESS) {
+        err = std::string("ExpertCache: cuMemUnmap failed (") + std::to_string((int) r) + "): " + cu_err(r);
+        return false;
+    }
+    r = cuMemRelease((CUmemGenericAllocationHandle) vmm_handle_);
+    if (r != CUDA_SUCCESS) {
+        err = std::string("ExpertCache: cuMemRelease failed (") + std::to_string((int) r) + "): " + cu_err(r);
+        return false;
+    }
+    vmm_handle_ = 0;
+    released_ = true;
+    return true;
+#else
+    (void) err;
+    return false;
+#endif
+}
+
+bool ExpertCache::restore_memory(std::string& err) {
+    if (!vmm_) {
+        err = "ExpertCache: not releasable (start the engine with --expert-cache-release)";
+        return false;
+    }
+    if (!released_) return true;
+#if !defined(STRATA_USE_HIP)
+    if (!vmm_map(err)) return false;
+    released_ = false;
+    return true;
+#else
+    (void) err;
+    return false;
+#endif
+}
+
 bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
                        std::string& err) {
     close();
@@ -193,7 +354,14 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
     }
 
-    if (cudaMalloc((void**) &base_, (size_t) want) != cudaSuccess) {
+    if (releasable_) {
+        if (!vmm_alloc(want, err)) {
+            std::fprintf(stderr, "strata: the expert cache cannot be releasable (%s); allocating it the usual way\n",
+                         err.c_str());
+            err.clear();
+        }
+    }
+    if (base_ == nullptr && cudaMalloc((void**) &base_, (size_t) want) != cudaSuccess) {
         base_ = nullptr;
         char buf[256];
         std::snprintf(buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s",
@@ -273,7 +441,9 @@ void ExpertCache::close() {
     blocking_staging_bytes_ = 0;
 #endif
     off_.clear();
-    if (base_ != nullptr) {
+    if (vmm_) {
+        vmm_free();
+    } else if (base_ != nullptr) {
         cudaFree(base_);
         base_ = nullptr;
     }

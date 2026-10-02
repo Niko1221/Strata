@@ -295,6 +295,7 @@ struct Options {
     /// to them.  Measured at 256 slots: **1781 of 60000 = 2.97%**, against **21.4%** for 8 slots per layer and
     /// **70.4%** for 64, from `Memory/cache_allocation.py` on the same run's routing.  Off by default.
     bool expert_cache_per_layer = false;
+    bool expert_cache_release = false;   // --expert-cache-release: the serve loop's RELEASE / REFILL commands
     /// The PLE gather's prefetch, as an A/B arm.  The gather measured 2.10-2.61 ms/token because its sixteen
     /// row reads are sixteen SEPARATE page faults into a 26.8 GB mapping; see `ple_prefetch_enable`.
     bool no_ple_prefetch = false;
@@ -558,6 +559,9 @@ void usage() {
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
                  "                       and measured **2.97%%**.  Per-layer, the same routing gives 21.4%% at 8\n"
                  "                       slots/layer and 70.4%% at 64.\n"
+                 "  --expert-cache-release  with --expert-cache: the serve loop answers RELEASE (give the cache's\n"
+                 "                       VRAM back to the OS) and REFILL (take it again) without moving the cache's\n"
+                 "                       device address, so the captured graphs keep working.  Off by default.\n"
                  "  --no-host-worker     R2.2: the A/B arm.  By default the HOST THREAD joins the drain, so the\n"
                  "                       pool is six threads on six cores instead of five plus an idle core;\n"
                  "                       this flag restores the five-worker form for comparison on `pool phases`.\n"
@@ -1263,6 +1267,7 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-swaps") o.adapt_swaps = std::atoi(next("--adapt-swaps"));
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
+        else if (a == "--expert-cache-release") o.expert_cache_release = true;
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--expert-profile-save") o.expert_profile_save = next("--expert-profile-save");
@@ -2825,6 +2830,7 @@ int main(int argc, char** argv) {
         // page back while the verify graph spun on a host flag never finished.  So the slots are zeroed and the
         // free figure read again; while it is short of the reserve the cache is reopened smaller.
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
+        xcache.set_releasable(o.expert_cache_release);
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
         int zero_reads = 0;
@@ -4573,6 +4579,9 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        // RELEASE/REFILL: the experts that were in the cache when it was released, as (residency index, slot).
+        // REFILL refills exactly these, so the residency table never has to be rebuilt.
+        std::vector<std::pair<int32_t, int32_t>> released;
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
@@ -4665,6 +4674,7 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> resident(host_res.size(), 0);
             for (size_t i = 0; i < host_res.size(); ++i) resident[i] = host_res[i] >= 0;
             for (const auto& p : pending) resident[(size_t) p.first] = 1;
+            for (const auto& p : released) resident[(size_t) p.first] = 1;   // released: resident again at the next REFILL
             std::string e;
             const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, heat,
                                                                    profile_loaded);
@@ -4836,12 +4846,114 @@ int main(int argc, char** argv) {
         bool mrope_identity = true;
         std::vector<float> img_rows;
         std::vector<const float*> row_ptr;
+        // --expert-cache-release.  RELEASE: hand the cache's VRAM back to other programs.  Every resident expert is
+        // marked not resident first (so nothing can read a slot whose memory is gone) and remembered in `released`, so
+        // REFILL can put exactly those experts back in exactly those slots.
+        auto release_cache = [&](std::string& e) -> bool {
+            if (!xcache.can_release()) {
+                e = "the expert cache is not releasable (start the engine with --expert-cache-release)";
+                return false;
+            }
+            if (multi_gpu || !stages.empty()) {
+                e = "not with a layer split";
+                return false;
+            }
+            if (src.complement_ready()) {
+                e = "not in the resident RAM mode: some experts are only in VRAM";
+                return false;
+            }
+            for (const auto& p : pf_parts)
+                if (!p.lent.empty()) {
+                    e = "the prompt path still has slots on loan";
+                    return false;
+                }
+            if (xcache.released()) return true;
+            apply_pending(true);
+            released.clear();
+            for (size_t i = 0; i < host_res.size(); ++i)
+                if (host_res[i] >= 0) {
+                    released.push_back({(int32_t) i, host_res[i]});
+                    host_res[i] = strata::core::kNotResident;
+                }
+            res_upload();
+            cudaDeviceSynchronize();
+            if (!xcache.release_memory(e)) {
+                for (const auto& [i, slot] : released) host_res[(size_t) i] = slot;
+                released.clear();
+                res_upload();
+                return false;
+            }
+            return true;
+        };
+        // REFILL: take the VRAM back (same address) and copy the remembered experts in from the host arena.
+        auto refill_cache = [&](std::string& e) -> bool {
+            if (!xcache.released()) return true;
+            if (!xcache.restore_memory(e)) return false;   // still released, e.g. another program holds the VRAM
+            for (const auto& [i, slot] : released) {
+                const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
+                const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+                if (b == nullptr) {
+                    e = "no host copy of an expert to refill from";
+                    return false;   // mapped but not filled: host_res stays not-resident, requests read from the host
+                }
+                if (!xcache.fill_slot_queued(slot, b, e, nb)) return false;
+            }
+            if (!xcache.sync_queued(e)) return false;
+            // STRATA_VERIFY_REFILL=1: read every refilled slot back and compare it to its host copy, byte for byte
+            if (const char* v = std::getenv("STRATA_VERIFY_REFILL"); v != nullptr && std::atoi(v) != 0) {
+                int64_t bad = 0;
+                std::string ve;
+                for (const auto& [i, slot] : released) {
+                    const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+                    if (!xcache.verify_slot(slot, srcp->blob(i / g.n_expert, i % g.n_expert), ve, nb)) ++bad;
+                }
+                std::fprintf(stderr, "strata serve: refill check: %lld of %lld slots differ from their host copy\n",
+                             (long long) bad, (long long) released.size());
+                if (bad > 0) {
+                    e = "the refilled slots do not match their host copies (" + ve + ")";
+                    return false;
+                }
+            }
+            for (const auto& [i, slot] : released) host_res[(size_t) i] = slot;
+            released.clear();
+            res_upload();
+            return true;
+        };
         while (next_line(line)) {
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
             if (line == "QUIT") break;
+            if (line == "RELEASE" || line == "REFILL") {
+                std::string e;
+                const auto t0 = Clock::now();
+                if (line == "RELEASE") {
+                    const bool already = xcache.released();
+                    if (!release_cache(e)) std::printf("ERR release: %s\n", e.c_str());
+                    else if (already) std::printf("RELEASED 0 0 0\n");
+                    else {
+                        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                        std::printf("RELEASED %zu %llu %.0f\n", released.size(),
+                                    (unsigned long long) (xcache.bytes() >> 20), ms);
+                        std::fprintf(stderr, "strata serve: the expert cache gave back %.2f GiB of VRAM (%lld experts) in %.0f ms\n",
+                                     (double) xcache.bytes() / 1073741824.0, (long long) released.size(), ms);
+                    }
+                } else {
+                    const size_t n = released.size();
+                    const bool was = xcache.released();
+                    if (!refill_cache(e)) std::printf("ERR refill: %s\n", e.c_str());
+                    else if (!was) std::printf("REFILLED 0 0\n");
+                    else {
+                        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                        std::printf("REFILLED %zu %.0f\n", n, ms);
+                        std::fprintf(stderr, "strata serve: the expert cache is back: %lld experts refilled in %.0f ms\n",
+                                     (long long) n, ms);
+                    }
+                }
+                std::fflush(stdout);
+                continue;
+            }
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
                 BusyScope() { strata::core::progress().busy.store(true); strata::core::progress_at("request"); }
@@ -4853,6 +4965,18 @@ int main(int argc, char** argv) {
             if (!geni && line.rfind("GEN ", 0) != 0) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");
                 continue;
+            }
+            // a request while the cache is released: refill it first (the request fails if that is impossible)
+            if (xcache.released()) {
+                const size_t n = released.size();
+                const auto t0 = Clock::now();
+                if (!refill_cache(err)) {
+                    std::printf("ERR the expert cache could not be refilled: %s\n", err.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                std::fprintf(stderr, "strata serve: the expert cache is back: %lld experts refilled in %.0f ms\n",
+                             (long long) n, std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
             }
             char* endp = nullptr;
             const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);

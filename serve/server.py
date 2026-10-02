@@ -430,6 +430,39 @@ class StrataEngine:
         self.__init__(*self.spawn)
         self.info = {**info, **self.info}
 
+    def cache_command(self, cmd: str, timeout: float = 120.0) -> dict:
+        """Send RELEASE or REFILL to the engine and read its one-line answer.
+
+        Returns {"status": "released", "experts": N, "freed_mib": N, "ms": F} or
+        {"status": "refilled", "experts": N, "ms": F}.
+        Raises ValueError on an ERR line, EngineDied if the engine is gone.
+        """
+        try:
+            self.proc.stdin.write(f"{cmd}\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError(f"the engine did not answer {cmd} within {timeout:.0f} s")
+            try:
+                line = self.lines.get(timeout=remaining)
+            except queue.Empty:
+                raise ValueError(f"the engine did not answer {cmd} within {timeout:.0f} s")
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if line.startswith("RELEASED "):
+                f = line.split()
+                return {"status": "released", "experts": int(f[1]), "freed_mib": int(f[2]), "ms": float(f[3])}
+            if line.startswith("REFILLED "):
+                f = line.split()
+                return {"status": "refilled", "experts": int(f[1]), "ms": float(f[2])}
+            if line.startswith("ERR "):
+                raise ValueError(line[4:].strip())
+            # any other line (a heartbeat, a log line) is skipped
+
     def _parse_done(self, line):
         f = line.split()
         self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
@@ -797,6 +830,9 @@ def engine_args(cfg: dict) -> list[str]:
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
     if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
         args.append("--split-skip-if-fits")
+    # giving the expert cache back when idle needs the engine to allocate it so that it can be released
+    if cfg.get("cache_release_idle_s") and "--expert-cache-release" not in args:
+        args.append("--expert-cache-release")
     return learned_profile_args(cfg, args)
 
 
@@ -981,6 +1017,8 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
+        self.cache_release_idle_s = 0                   # give the expert cache's VRAM back after this many idle s
+        self.cache_released_at = None                   # when the cache was last given back (None: it is in VRAM)
         self.min_free_vram_mib = 0
         self.before_load = None
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
@@ -1137,6 +1175,31 @@ class Service:
         finally:
             self.fifo.release()
 
+    def cache(self, action: str, idle_for: float | None = None) -> dict:
+        """POST /cache/release and /cache/refill: give the expert cache's VRAM back to the OS, or take it again.
+        Returns the engine's answer, or {"status": "busy"} / {"status": "not loaded"} / {"status": "unsupported"}
+        (and "busy" with idle_for when a request ran more recently than that)."""
+        if not hasattr(self.engine, "cache_command"):
+            return {"status": "unsupported"}
+        if not self.fifo.acquire(blocking=False):
+            return {"status": "busy"}
+        try:
+            if not self.engine.alive():
+                return {"status": "not loaded"}
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued"):
+                    return {"status": "busy"}
+            if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
+                return {"status": "busy"}
+            result = self.engine.cache_command("RELEASE" if action == "release" else "REFILL")
+            # the engine refills by itself before the next request, which also moves last_request_at past this
+            self.cache_released_at = time.time() if action == "release" else None
+            print(f"[strata] expert cache {result['status']}{f' after {idle_for:.0f} s idle' if idle_for else ''}: "
+                  f"{result.get('experts', 0)} experts", flush=True)
+            return result
+        finally:
+            self.fifo.release()
+
     def start_idle_unload(self):
         if not self.idle_unload_s or not hasattr(self.engine, "unload"):
             return
@@ -1149,6 +1212,27 @@ class Service:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
                     print(f"[strata] idle unload: {e}", flush=True)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def start_idle_cache_release(self):
+        if not self.cache_release_idle_s or not hasattr(self.engine, "cache_command"):
+            return
+        print(f"[strata] the expert cache is given back after {self.cache_release_idle_s} s without requests; the "
+              "next request takes it again", flush=True)
+
+        def loop():
+            while True:
+                time.sleep(max(1.0, min(30.0, self.cache_release_idle_s / 4)))
+                at = self.cache_released_at
+                if at is not None and at >= (self.last_request_at or self.started_at):
+                    continue                            # already given back, and no request since
+                try:
+                    self.cache("release", idle_for=self.cache_release_idle_s)
+                except ValueError as e:                 # the engine refused (e.g. a layer split): stop trying
+                    print(f"[strata] idle cache release: {e}; not tried again", flush=True)
+                    return
+                except (EngineDied, EngineStuck) as e:  # tried again at the next turn; the thread keeps running
+                    print(f"[strata] idle cache release: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
@@ -2181,6 +2265,17 @@ def make_handler(svc: Service):
                     return
                 self._json(409 if r == "busy" else 200, {"status": r})
                 return
+            if path in ("/cache/release", "/cache/refill"):   # give the expert cache's VRAM back, or take it again
+                try:
+                    r = svc.cache("release" if path == "/cache/release" else "refill")
+                except ValueError as e:
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                    return
+                except EngineDied as e:
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                self._json(409 if r.get("status") == "busy" else 200, r)
+                return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
                     svc.load()
@@ -2667,6 +2762,10 @@ def main() -> int:
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
                          "in the config; default: never)")
+    ap.add_argument("--cache-release-idle", type=float, default=None, metavar="SECONDS",
+                    help="give the expert cache's VRAM back after this many seconds without requests and keep the "
+                         "model loaded, so other programs can use that VRAM; the next request takes it again in a "
+                         "few seconds (also \"cache_release_idle_s\" in the config; default: never)")
     ap.add_argument("--min-free-vram-mib", type=int, default=None,
                     help="load an unloaded model only when this much VRAM is free, else answer 503 (also "
                          "\"min_free_vram_mib\" in the config; default: always load)")
@@ -2676,6 +2775,8 @@ def main() -> int:
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
+    if a.cache_release_idle is not None:
+        cfg["cache_release_idle_s"] = a.cache_release_idle
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
@@ -2766,6 +2867,7 @@ def main() -> int:
               + ("" if svc.api_key or "*" not in svc.cors_origins else
                  " - WARNING: any web page may use the model (no API key)"), flush=True)
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
+    svc.cache_release_idle_s = float(cfg.get("cache_release_idle_s") or 0)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
@@ -2803,6 +2905,7 @@ def main() -> int:
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
+    svc.start_idle_cache_release()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
