@@ -284,6 +284,25 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     qsa_set_kv_hybrid(kv_hybrid_was);
     localize();
     vram_ += rope_vram;
+    // Fase 3 (hetero multi-GPU): the session's block workspace (ss.block.gr - gr_read's scratch,
+    // see block_buffers_init) lives in the session's arena on the MAIN device; a drafter on ANOTHER
+    // GPU read it from its own kernels and faulted (measured: eager ck grmix, 2026-10-02).  The rope
+    // localization above already identified the roles case; same-device runs keep passing the
+    // session's workspace by reference, byte-identical to today.
+    if (rope_vram > 0) {
+        const strata::kernels::GrShapes gss{g.n_embd, g.hc, g.hc_lr};
+        const size_t wb = strata::kernels::gr_workspace_bytes(gss);
+        if (cudaMalloc((void**) &gr_ws_base_, wb) != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft layer's gr workspace does not fit";
+            return false;
+        }
+        strata::kernels::gr_workspace_init(gss, gr_ws_base_, gr_ws_);
+        vram_ += wb;
+        local_gr_ = true;
+        std::fprintf(stderr, "strata mtp: the draft layer's gr workspace runs on the draft device (%.1f MiB)\n",
+                     (double) wb / 1048576.0);
+    }
         qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
@@ -667,7 +686,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         for (int t = 0; t < T; ++t)
             gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
                     bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
+                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs,
+                    local_gr_ ? gr_ws_ : ss.block.gr,
                     sample_ + t * N, dummy_inj_, cs);
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
