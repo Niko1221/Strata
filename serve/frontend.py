@@ -378,6 +378,10 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        # The current "call" state was entered straight from "reasoning" (a <tool_call> opened inside
+        # the thinking span, no </think> ever seen) - a malformed body then falls back to visible
+        # reasoning instead of raising, unlike the historical content-span behavior.
+        self.call_from_reasoning = False
         self._reset_scan()
 
     def _reset_scan(self):
@@ -506,16 +510,29 @@ class OutputParser:
         while True:
             if self.state == "reasoning":
                 i = self.buf.find(THINK_END)
-                if i < 0:
-                    keep = self._hold(self.buf, (THINK_END,))
+                c = self.buf.find(CALL_START)
+                if 0 <= c and (i < 0 or c < i):
+                    # A tool call opened inside the thinking span - the model went from thought to
+                    # action without emitting </think> (a template that renders a call after the
+                    # reasoning block never injects one before it). Treat the opener as an implicit
+                    # think end: reasoning up to it, then the call parses normally. Without this the
+                    # whole call streams out as reasoning and a client that runs tools from the
+                    # content channel ends its turn with nothing to execute.
+                    if c:
+                        out.append(Event("reasoning", self.buf[:c]))
+                    self.buf = self.buf[c + len(CALL_START):]
+                    self.state, self.call_from_reasoning = "call", True
+                elif i < 0:
+                    keep = self._hold(self.buf, (THINK_END, CALL_START))
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
-                if i:
-                    out.append(Event("reasoning", self.buf[:i]))
-                self.buf = self.buf[i + len(THINK_END):]
-                self.state, self.lead = "content", True
+                else:
+                    if i:
+                        out.append(Event("reasoning", self.buf[:i]))
+                    self.buf = self.buf[i + len(THINK_END):]
+                    self.state, self.lead = "content", True
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -553,7 +570,18 @@ class OutputParser:
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
                 name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
+                try:
+                    call = parse_tool_call(body, self.schemas.get(name))
+                except ValueError:
+                    if self.call_from_reasoning:
+                        # A reasoning-span mention of the call format that closed like a call but
+                        # has no call body - show it as reasoning, never fail the stream.
+                        out.append(Event("reasoning", CALL_START + body + CALL_END))
+                        self.call_from_reasoning = False
+                        self.state, self.lead = "content", True
+                        continue
+                    raise
+                self.call_from_reasoning = False
                 if self.scall is not None:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))

@@ -2043,5 +2043,66 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
+
+class ReasoningToolCall(unittest.TestCase):
+    """A tool call that opens inside the thinking span (the model never emitted </think>) is an
+    implicit think end: reasoning up to the opener, then the call parses normally. Seen live as
+    agents stopping silently - the call streamed out as reasoning_content and the client's turn
+    ended with nothing to run."""
+
+    SCHEMA = [{"name": "Read", "parameters": {"properties": {"file_path": {"type": "string"},
+                                                             "offset": {"type": "integer"}}}}]
+
+    def run_parser(self, text, stream_tools, step):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        return evs
+
+    def test_call_opens_inside_thinking(self):
+        text = ("I need to inspect the kernel source first.\n<tool_call>\n<function=Read>\n"
+                "<parameter=file_path>\n/src/moe_mul1.cpp\n</parameter>\n<parameter=offset>\n30\n"
+                "</parameter>\n</function>\n</tool_call>")
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    evs = self.run_parser(text, stream_tools, step)
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(calls[0].name, "Read")
+                    self.assertEqual(calls[0].arguments, {"file_path": "/src/moe_mul1.cpp", "offset": 30})
+                    thought = "".join(e.text for e in evs if e.kind == "reasoning")
+                    self.assertIn("inspect the kernel source", thought)
+                    self.assertNotIn("<tool_call>", thought)
+                    self.assertFalse([e for e in evs if e.kind == "content" and e.text.strip()])
+
+    def test_think_end_still_wins_when_it_comes_first(self):
+        text = ("brief thought</think>prose<tool_call>\n<function=Read>\n"
+                "<parameter=file_path>\n/a\n</parameter>\n</function>\n</tool_call>")
+        evs = self.run_parser(text, False, 7)
+        thought = "".join(e.text for e in evs if e.kind == "reasoning")
+        self.assertEqual(thought, "brief thought")
+        contents = "".join(e.text for e in evs if e.kind == "content")
+        self.assertEqual(contents.strip(), "prose")
+        self.assertEqual(len([e for e in evs if e.kind == "tool_call"]), 1)
+
+    def test_malformed_reasoning_mention_falls_back_to_reasoning(self):
+        text = ("the format is<tool_call>\nnot a call body at all\n</tool_call>\nstill thinking"
+                "</think>and the answer")
+        evs = self.run_parser(text, False, 7)
+        self.assertFalse([e for e in evs if e.kind == "tool_call"])
+        thought = "".join(e.text for e in evs if e.kind == "reasoning")
+        self.assertIn("not a call body at all", thought)
+        contents = "".join(e.text for e in evs if e.kind == "content")
+        self.assertIn("and the answer", contents)
+
+    def test_unfinished_reasoning_call_not_reported_as_whole(self):
+        text = "planning<tool_call>\n<function=Read>\n<parameter=file_path>\n/sr"
+        evs = self.run_parser(text, False, 7)
+        self.assertFalse([e for e in evs if e.kind == "tool_call"])
+
 if __name__ == "__main__":
     unittest.main()
