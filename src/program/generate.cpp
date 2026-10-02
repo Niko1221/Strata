@@ -4573,6 +4573,7 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        const bool adapt_wait = std::getenv("STRATA_ADAPT_WAIT") != nullptr;
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
@@ -5518,7 +5519,20 @@ int main(int argc, char** argv) {
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
-                apply_pending(false);
+            // STRATA_ADAPT_WAIT=1 waits for an adaptive expert swap before reading the residency table.
+            //
+            // A non-blocking query left the next window's table to depend on whether the previous round's
+            // copies had landed: an expert that is resident runs the GPU kernel and one that is not is
+            // computed on the CPU, and the two round differently enough to move a logit by ~0.26. Waiting
+            // makes the table a function of what was actually copied, which is what makes greedy decode
+            // reproducible.
+            //
+            // It is opt-in because the wait is bounded by the swap volume and so is not free on a busy
+            // tier: measured on an RTX 5090 at 192 swaps every 2 rounds it cost ~5% a round (18.38 ->
+            // 19.32 ms) and bought 0.898 -> 0.906 hit rate with 3.11 -> 2.92 misses per layer; the same
+            // change on a lighter tier (96 swaps every 4 rounds) was under 0.3%. Off by default, so an
+            // install's speed is unchanged and A/B runs ask for reproducibility explicitly.
+            apply_pending(adapt_wait);
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
@@ -6213,12 +6227,27 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        const bool adapt_wait = std::getenv("STRATA_ADAPT_WAIT") != nullptr;
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
+        int64_t adapt_rounds = 0;   // counted here: `rounds` is declared below the adapt lambda
         auto apply_pending = [&](bool wait) {
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
-            else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
+            // STRATA_TRACE_ADAPT: a non-blocking query means the next window reads the residency table
+            // with whatever the copy has achieved.  Whether the incoming experts are RESIDENT for that
+            // window depends on copy latency, and a resident expert runs a different kernel than a
+            // CPU-computed one - a far bigger numerical difference than a rounding wobble.
+            static const bool trace_pending = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+            if (wait) cudaEventSynchronize(adapt_ev);
+            else if (cudaEventQuery(adapt_ev) != cudaSuccess) {
+                if (trace_pending)
+                    std::fprintf(stderr, "strata: PENDING not landed, %zu stay non-resident this window\n",
+                                 pending.size());
+                return;
+            }
+            if (trace_pending)
+                std::fprintf(stderr, "strata: PENDING landed, %zu experts become resident\n", pending.size());
             src.commit_exchanges();   // the resident RAM mode: the evicted experts take their places in RAM
             for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
             pending.clear();
@@ -6230,7 +6259,18 @@ int main(int argc, char** argv) {
         // routed clearly more often.  Copies run between rounds, when the GPU is idle.
         auto adapt = [&]() -> bool {
             const Clock::time_point ta = Clock::now();
-            if (!pending.empty()) return true;   // the previous swaps are still in flight
+            ++adapt_rounds;
+            // STRATA_TRACE_ADAPT: why an adapt round did or did not swap.  Default off, one getenv, and it
+            // reports the only thing that can make an adapt round a coin flip: whether the PREVIOUS round's
+            // asynchronous expert copies had landed by the time this round started.
+            static const bool trace_adapt = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+            if (!pending.empty()) {
+                if (trace_adapt)
+                    std::fprintf(stderr, "strata: ADAPT round=%lld SKIPPED, %zu swaps still in flight\n",
+                                 (long long) adapt_rounds, pending.size());
+                return true;   // the previous swaps are still in flight
+            }
+            if (trace_adapt) std::fprintf(stderr, "strata: ADAPT round=%lld considering\n", (long long) adapt_rounds);
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
@@ -6274,6 +6314,9 @@ int main(int argc, char** argv) {
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
+            if (trace_adapt)
+                std::fprintf(stderr, "strata: ADAPT round=%lld swapped %zu of %d slots, usage decayed\n",
+                             (long long) adapt_rounds, swaps.size(), o.adapt_swaps);
             for (float& v : drive.d.usage) v *= 0.7f;
             swaps_total += (int64_t) swaps.size();
             ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
@@ -6342,7 +6385,20 @@ int main(int argc, char** argv) {
             drive.d.layers = 0;
             drive.d.experts = 0;
             drive.d.failed = false;
-            apply_pending(false);
+            // STRATA_ADAPT_WAIT=1 waits for an adaptive expert swap before reading the residency table.
+            //
+            // A non-blocking query left the next window's table to depend on whether the previous round's
+            // copies had landed: an expert that is resident runs the GPU kernel and one that is not is
+            // computed on the CPU, and the two round differently enough to move a logit by ~0.26. Waiting
+            // makes the table a function of what was actually copied, which is what makes greedy decode
+            // reproducible.
+            //
+            // It is opt-in because the wait is bounded by the swap volume and so is not free on a busy
+            // tier: measured on an RTX 5090 at 192 swaps every 2 rounds it cost ~5% a round (18.38 ->
+            // 19.32 ms) and bought 0.898 -> 0.906 hit rate with 3.11 -> 2.92 misses per layer; the same
+            // change on a lighter tier (96 swaps every 4 rounds) was under 0.3%. Off by default, so an
+            // install's speed is unchanged and A/B runs ask for reproducibility explicitly.
+            apply_pending(adapt_wait);
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
