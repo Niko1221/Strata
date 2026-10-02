@@ -255,6 +255,7 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "cpu")
         self.assertEqual([t for t, _ in built], ["strata-vision"])
         self.assertIn("-DSTRATA_VISION_CUDA=OFF", built[0][1])
+        self.assertIn("-DSTRATA_PORTABLE=OFF", built[0][1])            # built for this PC (#411: portable is the default)
         self.assertEqual((meta["vision"], meta["vision_src"], have), ("cpu", "V", True))
         built, meta, _ = self.build({"vision": "cpu", "vision_src": "V"}, "cpu", vexe=True)
         self.assertEqual(built, [])                                    # built and unchanged: nothing to do
@@ -265,6 +266,34 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+
+class CudaVision(unittest.TestCase):
+    """#411: the image encoder setup compiles beside the CUDA engine is built for this PC, not portable."""
+
+    def test_the_encoder_is_built_native(self):
+        for vision in ("gpu", "cpu"):
+            with self.subTest(vision), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                eng = root / "engine"
+                eng.mkdir()
+                (eng / setup.EXE).write_bytes(b"engine")                 # the engine is built: only the encoder
+                (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "S"}))
+                built = []
+
+                def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+                    built.append((target, defs))
+                    (bdir / "bin").mkdir(parents=True)
+                    (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+
+                with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                        mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
+                        mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
+                        mock.patch.object(setup, "source_version", lambda: "test"):
+                    quiet(setup.build_engine, {"arch": "86"}, vision, True, "llama")
+                self.assertEqual([t for t, _ in built], ["strata-vision"])
+                self.assertIn("-DSTRATA_PORTABLE=OFF", built[0][1])
+                self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
 
 
 if __name__ == "__main__":

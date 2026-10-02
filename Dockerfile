@@ -64,7 +64,8 @@ RUN python3 -m venv .venv \
     && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built
-# exactly the way setup.py builds them. BUILD.json is what setup.py reads to
+# exactly the way setup.py builds them: native code for the CPU that builds the
+# image, so build it on the PC it runs on. BUILD.json is what setup.py reads to
 # decide whether an engine is current: source=local with a matching src hash
 # means the first start reuses it instead of recompiling.
 RUN .venv/bin/python - <<'PYEOF'
@@ -82,7 +83,7 @@ setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
      f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
 if vision != "none":
     setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
-        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON",
+        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
          f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
 
 eng = setup.ROOT / "engine"
