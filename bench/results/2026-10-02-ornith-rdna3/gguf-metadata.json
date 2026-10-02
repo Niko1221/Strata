@@ -1,0 +1,25 @@
+{
+  "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
+  "file": "Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf",
+  "size_bytes": 20125923520,
+  "general.architecture": "qwen35moe",
+  "n_tensors": 733,
+  "header_bytes": 10989248,
+  "geometry": {
+    "block_count": 40, "embedding_length": 2048,
+    "expert_count": 256, "expert_used_count": 8,
+    "expert_feed_forward_length": 512, "expert_shared_feed_forward_length": 512,
+    "attention.head_count": 16, "attention.head_count_kv": 2,
+    "attention.key_length": 256, "attention.value_length": 256,
+    "rope.dimension_count": 64, "rope.dimension_sections": [11,11,10,0], "rope.freq_base": 1e7,
+    "context_length": 262144, "full_attention_interval": 4,
+    "ssm.conv_kernel": 4, "ssm.inner_size": 4096, "ssm.state_size": 128,
+    "ssm.time_step_rank": 32, "ssm.group_count": 16,
+    "attention.layer_norm_rms_epsilon": 1e-6,
+    "recurrent_layers": 30, "attention_layers": 10, "vocab": 248320
+  },
+  "expert_types": {"ffn_gate_exps": "IQ4_XS", "ffn_up_exps": "IQ4_XS", "ffn_down_exps": "Q4_K",
+                   "ffn_gate_shexp": "Q8_0", "ffn_up_shexp": "Q8_0", "ffn_down_shexp": "Q8_0",
+                   "ffn_gate_inp": "F32", "ffn_gate_inp_shexp": "F32"},
+  "embedding_and_head": {"token_embd": "Q8_0", "output": "Q8_0", "output_norm": "F32"}
+}

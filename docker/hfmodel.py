@@ -39,6 +39,16 @@ FAMILIES = {
     "coder": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
               "title": "Qwen3.8-Flash-Next Coder"},
+    # Qwen35MoE / Ornith-1.5: ONE stock GGUF plus a SEPARATE trained Qwen3.6 MTP draft.  There is no PLE
+    # shard and no experts.bin pack on this path (the native expert source reads the GGUF itself), so
+    # `files` is 1 and `arena_gb` is 0.  The MTP draft is its own repository because it is trained and
+    # versioned independently of the target checkpoint; a different compatible Qwen3.5/3.6 MTP-only GGUF
+    # can be named with STRATA_MTP_REPO / STRATA_MTP_FILE without touching this table.
+    "ornith": {"repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
+               "file": "Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf", "subdir": False, "files": 1,
+               "single_name": True, "title": "Ornith-1.5-35B-A3B",
+               "mtp": {"repo": "EryriLabs/Ornith-1.5-35B-A3B-BigBang-MTP-GGUF",
+                       "file": "mtpdraft-Q8_0.gguf", "download_gb": 2.0}},
 }
 # The sizes Strata knows: quant -> family, download GB, RAM GB, experts.bin GB (setup.py:64-79).
 # download_gb is what `hf download` writes into the cache; arena_gb is what iq_pack.py --experts-bin
@@ -51,6 +61,7 @@ MODELS = {
     "Q2_0": {"family": "qwen", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
     "IQ2_XS": {"family": "qwen", "download_gb": 68.0, "ram_gb": 48, "arena_gb": 35.5},
     "IQ1_M": {"family": "coder", "download_gb": 58.4, "ram_gb": 32, "arena_gb": 23.4},
+    "ornith": {"family": "ornith", "download_gb": 20.1, "ram_gb": 24, "arena_gb": 0},
 }
 DEFAULT_MODEL = "IQ3_XXS"
 
@@ -103,20 +114,30 @@ def family_of(model: str, repo: str) -> dict | None:
     return FAMILIES[info["family"]] if info else None
 
 
-def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") -> Path | None:
-    """The path of shard `i` (1 = the experts, 2 = the PLE table) inside the cache, or None."""
-    fam = family_of(model, repo)
-    if fam is None:
-        return None
-    snap = snapshot_dir(repo_dir(root, fam["repo"]), rev)
-    if snap is None:
-        return None
-    if fam["file"]:
+def n_files(fam: dict) -> int:
+    """How many GGUF files this release has: 2 for the Qwen3.8 family (experts + PLE), 1 for Ornith."""
+    return int(fam.get("files", 2))
+
+
+def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
+    """One release file inside a snapshot directory.  The exact name first, then a naming-convention
+    fallback for a release the table has not been taught (or upstream renamed)."""
+    if n_files(fam) == 1:
+        if fam.get("single_name") and fam.get("file"):
+            cand = snap / fam["file"]
+            if cand.is_file():
+                return cand
+        if fam.get("title"):
+            hits = sorted(h for h in snap.glob(f"{fam['title']}-*.gguf") if h.is_file())
+            if hits:
+                return hits[0]
+        hits = sorted(h for h in snap.glob(f"*{model}*.gguf") if h.is_file())
+        return hits[0] if hits else None
+    if fam.get("file"):
         name = fam["file"].format(q=model, i=i)
         cand = snap / (f"{model}/{name}" if fam["subdir"] else name)
         if cand.is_file():
             return cand
-    # Upstream renamed something, or an unknown repo: find the shard by its naming convention instead.
     for pat in (f"{model}/*{model}*0000{i}*.gguf", f"*{model}*0000{i}*.gguf", f"*0000{i}-of-00002.gguf"):
         hits = sorted(h for h in snap.glob(pat) if h.is_file())
         if hits:
@@ -124,28 +145,68 @@ def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") ->
     return None
 
 
+def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") -> Path | None:
+    """The path of file `i` (1 = the model, 2 = Qwen3.8's PLE shard) inside the cache, or None.
+
+    A one-file release (Ornith) returns its single GGUF for i == 1 and None for i == 2."""
+    fam = family_of(model, repo)
+    if fam is None:
+        return None
+    if n_files(fam) == 1 and i != 1:
+        return None
+    snap = snapshot_dir(repo_dir(root, fam["repo"]), rev)
+    if snap is None:
+        return None
+    return _find_in_snapshot(snap, model, i, fam)
+
+
+def mtp_path(root: Path, model: str, rev: str = "", repo: str = "") -> Path | None:
+    """The external MTP draft GGUF for a family that has one (Ornith), or None."""
+    fam = family_of(model, repo)
+    if not fam or not fam.get("mtp"):
+        return None
+    m = fam["mtp"]
+    snap = snapshot_dir(repo_dir(root, m["repo"]), rev)
+    if snap is None:
+        return None
+    cand = snap / m["file"]
+    return cand if cand.is_file() else None
+
+
 def present(root: Path, model: str, rev: str = "") -> tuple[bool, bool]:
-    return (shard_path(root, model, 1, rev) is not None, shard_path(root, model, 2, rev) is not None)
+    have1 = shard_path(root, model, 1, rev) is not None
+    return (have1, shard_path(root, model, 2, rev) is not None)
 
 
 def available(root: Path) -> list[dict]:
     out = []
     for model, info in MODELS.items():
-        rd = repo_dir(root, FAMILIES[info["family"]]["repo"])
+        fam = FAMILIES[info["family"]]
+        rd = repo_dir(root, fam["repo"])
         have1, have2 = present(root, model)
-        out.append({"model": model, "repo": FAMILIES[info["family"]]["repo"], "repo_in_cache": rd.is_dir(),
-                    "shard1": have1, "shard2": have2, "download_gb": info["download_gb"],
-                    "ram_gb": info["ram_gb"]})
+        out.append({"model": model, "repo": fam["repo"], "repo_in_cache": rd.is_dir(),
+                    "shard1": have1, "shard2": have2, "files": n_files(fam),
+                    "mtp": mtp_path(root, model) is not None,
+                    "download_gb": info["download_gb"], "ram_gb": info["ram_gb"]})
     return out
 
 
 def describe_available(root: Path) -> str:
     rows = available(root)
-    lines = [f"{r['model']:8s} {r['repo']:58s} "
-             + ("both shards" if r["shard1"] and r["shard2"] else
-                "shard 1 only" if r["shard1"] else "repo in cache, files missing" if r["repo_in_cache"]
-                else "not in cache")
-             + f"   ({r['download_gb']} GB download)" for r in rows]
+    lines = []
+    for r in rows:
+        if r["files"] == 1:
+            state = ("model file" if r["shard1"] else
+                     "repo in cache, file missing" if r["repo_in_cache"] else "not in cache")
+            if r["shard1"] and r["mtp"]:
+                state += " + MTP"
+            elif r["shard1"]:
+                state += " (no MTP draft)"
+        else:
+            state = ("both shards" if r["shard1"] and r["shard2"] else
+                     "shard 1 only" if r["shard1"] else
+                     "repo in cache, files missing" if r["repo_in_cache"] else "not in cache")
+        lines.append(f"{r['model']:8s} {r['repo']:58s} {state}   ({r['download_gb']} GB download)")
     other = ""
     if root.is_dir():
         extras = sorted(d.name for d in root.iterdir()
@@ -165,7 +226,7 @@ def main() -> int:
     ap.add_argument("--repo", default="", help="override the repo id for a release not in setup.py")
     ap.add_argument("--rev", default="", help="revision/commit (default: refs/main or newest snapshot)")
     ap.add_argument("--print", dest="what", default="both",
-                    choices=["shard1", "shard2", "both", "json", "shell", "available"])
+                    choices=["shard1", "shard2", "both", "json", "shell", "available", "mtp"])
     ap.add_argument("--allow-missing", action="store_true",
                     help="with shell/json: exit 0 and empty paths when the shards are not cached yet")
     ap.add_argument("--resolve", action="store_true", help="print resolved blob paths instead of snapshot paths")
@@ -178,17 +239,35 @@ def main() -> int:
     if a.model not in MODELS and not a.repo:
         sys.exit(f"hfmodel: unknown model '{a.model}'. Known: {', '.join(sorted(MODELS))}")
 
+    if a.what == "mtp":
+        p = mtp_path(root, a.model, a.rev, a.repo)
+        print("" if p is None else str(p.resolve() if a.resolve else p))
+        if p is None and not a.allow_missing:
+            fam = family_of(a.model, a.repo) or {}
+            m = fam.get("mtp", {})
+            if m:
+                print(f"hfmodel: the MTP draft ({m['repo']} / {m['file']}) is not in {root}", file=sys.stderr)
+                print(f"  hf download {m['repo']} --include '{m['file']}'", file=sys.stderr)
+                return 1
+        return 0
+
     want = {"shard1": [1], "shard2": [2], "both": [1, 2], "json": [1, 2], "shell": [1, 2]}[a.what]
-    paths = {i: shard_path(root, a.model, i, a.rev, a.repo) for i in want}
     fam = family_of(a.model, a.repo) or FAMILIES["qwen"]
     info = MODELS.get(a.model, {"download_gb": "?", "ram_gb": "?", "arena_gb": "?"})
-    include = f"{a.model}/*" if fam["subdir"] else f"*{a.model}*.gguf"
-    missing = [i for i, p in paths.items() if p is None]
+    paths = {i: shard_path(root, a.model, i, a.rev, a.repo) for i in want}
+    if n_files(fam) == 1 and fam.get("single_name") and fam.get("file"):
+        include = fam["file"]
+    else:
+        include = f"{a.model}/*" if fam["subdir"] else f"*{a.model}*.gguf"
+    missing = [i for i, p in paths.items() if p is None and i <= n_files(fam)]
     if missing and not a.allow_missing:
-        names = ", ".join(f"shard {i}" for i in missing)
+        names = ", ".join(f"file {i}" for i in missing)
         print(f"hfmodel: {names} of '{a.model}' not found in {root}", file=sys.stderr)
-        print(f"  repo asked for: {fam['repo']}; looked for "
-              f"<snapshot>/{a.model}/*{a.model}*0000N*.gguf and *{a.model}*0000N*.gguf", file=sys.stderr)
+        if n_files(fam) == 1:
+            print(f"  repo asked for: {fam['repo']}; looked for {fam.get('file', '<title>-*.gguf')}", file=sys.stderr)
+        else:
+            print(f"  repo asked for: {fam['repo']}; looked for "
+                  f"<snapshot>/{a.model}/*{a.model}*0000N*.gguf and *{a.model}*0000N*.gguf", file=sys.stderr)
         print(f"  {describe_available(root)}", file=sys.stderr)
         print(f"\n  Fetch it (docker/bootstrap-model.sh does this on first start unless "
               f"STRATA_DOWNLOAD_MODEL=0), e.g.:\n    hf download {fam['repo']} --include '{include}'\n"
@@ -202,10 +281,17 @@ def main() -> int:
 
     if a.what == "shell":       # eval'able assignments for bootstrap-model.sh / the entrypoint
         import shlex
+        m = fam.get("mtp", {})
+        mp = mtp_path(root, a.model, a.rev, a.repo)
         for key, value in {"MODEL": a.model, "CACHED": int(not missing), "REPO": fam["repo"],
                            "HF_CACHE": str(root), "SHARD1": shown(1), "SHARD2": shown(2),
+                           "FILES": n_files(fam),
                            "DOWNLOAD_GB": info["download_gb"], "ARENA_GB": info["arena_gb"],
-                           "RAM_GB": info["ram_gb"], "HF_INCLUDE": include}.items():
+                           "RAM_GB": info["ram_gb"], "HF_INCLUDE": include,
+                           "MTP_REPO": m.get("repo", ""), "MTP_FILE": m.get("file", ""),
+                           "MTP": "" if mp is None else (str(mp.resolve()) if a.resolve else str(mp)),
+                           "MTP_CACHED": int(mp is not None),
+                           "MTP_DOWNLOAD_GB": m.get("download_gb", 0)}.items():
             print(f"STRATA_{key}={shlex.quote(str(value))}")
         return 0
 
@@ -213,7 +299,9 @@ def main() -> int:
     if a.what == "json":
         out.update({"model": a.model, "repo": fam["repo"], "cached": not missing, "cache": str(root),
                     "download_gb": info["download_gb"], "ram_gb": info["ram_gb"],
-                    "arena_gb": info["arena_gb"], "hf_include": include})
+                    "arena_gb": info["arena_gb"], "hf_include": include, "files": n_files(fam),
+                    "mtp": "" if mtp_path(root, a.model, a.rev, a.repo) is None else
+                           str(mtp_path(root, a.model, a.rev, a.repo))})
         print(json.dumps(out, indent=1))
     elif a.what == "both":
         print(shown(1) + "\n" + shown(2))

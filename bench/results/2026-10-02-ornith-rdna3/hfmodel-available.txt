@@ -1,0 +1,7 @@
+HF cache: /home/dhoard/Development/models
+IQ3_XXS  ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF                both shards   (75.8 GB download)
+IQ3_S    ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF                both shards   (83.6 GB download)
+Q2_0     ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF                repo in cache, files missing   (66.4 GB download)
+IQ2_XS   ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF                repo in cache, files missing   (68.0 GB download)
+IQ1_M    ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF          not in cache   (58.4 GB download)
+ornith   AtomicChat/Ornith-1.5-35B-A3B-GGUF                         not in cache   (20.1 GB download)

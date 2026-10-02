@@ -1,0 +1,47 @@
+Run the Ornith-1.5-35B-A3B server container on this machine's AMD GPU (Qwen35MoE path).
+
+  ./run3.sh                     Ornith AD-Q4_K-IQ4_XS + external Qwen3.6 MTP, http://127.0.0.1:9931
+  ./run3.sh --no-mtp            target-only (spec off) for a direct speed comparison
+  ./run3.sh --spec 4            a longer draft window
+  ./run3.sh --detach            background;  ./run3.sh --check  asks it afterwards whether it is up
+  ./run3.sh --offline           never download: fail with the command to run instead
+  ./run3.sh --dry-run           print the docker command and the reasoning, change nothing
+
+Ornith-1.5 is a DIFFERENT architecture from Qwen3.8-Flash-Next (Qwen35MoE: 40 layers, 30 gated-delta-net
+recurrent + 10 full-attention, 256 experts top-8, 2048-wide).  It therefore has its own launcher, its own
+container name and its own work directory; run.sh and run2.sh are untouched.  See
+docs/ORNITH_QWEN35MOE.md for the architecture, the artifacts and the validation behind them.
+
+Main model:  AtomicChat/Ornith-1.5-35B-A3B-GGUF / Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf  (~20.1 GB)
+MTP draft:   EryriLabs/Ornith-1.5-35B-A3B-BigBang-MTP-GGUF / mtpdraft-Q8_0.gguf           (~2.0 GB)
+
+Both live in the shared Hugging Face cache; prepared artifacts go under the writable /work mount, kept
+separate from the Qwen3.8 pack/MTP trees.
+
+Options:
+      --model KEY         hfmodel.py family key (default: ornith)
+      --model-file PATH   the main GGUF directly (skips the cache lookup)
+      --hf-cache PATH     model cache in the Hugging Face layout (default: ~/Development/models)
+      --work PATH         writable Strata state: packs, MTP, logs (default: ~/Development/strata-work)
+      --budget MiB        VRAM Strata may use for itself (default 10240 on a 12 GiB card)
+  -p, --port PORT         host port (default 9931)
+      --bind ADDR         host interface to publish on (default 127.0.0.1)
+  -d, --detach            run in the background instead of in the foreground
+      --check             query /v1/models of the running container and exit
+      --check-only        validate the GPU, the artifacts and the geometry, then exit (no server)
+      --offline           never download: fail with instructions instead
+      --fresh             remove an existing container of the same name first
+      --max-context N     KV context (default 131072; 262144 when validated on this card)
+      --max-tokens N      output cap a request gets when it names none (default 32768)
+      --reasoning-effort L  off, minimal, low, medium, high (default high)
+      --prefill N         prefill chunk (default 2048)
+      --expert-cache N    expert slot budget (default auto)
+      --pool-workers N    CPU expert workers (default 0 = auto)
+      --spec N            MTP draft length (default 3)
+      --no-mtp            disable the external MTP draft (--spec 0)
+      --mtp PATH          a specific MTP GGUF (default: the cached mtpdraft-Q8_0.gguf)
+  -e, --env KEY=VALUE     pass extra environment through (repeatable)
+      --image NAME:TAG    override the image (default strata-hip:<arch>-latest)
+      --allow-hsa-override  let HSA_OVERRIDE_GFX_VERSION through (breaks gfx1101; you have been told)
+  -n, --dry-run           print the command instead of running it
+  -h, --help              this text

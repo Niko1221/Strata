@@ -46,13 +46,16 @@ COPY serve/           ./serve/
 COPY data/            ./data/
 COPY tools/           ./tools/
 COPY chat.py          ./
-COPY docker/entrypoint-hip.sh docker/bootstrap-model.sh ./docker/
+COPY docker/entrypoint-hip.sh docker/entrypoint-ornith.sh docker/bootstrap-model.sh ./docker/
 COPY docker/hipinfo.py docker/vram-guard.py docker/hfmodel.py ./docker/
 
 COPY --from=engine  strata  /usr/local/bin/strata
 COPY --from=engine  strata-device /usr/local/bin/strata-device
+# The Qwen35MoE geometry/tensor guard, for run3.sh's --check-only: it reads only the GGUF header, so it
+# can validate the Ornith artifact before the engine allocates anything.
+COPY --from=engine  qwen35_layout_test /usr/local/bin/strata-qwen35-check
 COPY --from=ggufpy  /       /opt/strata/gguf-py/
-RUN chmod 0755 /usr/local/bin/strata /usr/local/bin/strata-device /opt/strata/docker/*.sh /opt/strata/docker/*.py
+RUN chmod 0755 /usr/local/bin/strata /usr/local/bin/strata-device /usr/local/bin/strata-qwen35-check /opt/strata/docker/*.sh /opt/strata/docker/*.py
 
 # The container contract.  HIP device 0 only (the iGPU must stay invisible), and the 10 GiB VRAM
 # budget that entrypoint-hip.sh turns into --vram-reserve-mib for THIS card.
