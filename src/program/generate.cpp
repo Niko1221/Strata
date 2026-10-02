@@ -378,6 +378,11 @@ struct Options {
     /// second GPU.  docs/HETERO_MGPU_PLAN.md
     int main_device = -1;
     int draft_device = -1;
+    /// Fase 8 (hetero multi-GPU), opt-in: the prompt fill queues on the drafter's stream and the wait moves to
+    /// the next prefill's entry - the main model's next chunk computes while the drafter catches up.  Only with
+    /// `--main-device != --draft-device`: the queued copy reads the verifier's mapped window (on one GPU the
+    /// device window is overwritten by the very next run).
+    bool draft_prefill_parallel = false;
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -556,6 +561,10 @@ void usage() {
                  "                       model, its KV and verify; DRAFT keeps the MTP drafter (weights, own\n"
                  "                       KV, drafting) in VRAM. Unset = everything on GPU 0, today's run.\n"
                  "                       Not with --layer-split or --expert-cache-deviceN.\n"
+                 "  --draft-prefill-parallel  Fase 8 (hetero multi-GPU): the prompt fill queues on the\n"
+                 "                       drafter's stream and the wait moves to the next prefill's entry -\n"
+                 "                       the main model's next chunk computes while the drafter catches up.\n"
+                 "                       Needs the roles (--main-device != --draft-device).\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1156,6 +1165,7 @@ int main(int argc, char** argv) {
         else if (a == "--split-device") o.split_device = next("--split-device");
         else if (a == "--main-device") o.main_device = std::atoi(next("--main-device"));
         else if (a == "--draft-device") o.draft_device = std::atoi(next("--draft-device"));
+        else if (a == "--draft-prefill-parallel") o.draft_prefill_parallel = true;
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -1328,6 +1338,14 @@ int main(int argc, char** argv) {
     // Fase 3 (hetero multi-GPU): explicit device roles (docs/HETERO_MGPU_PLAN.md).  This step validates and
     // reports; the wiring lands with the next steps (the drafter's device override, the per-device head, the
     // reservation that follows the role), so the banner says exactly what is already placed.
+    // Fase 8 (hetero multi-GPU): the pipelined prompt fill queues the drafter's chunk and only waits at the
+    // next prefill's entry - it reads the verifier's MAPPED window, whose rows survive until the run after
+    // next; a same-device run has only the device window, which the very next run overwrites.  The roles are
+    // required, and the check sits before their defaults so a bare `--draft-prefill-parallel` cannot slip in.
+    if (o.draft_prefill_parallel && o.main_device < 0 && o.draft_device < 0) {
+        std::fprintf(stderr, "strata generate: --draft-prefill-parallel is a hetero multi-GPU mode: it needs the roles, --main-device != --draft-device\n");
+        return 2;
+    }
     if (o.main_device >= 0 || o.draft_device >= 0) {
         int n_dev = 1;
         if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
@@ -4360,6 +4378,9 @@ int main(int argc, char** argv) {
                           " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
             std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
         }
+        // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill - a no-op without the flag (the mode sits
+        // on the drafter; the binding and the prompt loop below stay unchanged when it is off)
+        mtp.set_prefill_async(o.draft_prefill_parallel);
         // Fase 3 gate: with the DRAFT role on another GPU the window crosses as the verifier's mapped mirror -
         // no peer pair needed (measured on the rig: EnablePeerAccess deadlocks, a replay reading the other
         // device without it faults); a same-device run keeps the device pointer
@@ -5491,6 +5512,11 @@ int main(int argc, char** argv) {
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
+            // Fase 8: the queued async prompt fill finishes before the first window (a no-op without the flag)
+            if (!mtp.prefill_barrier(err)) {
+                std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
             if (cancelled) finish = "cancel";
             while (!cancelled && produced_n < max_new) {
                 int T = S_mtp;
@@ -6183,6 +6209,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill (see the serve path)
+        mtp.set_prefill_async(o.draft_prefill_parallel);
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
@@ -6285,6 +6313,10 @@ int main(int argc, char** argv) {
         // plan v0.3 P6: with a native pack the first window is the last prompt token alone (it produces the first
         // generated token and the MTP's first cell); otherwise the token loop already did that.
         bool first_window = native_pack;
+        if (use_mtp && !mtp.prefill_barrier(err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
         if (use_mtp && !first_window &&
             !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());

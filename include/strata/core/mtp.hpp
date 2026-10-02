@@ -48,6 +48,14 @@ public:
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     /// At most this many drafts per round (below max_t - 1): a window longer than the MTP's comes from elsewhere.
     void set_max_drafts(int k) { max_drafts_ = k; }
+    /// Hetero multi-GPU (Fase 8, opt-in `--draft-prefill-parallel`): when set, `prefill` returns after
+    /// ENQUEUEING its chunk on its stream - the main model's next chunk then computes while the drafter catches
+    /// up, and the wait moves to the next prefill's entry (or `prefill_barrier`).  Off by default: the wait sits
+    /// at the end, today's behaviour.
+    void set_prefill_async(bool on) { prefill_async_ = on; }
+    /// Waits for a queued async prompt fill (a no-op with nothing pending): the first round of the decode must
+    /// start against a finished prompt K/V.
+    bool prefill_barrier(std::string& err);
     uint64_t vram_bytes() const { return vram_; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
@@ -130,6 +138,8 @@ private:
     int max_t_ = 0;
     int device_ = -1;   ///< the device `load` ran on: the public calls switch to it (layer split)
     int max_drafts_ = 1 << 30;
+    bool prefill_async_ = false;   ///< Fase 8: the prompt fill queues and the wait moves to the next entry
+    bool pf_pending_ = false;      ///< Fase 8: an enqueued prompt fill the barrier has not drained yet
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;

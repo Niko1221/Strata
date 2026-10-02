@@ -818,6 +818,15 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
     const bool r_host = window_src_on_host(R_rows);   // the mapped mirror: an explicit Host copy, no peer needed
+    // Fase 8 (opt-in `--draft-prefill-parallel`): waiting HERE for the chunk before is where the overlap is
+    // won - the main model's chunk just ran while this stream caught up.  It also stream-orders every staging
+    // write after the chunk before (one staging set, no race) and consumes the mapped window's rows before the
+    // verifier's next run can overwrite them.
+    if (prefill_async_ && pf_pending_ && cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = std::string("mtp prefill barrier: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    pf_pending_ = false;
     // cells the window can never reach again need no K/V
     const int64_t first_needed = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
     // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
@@ -864,17 +873,21 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             if (cudaMemcpyAsync(tok_, d_tk + c, (size_t) T * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(step_, d_stp + c * 4, (size_t) T * 16, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
-                                r_host ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
+                (r_host ? cudaMemcpy((void*) Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                     cudaMemcpyHostToDevice)
+                        : cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                          cudaMemcpyDeviceToDevice, cs_))
+                    != cudaSuccess ||
                 cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
                 err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
         }
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        if (!prefill_async_ && cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
+        pf_pending_ = prefill_async_;   // the barrier owns it: the next prefill's entry, or prefill_barrier
         ms_prefill += ms_since(t0);
         return true;
     }
@@ -900,6 +913,16 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
         }
     }
     ms_prefill += ms_since(t0);
+    return true;
+}
+
+bool MtpDrafter::prefill_barrier(std::string& err) {
+    if (cs_ == nullptr || !pf_pending_) return true;
+    pf_pending_ = false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = std::string("mtp prefill barrier: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
     return true;
 }
 
