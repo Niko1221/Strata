@@ -15,9 +15,9 @@ records the model, the architecture, the artifacts, what is implemented and veri
 | Single-file (Ornith) cache resolution and `run3.sh` host-side launcher | done, dry-run verified |
 | Qwen35 forward pass: GDN, full attention, MoE, ordinary-residual trunk | done, host tests + runs on the real model |
 | GGUF loader + quantized matvec (ggml-cpu vec_dot for the projections) | done, loads the 20 GB artifact |
-| Session/serve wiring, so `run3.sh` executes the model | **not implemented** |
+| Session/serve wiring, so `run3.sh` executes the model | done, `run3.sh` serves it |
+| gfx1101 kernels for the new layers (the current pass is host CPU; ~6.6 tok/s) | **not implemented** |
 | External Qwen3.6 MTP backend and speculative rollback | **not implemented** |
-| gfx1101 kernels for the new layers (the current pass is host CPU; ~7.5 tok/s) | **not implemented** |
 
 The layer math and the artifact contract are proven; the loader and the serve integration are what stand
 between them and a running `./run3.sh`. See "Remaining work" at the bottom.
@@ -152,10 +152,13 @@ run.** No throughput is claimed for it.
   pass in the runtime build.
 - Qwen35 layer math: `qwen35_gdn_test` (0 failures) and `qwen35_layers_test` (0 failures) on the host and in
   the container.
-- **End to end on the real artifact (CPU, no GPU kernels yet):** `strata-qwen35` loads the 20 GB
-  `Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf`, the guard passes, and it generates greedy tokens - prefill of 4
-  tokens in 543 ms (7.4 tok/s), decode ~132 ms/token (~7.5 tok/s) on the Ryzen 9 7900.  This is the untouched
-  CPU path with no expert cache and no spec; it exists to prove correctness, not speed.
+- **End to end through Strata's server (CPU, no GPU kernels yet):** `./run3.sh --detach` loads the 20 GB
+  `Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf` and `/v1/models` reports
+  `ornith-1.5-35b-a3b-ad-q4-iq4 loaded ctx=131072`.  An OpenAI chat completion
+  ("Reply with exactly: hello world") returns coherent reasoning and the text `hello` at **6.6 tok/s decode,
+  7.5 tok/s prefill** on the Ryzen 9 7900.  This is the untouched CPU path with no GPU kernels, no expert
+  cache and no spec; it exists to prove correctness and integration, not speed - it is slower than
+  `run.sh`/`run2.sh`, and the GPU kernels below are what close that gap.
 - Ornith-dimension Q4_K-down expert parity: 0 failures, down rows bitwise-equal to ggml.
 - The Qwen35MoE guard accepts the real Ornith header and reads back the geometry above.
 
