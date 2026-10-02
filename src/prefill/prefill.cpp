@@ -540,8 +540,25 @@ const MmqPlan& mmq_plan() {
 // lets a bigger chunk or ring fit in the slots the prompt path borrows.  A last chunk below stream_all_min() still runs
 // MMQ in the same buffers, so each keeps MMQ's size for stream_all_min() - 1 tokens.  `src`: the layout streams experts
 // (Prefill::init got an ExpertSource; without one no chunk takes the streamed walk, so no chunk is fused).
+// The layout's smaller MoE buffers hold only what the fused kernels need, so every layer must take them: a layer they
+// do not cover runs MMQ (or the FP16 path) over the chunk's T x K rows, which do not fit there.  Native packs mix
+// formats by layer (IQ2_XS: three IQ1_M layers, which neither the fused kernels nor MMQ take), so `fused_ring()`
+// (any fused layer) is not enough here.
+inline bool fused_all() {
+    static const bool all = [] {
+        const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+        const MmqPlan& mp = mmq_plan();
+        for (size_t l = 0; l < mp.layer.size(); ++l) {
+            if (!mp.layer[l]) return false;
+            if (lay.native && !fused::native_supported(lay.fmt[l].gu_type, lay.fmt[l].d_type)) return false;
+        }
+        return !mp.layer.empty();
+    }();
+    return all;
+}
 bool fused_layout(size_t T, bool src) {
-    return src && fused_ring() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
+    return src && fused_ring() && fused_all() && mmq_plan().any && ring_slots(T) > STAGE &&
+           (int64_t) T >= stream_all_min();
 }
 // The MoE buffers MMQ and the fused path share: GU and H in floats, Xq and Hq in bytes.  Without `fused` (the
 // default): MMQ's, for T tokens.
