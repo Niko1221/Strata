@@ -4090,8 +4090,9 @@ int main(int argc, char** argv) {
             }
         strata::prefill::Prefill::set_pinned_share(total ? (double) pinned / (double) total : 1.0);
     }
-    auto lend_slots = [&](int64_t c) -> int64_t {
-        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ss, c);
+    // bytes -> slots for CUDA0's cache: exact when it knows its per-slot offsets (a native pack's blobs differ
+    // per layer), otherwise max_blob each.
+    auto slots_from_bytes = [&](uint64_t need) -> int64_t {
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
         if (xcache.slot_offsets() != nullptr) {   // sized slots: take slots from the end until they hold `need`
@@ -4100,6 +4101,18 @@ int main(int argc, char** argv) {
                    (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]) < need) ++k;
         }
         return k;
+    };
+    // ...and its inverse, for the ring's room: the bytes the cache's last `k` slots hold.  k can arrive <= 0: the
+    // caller's lend budget is `min(slots - 128, pct * slots / 100)` and goes negative on a cache smaller than 128
+    // slots, where `slots - k` would index slot_offsets() past its end.  Such a cache lends nothing, so say so.
+    auto bytes_from_slots = [&](int64_t k) -> uint64_t {
+        if (k <= 0) return 0;
+        if (xcache.slot_offsets() != nullptr)
+            return (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]);
+        return (uint64_t) k * (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+    };
+    auto lend_slots = [&](int64_t c) -> int64_t {
+        return slots_from_bytes(strata::prefill::Prefill::bytes_needed(g, ss, c));
     };
     // `lend_bytes` went with the single-cache serve loan: a participant's loan is priced by `part_bytes` from its
     // OWN cache, and the only other user of the old helper was the serve path's own relayout.
@@ -4111,7 +4124,7 @@ int main(int argc, char** argv) {
         return std::min(max_chunk, rounded);
     };
     // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,
-    // or with --prefill auto the largest of kAutoChunks whose buffers take at most kAutoLendPct % of the slots (a
+    // or with --prefill auto the largest chunk whose buffers take at most kAutoLendPct % of the slots (a
     // lent slot's expert is streamed during the prompt and refilled after it; measured on a 12 GB card, 32K Q2_0
     // prompt: 4096 791 tok/s, 6144 878, 8192 973 with 69% of the slots lent).  A request lends only what its own
     // prompt needs (Prefill::relayout), so a big chunk costs short prompts nothing.  0 = none fits.
@@ -4124,18 +4137,73 @@ int main(int argc, char** argv) {
         return v ? (int64_t) std::atoi(v)
                  : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
     }();
+    // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
+    // context, but a bare `auto` always reaches 8192.  32768 and 16384 stay opt-in (#282): a 32K prompt with
+    // IQ2_XS (RTX 5090, 64K context) read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K
+    // -> 18K experts streamed; an NVFP4 pack at 262K: 3,535 -> 5,201).
+    const int64_t auto_ceiling = std::max<int64_t>(8192, std::min<int64_t>(o.prefill_auto_max, o.max_context));
+    // The auto scan used to walk a fixed list of sizes - 32768, 16384, 8192, 6144, ... - and take the first that
+    // fit.  That list is coarse exactly where a rig needs it: this one affords ~8,700 tokens and was handed 8192,
+    // and 8704 is not on it.  `bytes_needed` is a sum of (T x positive constant) terms plus a max of such sums,
+    // so it rises monotonically with T, and so does every test the scan applies - which makes the largest size
+    // that fits a bisection on the 256-token grid the prompt path already works on (`request_chunk` rounds up to
+    // it).  log2(32768/256) = 7 probes, against the list's 10, at one `bytes_needed` per probe.
+    auto biggest_chunk = [](int64_t ceiling, auto&& ok) -> int64_t {
+        if (ceiling < 256) return 0;
+        int64_t lo = 1, hi = ceiling / 256, best = 0;   // n = T / 256, and ok() is monotone in n
+        while (lo <= hi) {
+            const int64_t mid = lo + (hi - lo) / 2;
+            if (ok(mid * 256)) { best = mid * 256; lo = mid + 1; } else hi = mid - 1;
+        }
+        return best;
+    };
     auto plan_lend = [&](int64_t& chunk) -> int64_t {
-        // 32768 and 16384 (#282, opt-in: --prefill auto:32768): a 32K prompt with IQ2_XS (RTX 5090, 64K context)
-        // read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K -> 18K experts streamed; an
-        // NVFP4 pack at 262K: 3,535 -> 5,201)
-        static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
         auto slots_for = lend_slots;
         if (o.prefill_auto) {
-            for (const int64_t c : kAutoChunks) {
-                // above 8192: only when asked for, and only when a prompt of the context can use it
-                if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
-                const int64_t k = slots_for(c);
-                if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) { chunk = c; return k; }
+            // The chunk and the ring are one budget, and the ring is the better buy.  Measured on this 4-way
+            // IQ3_S rig (2x RTX 3060 + 2x RTX 5060, CUDA3 lending at its 90% cap) on a 120K prompt: 8960 tokens
+            // with the 17-slot ring that leaves reads at 963 tok/s, 8192/130 at 1,008, 7168 with the ring full at
+            // its 199-slot byte budget at 1,000, and 5632/199 at 915.  A ring slot is worth ~0.53 tok/s there and
+            // a chunk token ~0.05, so the 69 slots between a full ring and 8192's 130 are worth more than the
+            // 512 chunk tokens they cost - and once the ring IS full, shrinking the chunk further buys nothing.
+            // So: the largest chunk that still leaves the ring full.  Only a rig where no chunk at all can afford
+            // one falls back to the old rule, which takes the largest chunk whose ring clears kRingMin (the
+            // value at or below which ring_slots() returns STAGE and streaming is off).
+            constexpr int64_t kRingMin = 16;
+            const int64_t ring_max = strata::prefill::Prefill::ring_max_slots();
+            const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
+            // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
+            // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
+            // happens to hold the pack's biggest layer - on the 4-way IQ3_S rig that is 2.15 MiB a slot against a
+            // 2.54 MiB max_blob.  Counting the room in slots priced the ring at 0.85x what it costs, `fits` then
+            // rejected the whole chunk instead of shrinking the ring, and the scan stopped a step short: measured
+            // against chunk 6144/ring 199, 8192 was refused where the same bytes afford a ~87-slot ring.
+            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+            const uint64_t avail = bytes_from_slots(budget);
+            auto room_of = [&](int64_t t) -> int64_t {
+                const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, ss, t);
+                return std::min((int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) blob), ring_max);
+            };
+            // `room_of` is capped at ring_max, so "the ring is full" is exactly room == ring_max, and both that
+            // test and the ones below it only get harder as t grows - the bisection stays valid.
+            auto scan = [&](int64_t floor) -> int64_t {
+                return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
+                    const int64_t room = room_of(t);
+                    if (room < floor) return false;
+                    strata::prefill::Prefill::set_ring_override((int) room);
+                    // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which case the
+                    // chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
+                    const int64_t k = slots_for(t);
+                    return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
+                });
+            };
+            int64_t c = scan(ring_max);
+            if (c == 0) c = scan(kRingMin);
+            if (c > 0) {
+                // the probe left the override on its last trial; put it back on the chunk that won
+                strata::prefill::Prefill::set_ring_override((int) room_of(c));
+                chunk = c;
+                return slots_for(c);
             }
             return 0;
         }
@@ -4220,9 +4288,9 @@ int main(int argc, char** argv) {
             int64_t lent_chunk = 0;
             std::vector<std::pair<int32_t, int32_t>> lent;
         };
-        auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
-            const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, c);
-            strata::core::ExpertCache& xc = *p.cache;
+        // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
+        // per layer), otherwise max_blob each.
+        auto cache_slots_for = [&](const strata::core::ExpertCache& xc, uint64_t need) -> int64_t {
             if (xc.slot_offsets() != nullptr) {   // sized slots: from the end until they hold `need`
                 int64_t k = 0;
                 while (k < xc.slots() &&
@@ -4231,6 +4299,9 @@ int main(int argc, char** argv) {
             }
             const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
             return (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
+        };
+        auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
+            return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c));
         };
         auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
             strata::core::ExpertCache& xc = *p.cache;
@@ -4274,20 +4345,67 @@ int main(int argc, char** argv) {
                 }
                 return true;
             };
-            static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
-            int64_t chunk = 0;
-            if (o.prefill_auto) {
-                for (const int64_t c : kAutoChunks) {
-                    if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;   // #282, as plan_lend
-                    if (fits(c, true)) { chunk = c; break; }
+            // The chunk and the ring are one budget.  The ring used to be a fixed 384 slots taken off the top
+            // before the chunk was considered: 506 MiB on a Q2_0 pack, where it was tuned, but 1,893 MiB on
+            // Q8_0, more than half an 8 GB card's cache - which is what kept that card at a 1024-token chunk.
+            // Size the chunk first and hand the ring what the smallest participant leaves over, up to the ring's
+            // byte budget - but hand it ALL of it, as in plan_lend: the ring is the better buy per byte (the
+            // measurements are there), so the chunk to take is the largest one that still leaves the ring full,
+            // not the largest one that leaves it anything at all.  kRingMin is the fallback floor for a rig where
+            // no chunk can afford a full ring; ring_slots() returns STAGE at or below it, which turns streaming
+            // off.
+            constexpr int64_t kRingMin = 16;
+            // The room is a BYTE budget, as in plan_lend: a ring slot is max_blob bytes, but a cache slot holds
+            // its own layer's blob, which on this rig averages 0.85 of it.  In slots the ring looked 18% cheaper
+            // than it is, and a chunk whose ring only fitted after that discount was refused outright - the scan
+            // stopped one step short while the chunk it did take had room to spare for the cap-sized ring.
+            const int64_t kBlob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+            auto ring_room = [&](int64_t c) -> int64_t {
+                int64_t room = strata::prefill::Prefill::ring_max_slots();
+                for (const PfPart& p : pf_parts) {
+                    // clamped at 0: on a cache smaller than 128 slots the budget above goes negative, and
+                    // `slots - budget` would then index part_bytes past the end of slot_offsets()
+                    const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
+                                                                        kAutoLendPct * p.cache->slots() / 100));
+                    const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
+                    const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c);
+                    room = std::min(room, (int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) kBlob));
                 }
+                return room;
+            };
+            int64_t chunk = 0, ring = 0;
+            if (o.prefill_auto) {
+                // As plan_lend: the largest chunk on the 256-token grid that every stage can lend WITH the ring
+                // still at its full byte budget (ring_room is capped at ring_max, so that is room == ring_max),
+                // under the operator's ceiling (auto_ceiling keeps a bare `auto` at 8192, #282).  Failing that,
+                // the largest chunk whose ring clears kRingMin.
+                auto scan = [&](int64_t floor) -> int64_t {
+                    return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
+                        const int64_t room = ring_room(t);
+                        if (room < floor) return false;
+                        strata::prefill::Prefill::set_ring_override((int) room);
+                        // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which
+                        // case the chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
+                        return fits(t, true);
+                    });
+                };
+                chunk = scan(strata::prefill::Prefill::ring_max_slots());
+                if (chunk == 0) chunk = scan(kRingMin);
+                if (chunk > 0) ring = ring_room(chunk);
             } else {
+                // an explicit --prefill is the operator's number, and a loan of it only has to fit
                 for (int64_t c = o.prefill_chunk; c >= 256; c /= 2)
                     if (fits(c, false)) { chunk = c; break; }
             }
             if (chunk > 0) {
+                if (ring > 0) strata::prefill::Prefill::set_ring_override((int) ring);
                 if (o.prefill_auto)
-                    std::fprintf(stderr, "strata serve: prompt chunk auto: %lld tokens\n", (long long) chunk);
+                    // the RESOLVED ring, not the room offered: ring_slots() clamps to [16, RING_MAX] and a chunk
+                    // under stream_all_min() gets STAGE, and STRATA_PREFILL_RING overrides both.  This is what
+                    // `init` lays out, and what the INFO line reports to the Monitor tab.
+                    std::fprintf(stderr, "strata serve: prompt chunk auto: %lld tokens, a %lld-slot ring\n",
+                                 (long long) chunk,
+                                 (long long) strata::prefill::Prefill::ring_slots_for(chunk));
                 else if (chunk != o.prefill_chunk)
                     std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens so its buffers fit in "
                                          "every expert cache\n", (long long) o.prefill_chunk, (long long) chunk);
@@ -5060,7 +5178,8 @@ int main(int argc, char** argv) {
                         "gpu_draft_mib=%s spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld prefill_chunk=%lld prefill_ring=%lld "
+                        "engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -5073,7 +5192,11 @@ int main(int argc, char** argv) {
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
-                        (long long) o.conversation_cache_min_free_mib);
+                        (long long) o.conversation_cache_min_free_mib,
+                        // the chunk the auto scan settled on (a request's borrow prices it) and the ring that came
+                        // with it: the pair the prompt path will really run, for the Monitor tab
+                        (long long) o.prefill_chunk,
+                        (long long) strata::prefill::Prefill::ring_slots_for(o.prefill_chunk));
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
