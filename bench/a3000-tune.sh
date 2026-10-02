@@ -5,12 +5,14 @@
 #
 # Run as the user (nicky). Hugepages need an unlimited locked-memory limit
 # (MAP_HUGETLB; see src/core/pinned.cu:202). On NixOS set
-# systemd.user.settings.Manager.DefaultLimitMEMLOCK = "infinity" and run this
-# script from a systemd unit/scope; an interactive shell only gets the limit
-# after a PAM login (security.pam.loginLimits).
+# systemd.user.extraConfig = "DefaultLimitMEMLOCK=infinity" (and the matching
+# systemd.settings.Manager.DefaultLimitMEMLOCK) and run this script from a
+# systemd unit/scope; an interactive shell only gets the limit after a PAM
+# login (security.pam.loginLimits).
 #
 # Runs, in order:
-#   A  0.1.18 engine backup,       --kv int8   - baseline (uses the installed server.py)
+#   A  0.1.18 engine backup,       --kv int8   - baseline (best effort: the
+#      old binary needs its build's lib-driver; it may fail to start)
 #   B  build/strata (0.1.31+),     --kv int8   - engine effect
 #   C  build/strata (0.1.31+),     --kv k8v4   - KV effect on top of the new engine
 set -eu
@@ -39,7 +41,7 @@ echo "nr_hugepages=$(cat /proc/sys/vm/nr_hugepages) HugePages_Free=$(grep '^Huge
 if [ "$(ulimit -l)" != "unlimited" ]; then
     echo "warning: memlock is $(ulimit -l); MAP_HUGETLB will not be used."
     echo "         Run this script from a systemd unit/scope with LimitMEMLOCK=infinity"
-    echo "         (see systemd.user.settings.Manager.DefaultLimitMEMLOCK) to enable hugepages."
+    echo "         (systemd.user.extraConfig = \"DefaultLimitMEMLOCK=infinity\") to enable hugepages."
 fi
 echo "memlock=$(ulimit -l)"
 
@@ -70,7 +72,9 @@ stop_server
 
 say "2. prepare configs"
 [ -f "$CFG_OLD" ] || cp "$CFG" "$CFG_OLD"
-[ -f "$BACKUP" ] || cp -L "$STRATA/engine/strata" "$BACKUP"
+if [ ! -f "$BACKUP" ]; then
+    echo "no 0.1.18 backup at $BACKUP - skipping A (do not copy the current engine over it)"
+fi
 "$PY" - <<PY
 import json
 c = json.load(open('$CFG_OLD'))
@@ -95,7 +99,9 @@ run() {
     echo "$out" | grep -qE '"decode_tok_s": *[0-9]'
 }
 
-run "A: 0.1.18 engine, kv int8" "$CFG_A" SERVE="$STRATA/serve/server.py" || echo "A produced no number - see /tmp/e2e-*.log"
+if [ -f "$BACKUP" ]; then
+    run "A: 0.1.18 engine, kv int8" "$CFG_A" SERVE="$STRATA/serve/server.py" || echo "A produced no number - see /tmp/e2e-*.log"
+fi
 run "B: build/strata, kv int8"  "$CFG_B" || echo "B produced no number - see /tmp/e2e-*.log"
 run "C: build/strata, kv k8v4"  "$CFG_C" || echo "C produced no number - see /tmp/e2e-*.log"
 
