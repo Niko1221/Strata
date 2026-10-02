@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_file.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 
@@ -29,6 +30,10 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& state,
 // fingerprints the authoritative payload only. Never changes model state.
 bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                             int64_t upto, bool include_index, uint64_t& fingerprint, std::string& error);
+// Disk save without a host copy: the layer's authoritative K/V as a streamed source (same bytes and metadata as
+// conversation_kv_save).  Caller synchronizes the device first and keeps the state untouched while it is read.
+bool conversation_kv_source(SessionKvSource& source, const QsaState& state, const ModelGeometry& g,
+                            int64_t upto, bool include_index, std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
@@ -67,6 +72,12 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const SessionState& session, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+// Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
+// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
+// synchronized and must not run the session until the file is written.
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState& draft, std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 enum class ConversationRestore { restored, invalid, transfer_failed };

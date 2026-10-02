@@ -273,6 +273,27 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     return true;
 }
 
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    if (!view_validate(view, ss, g, error) || !sync(error)) return false;
+    SavedConversation captured;
+    captured.geometry = geometry_key(g);
+    captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
+    captured.live.ids = view.ids; captured.live.imgs = view.images;
+    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
+    const int64_t upto = (int64_t) view.ids.size();
+    const size_t layers = owned_qsa(ss);
+    std::vector<SessionKvSource> out(layers + 1);
+    for (size_t j = 0; j < layers; ++j)
+        if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
+    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    meta = std::move(captured);
+    sources = std::move(out);
+    return true;
+}
+
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error) {
     if (!image.live.stage_parts.empty())
