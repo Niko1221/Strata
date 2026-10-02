@@ -995,6 +995,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     err.clear();
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
+    const char* sync_path = std::getenv("STRATA_P100_DIAGNOSTIC_SYNC_FILE");
+    std::FILE* sync_marker = sync_path ? std::fopen(sync_path, "rb") : nullptr;
+    set_debug_sync(sync_marker != nullptr);
+    if (sync_marker) std::fclose(sync_marker);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();

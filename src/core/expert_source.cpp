@@ -1309,7 +1309,52 @@ bool FileExpertSource::pin_cache_complement(
                              (long long) done, (long long) n_layers_, (double) copied.load() / 1073741824.0);
         }
     };
-    {
+    const char* sequential_env = std::getenv("STRATA_P100_RAM_SPLIT");
+    const bool sequential_native = !role_ptr_.empty() && sequential_env && std::atoi(sequential_env) == 1;
+    if (sequential_native) {
+        // HDD-friendly local experiment: read a complete projection successively,
+        // then scatter its unchanged bytes into the resident expert blobs.
+        // The usual six-thread gather seeks between three projections per expert.
+        std::vector<uint8_t> role_buffer;
+        std::vector<uint8_t> check;
+        std::fprintf(stderr, "FileExpertSource: sequential native RAM copy (P100 HDD mode)\n");
+        for (int64_t l = 0; l < n_layers_ && !failed.load(); ++l) {
+            uint64_t within = 0;
+            for (int r = 0; r < 3; ++r) {
+                const size_t i = (size_t) (3 * l + r);
+                const uint64_t per = role_bytes_[i];
+                role_buffer.resize((size_t) (per * (uint64_t) n_expert_));
+                std::memcpy(role_buffer.data(), role_ptr_[i], role_buffer.size());
+                for (int64_t e = 0; e < n_expert_; ++e) {
+                    const uint64_t off = offsets[(size_t) (l * n_expert_ + e)];
+                    if (off == kNoComplement) continue;
+                    if (off > bytes || within + per > bytes - off) {
+                        fail("FileExpertSource: sequential copy exceeds resident blob bounds"); break;
+                    }
+                    std::memcpy((uint8_t*) host + (size_t) (off + within),
+                                role_buffer.data() + (size_t) (per * (uint64_t) e), (size_t) per);
+                    copied.fetch_add(per);
+                }
+                within += per;
+#if defined(_WIN32)
+                (void) VirtualUnlock((LPVOID) role_ptr_[i], (SIZE_T) role_buffer.size());
+#endif
+            }
+            // One whole expert per layer checked against the original mapped GGUF.
+            check.resize((size_t) layer_blob_bytes_[(size_t) l]);
+            for (int64_t e = 0; e < n_expert_; ++e) {
+                const uint64_t off = offsets[(size_t) (l * n_expert_ + e)];
+                if (off == kNoComplement) continue;
+                if (!copy_from_files(l, e, check.data()) ||
+                    std::memcmp(check.data(), host + (size_t) off, check.size()) != 0)
+                    fail("FileExpertSource: sequential RAM expert does not match the GGUF");
+                break;
+            }
+            std::fprintf(stderr, "FileExpertSource: sequential copy layer %lld/%lld verified (%.2f GiB)\n",
+                         (long long) (l + 1), (long long) n_layers_, (double) copied.load() / 1073741824.0);
+            std::fflush(stderr);
+        }
+    } else {
         const int threads = (int) std::max<int64_t>(1, std::min<int64_t>(6, n_layers_));
         std::vector<std::thread> pool;
         for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
@@ -1806,6 +1851,20 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++d.multi_entries;
         }
     const auto c3 = std::chrono::steady_clock::now();
+    const char* strict_gpu = std::getenv("STRATA_P100_RAM_SPLIT");
+    const char* hybrid_env = std::getenv("STRATA_P100_HYBRID");
+    const bool p100_hybrid = hybrid_env && hybrid_env[0] == '1';
+    if (strict_gpu && strict_gpu[0] == '1' && !p100_hybrid && njobs != 0) {
+        std::fprintf(stderr, "strata P100: refused %d CPU jobs at layer %lld (tokens %lld, PCIe share %d/256, pinned layer %d, plan cap %lld, staging cap %lld)\n",
+                     njobs, (long long) d.layers, (long long) n_tok, d.pcie_num,
+                     (int) d.src->pcie_layer(d.layers), d.plan ? (long long) d.plan->cap : -1,
+                     d.plan ? (long long) d.plan->staging_cap : -1);
+        std::fflush(stderr);
+        d.failed = true;
+        d.fail = "GPU-only P100 mode refuses CPU expert jobs: check the pinned RAM and staging capacity";
+        d.fail_layer = d.layers;
+        return;
+    }
     pt("run", njobs);
     if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
     else d.pool->run_split_multi(d.jobs_multi.data(), njobs);

@@ -1,0 +1,50 @@
+[
+  {
+    "repeat": 1,
+    "pcie_frac": 0.0,
+    "test": 1,
+    "prompt": "Explique en français pourquoi le ciel est bleu, puis pourquoi il devient rouge au coucher du soleil. Donne une explication précise et accessible.",
+    "elapsed_seconds": 10.273061899999448,
+    "generation_tps": 28.732729497064994,
+    "prompt_tps": 30.7,
+    "output_tokens": 256,
+    "drafts": 189,
+    "accepted": 112,
+    "cpu_expert_jobs": 83494,
+    "ram_gpu_experts": 0,
+    "cpu_average_cores": 14.015721544519044,
+    "engine_io_read_bytes": 234,
+    "ram_peak_bytes": 90299097088,
+    "gpu_max_temp_c": 51,
+    "gpu_max_power_w": 123.013,
+    "vram_peak_mib": {
+      "1": 15052.0625,
+      "2": 15264.0625
+    },
+    "answer_sha256": "23f57dd9a585aa8369ebbe834cab4bff5a57be6cda622bb1eaea43ca7e980d09"
+  },
+  {
+    "repeat": 1,
+    "pcie_frac": 0.0,
+    "test": 2,
+    "prompt": "Écris une fonction Python fibonacci(n) qui retourne les n premiers nombres de Fibonacci, puis donne un exemple pour n=8. Réponds en français.",
+    "elapsed_seconds": 8.548876400000154,
+    "generation_tps": 35.60302625723187,
+    "prompt_tps": 34.0,
+    "output_tokens": 256,
+    "drafts": 188,
+    "accepted": 153,
+    "cpu_expert_jobs": 72350,
+    "ram_gpu_experts": 0,
+    "cpu_average_cores": 13.633005034439135,
+    "engine_io_read_bytes": 244,
+    "ram_peak_bytes": 90299977728,
+    "gpu_max_temp_c": 52,
+    "gpu_max_power_w": 127.211,
+    "vram_peak_mib": {
+      "1": 15052.0625,
+      "2": 15264.0625
+    },
+    "answer_sha256": "12c0386b2dde6aa5333a0b0ce1c540cd2becf61872ebb91341379a8df82626f0"
+  }
+]

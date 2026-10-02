@@ -164,6 +164,42 @@ int main() {
               "no key in the skip set: the index is not read");
     }
 
+    std::printf("4. data shards repeat only general.architecture\n");
+    {
+        const fs::path pack = tmp.path / "split";
+        write_pack(pack, false);
+        const std::string first = (tmp.path / "split-1.gguf").string();
+        const std::string second = (tmp.path / "split-2.gguf").string();
+        auto meta = arch_keys();
+        const auto split = fixture::split_keys(0, 2, 2);
+        meta.insert(meta.end(), split.begin(), split.end());
+        fixture::write(first, meta, {});
+        auto data_meta = fixture::split_keys(1, 2, 2);
+        data_meta.push_back(fixture::str("general.architecture", "qwen4exp"));
+        auto attempt = [&](const std::vector<fixture::Kv>& keys) {
+            fixture::write(second, keys, {{QKV, {NE0, NE1}, 8, 1}, {KEY, {NE0, NE1}, 8, 2}});
+            Loaded l;
+            std::string err;
+            const std::vector<std::string> shards{first, second};
+            uint64_t pool = 0;
+            if (!NativeDense::served_names(shards, true, l.skip, err) ||
+                !WeightTable::pool_bytes(pack.string(), pool, err, &l.skip)) return false;
+            if (cudaMalloc(&l.arena, pool ? pool : 256) != cudaSuccess) return false;
+            if (!l.wt.load(pack.string(), l.arena, pool ? pool : 256, err, &l.skip)) return false;
+            return l.dense.load(shards, l.wt, err, true);
+        };
+        check(attempt(data_meta), "architecture-only data shard loads after a validated metadata shard");
+        auto wrong_arch = data_meta;
+        wrong_arch.back() = fixture::str("general.architecture", "llama");
+        check(!attempt(wrong_arch), "a different architecture in a data shard is refused");
+        auto wrong_split = fixture::split_keys(1, 3, 2);
+        wrong_split.push_back(fixture::str("general.architecture", "qwen4exp"));
+        check(!attempt(wrong_split), "mismatched split.count is still refused");
+        auto wrong_count = fixture::split_keys(1, 2, 3);
+        wrong_count.push_back(fixture::str("general.architecture", "qwen4exp"));
+        check(!attempt(wrong_count), "mismatched split.tensors.count is still refused");
+    }
+
     std::printf(g_fail ? "native_dense_ple_key_test: %d FAILED\n" : "native_dense_ple_key_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

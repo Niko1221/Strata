@@ -1,0 +1,13 @@
+{
+  "id": "q4-p100-ciel-fibonacci-v1",
+  "prompts": [
+    "Explique en français pourquoi le ciel est bleu, puis pourquoi il devient rouge au coucher du soleil. Donne une explication précise et accessible.",
+    "Écris une fonction Python fibonacci(n) qui retourne les n premiers nombres de Fibonacci, puis donne un exemple pour n=8. Réponds en français."
+  ],
+  "max_tokens": 256,
+  "temperature": 0,
+  "seed": 42,
+  "cache_prompt": false,
+  "enable_thinking": false,
+  "context": 4096
+}

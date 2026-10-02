@@ -1,0 +1,14 @@
+Internal ctest changing into directory: <isolated sm_60 build>
+Test project <isolated sm_60 build>
+    Start 2: gguf_split_test
+1/4 Test #2: gguf_split_test ..................   Passed    0.10 sec
+    Start 3: file_expert_source_test
+2/4 Test #3: file_expert_source_test ..........   Passed    0.14 sec
+    Start 5: native_dense_ple_key_test
+3/4 Test #5: native_dense_ple_key_test ........   Passed    0.34 sec
+    Start 7: prefill_p100_test
+4/4 Test #7: prefill_p100_test ................   Passed    1.52 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   2.11 sec

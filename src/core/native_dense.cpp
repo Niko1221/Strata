@@ -85,7 +85,10 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
-            if (gguf.get("general.architecture")) {
+            // Local Unsloth shards repeat general.architecture on data shards,
+            // but only shard zero holds the complete architecture parameters.
+            const auto* arch = gguf.get("general.architecture");
+            if (arch && (!have_architecture || gguf.get("qwen4exp.block_count"))) {
                 err = strata::check_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
@@ -95,7 +98,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
             } else if (!have_architecture || !split_count || !count || !number || !tensors ||
                        count->u != split_count || number->u == 0 || number->u >= split_count ||
-                       tensors->u != split_tensors) {
+                       tensors->u != split_tensors || (arch && arch->s != "qwen4exp")) {
                 err = "native dense: additional shard must match the architecture-validated first shard's split metadata";
                 return false;
             }

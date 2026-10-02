@@ -1334,7 +1334,23 @@ int main(int argc, char** argv) {
         o.resident_cpu_experts = o.resident_pin = o.resident_soft = false;
         o.resident_headroom = 8ull << 30;
     }
-    if (o.resident_cpu_experts && (!o.layer_split.empty() || remote_caches)) {
+    // Local P100 experiment: fixed caches + own prefill buffers keep the excluded
+    // experts in VRAM for the whole session. Portable mapped RAM serves both GPUs.
+    const char* ram_split_env = std::getenv("STRATA_P100_RAM_SPLIT");
+    const bool ram_split = ram_split_env && std::atoi(ram_split_env) == 1 &&
+                           o.resident_cpu_experts && !o.layer_split.empty();
+    const char* hybrid_env = std::getenv("STRATA_P100_HYBRID");
+    const bool p100_hybrid = ram_split && hybrid_env && hybrid_env[0] == '1';
+    if (ram_split && (remote_caches || o.resident_soft || o.resident_budget != 0 ||
+                      !o.no_prefill_borrow || o.adapt_every != 0 || (!p100_hybrid && o.pcie_frac != 1.0))) {
+        std::fprintf(stderr, "strata generate: P100 RAM split needs full strict residency, --no-prefill-borrow, "
+                             "--adapt-every 0, no remote caches, and --pcie-frac 1 unless STRATA_P100_HYBRID=1\n");
+        return 2;
+    }
+    if (p100_hybrid)
+        std::fprintf(stderr, "strata P100: hybrid CPU+GPU enabled; pinned RAM residency and fixed VRAM caches preserved\n");
+    if (ram_split) o.resident_pin = true;
+    if (o.resident_cpu_experts && ((!o.layer_split.empty() && !ram_split) || remote_caches)) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support layer splits or remote expert caches\n");
         return 2;
     }
@@ -1459,7 +1475,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 #if defined(_WIN32)
-    if (o.ple_io == "ram") {
+    if (o.ple_io == "ram" && !ram_split) {
         std::fprintf(stderr, "strata generate: --ple-io ram is not available on Windows (no mlock); use --ple-io mmap\n");
         return 2;
     }
@@ -3788,8 +3804,21 @@ int main(int argc, char** argv) {
             const int64_t k = plan_lend(chunk);
             if (k > 0) lend_from = xcache.slots() - k;
         }
-        bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, {}, lend_from, o.resident_headroom,
+        std::vector<std::pair<int32_t, int32_t>> split_gpu_pairs;
+        if (ram_split) {
+            for (const auto& st : stages)
+                for (int64_t l = st->lb; l < st->le; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        if (st->cache.slot_of(l, e) >= 0)
+                            split_gpu_pairs.emplace_back((int32_t) l, (int32_t) e);
+        }
+        bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, split_gpu_pairs, lend_from, o.resident_headroom,
                                                     o.resident_budget, &profile);
+        if (ram_split && (!resident_ok || src.pinned_bytes() != src.resident_bytes())) {
+            std::fprintf(stderr, "strata generate: P100 RAM split requires the whole complement mapped/page-locked: %s\n",
+                         err.c_str());
+            return 1;
+        }
         std::string whole_err;
         if (!resident_ok && o.resident_soft) {
             // #467: the whole complement does not fit - keep what does, the hottest by the profile, through the #403
@@ -5380,6 +5409,8 @@ int main(int argc, char** argv) {
             double dt_run = 0, dt_commit = 0, dt_draft = 0;
             int64_t dec_windows = 0, dec_T = 0;
             const int64_t decode_hits0 = drive.d.cache_hits;
+            const int64_t decode_cpu_jobs0 = drive.d.multi_misses;
+            const int64_t decode_pcie0 = drive.d.pcie_experts;
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
@@ -5627,6 +5658,9 @@ int main(int argc, char** argv) {
                              (unsigned long long) h_pool_full, ss.ple_prev[0], ss.ple_prev[1]);
             }
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
+            if (ram_split) std::fprintf(stderr, "strata P100: decode expert compute: %lld CPU jobs, %lld RAM-to-GPU experts\n",
+                         (long long) (drive.d.multi_misses - decode_cpu_jobs0),
+                         (long long) (drive.d.pcie_experts - decode_pcie0));
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
             // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused> [hits] [lookups]
             //      [RAM blobs] [file blobs] [file MB]   (CS-T tiers; appended, so an older server reads the rest)

@@ -1,6 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
+#include "strata/kernels/f16_bits.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -34,6 +35,13 @@
 
 namespace strata::prefill {
 namespace {
+
+#if !defined(__HIPCC__)
+__global__ void pascal_bf16_to_f16(const uint16_t* src, uint16_t* dst, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = strata::kernels::f16_from_f32(__uint_as_float((uint32_t) src[i] << 16));
+}
+#endif
 
 void ck(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) {
@@ -294,6 +302,8 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
 }  // namespace
 
 Gemm::~Gemm() {
+    if (pascal_x_) cudaFree(pascal_x_);
+    if (pascal_w_) cudaFree(pascal_w_);
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
@@ -375,6 +385,36 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta) {
     if (T <= 0 || N <= 0) return;
+#if !defined(__HIPCC__)
+    if (!pascal_checked_) {
+        int dev = 0;
+        cudaDeviceProp p{};
+        cudaGetDevice(&dev);
+        cudaGetDeviceProperties(&p, dev);
+        pascal_bf16_ = p.major == 6 && p.minor == 0;
+        pascal_checked_ = true;
+    }
+    if (pascal_bf16_) {
+        // cuBLAS cannot multiply BF16 operands on GP100. Convert on the GPU,
+        // retain the temporary buffers, and accumulate the FP16 GEMM in FP32.
+        auto grow = [](uint16_t*& ptr, int64_t& cap, int64_t need) {
+            if (need <= cap) return;
+            if (ptr) cudaFree(ptr);
+            const cudaError_t e = cudaMalloc((void**) &ptr, (size_t) need * 2);
+            if (e != cudaSuccess) {
+                std::fprintf(stderr, "prefill Pascal conversion buffer: %s\n", cudaGetErrorString(e));
+                std::exit(1);
+            }
+            cap = need;
+        };
+        grow(pascal_x_, pascal_x_cap_, T * K);
+        grow(pascal_w_, pascal_w_cap_, N * K);
+        pascal_bf16_to_f16<<<(unsigned) ((T*K+255)/256),256,0,(cudaStream_t) stream_>>>(X,pascal_x_,T*K);
+        pascal_bf16_to_f16<<<(unsigned) ((N*K+255)/256),256,0,(cudaStream_t) stream_>>>(W,pascal_w_,N*K);
+        f16(pascal_x_,pascal_w_,Y,T,N,K,ldy,beta);
+        return;
+    }
+#endif
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)

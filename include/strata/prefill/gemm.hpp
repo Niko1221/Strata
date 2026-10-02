@@ -52,6 +52,11 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
+    bool pascal_checked_ = false;
+    bool pascal_bf16_ = false;
+    uint16_t* pascal_x_ = nullptr;
+    uint16_t* pascal_w_ = nullptr;
+    int64_t pascal_x_cap_ = 0, pascal_w_cap_ = 0;
 };
 
 

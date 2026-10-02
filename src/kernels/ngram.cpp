@@ -148,6 +148,10 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
+#if defined(_WIN32)
+    uint8_t* ram_copy = nullptr;
+    uint64_t ram_bytes = 0;
+#endif
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     bool fp8 = false;                 // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
@@ -259,7 +263,25 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->n_rows = n_rows;
     }
     if (io.mode == PleIo::Mmap && io.lock && impl_->data != nullptr) {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+        // Local P100 experiment: a private, locked copy avoids random HDD faults.
+        impl_->ram_copy = (uint8_t*) VirtualAlloc(nullptr, (SIZE_T) need, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!impl_->ram_copy) { err = "PLE: cannot allocate the complete RAM table"; close(); return false; }
+        impl_->ram_bytes = need;
+        SIZE_T lo = 0, hi = 0;
+        if (!GetProcessWorkingSetSize(GetCurrentProcess(), &lo, &hi) ||
+            !SetProcessWorkingSetSize(GetCurrentProcess(), lo + (SIZE_T) need + (64u << 20),
+                                      hi + (SIZE_T) need + (64u << 20)) ||
+            !VirtualLock(impl_->ram_copy, (SIZE_T) need)) {
+            err = "PLE: cannot lock the complete RAM table, Windows error " + std::to_string(GetLastError());
+            close(); return false;
+        }
+        std::fprintf(stderr, "strata P100: copying %.2f GiB PLE table to locked RAM\n", (double) need / 1073741824.0);
+        std::fflush(stderr);
+        std::memcpy(impl_->ram_copy, impl_->data, (size_t) need);
+        impl_->data = impl_->ram_copy;
+        impl_->locked = true;
+#else
         const uint64_t page = 4096;
         const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
         const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
@@ -281,6 +303,14 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 
 void PleTable::close() {
     impl_->reader.close();
+#if defined(_WIN32)
+    if (impl_->ram_copy) {
+        VirtualUnlock(impl_->ram_copy, (SIZE_T) impl_->ram_bytes);
+        VirtualFree(impl_->ram_copy, 0, MEM_RELEASE);
+        impl_->ram_copy = nullptr;
+        impl_->ram_bytes = 0;
+    }
+#endif
     impl_->pending = false;
     impl_->locked = false;   // the unmap below releases the lock
     impl_->mode = PleIo::Mmap;

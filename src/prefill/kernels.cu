@@ -16,6 +16,7 @@ namespace {
 
 constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
 constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+thread_local bool debug_sync = false;
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -56,7 +57,8 @@ __device__ float block_sum(float v, float* sh) {
     return sh[0];
 }
 void check(const char* what) {
-    const cudaError_t e = cudaGetLastError();
+    const cudaError_t launch = cudaGetLastError();
+    const cudaError_t e = launch == cudaSuccess && debug_sync ? cudaDeviceSynchronize() : launch;
     if (e != cudaSuccess) { std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
 }
 unsigned blocks_for(int64_t n, int t = 256) { return (unsigned) ((n + t - 1) / t); }
@@ -794,6 +796,7 @@ void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     copy_i32_kernel<<<(unsigned) (b < 256 ? b : 256), 256, 0, (cudaStream_t) stream>>>(dst, src, n);
     check("copy_i32");
 }
+void set_debug_sync(bool enabled) { debug_sync = enabled; }
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream) {
     if (n <= 0) return;
     gather_rows16_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst16, n, width);

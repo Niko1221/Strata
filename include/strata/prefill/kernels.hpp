@@ -60,6 +60,8 @@ void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void*
 /// dst[i] = src[i] for n int32s, as a kernel: either side may be mapped host memory, and the copy never waits
 /// behind the copy engine's queue (the prompt path's grouping tables, while the expert stream fills it).
 void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
+// Optional runtime diagnostics; disabled for normal inference and benchmarks.
+void set_debug_sync(bool enabled);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
