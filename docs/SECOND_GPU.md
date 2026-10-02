@@ -104,11 +104,12 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
   primary.
 
 `--peer-device` requires `--expert-profile` and an enabled expert cache, and
-the device must be visible; it refuses otherwise. `--expert-cache-device1`
-and the peer both fill CUDA1 with an expert cache; the code does not refuse
-the pair, but the two tiers then hold the same card twice and should not be
-combined. A layer split (`--layer-split`) is a different second-GPU mode; the
-combination is not refused and not tested.
+the device must be visible; it refuses otherwise. It also refuses
+`--layer-split` (a different second-GPU mode: use one or the other) and
+`--expert-cache-device1..3` (the peer tier already caches experts on that card):
+
+    strata generate: --peer-device cannot be combined with --layer-split (use one or the other)
+    strata generate: --peer-device cannot be combined with --expert-cache-device1..3 (the peer tier already caches experts there)
 
 Without `--peer-device` the binary is unchanged; its output is byte-identical
 to the release. With `--peer-device` and the same expert set split across the
