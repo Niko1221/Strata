@@ -1,0 +1,21 @@
+device 0: AMD Radeon RX 9070 XT
+  arch gfx1201, 15.9 GiB, wave32
+device 0: AMD Radeon RX 9070 XT
+  HIP arch            gfx1201 wave32 (compiled for gfx1100,gfx1101,gfx1102,gfx1200,gfx1201,gfx1030)
+  multiprocessors     32
+  VRAM total / free   15.922 GiB (17095983104 B) / 15.774 GiB (16937582592 B)
+  driver / runtime    71726391 / 71726391
+  HIP runtime         <folder>\Strata\engine\amdhip64_7.dll
+
+memory plan  --max-context 20480
+  KV + indexer keys   0.267387 GB
+  recurrent state     0.000000 GB  (GDN recurrence + conv history, NOT evictable)
+  expert cache        5.675613 GB  (4105 slots of 1,382,400 B)
+  VRAM pool           5.943000 GB
+  expert arena (DRAM) 0.000000 GB
+  card free           15.774 GiB (16937582592 B)
+  plan + KV vs free   FITS
+
+selftest: arena 0.062 GiB (67108864 B), used 0.002 GiB (2097152 B) after two 1 MiB allocations
+selftest: over-allocation refused as required
+strata-device selftest OK
