@@ -535,26 +535,46 @@ __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[
         for (int i = 0; i < 4; ++i) s[i] = (uint32_t) (v >> (r + (3 - i) * K)) & 0xFFFFu;
     }
 }
-// lane iqs/4 of block kbx against the q8_1 blocks aligned with the block's start (4 per trellis block)
+// lane iqs/4 of block kbx against the q8_1 blocks aligned with the block's start (4 per trellis block).  Split in
+// two, like the IQ types' decode-once kernels below: tq_load decodes the lane's 16 codebook values (weight side only),
+// tq_apply does the activation side.  vec_dot_tq_q8_1 is apply(load()), so the per-entry and the decode-once kernels
+// do the same float operations in the same order: bitwise equal.
+struct TqLane { float v[16]; float d; };
 template<int TY>
-__device__ __forceinline__ float vec_dot_tq_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
-                                                 const int& kbx, const int& iqs) {
+__device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs) {
     const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
-    const int l = iqs / 4;
     uint32_t s[4];
-    tq_states4<TY>(b->qs, l, s);
+    tq_states4<TY>(b->qs, iqs / 4, s);
+    TqLane r;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float2 p0, p1;
+        tq_step(s[i], p0, p1);
+        r.v[4 * i + 0] = p0.x;
+        r.v[4 * i + 1] = p0.y;
+        r.v[4 * i + 2] = p1.x;
+        r.v[4 * i + 3] = p1.y;
+    }
+    r.d = tq_h2f(b->d);
+    return r;
+}
+__device__ __forceinline__ float tq_apply(const TqLane& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+    const int l = iqs / 4;
     const block_q8_1* b8 = bq8_1 + l / 2;
     const int* q8 = (const int*) b8->qs + 4 * (l & 1);
     float sum = 0.0f;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        float2 p0, p1;
-        tq_step(s[i], p0, p1);
         const int v = q8[i];
-        sum += p0.x * (float) (int8_t) (v) + p0.y * (float) (int8_t) (v >> 8) + p1.x * (float) (int8_t) (v >> 16) +
-               p1.y * (float) (int8_t) (v >> 24);
+        sum += r.v[4 * i + 0] * (float) (int8_t) (v) + r.v[4 * i + 1] * (float) (int8_t) (v >> 8) +
+               r.v[4 * i + 2] * (float) (int8_t) (v >> 16) + r.v[4 * i + 3] * (float) (int8_t) (v >> 24);
     }
-    return tq_h2f(b->d) * __low2float(b8->ds) * sum;
+    return r.d * __low2float(b8->ds) * sum;
+}
+template<int TY>
+__device__ __forceinline__ float vec_dot_tq_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                 const int& kbx, const int& iqs) {
+    return tq_apply(tq_load<TY>(vbq, kbx, iqs), bq8_1, iqs);
 }
 
 // ---------------------------------------------------------------- the formats
@@ -950,6 +970,18 @@ template<> struct Split<42> {   // Q2_0
         return r.d2 * d8 * sumi;
     }
 };
+// APR trellis types: the lane's 16 decoded codebook values (tq_load / tq_apply above)
+template<> inline constexpr bool kSplit<144> = true;
+template<> inline constexpr bool kSplit<145> = true;
+template<> inline constexpr bool kSplit<146> = true;
+template<int TY> struct SplitTq {
+    using W = TqLane;
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs) { return tq_load<TY>(vbq, kbx, iqs); }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
+};
+template<> struct Split<144> : SplitTq<144> {};
+template<> struct Split<145> : SplitTq<145> {};
+template<> struct Split<146> : SplitTq<146> {};
 
 // One row against the n <= NC activations x + off[0..n) (n >= 1, warp-uniform; offsets in q8_1 blocks, 32-bit to
 // spare registers), the whole warp.  Per activation this is row_dot: the same calls k, lane-strided the same way,

@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <numeric>
@@ -55,10 +57,10 @@ std::vector<float> decode_matrix(ggml_type type, const std::vector<uint8_t> & q,
     return out;
 }
 
-std::vector<uint8_t> make_q2_matrix(int64_t rows, int64_t cols, int expert, int trial) {
-    const ggml_type type = GGML_TYPE_Q2_0;
+std::vector<uint8_t> make_q2_matrix(int64_t rows, int64_t cols, int expert, int trial,
+                                    ggml_type type = GGML_TYPE_Q2_0) {
     const auto * tr = ggml_get_type_traits(type);
-    if (!tr || !tr->from_float_ref) throw std::runtime_error("Q2_0 host quantizer unavailable");
+    if (!tr || !tr->from_float_ref) throw std::runtime_error("host quantizer unavailable");
     const size_t rb = row_bytes(type, cols);
     std::vector<uint8_t> out((size_t) rows * rb);
     std::vector<float> row((size_t) cols);
@@ -137,7 +139,10 @@ Metrics run_product(Context & ctx, hipStream_t stream, const std::string & name,
     hip_check(hipMemcpy(ddst.p, dst_ids.data(), dst_ids.size() * sizeof(int32_t), hipMemcpyHostToDevice), "copy dst ids");
     hip_check(hipMemcpy(dbounds.p, bounds.data(), bounds.size() * sizeof(int32_t), hipMemcpyHostToDevice), "copy bounds");
     hip_check(hipMemcpy(dw.p, w.data(), w.size(), hipMemcpyHostToDevice), "copy weights and zero tail");
-    hip_check(hipMemset(dy.p, 0xff, (size_t) rows * (size_t) out_rows * sizeof(float)), "initialize output sentinel");
+    // on the test's stream: a plain hipMemset may run on the null stream AFTER the MMQ kernel on this non-blocking
+    // stream, overwriting the result with the sentinel (seen as "all outputs unwritten", intermittently, on a busy GPU)
+    hip_check(hipMemsetAsync(dy.p, 0xff, (size_t) rows * (size_t) out_rows * sizeof(float), stream),
+              "initialize output sentinel");
 
     quantize(dx.as<float>(), dsrc.as<int32_t>(), dxq.p, (int) type, cols, cols, rows, (void *) stream);
     const int max_rows = *std::max_element(counts.begin(), counts.end());
@@ -168,8 +173,17 @@ Metrics run_product(Context & ctx, hipStream_t stream, const std::string & name,
             }
         }
     }
+    {
+        size_t bad = 0, first = got.size();
+        uint32_t first_bits = 0;
+        for (size_t i = 0; i < got.size(); ++i)
+            if (!std::isfinite(got[i])) { if (!bad++) { first = i; std::memcpy(&first_bits, &got[i], 4); } }
+        if (bad)
+            throw std::runtime_error(name + ": " + std::to_string(bad) + " non-finite or unwritten MMQ outputs, first at row " +
+                                     std::to_string(first / (size_t) out_rows) + " col " + std::to_string(first % (size_t) out_rows) +
+                                     " bits " + std::to_string(first_bits));
+    }
     for (size_t i = 0; i < got.size(); ++i) {
-        if (!std::isfinite(got[i])) throw std::runtime_error(name + ": non-finite or unwritten MMQ output");
         const double d = (double) got[i] - ref[i];
         err2 += d * d; ref2 += (double) ref[i] * ref[i]; max_abs = std::max(max_abs, (float) std::fabs(d));
     }
@@ -196,9 +210,10 @@ Metrics run_product(Context & ctx, hipStream_t stream, const std::string & name,
     return m;
 }
 
-std::vector<std::vector<uint8_t>> synthetic_q2(int experts, int64_t out_rows, int64_t cols, int trial) {
+std::vector<std::vector<uint8_t>> synthetic_q2(int experts, int64_t out_rows, int64_t cols, int trial,
+                                               ggml_type type = GGML_TYPE_Q2_0) {
     std::vector<std::vector<uint8_t>> w;
-    for (int e = 0; e < experts; ++e) w.push_back(make_q2_matrix(out_rows, cols, e, trial));
+    for (int e = 0; e < experts; ++e) w.push_back(make_q2_matrix(out_rows, cols, e, trial, type));
     return w;
 }
 
@@ -267,6 +282,24 @@ int main(int argc, char ** argv) {
                             2560, 640, synthetic_q2(n, 2560, 640, trial + 9), counts,
                             make_activations(rows, 640, trial + 3), src, dst);
                 ++trial;
+            }
+            // APR trellis experts (ggml types 144-146), when the build has their MMQ instances (agention fork): gate/up
+            // 1280 x 2560 and down 2560 x 640 (5 blocks per row: the last 256-slice reads past the row, against zero
+            // activations)
+            for (const ggml_type t : {(ggml_type) 145, (ggml_type) 146, (ggml_type) 144}) {
+                if (!supported((int) t)) { std::cout << "type " << (int) t << ": no MMQ instance in this build\n"; continue; }
+                const std::vector<int> counts{2, 3};
+                const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
+                const std::string tn = ggml_type_name(t);
+                const char* rep = std::getenv("MMQ_PARITY_REPEAT");   // repeat each product (flakiness screen)
+                const int reps = rep ? std::max(1, std::atoi(rep)) : 1;
+                const auto wgu = synthetic_q2(2, 1280, 2560, 5, t), wd = synthetic_q2(2, 2560, 640, 6, t);
+                for (int r = 0; r < reps; ++r) {
+                    run_product(ctx, stream, "synthetic-" + tn + "-GU", t, 1280, 2560, wgu, counts,
+                                make_activations(5, 2560, 5), src, dst);
+                    run_product(ctx, stream, "synthetic-" + tn + "-down", t, 2560, 640, wd, counts,
+                                make_activations(5, 640, 6), src, dst);
+                }
             }
             if (argc == 2) run_real_iq3_first_expert(ctx, stream, argv[1]);
         }
