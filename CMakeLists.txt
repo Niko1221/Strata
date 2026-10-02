@@ -170,6 +170,18 @@ if(STRATA_BUILD_TESTS)
   add_executable(qwen35_layout_test src/core/qwen35_layout_test.cpp src/core/qwen35.cpp)
   target_link_libraries(qwen35_layout_test PRIVATE strata_artifact)
   add_test(NAME qwen35_layout_test COMMAND qwen35_layout_test)
+  # The Qwen35MoE forward pass (GDN, attention, MoE, trunk), plain float, no GPU and no ggml needed.  Each op is
+  # checked against an independent reference: the delta-net recurrence is llama.cpp's own
+  # ggml_compute_forward_gated_delta_net_one_chunk, re-derived in float64 with the natural state layout.
+  add_library(strata_qwen35 STATIC src/qwen35/qwen35.cpp)
+  target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_qwen35 PRIVATE strata_warnings)
+  add_executable(qwen35_gdn_test src/qwen35/gdn_test.cpp)
+  target_link_libraries(qwen35_gdn_test PRIVATE strata_qwen35)
+  add_test(NAME qwen35_gdn_test COMMAND qwen35_gdn_test)
+  add_executable(qwen35_layers_test src/qwen35/layers_test.cpp)
+  target_link_libraries(qwen35_layers_test PRIVATE strata_qwen35)
+  add_test(NAME qwen35_layers_test COMMAND qwen35_layers_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
