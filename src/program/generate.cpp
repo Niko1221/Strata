@@ -1197,7 +1197,15 @@ int main(int argc, char** argv) {
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_given = true; }
-        else if (a == "--adapt-decay") { o.adapt_decay = (float) std::atof(next("--adapt-decay")); o.adapt_given = true; }
+        else if (a == "--adapt-decay") {
+            o.adapt_decay = (float) std::atof(next("--adapt-decay"));
+            o.adapt_given = true;
+            // at 1 or more the usage counts grow without end and the swap gains turn NaN
+            if (!(o.adapt_decay > 0.0f && o.adapt_decay < 1.0f)) {
+                std::fprintf(stderr, "--adapt-decay must be between 0 and 1 (exclusive)\n");
+                return 2;
+            }
+        }
         else if (a == "--adapt-tuned") o.adapt_tuned = true;
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
         else if (a == "--stop-eos") o.stop_eos = true;
