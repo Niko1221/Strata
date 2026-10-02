@@ -354,6 +354,10 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         n_ = (int) topo_.worker_cores.size();
     }
     if (n_ < 1) n_ = 1;
+    if (const char* e = std::getenv("STRATA_POOL_QUANT_THRESH"))
+        quant_threshold_ = (std::max)(0, std::atoi(e));
+    else
+        quant_threshold_ = (std::max)(8, n_);
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
@@ -661,7 +665,12 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     for (int e = 0; e < n; ++e)
         for (int t = 0; t < jobs[e].nt; ++t)
             quant_tasks_.push_back({e, t});
-    if (!quant_tasks_.empty()) run_phase(7, (int) quant_tasks_.size());
+    if ((int) quant_tasks_.size() > quant_threshold_) {
+        run_phase(7, (int) quant_tasks_.size());
+    } else {
+        for (const auto& q : quant_tasks_)
+            act_quant_q8_1(split_multi_[(size_t) q.e].ff[q.t], FF, split_multi_[(size_t) q.e].a2[q.t]);
+    }
     const auto t2 = std::chrono::steady_clock::now();
     mrows_ = (int64_t) n * H;
     run_phase(4, mtasks_);
@@ -692,7 +701,16 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)
                 quant_tasks_.push_back({e, t});
-        if (!quant_tasks_.empty()) run_phase(7, (int) quant_tasks_.size());
+        if ((int) quant_tasks_.size() > quant_threshold_) {
+            run_phase(7, (int) quant_tasks_.size());
+        } else {
+            for (const auto& q : quant_tasks_) {
+                if (f.d_type == 42)
+                    act_quant_any(split_multi_[(size_t) q.e].ff[q.t], FF, split_multi_[(size_t) q.e].a2[q.t]);
+                else
+                    native_quant_h(f, split_multi_[(size_t) q.e].ff[q.t], split_multi_[(size_t) q.e].hq[q.t]);
+            }
+        }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * H;
         run_phase(6, mtasks_);

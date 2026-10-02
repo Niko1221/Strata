@@ -132,6 +132,7 @@ public:
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
+    int quant_threshold() const { return quant_threshold_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
     int p_cores() const { return topo_.p_cores; }
@@ -270,6 +271,7 @@ private:
         int t = 0;
     };
     std::vector<QuantTask> quant_tasks_;
+    int quant_threshold_ = 8;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
 };
