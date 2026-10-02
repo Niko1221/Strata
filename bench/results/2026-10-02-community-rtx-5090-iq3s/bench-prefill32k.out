@@ -1,0 +1,30 @@
+   1024 run 0: prompt 856.7 tok/s, decode 140.9 tok/s, cache_n 0, gen 256, 3.01 s
+   1024 run 1: prompt 962.5 tok/s, decode 144.4 tok/s, cache_n 0, gen 256, 5.37 s
+   1024 run 2: prompt 999.1 tok/s, decode 135.5 tok/s, cache_n 0, gen 238, 6.62 s
+   1024 run 3: prompt 1090.3 tok/s, decode 146.7 tok/s, cache_n 0, gen 256, 2.71 s
+   1024 TTFT 0.84 s
+   4096 run 0: prompt 2663.2 tok/s, decode 144.3 tok/s, cache_n 0, gen 220, 3.1 s
+   4096 run 1: prompt 2760.3 tok/s, decode 148.6 tok/s, cache_n 0, gen 256, 3.4 s
+   4096 run 2: prompt 2439.3 tok/s, decode 154.1 tok/s, cache_n 0, gen 252, 3.15 s
+   4096 run 3: prompt 1971.2 tok/s, decode 143.5 tok/s, cache_n 0, gen 256, 3.68 s
+   4096 TTFT 1.54 s
+  32768 run 0: prompt 4948.0 tok/s, decode 151.8 tok/s, cache_n 0, gen 256, 7.98 s
+  32768 run 1: prompt 5177.8 tok/s, decode 142.2 tok/s, cache_n 0, gen 256, 8.18 s
+  32768 run 2: prompt 4743.0 tok/s, decode 148.6 tok/s, cache_n 0, gen 256, 9.25 s
+  32768 run 3: prompt 5045.3 tok/s, decode 138.6 tok/s, cache_n 0, gen 256, 8.19 s
+  32768 TTFT 33.4 s
+ 131072 run 0: prompt 6290.3 tok/s, decode 124.4 tok/s, cache_n 0, gen 256, 22.68 s
+ 131072 run 1: prompt 6003.5 tok/s, decode 122.4 tok/s, cache_n 0, gen 256, 25.14 s
+ 131072 run 2: prompt 6067.4 tok/s, decode 125.4 tok/s, cache_n 0, gen 256, 25.55 s
+ 131072 run 3: prompt 5746.6 tok/s, decode 125.6 tok/s, cache_n 0, gen 256, 22.3 s
+ 131072 TTFT 25.06 s
+
+| Prompt | prompt tok/s (3 runs) | decode tok/s (3 runs) | TTFT s | draft accept |
+| --- | --- | --- | --- | --- |
+| 1,024 | 999 (962-1,090) | 144.4 (135.5-146.7) | 0.84 | 75% |
+| 4,096 | 2,439 (1,971-2,760) | 148.6 (143.5-154.1) | 1.54 | 76% |
+| 32,768 | 5,045 (4,743-5,178) | 142.2 (138.6-148.6) | 33.4 | 75% |
+| 131,072 | 6,004 (5,747-6,067) | 125.4 (122.4-125.6) | 25.06 | 76% |
+
+runs with prompt reuse (cache_n>0): 0; VRAM free min during sweep: 485 MiB
+wrote E:\Modelos\Multimodal\Strata\bench\results\2026-10-02-community-rtx-5090-iq3s\runs.json

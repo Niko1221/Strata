@@ -1,0 +1,7 @@
+haystack window base: 10902561
+A1 fresh doc A           prompt  66,209  reused       0  fresh 66,209   12.63 s
+B1 fresh doc B           prompt  64,946  reused       0  fresh 64,946   11.69 s
+A2 follow-up on A        prompt  66,258  reused  66,202  fresh     56    1.17 s
+B2 follow-up on B        prompt  64,994  reused  64,939  fresh     55    1.03 s
+A3 follow-up on A again  prompt  66,310  reused  66,251  fresh     59    0.61 s
+wrote demo.json
