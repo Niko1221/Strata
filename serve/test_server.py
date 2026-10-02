@@ -1365,7 +1365,8 @@ class WebApp(unittest.TestCase):
                     self.svc.status["busy"] = busy
                 code, _, body = self.get("/slots")
                 self.assertEqual(code, 200)
-                self.assertEqual(json.loads(body), [{"id": 0, "n_ctx": CTX, "is_processing": busy}])
+                self.assertEqual(json.loads(body), [{"id": 0, "n_ctx": CTX, "is_processing": busy,
+                                                     "n_prompt_tokens": 0}])
         finally:
             with self.svc.status_lock:
                 self.svc.status["busy"] = False
@@ -1373,6 +1374,19 @@ class WebApp(unittest.TestCase):
         props = json.loads(self.get("/props")[2])
         self.assertNotIn("build_info", props)
         self.assertNotIn("model_path", props)
+
+    def test_slot_reports_the_context_in_use(self):
+        """/slots in llama.cpp's names: a front-end's context meter divides n_prompt_tokens by n_ctx, so a server
+        that leaves the key out shows 0 % no matter how full the context is."""
+        with self.svc.status_lock:
+            self.svc.status["prompt_tokens"] = 1234
+        try:
+            slot = json.loads(self.get("/slots")[2])[0]
+            self.assertEqual((slot["n_ctx"], slot["n_prompt_tokens"]), (CTX, 1234))
+        finally:
+            with self.svc.status_lock:
+                self.svc.status.pop("prompt_tokens", None)
+        self.assertEqual(json.loads(self.get("/slots")[2])[0]["n_prompt_tokens"], 0)
 
     def test_discovery_does_not_restart_a_dead_engine(self):
         self.svc.engine.alive = lambda: False

@@ -2158,7 +2158,13 @@ def make_handler(svc: Service):
                     loaded = not hasattr(svc.engine, "alive") or svc.engine.alive()
                     with svc.status_lock:
                         busy = bool(svc.status.get("busy"))
-                    slot = {"id": 0, "n_ctx": svc.engine.max_context, "is_processing": busy}
+                        # llama.cpp's name for what the slot's context holds: the running request's prompt size,
+                        # kept after it ends (the conversation cache carries it on). A front-end's context meter
+                        # divides it by n_ctx; without the key it reads 0 % against Strata forever, although the
+                        # same number is already in /status and in /metrics' requests[].
+                        in_use = int(svc.status.get("prompt_tokens") or 0)
+                    slot = {"id": 0, "n_ctx": svc.engine.max_context, "is_processing": busy,
+                            "n_prompt_tokens": in_use}
                     self._json(200, [slot] if loaded else [])
             elif path == "/v1/status":
                 if self._authorized():
