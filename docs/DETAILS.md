@@ -14,16 +14,69 @@ New here? Start with the [README](../README.md) - it has everything you need to 
 
 ### Tesla V100 fork benchmark
 
-The Strata-V100 measurements use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5 3600
-(6 cores), 48 GB DDR4-3200, CUDA 12.8, Linux, and engine 0.1.20 with the prefill-speed PR merged (2026-09-28).
-The fork's engine is now based on upstream 0.1.30 (merged 2026-09-30) with the V100 work preserved; the
-rows below predate that merge and are re-measured with `bench/run_v100_bench.py` on the merged engine.
-Runtime settings are a 262,144-token context, int8 KV cache, automatic prefill, five CPU pool workers, a
-calibrated 0.28 PCIe fraction, and MTP speculative decoding (`--spec 4`, engine `mtp_max=4`, calibrated draft
-floor 0.70). Each row is a separate, uncached OpenAI-compatible chat-completion request with a unique-prefix
-repeated-text prompt and 64 generated tokens. Prompt and decode timings come from the server's `/metrics`
-endpoint rather than client wall-clock estimates. The prompts target the exact token totals of the baseline
-table below, so the rows compare directly one for one.
+The current Strata-V100 numbers were measured on 2026-10-02 on a single, cooled card
+(below). They use Qwen3.8-Flash-Next Q2_0 on a Tesla V100-PCIE-16GB (`sm_70`), Ryzen 5
+3600 (6 cores, 12 threads), 48 GB DDR4-3200, CUDA 12.8, and Linux. The engine is the
+fork's version 0.1.31 (CMake project version), installed build commit `78417ea`
+(SHA-256 `512b1f25d60479a2ddb66fcf1ddca5407963e45378a3c8a463413ad159edae17`).
+Runtime settings: 262,144-token context, int8 KV cache, automatic prefill,
+MTP speculative decoding (`--spec 8`, draft floor 0.70), the paired
+expert variant, and a 700 MiB vision reserve. Prompt and decode timings come from the
+server's `/metrics` endpoint, not from client wall clocks. The expert cache held 4,198
+slots at startup.
+
+**Single-card cooled benchmark (2 October 2026)**
+
+Measured on physical GPU 1 only: a single Tesla V100-PCIE-16GB on a PCIe Gen3 x16 link.
+The engine and vision encoder ran on GPU1. GPU0 was not used for inference.
+Eight target sizes ran, from 1K to near 256K (the configured capacity is 262,144 tokens).
+Each size had three fresh requests. Every request wrote exactly 256 output tokens. The
+table gives medians.
+
+| Target prompt | Median prompt tokens | Prefill (tok/s) | Decode (tok/s) | Max GPU temp |
+| ---: | ---: | ---: | ---: | ---: |
+| 1K | 1,036 | 398.6 | 52.0 | 56 °C |
+| 4K | 4,111 | 1,214.0 | 50.8 | 61 °C |
+| 8K | 8,185 | 1,442.4 | 48.1 | 63 °C |
+| 16K | 16,367 | 1,490.7 | 49.8 | 67 °C |
+| 32K | 32,765 | 1,495.7 | 47.3 | 72 °C |
+| 64K | 65,533 | 1,484.3 | 43.0 | 81 °C |
+| 128K | 131,063 | 1,033.0 † | 40.9 | 84 °C |
+| 256K | 256,080 | 617.8 † | 36.8 | 84 °C |
+
+† Software thermal slowdown active during the prompt (84 °C).
+
+Before every measured request, GPU1 cooled for at least 120 seconds. The gate was:
+temperature at or below 55 °C, stable for 15 seconds, without software thermal
+slowdown. The gate checked every 3 seconds. Separate telemetry ran at 1 Hz.
+Actual start temperatures were 51-55 °C. Actual waits were
+121.4-588.7 seconds (about 2-9.8 minutes; the 128K and 256K requests needed the
+longest waits). Seed 20261002. All 24 requests were fresh (`reused=0`).
+
+The card showed no software thermal slowdown through 64K; its maximum there was
+81 °C. The 128K and 256K prompts heated the passively cooled card to 84 °C, and it
+throttled during those prompts despite the cooled start. Long requests may throttle
+after a cooled start. All requests were kept; none were removed.
+
+Raw data:
+[`matrix.json`](../bench/results/2026-10-02-v100-single-cooled/matrix.json),
+[`completed-requests.json`](../bench/results/2026-10-02-v100-single-cooled/completed-requests.json),
+[`protocol.json`](../bench/results/2026-10-02-v100-single-cooled/protocol.json),
+[`summary.json`](../bench/results/2026-10-02-v100-single-cooled/summary.json), and
+[`gpu.csv`](../bench/results/2026-10-02-v100-single-cooled/gpu.csv) (continuous
+1 Hz telemetry).
+
+Repeat the sweep with `bench/run_v100_bench.py`: targets
+`1024,4096,8192,16384,32768,65536,131072,256073`, `--max-tokens 256`,
+`--seed 20261002`, `--repeats 3`, and the same cooldown gate before every
+measured request.
+The harness does not pause automatically. Apply the cooldown gate between
+individual measured requests, as in this run.
+
+**Older measurements.** The September sections used 64 output tokens and older
+engine builds. The 1 October comparison used two cards and 256 output tokens.
+These tables are kept for reference. They are not controlled comparisons with
+the 2 October single-card run because the protocols differ.
 
 The prefill fast path (2026-09-28) keeps everything else unchanged but replaces the BF16 projection GEMMs with
 FP16 tensor-core products (a BF16 value is exact in FP16 - the scalar 16x16 fallback is gone), the PLE row
@@ -66,7 +119,7 @@ with CPU expert jobs. A window with no CPU expert jobs does not wait for the
 CPU worker barrier. Cache refills start on both cards before either card waits.
 
 
-**V100 follow-up measurement (1 October 2026)**
+**V100 follow-up measurement (1 October 2026; earlier, dual-GPU A/B)**
 
 This run used two V100 PCIe 16GB cards. GPU0 had a Gen3 x2 link. GPU1 had a
 Gen3 x16 link. Each size had three fresh requests and 256 output tokens.

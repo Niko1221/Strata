@@ -5,36 +5,51 @@
 > configuration provides the model's full **262,144-token context**, int8 KV cache, and MTP speculative decoding.
 > The bundled web chat and live performance monitor listen on port `8088`; open
 > `http://<host-or-lan-address>:8088/`. API access is protected by the key stored locally in `.strata-service.env`.
-> Hardware calibration selected a 0.28 PCIe share and 0.70 MTP draft floor, measuring **45.5 output tokens/s**.
+> The single-card benchmark below uses physical GPU1 on its PCIe Gen3 x16 link.
 
-> | V100 benchmark | ~4K prompt | ~8K prompt | 32K prompt | 128K prompt | 256K prompt |
-> | --- | ---: | ---: | ---: | ---: | ---: |
-> | Prompt processing | **1163.8 tok/s** | **1169.7 tok/s** | **1462.3 tok/s** | **1099.0 tok/s** | **546.3 tok/s** |
-> | Output generation | 42.3 tok/s | 54.4 tok/s | 54.0 tok/s | 41.6 tok/s | 39.1 tok/s |
+> | Target | Median prompt tokens | Prefill (tok/s) | Decode (tok/s) | Max GPU temp |
+> | ---: | ---: | ---: | ---: | ---: |
+> | 1K | 1,036 | 398.6 | 52.0 | 56 °C |
+> | 4K | 4,111 | 1,214.0 | 50.8 | 61 °C |
+> | 8K | 8,185 | 1,442.4 | 48.1 | 63 °C |
+> | 16K | 16,367 | 1,490.7 | 49.8 | 67 °C |
+> | 32K | 32,765 | 1,495.7 | 47.3 | 72 °C |
+> | 64K | 65,533 | 1,484.3 | 43.0 | 81 °C |
+> | 128K | 131,063 | 1,033.0 † | 40.9 | 84 °C |
+> | 256K | 256,080 | 617.8 † | 36.8 | 84 °C |
 >
-> All rows are uncached API requests (`reused=0`) on the prefill fast path: FP16 tensor-core
-> GEMMs for the Volta BF16 projections (no scalar fallback), tensor-core prompt attention
-> (Volta m8n8k4 MMAs), io_uring O_DIRECT reads for the PLE table, and model storage on the
-> NVMe. Re-measured 2026-09-29 on the prefill-decode branch (batched verify windows, the
-> tiled block scorer, `--spec 8`, and the Volta prompt-attention port): the table's rows are
-> cool-card measurements; the same-day warm-card baseline (the same branch without the
-> attention port) measures 1051.5 / 984.9 / 781.7 / 566.0 / 470.5 tok/s at 4K / 8K / 32K /
-> 128K / 256K (+12% / +19% / +24% / +13% / +11% at the same condition; the isolated
-> QSA attention kernel is 1.6-1.9x faster, and the previously largest long-context term,
-> the FP32 decode-style prompt fallback that the V100 ran before, is gone). The
-> passively-cooled V100 throttles when hot (the same 8K prompt spans 557-1170 tok/s across
-> sessions), so the table shows the cool-idle measurement. Raw rows and notes:
-> [`bench/results/2026-09-29-volta-prompt-attn`](bench/results/2026-09-29-volta-prompt-attn).
+> Medians of three fresh requests per target, measured 2026-10-02 on physical GPU1 only:
+> a single Tesla V100-PCIE-16GB on a PCIe Gen3 x16 link. Both the engine and vision encoder
+> used GPU1. GPU0 was not used for inference. Every request was uncached (`reused=0`, seed 20261002) and wrote exactly
+> 256 output tokens. The installed Qwen3.8-Flash-Next Q2_0 configuration runs the full
+> 262,144-token context with an int8 KV cache, `--prefill auto`, `--spec 8`, draft floor 0.70,
+> the paired expert variant, and a 700 MiB vision reserve. Timings come from the engine's
+> `/metrics`, not from client wall clocks.
+>
+> Cooled protocol: before every measured request the card idled at least 120 s, until it was at
+> or below 55 °C without software thermal slowdown for 15 s. The gate checked every 3 s;
+> separate telemetry ran at 1 Hz. Actual start
+> temperatures were 51-55 °C; actual waits were 121.4-588.7 s (about 2-9.8 min). The passively
+> cooled card showed no software thermal slowdown through 64K (max 81 °C). The 128K and 256K
+> prompts heated it to 84 °C and it throttled during the prompt despite the cooled start; long
+> requests may throttle after a cooled start. All requests were kept; none were removed.
+>
+> † Software thermal slowdown active during the prompt (84 °C).
+>
+> Engine: the fork's version 0.1.31 (CMake project version), installed build commit `78417ea`
+> (SHA-256 `512b1f25d60479a2ddb66fcf1ddca5407963e45378a3c8a463413ad159edae17`). PR #12 merged
+> into `main` at `7fbe49a`. Raw rows and methodology:
+> [`summary.json`](bench/results/2026-10-02-v100-single-cooled/summary.json),
+> [`protocol.json`](bench/results/2026-10-02-v100-single-cooled/protocol.json),
+> [`matrix.json`](bench/results/2026-10-02-v100-single-cooled/matrix.json),
+> [`completed-requests.json`](bench/results/2026-10-02-v100-single-cooled/completed-requests.json),
+> and [`gpu.csv`](bench/results/2026-10-02-v100-single-cooled/gpu.csv) (1 Hz telemetry).
 > [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
 >
-> The engine is now based on upstream **0.1.30** (merged 2026-09-30) with the V100 work
-> preserved and adapted: the Volta prompt attention also serves the K8V4 hybrid KV cache,
-> the fused hyper-connection kernels write FP16 bits on Volta, and the sm_70 floor stands
-> in CMake, the runtime device check and setup.  New upstream features available on the
-> V100: the tensor-core QSA selector (with its portable fallback), 1024-token prefill
-> chunks, the multi-GPU session carve, rope scaling, the conversation cache, idle unload
-> and the low-RAM resident variant.  The table above was measured on the pre-merge branch;
-> re-run [`bench/run_v100_bench.py`](bench/run_v100_bench.py) on the merged engine.
+> This table replaces the September table, which used 64 output tokens, a pre-merge branch, and
+> a different protocol. The two runs are not a controlled A/B, so no gains are claimed against
+> that table. Use the recorded protocol to repeat the sweep. The benchmark harness does not
+> pause automatically; add the documented cooldown gate between measured requests.
 
 <p align="center"><b>Run a 125-billion-parameter AI model on a normal gaming PC</b><br>
 one NVIDIA card (12-24 GB) + 64 GB of RAM · Windows or Linux · one click to install</p>
@@ -294,9 +309,11 @@ Want the full picture? The [details](docs/DETAILS.md#how-it-works) explain every
 
 The V100 table above is reproduced end to end by [`bench/run_v100_bench.py`](bench/run_v100_bench.py):
 it builds every row at the exact published prompt size (unique-prefix repeated text, uncached,
-64 generated tokens), targets the running server, and reads the engine's own timings from
-`/metrics`. The API key is read from `.strata-service.env` / `$STRATA_API_KEY`, so the script
-contains no credentials and can be committed. Use it for all future benchmark runs:
+256 generated tokens, three fresh requests per size, seed 20261002), targets the running server,
+and reads the engine's own timings from `/metrics`. For the 2 October 2026 table, every request
+followed the cooldown gate (at least 120 s, at or below 55 °C for 15 s); the per-request waits
+are recorded in the raw rows. The API key is read from `.strata-service.env` / `$STRATA_API_KEY`,
+so the script contains no credentials and can be committed. Use it for all future benchmark runs:
 
 ```sh
 .venv/bin/python bench/run_v100_bench.py --model-gguf models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
