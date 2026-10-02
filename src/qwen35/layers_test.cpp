@@ -201,7 +201,7 @@ int main() {
             m.experts = ex.data();
             tw.moe[(size_t) l] = m;
         }
-        q::TrunkState ts; ts.reset(g);
+        q::TrunkState ts; ts.reset(g, 0);
         std::vector<float> logits((size_t) g.n_vocab), logits2((size_t) g.n_vocab);
         q::trunk_forward(g, tw, ts, 3, logits.data());
         q::trunk_forward(g, tw, ts, 5, logits2.data());
