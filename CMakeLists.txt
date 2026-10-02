@@ -277,6 +277,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
   # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
   # 262144-cell capacity (the top-k dispatch follows the capacity) and exits non-zero on a failed gate
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    add_executable(qsa_topk_active_parity src/kernels/qsa_topk_active_parity.cpp)
+    target_include_directories(qsa_topk_active_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_topk_active_parity PRIVATE strata_kernels CUDA::cudart)
+    add_test(NAME qsa_topk_active_parity COMMAND qsa_topk_active_parity)
+    set_tests_properties(qsa_topk_active_parity PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_HIP)
     add_executable(qsa_select_bench src/kernels/qsa_select_bench.cpp)
     set_source_files_properties(src/kernels/qsa_select_bench.cpp PROPERTIES LANGUAGE HIP)

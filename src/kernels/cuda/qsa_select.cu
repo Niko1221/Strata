@@ -745,6 +745,24 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
+#if !defined(__HIPCC__)
+// Only Turing has a retained model measurement for this CUDA dispatch. Other CUDA devices keep the capacity rule
+// (the RTX 5070 regression below). Cache the properties per calling thread; layer-split device switches are checked.
+static bool topk_active_turing_device() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    static thread_local int cached_device = -1;
+    static thread_local bool turing = false;
+    if (dev != cached_device) {
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return false;
+        turing = prop.major == 7 && prop.minor == 5;
+        cached_device = dev;
+    }
+    return turing;
+}
+#endif
+
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
     // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. STRATA_TOPK_OLD=1:
@@ -756,10 +774,13 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
 #if defined(__HIPCC__)
     const bool counted = active_blocks > 0;
 #else
-    // CUDA keeps 0.1.32's capacity rule: #337's dispatch was measured on RDNA4 only, and on the RTX 5070 the 64K
-    // prompts read 1-3% slower with it
-    const bool counted = false;
-    (void) active_blocks;
+    // Turing: --max-context 262144 makes the stride 65538, even while a 131K prompt's active blocks fit in
+    // TK_T * TK_PER registers. Use the prefill bound on sm_75, keeping max_blocks as the score-row stride.
+    // Other CUDA devices keep 0.1.32's capacity rule: #337 was measured on RDNA4, and RTX 5070 64K prompts were
+    // 1-3% slower. Decode/captured graphs omit the bound and never query the device here.
+    static const bool capacity_guard = std::getenv("STRATA_TOPK_CAPACITY_GUARD") != nullptr;
+    const bool counted = !capacity_guard && active_blocks > 0 && active_blocks <= max_blocks &&
+                         topk_active_turing_device();
 #endif
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
     const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
