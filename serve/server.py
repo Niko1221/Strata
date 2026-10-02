@@ -2176,11 +2176,6 @@ class Service:
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
             ids = out
-            combined = self.vision.dir / f"req-{uuid.uuid4().hex[:12]}.sve"
-            with open(combined, "wb") as f:
-                for path, _ in encoded:
-                    f.write(path.read_bytes())
-            self.embeddings.path = combined
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
@@ -2203,7 +2198,24 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+        if images:
+            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+            # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
+            # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
+            combined = self.vision.dir / f"req-{uuid.uuid4().hex[:12]}.sve"
+            self.embeddings.path = combined             # first, so a half-written one is found as well
+            with open(combined, "wb") as f:
+                for path, _ in encoded:
+                    f.write(path.read_bytes())
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
+
+    def drop_embeddings(self) -> None:
+        """Delete the combined image file prepare() wrote when no run() took it over (a run deletes its own as it
+        ends): a request can end before its answer starts - its client gone, anything raised after prepare() - and
+        then nothing else would.  The handler calls this when a request is done."""
+        path, self.embeddings.path = getattr(self.embeddings, "path", None), None
+        if path is not None:
+            Path(path).unlink(missing_ok=True)
 
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
@@ -2254,7 +2266,7 @@ class Service:
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
-        emb = getattr(self.embeddings, "path", None)
+        emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         # Identity token: only a DONE line replaces engine.last, so a request that died, errored or was
         # disconnected must not have the PREVIOUS request's decode figures recorded as its own.
         engine_last0 = getattr(self.engine, "last", None)
@@ -3183,6 +3195,7 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 raise                                        # as before #332: the server's own handling
             finally:
+                svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
                     self.watch_done.set()
                 record = self.record
