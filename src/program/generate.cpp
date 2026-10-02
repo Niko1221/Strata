@@ -4436,6 +4436,20 @@ int main(int argc, char** argv) {
         const strata::core::PoolMultiFn win_pool_fn = n_stages > 1 ? &drive_pool_split : &drive_pool_multi;
         void* const win_pool_user = n_stages > 1 ? (void*) &split_drive : (void*) &drive;
         mem_mark("the verifier and the drafter's binding");
+        // Fase 11 (hetero multi-GPU): the role plan's VRAM accounting, per device right after the binding - the
+        // verifier and its pools live on the MAIN device, the drafter's weights, state and buffers (and its
+        // remote head) on the DRAFT one.  Informational; STRATA_TRACE marks the current device only.
+        if (o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device}) {
+                const strata::core::OnDevice on_report(role_dev);
+                size_t free_b = 0, total_b = 0;
+                if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                    std::fprintf(stderr, "strata generate: role device %d after the binding: %zu MiB free of %zu\n",
+                                 role_dev, free_b >> 20, total_b >> 20);
+                else
+                    cudaGetLastError();
+            }
+        }
         ver.set_split(o.spec_split);
         // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
         // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;
@@ -6246,6 +6260,20 @@ int main(int argc, char** argv) {
         // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill (see the serve path)
         mtp.set_prefill_async(o.draft_prefill_parallel);
         mem_mark("the verifier and the drafter's binding");
+        // Fase 11 (hetero multi-GPU): the role plan's VRAM accounting, per device right after the binding - the
+        // verifier and its pools live on the MAIN device, the drafter's weights, state and buffers (and its
+        // remote head) on the DRAFT one.  Informational; STRATA_TRACE marks the current device only.
+        if (o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device}) {
+                const strata::core::OnDevice on_report(role_dev);
+                size_t free_b = 0, total_b = 0;
+                if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                    std::fprintf(stderr, "strata generate: role device %d after the binding: %zu MiB free of %zu\n",
+                                 role_dev, free_b >> 20, total_b >> 20);
+                else
+                    cudaGetLastError();
+            }
+        }
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
         ver.set_split(o.spec_split);
