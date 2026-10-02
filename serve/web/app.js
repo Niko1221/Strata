@@ -607,6 +607,7 @@ function setSide(open, save) {
   sideOpen = open;
   $("chat-side").dataset.open = String(open);
   $("chats-btn").setAttribute("aria-expanded", String(open));
+  $("chats-btn").hidden = open;
   $("side-scrim").hidden = !(open && narrowMq.matches);
   if (save && !narrowMq.matches) store.set("sidebar", open);
 }

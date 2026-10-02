@@ -60,6 +60,9 @@
     </aside>
     <div class="scrim" id="side-scrim" hidden></div>
     <div class="chat-main">
+      <button type="button" class="st-btn st-btn--icon side-open" id="chats-btn" title="Show your chats" aria-label="Show your chats"
+              aria-controls="chat-side" aria-expanded="false">
+        <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
       <div class="chat-scroll" id="chat-scroll">
         <div class="chat" id="chat">
           <div class="chat-empty" id="chat-empty">
@@ -76,9 +79,6 @@
             <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
               <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
             <input type="file" id="file" multiple hidden>
-            <button type="button" class="st-btn st-btn--icon" id="chats-btn" title="Your chats" aria-label="Your chats"
-                    aria-controls="chat-side" aria-expanded="false">
-              <svg class="st-icon"><use href="web/sprite.svg#i-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
               <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">

@@ -15,7 +15,11 @@ main { flex: 1; min-height: 0; display: flex; }
 
 /* ---------------------------------------------------------------- chat */
 .view--chat { flex-direction: row; }
-.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.chat-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* where the list was: the way back once it is hidden */
+.side-open { position: absolute; top: var(--st-s-3); left: var(--st-s-3); z-index: 3; background: var(--st-surface);
+             border: 1px solid var(--st-line); box-shadow: var(--st-sh-card); }
+.side-open .st-icon { transform: rotate(-90deg); }
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* the saved chats: beside the chat on wide screens, over it (like the drawer) below 1000px */
@@ -181,6 +185,7 @@ main { flex: 1; min-height: 0; display: flex; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .monitor-row { grid-template-columns: 1fr; }
   .chat-side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 40; width: min(300px, 86vw); box-shadow: var(--st-sh-pop); }
+  .chat { padding-top: 60px; }                     /* the first message clears the list button */
 }
 @media (max-width: 640px) {
   .st-header { padding: 0 var(--st-s-3); gap: var(--st-s-2); }
@@ -188,7 +193,7 @@ main { flex: 1; min-height: 0; display: flex; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
   #pill-text { display: none; }
-  .chat { padding: var(--st-s-5) var(--st-s-4); }
+  .chat { padding: 60px var(--st-s-4) var(--st-s-5); }
   .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
   .monitor, .about { padding: var(--st-s-4); }
   .facts { grid-template-columns: 1fr; gap: 2px; }
