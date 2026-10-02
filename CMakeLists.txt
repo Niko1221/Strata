@@ -283,6 +283,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(qsa_select_bench PRIVATE strata_kernels strata_hip_runtime)
     add_test(NAME qsa_select_bench COMMAND qsa_select_bench 32768 256 3 262144)
   endif()
+  # The AMD tensor-core block scores (ROCWMMA, opt-in) against the FP64 oracle and the warp order's exact
+  # host model (PORTING.md 18).  HIP + rocWMMA only: it tests an arm that exists nowhere else.
+  if(STRATA_ENABLE_HIP AND (STRATA_BUILD_TESTS OR STRATA_PARITY_QSA_SELECT_WMMA))
+    add_executable(qsa_select_wmma_parity src/kernels/qsa_select_wmma_parity.cpp)
+    set_source_files_properties(src/kernels/qsa_select_wmma_parity.cpp PROPERTIES LANGUAGE HIP)
+    target_link_libraries(qsa_select_wmma_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    if(STRATA_ROCWMMA_INCLUDE_DIR)
+      target_include_directories(qsa_select_wmma_parity PRIVATE ${STRATA_ROCWMMA_INCLUDE_DIR})
+    endif()
+    add_test(NAME qsa_select_wmma_parity COMMAND qsa_select_wmma_parity)
+  endif()
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/ggml)
   target_include_directories(strata_kernels PRIVATE third_party/ggml)
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
