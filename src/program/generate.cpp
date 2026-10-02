@@ -4956,6 +4956,14 @@ int main(int argc, char** argv) {
                 }
             }
             for (float& v : drive.d.usage) v *= o.adapt_decay;
+            // Fase 7 (hetero multi-GPU): the EVICTIONS are visible on every device's table now.  The copies above
+            // write the evicted experts' slots as they run, and the residency table (d_res) reached the devices only
+            // in apply_pending - whose non-blocking call DROPS while the copy is in flight, leaving a window that
+            // would read the evicted expert on the device table staring into a slot mid-overwrite (measured
+            // 2026-10-02: outputs nondeterministic in the roles run, the first divergent window is always the one
+            // right after the first adapt round).  Upload here: the evicted expert goes to the CPU pool path at once,
+            // the swapped-in experts stay non-resident until the copies land (admitted by apply_pending's event).
+            res_upload();
             return true;
         };
         // #477: write the learned profile (between requests and at QUIT: a prompt's lent slots are back by then).
@@ -5915,12 +5923,12 @@ int main(int argc, char** argv) {
                 const double w = (double) dec_windows, L = (double) g.n_layers;
                 std::fprintf(stderr, "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
                                      "verify %.2f (GPU-reach wait %.2f + per-layer host %.2f [plan %.2f actq %.2f jobs %.2f "
-                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f; per layer-window: CPU experts "
+                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f + mirror %.2f; per layer-window: CPU experts "
                                      "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f\n",
                              (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_run / w,
                              (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w, (d1.plan - ds0.plan) / w,
                              (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w, (d1.run - ds0.run) / w,
-                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, (d1.misses - ds0.misses) / (w * L),
+                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, ver.ms_mirror, (d1.misses - ds0.misses) / (w * L),
                              (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L));
                 const std::string pr = ver.profile_report();
                 if (!pr.empty()) std::fprintf(stderr, "strata decode GPU stages (ms/window):%s\n", pr.c_str());
