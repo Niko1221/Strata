@@ -140,6 +140,12 @@ public:
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    /// Hetero multi-GPU (Fase 3 gate; set BEFORE `init`): after every `run` the last stage mirrors its final
+    /// residual rows into mapped host memory - a drafter on another GPU reads that window instead of the device
+    /// arena, which needs no peer pair (measured on the rig: EnablePeerAccess deadlocks, and a replay reading the
+    /// other device without it faults).  Same-device runs keep the device pointer.
+    void set_R_mirror(bool on) { mirror_R_ = on; }
+    const float* r_mirror_all() const { return next_ ? next_->r_mirror_all() : h_Rmirror_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -236,6 +242,8 @@ private:
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    bool mirror_R_ = false;                                     // set_R_mirror (before init)
+    float* h_Rmirror_ = nullptr;  float* m_Rmirror_ = nullptr;  // the final residual rows, mapped staging
 
     // device
     void* arena_ = nullptr;
