@@ -123,11 +123,20 @@ The same idea, in a container (NVIDIA cards).
 
 ## Updating
 
-Download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` (Linux: `./setup.sh`) in
-it. The model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy finds them and sets
-itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup compiles the engine
-again when its source changed (a minute or two for the changed files); if that compile fails, it says so and starts
-the engine you had.
+**`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
+something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
+`START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
+compiled engine is compiled again when its source changed), the Python packages, and each installed model's settings
+and draft subset. The model files are not touched (at most a new engine is downloaded) and no question is asked.
+Close the model's window first (a running engine cannot be replaced); start the model later with `START-HERE.bat` as
+usual. In a copy that was downloaded as a zip it says to download the new zip (below): it cannot fetch new files
+itself.
+
+Or by hand: download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` (Linux:
+`./setup.sh`) in it. The model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy
+finds them and sets itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup
+compiles the engine again when its source changed (a minute or two for the changed files); if that compile fails, it
+says so and starts the engine you had.
 
 ## Where things are stored
 

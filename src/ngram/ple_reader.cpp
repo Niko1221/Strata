@@ -348,6 +348,7 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
         return false;
     }
     impl_->table_offset = table_offset;
+    impl_->n_rows = n_rows;                        // issue() zero-fills rows >= this
     impl_->slab = (uint8_t*) DirectFile::alloc_aligned((size_t) max_inflight * 2 * PAGE);
     impl_->max_inflight = max_inflight;
     if (impl_->slab == nullptr) { err = "PleReader: cannot allocate read buffers"; close(); return false; }
