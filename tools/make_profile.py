@@ -8,6 +8,13 @@ writes one that ranks all 24,576.
 The order: the base profile's ranking (default: the shipped data/expert-profile.bin), then the pairs your routing
 traces used, most frequent first, then every pair still missing, interleaved across the layers.
 
+WATCH THE BASE: `take()` skips a pair it has already ranked, and the shipped base ranks all 24,576, so with the
+default `--base` NO trace can ever move a pair - the run prints "0 from the traces" and the output is the base
+again.  Pass `--no-base` (rank by the traces alone, then fill) when you mean to re-rank for your own traffic.
+That the profile in use is the shipped ordering and not this model's is not cosmetic: the layer-split cost model
+reads a RANKING as if it were a frequency curve, and `predict` in src/program/generate.cpp carries the measured
+hit rates that say how far off that goes (94.9% claimed against 69.2% measured at 5,805 pairs held).
+
     python tools/make_profile.py [TRACE ...] [--base data/expert-profile.bin | --no-base] [--out PATH]
                                  [--n-expert 256]      (a pruned model: GSQ-RCO Coder keeps 256 of 512)
 

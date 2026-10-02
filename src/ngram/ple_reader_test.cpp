@@ -41,33 +41,37 @@ int g_fail = 0;
 
 constexpr uint64_t HEADER = 192;   // the real shard's data offset, so rows are misaligned the same way
 
-void expected_row(uint32_t row, uint8_t* out) {
-    for (uint32_t b = 0; b < ng::ROW_BYTES; ++b) out[b] = (uint8_t) ((row * 2654435761u + b * 97u) >> 7);
+// `row_bytes` is the GGML type's row size under test: 90 for IQ4_NL (what the IQ3_S/IQ2_S checkpoints carry)
+// or 170 for Q8_0 (what the Q8_0 checkpoint carries).  Every dimension of the reader - the page arithmetic,
+// the row cache stride and the batch slab - is driven by it, so both are exercised end to end.
+void expected_row(uint32_t row, uint8_t* out, uint32_t row_bytes) {
+    for (uint32_t b = 0; b < row_bytes; ++b) out[b] = (uint8_t) ((row * 2654435761u + b * 97u) >> 7);
     std::memcpy(out, &row, 4);
 }
 
-bool make_table(const std::string& path, uint32_t rows) {
+bool make_table(const std::string& path, uint32_t rows, uint32_t row_bytes) {
     std::ofstream f(path, std::ios::binary);
     std::vector<uint8_t> head(HEADER, 0xAB);
     f.write((const char*) head.data(), (std::streamsize) head.size());
-    uint8_t r[ng::ROW_BYTES];
+    uint8_t r[k::PLE_ROW_BYTES_MAX];
     for (uint32_t i = 0; i < rows; ++i) {
-        expected_row(i, r);
-        f.write((const char*) r, ng::ROW_BYTES);
+        expected_row(i, r, row_bytes);
+        f.write((const char*) r, row_bytes);
     }
     return (bool) f;
 }
 
-bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n_rows, const char* what) {
-    std::vector<uint8_t> out(rows.size() * ng::ROW_BYTES, 0xCC);
+bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n_rows, uint32_t row_bytes,
+                const char* what) {
+    std::vector<uint8_t> out(rows.size() * row_bytes, 0xCC);
     std::string err;
     const auto t = rd.issue(rows.data(), rows.size(), out.data());
     if (!rd.collect(t, err)) { CHECK(false, "%s: collect failed: %s", what, err.c_str()); return false; }
-    uint8_t want[ng::ROW_BYTES];
+    uint8_t want[k::PLE_ROW_BYTES_MAX];
     for (size_t i = 0; i < rows.size(); ++i) {
-        if (rows[i] >= n_rows) std::memset(want, 0, sizeof want);
-        else expected_row(rows[i], want);
-        if (std::memcmp(want, &out[i * ng::ROW_BYTES], ng::ROW_BYTES) != 0) {
+        if (rows[i] >= n_rows) std::memset(want, 0, row_bytes);
+        else expected_row(rows[i], want, row_bytes);
+        if (std::memcmp(want, &out[i * row_bytes], row_bytes) != 0) {
             CHECK(false, "%s: row %u (index %zu) differs", what, rows[i], i);
             return false;
         }
@@ -75,50 +79,50 @@ bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n
     return true;
 }
 
-int selftest(const std::string& dir) {
-    const uint32_t N = 500000;                          // 45 MB: large enough for thousands of distinct pages
-    const std::string path = dir + "/ple_reader_selftest.bin";
-    if (!make_table(path, N)) { std::fprintf(stderr, "cannot write %s\n", path.c_str()); return 2; }
+int selftest_rows(const std::string& dir, uint32_t rb) {
+    const uint32_t N = (uint32_t) (45u * 1024 * 1024 / rb);   // ~45 MB: thousands of distinct pages
+    const std::string path = dir + "/ple_reader_selftest_" + std::to_string(rb) + ".bin";
+    if (!make_table(path, N, rb)) { std::fprintf(stderr, "cannot write %s\n", path.c_str()); return 2; }
     std::mt19937 rng(7);
     for (bool thr : {false, true})
     for (uint64_t cache : {0ull, 4096ull}) {
         for (uint32_t inflight : {1u, 8u, 64u}) {
             ng::PleReader rd;
             std::string err;
-            CHECK(rd.open(path, HEADER, N, inflight, cache, err, thr), "open: %s", err.c_str());
+            CHECK(rd.open(path, HEADER, N, inflight, cache, err, thr, rb), "open[%u]: %s", rb, err.c_str());
             // decode-shaped tickets: 16 random rows
             for (int t = 0; t < 200; ++t) {
                 std::vector<uint32_t> rows(16);
                 for (auto& r : rows) r = rng() % N;
-                check_rows(rd, rows, N, "decode");
+                check_rows(rd, rows, N, rb, "decode");
             }
-            // rows that straddle a 4 KiB boundary: byte offset of row r is HEADER + 90 r
+            // rows that straddle a 4 KiB boundary: byte offset of row r is HEADER + rb * r
             std::vector<uint32_t> straddle;
             for (uint32_t r = 0; r < N && straddle.size() < 64; ++r) {
-                const uint64_t a = HEADER + (uint64_t) r * ng::ROW_BYTES;
-                if (a / 4096 != (a + ng::ROW_BYTES - 1) / 4096) straddle.push_back(r);
+                const uint64_t a = HEADER + (uint64_t) r * rb;
+                if (a / 4096 != (a + rb - 1) / 4096) straddle.push_back(r);
             }
-            check_rows(rd, straddle, N, "straddle");
+            check_rows(rd, straddle, N, rb, "straddle");
             // duplicates, neighbours on one page, the first and last rows, and out-of-range rows
-            check_rows(rd, {5, 5, 6, 7, 5, 0, N - 1, N, 0xFFFFFFFFu, 44, 45}, N, "dedup/edges");
+            check_rows(rd, {5, 5, 6, 7, 5, 0, N - 1, N, 0xFFFFFFFFu, 44, 45}, N, rb, "dedup/edges");
             // a prefill-shaped ticket much larger than the in-flight window
             std::vector<uint32_t> bulk(20000);
             for (auto& r : bulk) r = rng() % N;
-            check_rows(rd, bulk, N, "bulk");
+            check_rows(rd, bulk, N, rb, "bulk");
             // two tickets in flight at once, collected in reverse order
             std::vector<uint32_t> a(16), b(16);
             for (auto& r : a) r = rng() % N;
             for (auto& r : b) r = rng() % N;
-            std::vector<uint8_t> oa(16 * ng::ROW_BYTES), ob(16 * ng::ROW_BYTES);
+            std::vector<uint8_t> oa(16 * rb), ob(16 * rb);
             const auto ta = rd.issue(a.data(), 16, oa.data());
             const auto tb = rd.issue(b.data(), 16, ob.data());
             CHECK(rd.collect(tb, err) && rd.collect(ta, err), "two tickets: %s", err.c_str());
-            uint8_t want[ng::ROW_BYTES];
+            uint8_t want[k::PLE_ROW_BYTES_MAX];
             for (int i = 0; i < 16; ++i) {
-                expected_row(a[i], want);
-                CHECK(!std::memcmp(want, &oa[i * ng::ROW_BYTES], ng::ROW_BYTES), "ticket a row %d", i);
-                expected_row(b[i], want);
-                CHECK(!std::memcmp(want, &ob[i * ng::ROW_BYTES], ng::ROW_BYTES), "ticket b row %d", i);
+                expected_row(a[i], want, rb);
+                CHECK(!std::memcmp(want, &oa[i * rb], rb), "ticket a row %d", i);
+                expected_row(b[i], want, rb);
+                CHECK(!std::memcmp(want, &ob[i * rb], rb), "ticket b row %d", i);
             }
             if (cache > 0) CHECK(rd.stats().cache_hits > 0, "the row cache never hit");
             CHECK(rd.cache_size() <= rd.cache_capacity(), "row cache exceeded its bound");
@@ -128,12 +132,12 @@ int selftest(const std::string& dir) {
     for (bool thr : {false, true}) {
         ng::PleReader rd;
         std::string err;
-        CHECK(rd.open(path, HEADER, N, 16, 0, err, thr), "open: %s", err.c_str());
+        CHECK(rd.open(path, HEADER, N, 16, 0, err, thr, rb), "open[%u]: %s", rb, err.c_str());
         rd.set_injected_delay_us(3000);
         std::vector<uint32_t> rows(16);
         for (auto& r : rows) r = rng() % N;
         const double t0 = now_us();
-        check_rows(rd, rows, N, "delayed");
+        check_rows(rd, rows, N, rb, "delayed");
         CHECK(now_us() - t0 >= 3000, "injected delay not observed (%.0f us)", now_us() - t0);
         CHECK(rd.stats().late_injected > 0, "no read was held back");
     }
@@ -143,11 +147,11 @@ int selftest(const std::string& dir) {
     {
         ng::PleReader rd;
         std::string err;
-        CHECK(rd.open(path, HEADER, N, 16, 4096, err, true), "open: %s", err.c_str());
+        CHECK(rd.open(path, HEADER, N, 16, 4096, err, true, rb), "open[%u]: %s", rb, err.c_str());
         rd.set_keepalive(20.0, 0.5);
         std::vector<uint32_t> rows(16);
         for (auto& r : rows) r = rng() % N;
-        check_rows(rd, rows, N, "keep-alive, first ticket");
+        check_rows(rd, rows, N, rb, "keep-alive, first ticket");
         const uint64_t reads0 = rd.snapshot().reads;
         const auto nap = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
         nap(300);
@@ -161,14 +165,14 @@ int selftest(const std::string& dir) {
         CHECK(k3 == k2, "keep-alive went on after the window (%llu -> %llu)", (unsigned long long) k2,
               (unsigned long long) k3);
         CHECK(k2 <= k1 + 20, "keep-alive: %llu reads by the end of a 0.5 s window", (unsigned long long) k2);
-        check_rows(rd, rows, N, "keep-alive, cached ticket");   // the row cache serves all 16: no row read
+        check_rows(rd, rows, N, rb, "keep-alive, cached ticket");   // the row cache serves all 16: no row read
         CHECK(rd.snapshot().reads == reads0, "cached rows were read again");
         nap(200);
         CHECK(rd.snapshot().keepalive_reads >= k3 + 5, "the keep-alive did not start again (%llu -> %llu)",
               (unsigned long long) k3, (unsigned long long) rd.snapshot().keepalive_reads);
         std::vector<uint32_t> more(2000);
         for (auto& r : more) r = rng() % N;
-        check_rows(rd, more, N, "keep-alive, rows afterwards");
+        check_rows(rd, more, N, rb, "keep-alive, rows afterwards");
         rd.set_keepalive(0, 0.5);                           // off
         const uint64_t k4 = rd.snapshot().keepalive_reads;
         nap(200);
@@ -179,15 +183,42 @@ int selftest(const std::string& dir) {
     {   // the caller's thread does the reads: no worker, so no keep-alive
         ng::PleReader rd;
         std::string err;
-        CHECK(rd.open(path, HEADER, N, 16, 0, err, false), "open: %s", err.c_str());
+        CHECK(rd.open(path, HEADER, N, 16, 0, err, false, rb), "open[%u]: %s", rb, err.c_str());
         rd.set_keepalive(20.0, 1.0);
         std::vector<uint32_t> rows(16);
         for (auto& r : rows) r = rng() % N;
-        check_rows(rd, rows, N, "keep-alive, caller thread");
+        check_rows(rd, rows, N, rb, "keep-alive, caller thread");
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
         CHECK(rd.snapshot().keepalive_reads == 0, "keep-alive without the worker thread");
     }
     std::filesystem::remove(path);
+    return 0;
+}
+
+int selftest(const std::string& dir) {
+    // Both row sizes the engine can decode: IQ4_NL (90 B, the IQ3_S/IQ2_S checkpoints) and Q8_0 (170 B,
+    // the Q8_0 checkpoint).  A reader pinned to 90 would read Q8_0 rows half-overlapping.
+    for (uint32_t rb : {(uint32_t) ng::ROW_BYTES, (uint32_t) k::ple_row_bytes(8)}) {
+        const int rc = selftest_rows(dir, rb);
+        if (rc != 0) return rc;
+    }
+    // The Q8_0 row decoder itself, against the block layout: 34 bytes = one fp16 `d` + 32 int8, no min term.
+    {
+        uint8_t row[k::PLE_ROW_BYTES_MAX];
+        std::memset(row, 0, sizeof row);
+        for (int b = 0; b < k::PLE_HEAD_DIM / 32; ++b) {
+            const uint16_t d = 0x3C00;                        // fp16 1.0
+            std::memcpy(row + (size_t) b * 34, &d, 2);
+            for (int j = 0; j < 32; ++j) row[(size_t) b * 34 + 2 + j] = (uint8_t) (int8_t) (j - 16);
+        }
+        float got[k::PLE_HEAD_DIM];
+        CHECK(k::ple_dequant_row(8, row, got), "Q8_0 row was not dispatched");
+        bool ok = true;
+        for (int i = 0; i < k::PLE_HEAD_DIM; ++i)
+            if (got[i] != (float) ((i % 32) - 16)) ok = false;
+        CHECK(ok, "Q8_0 row decoded to the wrong values (block layout or stride)");
+        CHECK(!k::ple_dequant_row(30, row, got), "an unsupported type was accepted");
+    }
     std::printf("ple_reader selftest: %s\n", g_fail ? "FAILED" : "OK");
     return g_fail ? 1 : 0;
 }

@@ -46,6 +46,11 @@ namespace strata::core {
 class RemoteExperts;
 struct LoadStats;
 
+/// How many helper expert tiers a dispatch can consult: one per GPU this engine will use.  Three used to be
+/// the ceiling because a tier had to run on a card no stage ran on; a layer split now spills each card's
+/// leftover VRAM into a tier, CUDA0 included, so all four fit.
+inline constexpr int kRemoteMax = 4;
+
 namespace detail {
 
 /// Sentinel used by the pure complement planner for a blob that remains in the mmap fallback.
@@ -214,7 +219,10 @@ struct ExpertDispatch {
     strata::kernels::cpu::ExpertPool* pool = nullptr;
     ExpertSource* src = nullptr;
     RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
-    RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
+    /// One per card this engine can use: the explicit `--expert-cache-deviceN` tiers, or (with a layer split)
+    /// the automatic spill tier each card's leftover VRAM funds - a card can be both a stage and a tier, so
+    /// this is the GPU count, not "the GPUs no stage runs on".
+    RemoteExperts* remote[kRemoteMax] = {};
     int remote_count = 0;
     int64_t n_expert = strata::kernels::cpu::NE;
 

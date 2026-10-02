@@ -87,10 +87,15 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err, 
 }  // namespace
 
 bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                             const std::set<std::string>* skip) {
+                             const std::set<std::string>* skip, int64_t layer_lo, int64_t layer_hi,
+                             const std::set<std::string>* keep) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "cannot open " + path; return false; }
+    // Either filter compacts the arena, and both must go through the SAME predicate as `load`: a size
+    // computed by one rule and a layout written by another is an arena that overruns or one that is
+    // silently short, and the second failure mode is a tensor reading its neighbour's bytes.
+    const bool any_filter = skip != nullptr || layer_hi >= 0;
     char line[1024];
     out = 0;
     uint64_t pool = 0, compact = 0;
@@ -102,19 +107,67 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3) { pool = p; align = a; }
             continue;
         }
-        if (skip == nullptr) continue;
+        if (!any_filter) continue;
         char name[256] = {0};
         unsigned long long dst_bytes = 0, dummy = 0;
         int i1 = 0, i2 = 0;
         if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
             continue;
-        if (skip->count(name)) continue;
+        if (skip != nullptr && skip->count(name)) continue;
+        if (layer_out_of_range(name, layer_lo, layer_hi, keep)) continue;
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
         compact += (dst_bytes + a - 1) / a * a;
     }
     std::fclose(f);
     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
-    out = skip ? compact : pool;
+    out = any_filter ? compact : pool;
+    return true;
+}
+
+bool WeightTable::layer_bytes(const std::string& pack_dir, int64_t n_layers, std::vector<uint64_t>& per_layer,
+                              uint64_t& globals, uint64_t& keep_bytes, std::string& err,
+                              const std::set<std::string>* skip, const std::set<std::string>* keep) {
+    const std::string path = pack_dir + "/index.txt";
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { err = "cannot open " + path; return false; }
+    if (n_layers < 0) { err = "layer_bytes: a negative layer count"; std::fclose(f); return false; }
+    per_layer.assign((size_t) n_layers, 0);
+    globals = 0;
+    keep_bytes = 0;
+    int align = 0;
+    bool header = false;
+    char line[1024];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#') {
+            unsigned long long p = 0;
+            int a = 0, t = 0;
+            if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &t) == 3) { align = a; header = true; }
+            continue;
+        }
+        char name[256] = {0};
+        unsigned long long dst_bytes = 0, dummy = 0;
+        int i1 = 0, i2 = 0;
+        if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
+            continue;
+        if (skip != nullptr && skip->count(name)) continue;
+        const uint64_t a = align > 0 ? (uint64_t) align : 256;
+        const uint64_t placed = (dst_bytes + a - 1) / a * a;
+        const int64_t l = tensor_layer(name);
+        if (l < 0) {
+            globals += placed;   // every stage holds it
+        } else if (keep != nullptr && keep->count(name) != 0) {
+            keep_bytes += placed;   // resident on EVERY stage, whatever range it runs
+        } else if (l >= n_layers) {
+            err = std::string(name) + ": layer " + std::to_string(l) + " is beyond the model's " +
+                  std::to_string(n_layers) + " layers";
+            std::fclose(f);
+            return false;
+        } else {
+            per_layer[(size_t) l] += placed;
+        }
+    }
+    std::fclose(f);
+    if (!header) { err = "no '# align ... pool ...' header in " + path; return false; }
     return true;
 }
 
@@ -142,7 +195,8 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
 }
 
 bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-                       const std::set<std::string>* skip) {
+                       const std::set<std::string>* skip, int64_t layer_lo, int64_t layer_hi,
+                       const std::set<std::string>* keep) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* idx = std::fopen(path.c_str(), "rb");
     if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
@@ -191,12 +245,22 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     if (pool == 0 || rows.empty()) { err = "index.txt has no header or no rows"; return false; }
     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
     // alignment; skipped rows keep their metadata and get no bytes.
+    //
+    // THE LAYER RANGE USES THIS SAME PASS, and that is the point of putting it here rather than in a
+    // second function: one predicate decides both the arena's size (`pool_bytes`) and its layout, so a
+    // stage's slice cannot be priced by one rule and written by another.  With no filter at all the loop
+    // is skipped entirely and the pack's own `dst_off` values stand, which is why a full-range carve is
+    // byte-identical to the unfiltered load.
     std::vector<bool> skipped(rows.size(), false);
-    if (skip != nullptr) {
+    if (skip != nullptr || layer_hi >= 0) {
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
         uint64_t at = 0;
         for (size_t i = 0; i < rows.size(); ++i) {
-            if (skip->count(rows[i].name)) { skipped[i] = true; continue; }
+            if ((skip != nullptr && skip->count(rows[i].name)) ||
+                layer_out_of_range(rows[i].name, layer_lo, layer_hi, keep)) {
+                skipped[i] = true;
+                continue;
+            }
             rows[i].dst_off = at;
             at += (rows[i].dst_bytes + a - 1) / a * a;
         }

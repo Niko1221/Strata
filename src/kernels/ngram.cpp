@@ -113,6 +113,21 @@ void iq4nl_dequant_row(const uint8_t* row, float* out160) {
     }
 }
 
+bool ple_dequant_row(int ggml_type, const uint8_t* row, float* out160) {
+    const int nb = PLE_HEAD_DIM / 32;                              // 5 blocks of 32
+    if (ggml_type == 20) {
+        for (int b = 0; b < nb; ++b) strata::dequantize_iq4_nl(row + (size_t) b * 18, out160 + b * 32);
+        return true;
+    }
+    // Q8_0's blocks are 34 bytes instead of 18, and there is no codebook: `qs` is already signed, so the block
+    // is one fp16 `d` followed by 32 int8.
+    if (ggml_type == 8) {
+        for (int b = 0; b < nb; ++b) strata::dequantize_q8_0(row + (size_t) b * 34, out160 + b * 32);
+        return true;
+    }
+    return false;
+}
+
 namespace {
 struct Fp8Table {
     float v[256];
@@ -140,6 +155,7 @@ struct PleTable::Impl {
     const uint8_t* data = nullptr;
     uint64_t n_rows = 0;
     bool q5_0 = false;                // #296: Q5_0 rows (110 B), the mapped reader only
+    bool q8_0 = false;                // a Q8_0 row (170 B): one fp16 `d` per 32 values, no min term, no codebook
     mutable uint64_t bytes_read = 0;
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
@@ -154,10 +170,14 @@ struct PleTable::Impl {
     float scale = 1.0f;               // the FP8 table's one scale
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
     void decode(const uint8_t* row, float* out160) const {
-        if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
-        else if (q5_0)
+        if (fp8) { fp8_e4m3_dequant_row(row, scale, out160); return; }
+        if (q5_0) {
             for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
-        else iq4nl_dequant_row(row, out160);
+            return;
+        }
+        // The two types a published checkpoint carries the table as go through the one dispatcher the reader's
+        // tests also use, so a block layout cannot be right in one and wrong in the other.
+        ple_dequant_row(q8_0 ? 8 : 20, row, out160);
     }
 };
 
@@ -188,11 +208,15 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as
-    // shipped: I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
+    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), Q8_0 (the Q8_0
+    // checkpoint's shard 3), or the FP8 table as shipped: I8 bytes marked strata.ple.format = f8_e4m3 with
+    // strata.ple.scale (tools/ple_fp8_pack.py).  All four are the same 160-wide row; only the stride and the
+    // block decoder differ, so the geometry below, the n-gram hashing and the 16-rows-make-2560 flatten are
+    // untouched by any of them.
     impl_->fp8 = false;
     impl_->q5_0 = std::strcmp(t->type_name(), "Q5_0") == 0;
-    impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : PLE_ROW_BYTES;
+    impl_->q8_0 = std::strcmp(t->type_name(), "Q8_0") == 0;
+    impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : (uint32_t) ple_row_bytes(impl_->q8_0 ? 8 : 20);
     if (std::strcmp(t->type_name(), "I8") == 0) {
         const MetaValue* f = impl_->file->get("strata.ple.format");
         const MetaValue* s = impl_->file->get("strata.ple.scale");
@@ -204,8 +228,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->fp8 = true;
         impl_->scale = (float) s->num();
         impl_->rb = PLE_ROW_BYTES_FP8;
-    } else if (!impl_->q5_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q5_0 or FP8 (I8)";
+    } else if (!impl_->q5_0 && !impl_->q8_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q5_0, Q8_0 or FP8 (I8)";
         close();
         return false;
     }
@@ -276,6 +300,11 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 #endif
     }
     impl_->mode = io.mode;
+    // The row size is derived from the tensor's own type, and a WRONG derivation still opens and decodes
+    // plausible garbage - every row is then read at the wrong stride.  One line, so which arm ran - and how
+    // wide it read - is checkable rather than assumed.
+    std::fprintf(stderr, "strata generate: PLE table %llu rows x %u B (%s)\n", (unsigned long long) impl_->n_rows,
+                 (unsigned) impl_->rb, format());
     return true;
 }
 
@@ -290,12 +319,15 @@ void PleTable::close() {
     impl_->n_rows = 0;
     impl_->rb = PLE_ROW_BYTES;
     impl_->q5_0 = false;
+    impl_->q8_0 = false;
     impl_->fp8 = false;
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL"; }
+const char* PleTable::format() const {
+    return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : impl_->q8_0 ? "Q8_0" : "IQ4_NL";
+}
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }

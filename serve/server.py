@@ -26,7 +26,6 @@ import base64
 import hashlib
 import hmac
 import codecs
-import ctypes
 import json
 import os
 import queue
@@ -491,12 +490,26 @@ class StrataEngine:
                 self.progress, self.last = None, {}
 
 
+def _free_vram_mib(index: int, amd: bool = False) -> int | None:
+    """Free VRAM on one card; None when it can't be read.
+
+    `Service.free_vram_mib()` asks the same of the engine's card.  This one takes the index because the encoder
+    and the engine can be on different cards - and because the encoder is asked at a moment when the engine is
+    not loaded yet.  Both go through `serve.telemetry`, which reads NVML or, on the AMD backend, amdgpu's sysfs
+    files (#301) - one helper rather than a copy of the NVML calls per caller."""
+    try:
+        from serve.telemetry import free_vram_mib
+        return free_vram_mib(int(index or 0), amd=amd)
+    except Exception:  # noqa: BLE001 - telemetry must never take the server down
+        return None
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
-    def __init__(self, cfg: dict, log=None, env: dict | None = None):
+    def __init__(self, cfg: dict, log=None, env: dict | None = None, device: int = 0):
         args = [cfg["exe"], "--mmproj", cfg["mmproj"], "--model", cfg["model"]]
         if cfg.get("gpu"):
             args.append("--gpu")
@@ -506,6 +519,11 @@ class Vision:
             args += ["--max-tokens", str(cfg["max_tokens"])]
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
         self.spawn = (args, log, env)                   # to start it again after an unload
+        # There is no device flag to pass: mtmd takes device 0 of CUDA_VISIBLE_DEVICES, which child_env builds
+        # from the config's own GPU list, so this is the card the encoder lands on.  Kept so the Monitor can show
+        # its footprint on that card rather than on the engine's.
+        self.device = int(device or 0)
+        self.mib: int | None = None                     # the VRAM it holds; None = not measured
         self.stopped = False
         self._start()
         self.lock = threading.Lock()
@@ -513,6 +531,11 @@ class Vision:
 
     def _start(self):
         args, log, env = self.spawn
+        # The encoder is a separate process and reports no memory of its own - not in its stdout, not in the log -
+        # so its footprint is what this card's free VRAM lost while it started.  It runs a 2048px warm-up before
+        # printing READY (tools/vision/strata_vision.cpp), so every buffer it will ever need is already allocated
+        # by the time `after` is read.
+        before = _free_vram_mib(self.device)
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log or subprocess.DEVNULL,
                                      text=True, encoding="utf-8", bufsize=1, env=env)
         contain(self.proc)
@@ -520,6 +543,13 @@ class Vision:
         if not line.startswith("READY"):
             raise RuntimeError("the vision encoder did not start: " + line.strip())
         self.stopped = False
+        after = _free_vram_mib(self.device)
+        # A real encoder is hundreds of MiB to ~1.5 GB (docs/DETAILS.md quotes ~1.4 GB, setup reserves 700 MiB), so
+        # anything outside 64..8192 is noise rather than this process: a CPU-mode encoder takes no VRAM at all, an
+        # unreadable card gives None, and on a restart the killed process has not released its memory yet.
+        if before is not None and after is not None and 64 <= before - after <= 8192:
+            self.mib = before - after
+        # Otherwise the last good reading stands.  A wrong number here is worse than no number.
 
     def alive(self) -> bool:
         return not self.stopped and self.proc.poll() is None
@@ -539,15 +569,27 @@ class Vision:
 
     @staticmethod
     def load(source: str) -> bytes:
+        # Everything in here raises ValueError, never OSError: the request dispatcher maps only ValueError to a
+        # status, so an OSError from a 404, a refused connection or an unknown host closed the client's
+        # connection with no reply at all (curl: "(52) Empty reply from server") instead of a 400.
         if source.startswith("data:"):
-            return base64.b64decode(source.split(",", 1)[1])
+            try:
+                return base64.b64decode(source.split(",", 1)[1])
+            except (IndexError, ValueError) as e:                # no comma, or not base64
+                raise ValueError(f"the image's data: URL could not be read ({e})") from None
         if source.startswith(("http://", "https://")):
             req = urllib.request.Request(source, headers={"User-Agent": "strata"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return r.read()
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.read()
+            except OSError as e:                                 # HTTPError and URLError are both OSError
+                raise ValueError(f"the image could not be fetched from {source} ({e})") from None
         path = source[7:] if source.startswith("file://") else source
         if path and os.path.isfile(path):
-            return Path(path).read_bytes()
+            try:
+                return Path(path).read_bytes()
+            except OSError as e:
+                raise ValueError(f"the image could not be read from {path} ({e})") from None
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
@@ -826,23 +868,27 @@ class Service:
     def _vision_down(self) -> bool:
         return self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
 
+    def vision_metrics(self) -> dict:
+        """The encoder's line in /metrics: configured or not, process up or not, and which card holds it with how
+        much VRAM.  Everything is `getattr`, because a test stands a bare double in for the encoder (test_server
+        line ~174 has only `encode`) and the Monitor must not depend on what that double happens to implement."""
+        v = self.vision
+        if v is None:
+            return {"enabled": False, "running": False, "device": None, "mib": None}
+        alive = getattr(v, "alive", None)
+        running = True if alive is None else bool(alive())
+        # `device` is a config index - the same numbering as hardware.gpus[].index - so the Monitor can put the row
+        # on the card whose NVML index matches.  `mib` is reported only while the process is up: an unloaded
+        # encoder really has given its VRAM back, and showing the last measurement next to a stopped process would
+        # read as if it were still holding it.
+        return {"enabled": True, "running": running, "device": getattr(v, "device", None),
+                "mib": getattr(v, "mib", None) if running else None}
+
     def free_vram_mib(self) -> int | None:
         """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
         be read (then nothing is refused)."""
-        try:
-            if getattr(self, "backend", None) == "hip":
-                from serve.telemetry import free_vram_mib
-                return free_vram_mib(int(getattr(self, "gpu_index", 0) or 0), amd=True)
-            from serve.telemetry import _Nvml
-            nv = _Nvml(int(getattr(self, "gpu_index", 0) or 0))
-            if not nv.ok():
-                return None
-            m = nv.Mem()
-            if nv.lib.nvmlDeviceGetMemoryInfo(nv.dev, ctypes.byref(m)) != 0:
-                return None
-            return int(m.free >> 20)
-        except Exception:
-            return None
+        return _free_vram_mib(int(getattr(self, "gpu_index", 0) or 0),
+                              amd=getattr(self, "backend", None) == "hip")
 
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
@@ -1074,7 +1120,8 @@ class Service:
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
-        return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
+        return {"engine": engine, "vision": self.vision_metrics(), "live": live,
+                "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -2484,8 +2531,14 @@ def main() -> int:
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
+            # The card the encoder's footprint is read on: the vision section's own "cuda_device" when it names one -
+            # the very card `vision_env` pins the child to - else the engine's first GPU, which is where mtmd lands
+            # without it.  A helper that pinned the encoder elsewhere and then watched the engine's card would read
+            # the engine's VRAM as the encoder's (and refuse loads that are not tight at all).
+            vdev = vcfg.get("cuda_device")
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env))
+                            env=vision_env(cfg, env),
+                            device=int(vdev) if vdev is not None else (gpu_list(cfg) or [0])[0])
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:

@@ -83,10 +83,18 @@ inline int64_t stream_all_min() {
     return v;
 }
 double g_pinned_share = 1.0;
-// The streamed ring: 384 slots when (nearly) every streamed expert is DMA'd from pinned RAM - measured on Q2_0,
-// 8192-token chunks: 96 slots 1153 tok/s, 384 1294 (the next layer's experts arrive during its attention half) -
-// and 96 when a large share goes through host copies (IQ3_S on 64 GB, a third unpinned: 96 slots 1216, 256 1070 -
-// the host copies are the limit and the bigger ring only takes cache slots).  STRATA_PREFILL_RING overrides.
+// The streamed ring, as a BYTE budget: 506 MiB when (nearly) every streamed expert is DMA'd from pinned RAM -
+// measured on Q2_0, 8192-token chunks: 96 slots 1153 tok/s, 384 1294 (the next layer's experts arrive during its
+// attention half) - and a quarter of it when a large share goes through host copies (IQ3_S on 64 GB, a third
+// unpinned: 96 slots 1216, 256 1070 - the host copies are the limit and the bigger ring only takes cache slots).
+//
+// It is bytes, not slots, because a slot is one whole expert blob and a blob's size is the pack's: 384 slots is
+// 506 MiB on Q2_0 (1,382,400 B) but 1,893 MiB on Q8_0 (5,222,400 B), where it is more than half of an 8 GB card's
+// expert cache and left that card room for a 1024-token chunk where its own buffers wanted 6144.  Measured on the
+// 4-way rig, one env var and nothing else: chunk 1024 -> 6144, prefill 87 -> 402 tok/s.  Q2_0 still resolves to
+// exactly 384 (pinned) and 96 (not), so the pack it was tuned on is unchanged.
+inline constexpr uint64_t RING_BYTES = 384ull * 1382400ull;   // 506 MiB = 384 slots of a Q2_0 blob
+inline uint64_t ring_bytes() { return g_pinned_share >= 0.9 ? RING_BYTES : RING_BYTES / 4; }
 int g_ring_override = 0;   // #340: set by a layer split (Prefill::set_ring_override); 0 = the rule below
 inline int ring_slots(size_t T) {
     const char* v = std::getenv("STRATA_PREFILL_RING");
@@ -99,7 +107,8 @@ inline int ring_slots(size_t T) {
     }();
     if (!v && g_ring_override <= 0 && wmma) return (int64_t) T >= stream_all_min() ? 96 : STAGE;
 #endif
-    const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override : (g_pinned_share >= 0.9 ? 384 : 96);
+    const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override
+                                                         : (int) (ring_bytes() / (uint64_t) MAXBLOB());
     if (v && r == STAGE) return STAGE; // Explicit opt-in to routed-only staging, including large chunks.
     const int big = r < 16 ? 16 : r > RING_MAX ? RING_MAX : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
@@ -893,7 +902,15 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     o.take<uint16_t>((size_t) GEMM_SCRATCH, ok);
     o.take<uint8_t>(GEMM_WS, ok);
     auto f = [&](size_t n) { o.take<float>(n, ok); };
-    f(T * N); f(T * D); f(T * D); o.take<uint16_t>(T * D, ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
+    // `carve`'s order, buffer for buffer: emb, R, xn, grs, xn16, lo, lo16, gated, inj, mixed, mixed_bf, mixed_h,
+    // bo.  This counted `xn` unconditionally (carve takes it only under STRATA_GR_UNFUSED) and never counted
+    // `grs`.  Net over-count T*(D-HC)*4 bytes: 42 MB at a 1024-token chunk, 252 MB (48 Q8_0 slots) at 6144 - the
+    // prompt path was told it had less room than it did.  Safe - the direction is over-estimating, and `take`
+    // still bounds-checks - but it under-sizes every loan, so every chunk the scan picks is one step smaller.
+    f(T * N); f(T * D);
+    if (gr_unfused()) f(T * D);
+    f(T * HC);
+    o.take<uint16_t>(T * D, ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
     f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok); f(T * N);
     if (bf16x2_hc()) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2()) o.take<uint16_t>(T * N, ok);
@@ -920,6 +937,14 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     take_stage(o, ss, s, stage, ok);
     return o.used + (8u << 20);   // alignment slack
 }
+
+uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
+    return bytes_needed(g, ss, chunk) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
+}
+
+int64_t Prefill::ring_max_slots() { return (int64_t) (ring_bytes() / (uint64_t) MAXBLOB()); }
+
+int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 
 namespace {
 

@@ -197,6 +197,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata-load src/core/load_main.cpp)
   target_link_libraries(strata-load PRIVATE strata_core strata_kernels)
 
+  if(STRATA_BUILD_TESTS)
+    # the layer-range carve in the dense-weight loader: `pool_bytes` and `layer_bytes` must agree over
+    # every range, and the full range must reproduce the pack's own pool (a synthetic index, a real pack
+    # by argument; no GPU and no model - both functions are pure file parsing, which is what lets the
+    # split search price a placement before committing VRAM to it)
+    add_executable(weights_carve_test tests/core/weights_carve_test.cpp)
+    target_link_libraries(weights_carve_test PRIVATE strata_core)
+    add_test(NAME weights_carve_test COMMAND weights_carve_test)
+    set_tests_properties(weights_carve_test PROPERTIES TIMEOUT 60)
+  endif()
+
   add_executable(strata-concurrent src/core/concurrent_main.cpp)
   target_include_directories(strata-concurrent PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata-concurrent PRIVATE strata_core strata_kernels ${_strata_gpu_runtime_target})
@@ -349,6 +360,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(file_expert_source_test PRIVATE strata_engine)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)
     set_tests_properties(file_expert_source_test PROPERTIES TIMEOUT 60)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/remote_budget_test.cpp")
+    # The helper tiers' pair selection (the spill tier a layer split opens on every card).  No GPU: the walk is
+    # pure arithmetic, and CUDA_VISIBLE_DEVICES=-1 keeps a stray context from being created for the link alone.
+    add_executable(remote_budget_test tests/core/remote_budget_test.cpp)
+    target_link_libraries(remote_budget_test PRIVATE strata_engine)
+    add_test(NAME remote_budget_test COMMAND remote_budget_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
+    set_tests_properties(remote_budget_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 60)
   endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
