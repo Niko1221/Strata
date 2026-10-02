@@ -44,6 +44,8 @@ void row_dequant(int type, const void* row, int64_t n, float* out) {
     static std::once_flag once;
     std::call_once(once, [] { ggml_cpu_init(); });
     const auto* t = ggml_get_type_traits((ggml_type) type);
+    if (std::getenv("Q35_TRACE")) std::fprintf(stderr, "q35: type %d traits=%p to_float=%p\n", type, (const void*) t,
+                                               t ? (const void*) t->to_float : nullptr);
     if (!t || !t->to_float) {
         std::fprintf(stderr, "qwen35: ggml has no to_float for type %d\n", type);
         std::exit(1);
@@ -54,6 +56,16 @@ void row_dequant(int type, const void* row, int64_t n, float* out) {
 }  // namespace
 
 void qwen35_enable_ggml() {
+    // ggml's fp16 conversion tables (which `to_float` and the vec_dots read) are set up by ggml_init; ggml_cpu_init
+    // alone is not enough in this revision.  One context, kept for the process lifetime.
+    static ggml_context* ctx = nullptr;
+    if (!ctx) {
+        ggml_init_params p{};
+        p.mem_size = 16u * 1024u * 1024u;
+        p.mem_buffer = nullptr;
+        p.no_alloc = true;
+        ctx = ggml_init(p);
+    }
     g_quant_matvec = quant_matvec;
     g_row_dequant = row_dequant;
 }

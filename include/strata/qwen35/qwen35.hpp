@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -161,6 +162,8 @@ struct TrunkWeights {
     std::vector<MoeLayerWeights> moe;
     /// The expert weight storage the `moe[l].experts` arrays point into (one entry per routed expert).
     std::vector<std::vector<ExpertWeights>> expert_store;
+    /// Owns the mmap the `Mat`s point into: the loader keeps the GGUF open for the lifetime of the weights.
+    std::shared_ptr<void> backing;
 };
 
 struct TrunkState {

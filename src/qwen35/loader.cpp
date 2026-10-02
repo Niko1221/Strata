@@ -50,7 +50,10 @@ Mat make_expert(const strata::GgufModel& m, const std::string& name, int64_t exp
 
 bool load_trunk(const std::string& path, Qwen35Geometry& g, TrunkWeights& w, std::string& err) {
     try {
-        strata::GgufModel model({path});
+        // The Mats point INTO this model's mmap, so it must outlive them: keep it in `w.backing`.
+        auto holder = std::make_shared<strata::GgufModel>(std::vector<std::string>{path});
+        strata::GgufModel& model = *holder;
+        w.backing = holder;
         if (!core::check_qwen35_all(model, g, err)) return false;
         const int64_t L = g.n_layers, H = g.n_embd;
 

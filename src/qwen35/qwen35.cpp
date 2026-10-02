@@ -52,9 +52,34 @@ void matvec(const Mat& m, const float* x, float* y) {
     g_quant_matvec(m.type, m.data, m.n_in, m.n_out, x, y);
 }
 
+namespace {
+/// fp16 -> fp32, the standard bit arithmetic (no table, no ggml dependency).
+float fp16_to_fp32(uint16_t h) {
+    const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t exp = (h >> 10) & 0x1Fu, mant = h & 0x3FFu, f;
+    if (exp == 0) {
+        if (mant == 0) { f = sign; }
+        else { exp = 127 - 15 + 1; while (!(mant & 0x400u)) { mant <<= 1; --exp; } mant &= 0x3FFu; f = sign | (exp << 23) | (mant << 13); }
+    } else if (exp == 31) { f = sign | 0x7F800000u | (mant << 13); }
+    else { f = sign | ((exp + 112u) << 23) | (mant << 13); }
+    float r; std::memcpy(&r, &f, 4); return r;
+}
+}  // namespace
+
 void dequant_row(const Mat& m, int64_t row, float* out) {
     const uint8_t* p = (const uint8_t*) m.data + (size_t) row * m.row_bytes;
+    // F32 (the tests) and Q8_0 (the embedding and the head) are decoded here; other types go to ggml.
     if (m.type == 0) { std::memcpy(out, p, (size_t) m.n_in * sizeof(float)); return; }
+    if (m.type == 8) {  // Q8_0: 32 values per 34-byte block (fp16 scale + 32 int8)
+        const int64_t nb = m.n_in / 32;
+        for (int64_t b = 0; b < nb; ++b) {
+            uint16_t dh; std::memcpy(&dh, p + b * 34, 2);
+            const float d = fp16_to_fp32(dh);
+            const int8_t* q = (const int8_t*) (p + b * 34 + 2);
+            for (int j = 0; j < 32; ++j) out[b * 32 + j] = (float) q[j] * d;
+        }
+        return;
+    }
     if (!g_row_dequant) no_quant(m.type);
     g_row_dequant(m.type, p, m.n_in, out);
 }
