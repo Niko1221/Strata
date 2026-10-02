@@ -4996,8 +4996,10 @@ int main(int argc, char** argv) {
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
-                        o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
-                        (long long) o.conversation_cache_min_free_mib);
+                        o.spec_min_p,
+                        // the budget in effect: --prompt-cache 0 builds the cache with none (the Monitor's "off")
+                        (long long) (conversations.enabled() ? o.conversation_cache_mib : 0),
+                        o.conversation_cache_slots, (long long) o.conversation_cache_min_free_mib);
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -5252,12 +5254,16 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
+            bool switched = false;    // DONE: not a continuation of the conversation held (conversation_switched)
+            bool restored = false;    // DONE: its state came back from a parked snapshot, beyond its system prompt
+            bool mounted_root = false;   // what this request reuses is only the root (system-prompt) checkpoint
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
                         resume = (int64_t) c.ids.size();
                         from_live = false;
+                        mounted_root = c.root;
                     }
             }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
@@ -5270,6 +5276,8 @@ int main(int argc, char** argv) {
                 incoming.reset();
                 err.clear();
             }
+            // DONE's switched: from what this request found before it parks or restores anything
+            switched = strata::core::conversation_switched(incoming.has_value(), resume, mounted_root);
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
             if ((!from_live || incoming) && !park_current(incoming ? incoming->bytes() : 0)) {
@@ -5285,6 +5293,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR restoring parked conversation: %s\n", err.c_str());
                     return 1;
                 }
+                restored = !parked.root;   // only the system prompt back is no hit: a new chat of the same client
                 if (std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     if (!strata::core::conversation_kv_verify(incoming->kv.back(), mtp.kv_state(), g,
@@ -5651,6 +5660,9 @@ int main(int argc, char** argv) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
+                if (to == root_at)   // the Monitor tells a mount of the system prompt alone from a continuation
+                    for (ConvCheckpoint& c : checks)
+                        if ((int64_t) c.ids.size() == root_at) c.root = true;
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
@@ -5950,13 +5962,17 @@ int main(int argc, char** argv) {
             const int64_t fresh = n - resume;
             const int64_t read_n = cancelled ? std::clamp<int64_t>(pp_reached - resume, 0, fresh) : fresh;
             // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused> [hits] [lookups]
-            //      [RAM blobs] [file blobs] [file MB]   (CS-T tiers; appended, so an older server reads the rest)
+            //      [RAM blobs] [file blobs] [file MB]   (CS-T tiers)
             //      [prompt tokens read]   (#471: fewer than <prompt> - <reused> when a cancel stopped the read)
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld\n", (long long) produced_n,
-                        (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
-                        (long long) resume, (long long) req_hits, (long long) req_look,
+            //      [switched] [restored] [parked] [parked bytes] [evictions]   (the conversation cache)
+            //      each group appended, so an older server reads the rest
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %d %d %lld %lld %lld\n",
+                        (long long) produced_n, (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted,
+                        (long long) draft_offered, (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
-                        (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n);
+                        (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n, switched ? 1 : 0,
+                        restored ? 1 : 0, (long long) conversations.size(), (long long) conversations.bytes(),
+                        (long long) conversations.evictions());
             std::fflush(stdout);
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read

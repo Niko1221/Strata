@@ -209,5 +209,35 @@ int main() {
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");
         check(disabled.best(a,{},true).tokens == 0, "disabled cache has no matches");
     }
+    {
+        // the Monitor's "switch": arguments are (restored a parked snapshot, tokens reused, mounted the root)
+        check(conversation_switched(false, 0, false), "a prompt read from 0 is a switch");
+        check(conversation_switched(false, 3, true), "reusing only the root (the system prompt) is a switch");
+        check(!conversation_switched(false, 6, false), "a turn checkpoint of the same chat continues it");
+        check(conversation_switched(true, 8, false), "restoring a parked snapshot is a switch");
+        check(conversation_switched(true, 0, false), "restoring with nothing reused is still a switch");
+    }
+    {
+        // best() says whether the longest match is only a parked conversation's root (system-prompt) checkpoint
+        ConversationCache cache(1 << 20, 4);
+        SavedConversation s = image({9, 1, 2, 9, 4, 5});
+        ConversationCheckpoint root;
+        root.ids = {9, 1, 2};
+        root.root = true;
+        s.checkpoints.push_back(root);
+        ConversationCheckpoint turn;
+        turn.ids = {9, 1, 2, 9, 4};
+        s.checkpoints.push_back(turn);
+        check(cache.put(std::move(s)), "a conversation with a root and a turn checkpoint parks");
+        const std::vector<int32_t> other{9, 1, 2, 9, 7, 7};   // another chat with the same system prompt
+        const auto m = cache.best(other, {}, true);
+        check(m.tokens == 3 && m.root, "a new chat that shares only the system prompt matches the root");
+        const std::vector<int32_t> same{9, 1, 2, 9, 4, 8};
+        const auto t = cache.best(same, {}, true);
+        check(t.tokens == 5 && !t.root, "the same chat's turn checkpoint is no root match");
+        const std::vector<int32_t> back{9, 1, 2, 9, 4, 5, 6};
+        const auto l = cache.best(back, {}, true);
+        check(l.tokens == 6 && l.live && !l.root, "its live state is no root match");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
