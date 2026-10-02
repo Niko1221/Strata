@@ -180,12 +180,16 @@ struct TrunkWeights {
 struct TrunkState {
     std::vector<GdnState> gdn;
     std::vector<AttnState> attn;
-    void reset(const Qwen35Geometry& g) {
+    /// `context` is the KV capacity in cells (the launcher's --max-context); 0 means the model's native
+    /// maximum.  The attention states are sized for it, so a 128K deployment holds 128K of KV, not the
+    /// model's 262K.
+    void reset(const Qwen35Geometry& g, int64_t context) {
+        const int64_t cells = context > 0 ? context : g.context_length;
         gdn.assign((size_t) g.n_layers, {});
         attn.assign((size_t) g.n_layers, {});
         for (int64_t l = 0; l < g.n_layers; ++l) {
             if (g.is_recurrent(l)) gdn[(size_t) l].resize(g);
-            else attn[(size_t) l].resize(g.context_length, g);
+            else attn[(size_t) l].resize(cells, g);
         }
     }
     void zero(const Qwen35Geometry& g) {

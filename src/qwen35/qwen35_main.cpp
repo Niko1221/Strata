@@ -92,10 +92,11 @@ std::vector<int64_t> parse_ids(const std::string& s) {
 }
 
 int run_serve(q::TrunkWeights& w, strata::core::Qwen35Geometry& g, int64_t max_context) {
+    const int64_t ctx = max_context > 0 ? max_context : g.context_length;
     q::TrunkState st;
-    st.reset(g);
+    st.reset(g, ctx);
     std::vector<float> logits((size_t) g.n_vocab);
-    std::printf("READY %lld stop\n", (long long) max_context);
+    std::printf("READY %lld stop\n", (long long) ctx);
     std::fflush(stdout);
 
     std::string line;
@@ -128,6 +129,11 @@ int run_serve(q::TrunkWeights& w, strata::core::Qwen35Geometry& g, int64_t max_c
             const std::vector<int64_t> ids = parse_ids(ids_field);
             if (ids.empty()) { std::printf("ERR empty prompt\n"); std::fflush(stdout); continue; }
 
+            if ((int64_t) ids.size() > ctx) {
+                std::printf("ERR prompt has %zu tokens but the context is %lld\n", ids.size(), (long long) ctx);
+                std::fflush(stdout);
+                continue;
+            }
             st.zero(g);
             const auto t0 = std::chrono::steady_clock::now();
             for (int64_t t : ids) q::trunk_forward(g, w, st, t, logits.data());
@@ -137,7 +143,7 @@ int run_serve(q::TrunkWeights& w, strata::core::Qwen35Geometry& g, int64_t max_c
             int64_t generated = 0;
             std::string finish = "length";
             const auto d0 = std::chrono::steady_clock::now();
-            for (int64_t n = 0; n < max_new; ++n) {
+            for (int64_t n = 0; n < max_new && (int64_t) ids.size() + n < ctx; ++n) {
                 const int64_t best = sample(logits, s, rng);
                 if (w.eos_token >= 0 && best == w.eos_token) { finish = "stop"; break; }
                 std::printf("T %lld\n", (long long) best);
@@ -224,7 +230,7 @@ int main(int argc, char** argv) {
     if (tokens.empty()) { std::fprintf(stderr, "strata-qwen35: --tokens is required without --serve\n"); return 2; }
 
     q::TrunkState st;
-    st.reset(g);
+    st.reset(g, max_context);
     std::vector<float> logits((size_t) g.n_vocab);
     const auto t0 = std::chrono::steady_clock::now();
     for (int64_t tok : tokens) q::trunk_forward(g, w, st, tok, logits.data());

@@ -212,6 +212,12 @@ void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& s
     const float eps = g.rms_eps;
     const float scale = 1.0f / std::sqrt((float) D);
     const int64_t pos = st.n;
+    const int64_t cells = (int64_t) (st.k.size() / (size_t) kv);
+    if (pos >= cells) {
+        std::fprintf(stderr, "qwen35: context full: position %lld but the KV holds %lld cells\n",
+                     (long long) pos, (long long) cells);
+        std::exit(1);
+    }
 
     std::vector<float> xn((size_t) H);
     rms_norm(x, w.attn_norm, H, eps, xn.data());
