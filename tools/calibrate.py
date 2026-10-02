@@ -119,10 +119,23 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    args = list(cfg["args"])
-    if isinstance(cfg.get("gpu"), list) and "--layer-split" not in args:   # several cards: measured as it runs
-        args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    args = split_args(cfg)
     return measure(args, ids_list, start_engine, say)
+
+
+def split_args(cfg: dict) -> list[str]:
+    """The config's args with the layer split appended when the config really splits layers.
+
+    A `gpu` list alone is not a split: the helper-GPU expert tier (--expert-cache-deviceN,
+    docs/SECOND_GPU.md) runs one stage on one card with a second card visible for the tier,
+    and the engine rejects `--expert-cache-remote` together with a layer split. Mirror
+    serve.server.engine_args(): the split is appended only when several cards run stages.
+    """
+    from serve.server import gpu_list
+    args = list(cfg["args"])
+    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:   # several cards: measured as it runs
+        args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
+    return args
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:

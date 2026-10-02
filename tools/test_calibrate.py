@@ -102,6 +102,22 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [51, 51.5, 51]}, "a"), "a")
         self.assertEqual(CAL.pick({}, "a"), "a")
 
+    def test_helper_gpu_config_gets_no_split(self):
+        # issue #447: a `gpu` list is not a split. The helper-GPU expert tier (docs/SECOND_GPU.md)
+        # runs one stage on one card with a second card visible for the tier; the engine rejects
+        # --expert-cache-remote together with a layer split, so the tuner must not append one.
+        cfg = {"args": list(BASE) + ["--expert-cache-device1", "1800"], "gpu": [0],
+               "env": {"CUDA_VISIBLE_DEVICES": "0,1"}}
+        self.assertNotIn("--layer-split", CAL.split_args(cfg))
+
+    def test_real_split_still_gets_the_split(self):
+        a = CAL.split_args({"args": list(BASE), "gpu": [0, 1]})
+        self.assertEqual(CAL.arg_value(a, "--layer-split"), "auto")
+        self.assertEqual(CAL.arg_value(CAL.split_args({"args": list(BASE), "gpu": "0,1"}), "--layer-split"), "auto")
+        # an explicit split in the config is left as it is
+        cfg = {"args": list(BASE) + ["--layer-split", "18"], "gpu": [0, 1]}
+        self.assertEqual(CAL.arg_value(CAL.split_args(cfg), "--layer-split"), "18")
+
 
 class SetupIntegration(unittest.TestCase):
     def setUp(self):
