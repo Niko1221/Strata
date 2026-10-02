@@ -26,6 +26,20 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
+// The dense tensors are named `blk.N.<suffix>` (llama.cpp's convention).  Returns the layer index, or -1 for
+// a name without one (none of the eligible tensors have such a name; the non-layer tensors are not uploaded).
+int64_t layer_of(const std::string& name) {
+    if (name.rfind("blk.", 0) != 0) return -1;
+    const char* p = name.c_str() + 4;
+    if (*p < '0' || *p > '9') return -1;
+    int64_t l = 0;
+    while (*p >= '0' && *p <= '9') {
+        l = l * 10 + (int64_t) (*p - '0');
+        if (l > 1000000) return -1;   // a real model has far fewer layers
+        ++p;
+    }
+    return *p == '.' ? l : -1;
+}
 struct DeviceFree { void operator()(void* p) const { if (p) cudaFree(p); } };
 using DevicePtr = std::unique_ptr<void, DeviceFree>;
 struct Pending {
@@ -59,7 +73,7 @@ NativeDense::~NativeDense() {
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-                       bool include_ple_key) {
+                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {
     if (scratch_ || !weights_.empty()) { err = "native dense: already loaded"; return false; }
     if (shards.empty()) { err = "native dense: at least one GGUF shard is required"; return false; }
     try {
@@ -129,6 +143,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             }
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key)) continue;
+                // Owned layers only: a split stage's copy keeps the dense projections of the layers it runs
+                // (the PLE key follows layer 1).  Skipping the allocation/copy up front is what frees the
+                // unowned layers' VRAM for the expert cache; there is nothing to free afterwards.
+                const int64_t l = layer_of(tensor.name);
+                if (l >= 0 && (l < layer_lo || (layer_hi >= 0 && l >= layer_hi))) continue;
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }

@@ -110,8 +110,13 @@ void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t w
 /// Plan v0.3 P3: the doorbell's payload and its ring in ONE kernel.  Copies `x` (n floats), `ids` and `weights`
 /// (k each) into the mapped host regions, fences, and increments the mapped sequence number - replacing three
 /// device-to-host memcpy nodes (copy-engine operations in the middle of the layer chain) and the ring kernel.
+/// E-6 (STRATA_VERIFY_DEVICE_PLAN=1): with `skip`/`expected` given, a group whose skip word EQUALS expected
+/// (the device planned it: every routed expert resident) publishes the ids/weights and the ring but NOT the
+/// activation payload - the host pool still counts usage from the valid ids and never reads the activation
+/// for an all-resident group.  Null `skip` (layer.cpp's session doorbell) keeps the full publish.
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
-                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream);
+                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream,
+                      const uint32_t* skip = nullptr, uint32_t expected = 0);
 
 /// Plan v0.3 P3: copy `n` int32 from mapped pinned host memory into device memory with a kernel (the QSA
 /// per-token step and positions), instead of a host-to-device memcpy node in the middle of a layer.

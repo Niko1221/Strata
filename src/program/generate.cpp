@@ -1766,8 +1766,12 @@ int main(int argc, char** argv) {
         if (!native_pack) skip.erase("blk.1.ple_key.weight");
         if (native_pack) skip.insert("token_embd.weight");
     }
+    // An explicit layer split's stages load only their OWN layers' weights (the other stages' canonical GR
+    // stays out of this card's arena); auto splits keep the full tables until their placement is final.
+    const int64_t owned_hi = (multi_gpu && !split_auto) ? split_at[0] : -1;
     uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip, 0,
+                                               owned_hi)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -1778,7 +1782,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip, 0, owned_hi)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -1788,7 +1792,7 @@ int main(int argc, char** argv) {
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
+        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key, 0, owned_hi)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
             return 1;
         }
@@ -2058,14 +2062,25 @@ int main(int argc, char** argv) {
             return 1;
         }
         const strata::core::OnDevice on(st.dev);
+        // an explicit split's stage loads only its OWN layers' weights (auto splits keep the full tables)
+        const int64_t owned_lo = !split_auto ? split_at[i] : 0;
+        const int64_t owned_hi = !split_auto ? (i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers) : -1;
         void* arena_s = nullptr;
-        if (cudaMalloc(&arena_s, pool_bytes) != cudaSuccess ||
-            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+        uint64_t stage_pool = 0;
+        if (!strata::core::WeightTable::pool_bytes(o.pack, stage_pool, err, skip.empty() ? nullptr : &skip,
+                                                   owned_lo, owned_hi) ||
+            cudaMalloc(&arena_s, stage_pool) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev,
                          err.empty() ? "the weight arena does not fit" : err.c_str());
             return 1;
         }
-        if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
+        if (!st.wt.load(o.pack, arena_s, stage_pool, err, skip.empty() ? nullptr : &skip, owned_lo, owned_hi)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev,
+                         err.empty() ? "the weight arena does not fit" : err.c_str());
+            return 1;
+        }
+        if (!o.native_dense_gguf.empty() &&
+            !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key, owned_lo, owned_hi)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());
             return 1;
@@ -3902,6 +3917,7 @@ int main(int argc, char** argv) {
                     vs.slot_off = gs.cache.slot_offsets();
                     vs.n_slots = gs.cache.slots();
                     ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, o.spec, err);
+                    gs.ver.require_host_activations(drive.d.lookahead != nullptr);
                     split_drive.cache_base[st] = gs.cache.device_slot(0);
                     split_drive.cache_slot_off[st] = gs.cache.slot_offsets();
                     split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
@@ -3923,6 +3939,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
+        ver.require_host_activations(drive.d.lookahead != nullptr);
         for (int st = 0; st < n_stages && n_stages > 1; ++st) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
             if (st > 0) {
@@ -4108,7 +4125,7 @@ int main(int argc, char** argv) {
             }
             return true;
         };
-        if (multi_gpu) {   // the batched prompt is reported by its last stage (the drafter's rows are there)
+        if (multi_gpu) {   // the batched prompt is reported by its last stage
             stages.back()->sp.on_chunk = std::move(sp.on_chunk);
             sp.on_chunk = nullptr;
             for (size_t i = 0; i <= stages.size(); ++i) {
@@ -4729,7 +4746,6 @@ int main(int argc, char** argv) {
             // tokens [a, b) through the windows: commit all of them, then give the draft layer their residuals
             auto read_windows = [&](int64_t a, int64_t b, std::string& e) -> bool {
                 strata::core::progress_at("reading the prompt (verify windows), from token", a);   // #217: not "batched"
-                // every token is committed and the picks are discarded: no head sampling (see set_head_sampling)
                 struct NoHeadSampling {
                     strata::core::Verifier& v;
                     explicit NoHeadSampling(strata::core::Verifier& x) : v(x) { v.set_head_sampling(false); }
@@ -4780,7 +4796,7 @@ int main(int argc, char** argv) {
             // the arena, the residency table is restored, and one upload puts it on every device.  A stage refills
             // through its own cache and its own device - a slot refilled into the wrong cache would leave that
             // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
-            auto refill_one = [&](PfPart& p, std::string& e) -> bool {
+            auto queue_refill = [&](PfPart& p, std::string& e) -> bool {
                 if (p.lent.empty()) return true;
                 tr("refill start", (long long) p.lent.size());
                 const strata::core::OnDevice on(p.dev);
@@ -4792,15 +4808,26 @@ int main(int argc, char** argv) {
                         return false;
                     host_res[(size_t) i] = slot;
                 }
+                return true;
+            };
+            auto finish_refill = [&](PfPart& p, std::string& e) -> bool {
+                if (p.lent.empty()) return true;
+                const strata::core::OnDevice on(p.dev);
                 if (!p.cache->sync_queued(e)) return false;
                 p.lent.clear();
                 p.lent_chunk = 0;
                 return true;
             };
+            auto refill_one = [&](PfPart& p, std::string& e) -> bool {
+                return queue_refill(p, e) && finish_refill(p, e);
+            };
             auto refill = [&](std::string& e) -> bool {
                 bool any = false;
+                // Queue every device before waiting: independent PCIe links can refill together.
                 for (PfPart& p : pf_parts)
-                    if (!p.lent.empty()) { any = true; if (!refill_one(p, e)) return false; }
+                    if (!p.lent.empty()) { any = true; if (!queue_refill(p, e)) return false; }
+                for (PfPart& p : pf_parts)
+                    if (!finish_refill(p, e)) return false;
                 if (any) res_upload();
                 return true;
             };
@@ -4901,9 +4928,11 @@ int main(int argc, char** argv) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
-                if (!win && !lend(to - at, err)) {
-                    std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
-                    return 1;
+                if (!win) {
+                    if (!lend(to - at, err)) {
+                        std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
+                        return 1;
+                    }
                 }
                 const auto tsp = Clock::now();
                 const bool sp_ok = win ? read_windows(at, to, err) : sp.run(ids.data() + at, to - at, at, err);

@@ -19,8 +19,14 @@ public:
     ~NativeDense();
     NativeDense(const NativeDense&) = delete;
     NativeDense& operator=(const NativeDense&) = delete;
+    /// Uploads only the tensors of layers [layer_lo, layer_hi) (`blk.N.*` names; hi < 0 = no upper bound):
+    /// a split stage's copy needs only the dense projections of the layers it runs, and the unowned layers'
+    /// VRAM (about 2 GiB of the ~3.4 GiB on a two-GPU split) goes back to the expert cache instead.  The
+    /// head and the embedding are not dense tensors and are not affected.  The PLE key (blk.1) follows its
+    /// layer.  Default full range - callers that pass no range are unchanged.  The tensor is uploaded once
+    /// when in range; there is no post-load freeing.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-              bool include_ple_key = false);
+              bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
     /// Plan v0.3 P1: the canonical tensor names `load` would serve natively from these shards (eligible name,
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,

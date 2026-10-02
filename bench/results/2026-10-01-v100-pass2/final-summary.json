@@ -1,0 +1,55 @@
+{
+  "protocol": {
+    "repeats": 3,
+    "output_tokens": 256,
+    "seed": 20261002,
+    "model": "qwen",
+    "layer_split": "20/28",
+    "context_capacity": 262144,
+    "kv": "int8",
+    "prefill_chunk": "auto",
+    "spec": 8,
+    "spec_min_p": 0.7,
+    "expert_pair": 1
+  },
+  "target_percent": 20,
+  "target_met": false,
+  "rows": [
+    {
+      "target": 4096,
+      "baseline_prefill_tok_s": 442.3,
+      "installed_prefill_tok_s": 525.0,
+      "prefill_change_percent": 18.7,
+      "baseline_decode_tok_s": 66.9,
+      "installed_decode_tok_s": 69.9,
+      "decode_change_percent": 4.5
+    },
+    {
+      "target": 8192,
+      "baseline_prefill_tok_s": 620.8,
+      "installed_prefill_tok_s": 705.9,
+      "prefill_change_percent": 13.7,
+      "baseline_decode_tok_s": 66.8,
+      "installed_decode_tok_s": 64.5,
+      "decode_change_percent": -3.4
+    },
+    {
+      "target": 16384,
+      "baseline_prefill_tok_s": 820.2,
+      "installed_prefill_tok_s": 955.6,
+      "prefill_change_percent": 16.5,
+      "baseline_decode_tok_s": 64.0,
+      "installed_decode_tok_s": 66.5,
+      "decode_change_percent": 3.9
+    },
+    {
+      "target": 32768,
+      "baseline_prefill_tok_s": 976.3,
+      "installed_prefill_tok_s": 1105.9,
+      "prefill_change_percent": 13.3,
+      "baseline_decode_tok_s": 66.2,
+      "installed_decode_tok_s": 70.0,
+      "decode_change_percent": 5.7
+    }
+  ]
+}

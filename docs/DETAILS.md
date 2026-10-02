@@ -49,6 +49,55 @@ reproduced by [`bench/run_v100_bench.py`](../bench/run_v100_bench.py).
 The PLE row gather for a fresh request dropped from ~3.6-8 s to ~7 ms, and the hyper-connection GEMMs (the
 largest BF16 projection block) from ~5.2 s to ~0.5 s at 8K. Decode is unchanged.
 
+An explicit layer split loads each card's canonical weights and native dense
+projections for its own layers only. Automatic placements keep the full tables.
+The configured context capacity and vision support are unchanged.
+
+**Opt-in decode kernel variant (`STRATA_EXPERT_PAIR=1`, off by default):** with
+a native expert pack, the grouped expert kernels compute two rows per warp
+instead of one. The GPU parity fixtures produced byte-identical results on
+both V100 cards. Set this variable in the installed config's environment
+to enable the variant. The service file does not need a change.
+
+The prompt path's FP16 experts use per-expert scratch (at most one chunk's
+rows per expert) by default. The decode path quantizes the shared expert's
+activation once per layer. CPU activation quantization runs only for tokens
+with CPU expert jobs. A window with no CPU expert jobs does not wait for the
+CPU worker barrier. Cache refills start on both cards before either card waits.
+
+
+**V100 follow-up measurement (1 October 2026)**
+
+This run used two V100 PCIe 16GB cards. GPU0 had a Gen3 x2 link. GPU1 had a
+Gen3 x16 link. Each size had three fresh requests and 256 output tokens.
+The table gives the median speed in tokens per second.
+
+| Target prompt | Original prefill | Installed prefill | Change | Original decode | Installed decode | Change |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4K | 442.3 | 525.0 | +18.7% | 66.9 | 69.9 | +4.5% |
+| 8K | 620.8 | 705.9 | +13.7% | 66.8 | 64.5 | -3.4% |
+| 16K | 820.2 | 955.6 | +16.5% | 64.0 | 66.5 | +3.9% |
+| 32K | 976.3 | 1105.9 | +13.3% | 66.2 | 70.0 | +5.7% |
+
+The 20-percent prefill and decode target was not met at all four sizes.
+Decode results are mixed. Do not use the kernel fixture speed as a runtime
+speed claim. Recorded samples reached 84 C on GPU0 and 83 C on GPU1.
+Both cards reported software thermal slowdown during this run.
+
+The installed settings keep the 20/28 layer split, 262144-token context,
+int8 KV, automatic prefill chunks, spec 8, draft confidence 0.70, and vision.
+The paired expert variant is enabled. On GPU0, owned-layer loading reduced
+native dense weights from 1376.20 MiB to 541.27 MiB. The expert cache increased
+from 6750 to 7918 slots.
+
+Raw measurements:
+[original](../bench/results/2026-10-01-v100-pass2/baseline/matrix.json),
+[installed](../bench/results/2026-10-01-v100-pass2/final-installed/matrix.json),
+[summary](../bench/results/2026-10-01-v100-pass2/final-summary.json), and
+[thermal samples](../bench/results/2026-10-01-v100-pass2/final-installed-gpu.csv).
+Use `bench/run_v100_bench.py` with targets `4096,8192,16384,32768`,
+`--max-tokens 256`, `--seed 20261002`, and `--repeats 3` to repeat the sweep.
+
 Long-context baseline for comparison (engine 0.1.20, models on the portable SSD, before the fast path):
 | Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed | Expert-cache hit rate | Total request |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

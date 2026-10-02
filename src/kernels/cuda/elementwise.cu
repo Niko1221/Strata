@@ -275,7 +275,27 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
 
 __global__ void doorbell_publish_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
                                         const float* __restrict__ w, int n, int k, float* x_out, int32_t* ids_out,
-                                        float* w_out, uint32_t* seq) {
+                                        float* w_out, uint32_t* seq, const uint32_t* __restrict__ skip,
+                                        uint32_t expected) {
+    // E-6 (STRATA_VERIFY_DEVICE_PLAN=1): the device planned this group (every routed expert resident, the
+    // skip word set by resident_plan == expected): publish ONLY the ids/weights and the ring - the host pool
+    // still counts usage and keeps its counters from the valid ids, and builds no jobs for an all-resident
+    // group, so it never reads the activation - but SKIP the large activation payload, which is the mapped
+    // write that costs tens of us on a narrow link.  The group's post() runs on the device plan (the OR-skip
+    // waits), so the absent x is never consumed.  Null skip keeps the full publish.
+    if (skip != nullptr && *skip == expected) {
+        if ((int) threadIdx.x < k) {
+            ids_out[threadIdx.x] = ids[threadIdx.x];
+            w_out[threadIdx.x] = w[threadIdx.x];
+        }
+        __threadfence_system();
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            *(volatile uint32_t*) seq = *(volatile uint32_t*) seq + 1u;
+        }
+        return;
+    }
     for (int i = threadIdx.x; i < n; i += blockDim.x) x_out[i] = x[i];
     if ((int) threadIdx.x < k) { ids_out[threadIdx.x] = ids[threadIdx.x]; w_out[threadIdx.x] = w[threadIdx.x]; }
     __threadfence_system();
@@ -287,10 +307,11 @@ __global__ void doorbell_publish_kernel(const float* __restrict__ x, const int32
 }
 
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
-                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream) {
+                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream,
+                      const uint32_t* skip, uint32_t expected) {
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish: k too large\n"); std::exit(1); }
     doorbell_publish_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(x, ids, weights, (int) n, (int) k, x_out, ids_out,
-                                                                    weights_out, d_seq);
+                                                                    weights_out, d_seq, skip, expected);
     check_launch("doorbell_publish");
 }
 

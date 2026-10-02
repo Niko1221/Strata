@@ -329,6 +329,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
+    add_executable(expert_dispatch_gate_test tests/core/expert_dispatch_gate_test.cpp)
+    target_link_libraries(expert_dispatch_gate_test PRIVATE strata_engine)
+    add_test(NAME expert_dispatch_gate_test_q2 COMMAND expert_dispatch_gate_test
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts/q2_0.txt)
+    add_test(NAME expert_dispatch_gate_test_iq COMMAND expert_dispatch_gate_test
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts/iq2_xs.txt)
+    set_tests_properties(expert_dispatch_gate_test_q2 expert_dispatch_gate_test_iq
+                         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
+    enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
     target_link_libraries(file_expert_source_test PRIVATE strata_engine)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)

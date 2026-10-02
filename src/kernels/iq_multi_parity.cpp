@@ -231,39 +231,43 @@ struct Grouped {
         cudaFree(dptr); cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
         cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout);
     }
-    void run(bool old, cudaStream_t s) {
+    void run(bool old, bool pair, cudaStream_t s) {
+        k::iq_set_pair_kernels(pair);
         k::iq_set_old_kernels(old);
         k::quantize_q8_1_rows(dx, n_tok, L.n_embd, dxq, s);
         k::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, cap_groups, cap_ent, dxq, dscr, dout, s);
         k::iq_set_old_kernels(false);
+        k::iq_set_pair_kernels(false);
     }
-    std::vector<float> result(bool old, cudaStream_t s) {
+    std::vector<float> result(bool old, bool pair, cudaStream_t s) {
         ck(cudaMemset(dout, 0xFF, out_floats * 4), "memset");      // NaN rows: must stay NaN where nothing writes
         ck(cudaMemset(dscr, 0, k::native_expert_scratch_bytes(cap_ent, L.n_ff)), "memset");
-        run(old, s);
+        run(old, pair, s);
         ck(cudaStreamSynchronize(s), "sync");
         std::vector<float> o(out_floats);
         ck(cudaMemcpy(o.data(), dout, o.size() * 4, cudaMemcpyDeviceToHost), "out");
         return o;
     }
 };
-
 void check_grouped(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& rng) {
     // 0..11 entries per group: one pass, a partial pass, two passes and three passes of GRP_NC = 4
     Grouped G(gu, dt, H, FF, {1, 3, 4, 5, 0, 8, 2, 11, 1}, 8, rng);
-    const auto a = G.result(true, s), b = G.result(false, s);
-    size_t diff = 0, written = 0;
+    const auto a = G.result(true, false, s), b = G.result(false, false, s), p = G.result(false, true, s);
+    size_t diff = 0, pvdiff = 0, written = 0;
     bool finite = true;
     for (size_t i = 0; i < a.size(); ++i) {
         diff += std::memcmp(&a[i], &b[i], 4) != 0;
-        if (i < (size_t) G.n_ent * H) { ++written; finite = finite && std::isfinite(b[i]); }
+        pvdiff += std::memcmp(&b[i], &p[i], 4) != 0;
+        if (i < (size_t) G.n_ent * H) { ++written; finite = finite && std::isfinite(b[i]) && std::isfinite(p[i]); }
     }
-    const bool ok = diff == 0 && finite;
-    std::printf("%-8s/%-7s %5lld x %4lld  native_expert_grouped, %d groups, %d entries: %s\n", name_of(gu),
+    const bool ok = diff == 0 && pvdiff == 0 && finite;
+    std::printf("%-8s/%-7s %5lld x %4lld  native_expert_grouped, %d groups, %d entries: %s%s\n", name_of(gu),
                 name_of(dt), (long long) H, (long long) FF, G.n_groups, G.n_ent,
-                ok ? "bitwise equal to the old kernels" : "FAIL");
+                ok ? "bitwise equal to the old kernels" : "FAIL",
+                pvdiff == 0 ? " (pair bitwise too)" : " (PAIR DIFFERS FROM THE MULTI PATH)");
     if (!ok) {
-        std::printf("  %zu of %zu floats differ%s\n", diff, a.size(), finite ? "" : ", non-finite outputs");
+        std::printf("  %zu of %zu floats differ (old/new), %zu new/pair%s\n", diff, a.size(), pvdiff,
+                    finite ? "" : ", non-finite outputs");
         ++g_fail;
     }
 }
@@ -312,14 +316,15 @@ void bench(cudaStream_t s, std::mt19937& rng) {
         cudaFree(dw); cudaFree(dx); cudaFree(dxq); cudaFree(dy);
     }
     // the verify window's shape: 2560 x 640 experts, 16 groups of m entries each
-    for (int gu : {16, 17, 18, 21, 22, 29}) {
+    for (int gu : {16, 17, 18, 21, 22, 29, 42}) {
         std::printf("%-8s/Q2_0 grouped, 16 groups of m entries:", name_of(gu));
         for (int m : {1, 2, 3, 4, 8}) {
             Grouped G(gu, 42, 2560, 640, std::vector<int>(16, m), 8, rng);
-            float us[2];
+            float us[3];
             for (int old = 1; old >= 0; --old)
-                us[old] = 1e3f * time_ms(s, 50, [&] { G.run(old != 0, s); });
-            std::printf("  m=%d: %.1f/%.1f", m, us[1], us[0]);
+                us[old] = 1e3f * time_ms(s, 50, [&] { G.run(old != 0, false, s); });
+            us[2] = 1e3f * time_ms(s, 50, [&] { G.run(false, true, s); });
+            std::printf("  m=%d: %.1f/%.1f/%.1f (old/new/pair)", m, us[1], us[0], us[2]);
         }
         std::printf("\n");
     }
