@@ -1,20 +1,17 @@
 #!/bin/bash
-# a3000-tune.sh - A/B the sm_86 tuning work on this host, then restart the server.
+# a3000-tune.sh - A/B the KV format on the local sm_86 build, then restart the server.
 #
 #   ./bench/a3000-tune.sh
 #
-# Run as the user (nicky). Hugepages need an unlimited locked-memory limit
-# (MAP_HUGETLB; see src/core/pinned.cu:202). On NixOS set
-# systemd.user.extraConfig = "DefaultLimitMEMLOCK=infinity" (and the matching
-# systemd.settings.Manager.DefaultLimitMEMLOCK) and run this script from a
-# systemd unit/scope; an interactive shell only gets the limit after a PAM
-# login (security.pam.loginLimits).
+# Run as the user. Hugepages need an unlimited locked-memory limit (MAP_HUGETLB;
+# see src/core/pinned.cu). On CachyOS that is installed by
+# hosts/laptop-p16/cachyos/install.sh (a limits.d file and a user@.service
+# drop-in); otherwise run this from a systemd unit/scope with
+# LimitMEMLOCK=infinity - a plain shell only gets it after a PAM login.
 #
-# Runs, in order:
-#   A  0.1.18 engine backup,       --kv int8   - baseline (best effort: the
-#      old binary needs its build's lib-driver; it may fail to start)
-#   B  build/strata (0.1.31+),     --kv int8   - engine effect
-#   C  build/strata (0.1.31+),     --kv k8v4   - KV effect on top of the new engine
+# Runs, in order (both from $ROOT/build/strata):
+#   B  --kv int8   - the baseline KV
+#   C  --kv k8v4   - the lowest-memory hybrid (no KV streaming)
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -22,11 +19,9 @@ ROOT=/home/nicky/code/forks-Strata
 STRATA=/home/nicky/.local/share/strata
 CFG=$STRATA/strata-swift-iq3_xxs.json
 CFG_OLD=$STRATA/strata-swift-iq3_xxs.json.bak
-CFG_A=$STRATA/strata-a.json
 CFG_B=$STRATA/strata-b.json
 CFG_C=$STRATA/strata-c.json
 PY=$STRATA/.venv/bin/python
-BACKUP=$STRATA/engine/strata.0.1.18.bak
 HUGEPAGES=22528   # 44 GiB of 2 MB pages: covers the 39.97 GiB arena (all-or-nothing MAP_HUGETLB)
 
 say() { printf '\n=== %s ===\n' "$*"; }
@@ -72,14 +67,8 @@ stop_server
 
 say "2. prepare configs"
 [ -f "$CFG_OLD" ] || cp "$CFG" "$CFG_OLD"
-if [ ! -f "$BACKUP" ]; then
-    echo "no 0.1.18 backup at $BACKUP - skipping A (do not copy the current engine over it)"
-fi
 "$PY" - <<PY
 import json
-c = json.load(open('$CFG_OLD'))
-c['exe'] = '$BACKUP'
-json.dump(c, open('$CFG_A','w'), indent=1)
 c = json.load(open('$CFG_OLD'))
 c['exe'] = '$ROOT/build/strata'
 json.dump(c, open('$CFG_B','w'), indent=1)
@@ -99,13 +88,10 @@ run() {
     echo "$out" | grep -qE '"decode_tok_s": *[0-9]'
 }
 
-if [ -f "$BACKUP" ]; then
-    run "A: 0.1.18 engine, kv int8" "$CFG_A" SERVE="$STRATA/serve/server.py" || echo "A produced no number - see /tmp/e2e-*.log"
-fi
 run "B: build/strata, kv int8"  "$CFG_B" || echo "B produced no number - see /tmp/e2e-*.log"
 run "C: build/strata, kv k8v4"  "$CFG_C" || echo "C produced no number - see /tmp/e2e-*.log"
 
 say "3. restart the nix-managed server"
 stop_server
 
-say "done - A/B/C above; the server restarts on the nix-managed engine"
+say "done - B/C above; the server restarts on the nix-managed engine"
