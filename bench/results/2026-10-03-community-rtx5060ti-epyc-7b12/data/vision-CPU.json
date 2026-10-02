@@ -1,0 +1,40 @@
+{
+ "tag": "CPU",
+ "text_1tok": {
+  "wall": 0.601,
+  "prompt_n": 19,
+  "cache_n": 0,
+  "prefill": 35.9,
+  "ct": 1
+ },
+ "image_runs": [
+  {
+   "wall": 5.398,
+   "prompt_n": 280,
+   "cache_n": 0,
+   "prefill": 62.8,
+   "ct": 1
+  },
+  {
+   "wall": 0.172,
+   "prompt_n": 7,
+   "cache_n": 273,
+   "prefill": 58.8,
+   "ct": 1
+  },
+  {
+   "wall": 0.194,
+   "prompt_n": 7,
+   "cache_n": 273,
+   "prefill": 58.7,
+   "ct": 1
+  }
+ ],
+ "encode_s_est": 5.226,
+ "engine": {
+  "expert_slots": 2644,
+  "vram_free_mib": 188,
+  "context": 262144,
+  "kv_resident": 32768
+ }
+}

@@ -1,0 +1,71 @@
+(1) 逐字读出图中给出的已知条件与所求：
+已知△ABC中，∠CAB=∠CBA=40°，D为三角形内一点，∠DBC=20°，∠DCA=20°，求∠DAC的大小。
+
+(2) 完整的推导或证明过程：
+证明：
+在△ABC中，因为 ∠CAB = ∠CBA = 40°，
+所以 △ABC 是等腰三角形，且 AC = BC。
+顶角 ∠ACB = 180° - 40° - 40° = 100°。
+
+已知 ∠DCA = 20°，
+所以 ∠DCB = ∠ACB - ∠DCA = 100° - 20° = 80°。
+
+在△BCD中，已知 ∠DBC = 20°，∠DCB = 80°，
+所以 ∠BDC = 180° - 20° - 80° = 80°。
+因为 ∠DCB = ∠BDC = 80°，
+所以 △BCD 是等腰三角形，且 BC = BD。
+
+结合前面得到的 AC = BC，可得 AC = BD。
+
+设 ∠DAC = x，则 ∠DAB = ∠CAB - ∠DAC = 40° - x。
+在△ACD中，根据正弦定理有：
+AD / sin∠DCA = AC / sin∠ADC
+因为 ∠ADC = 180° - ∠DCA - ∠DAC = 180° - 20° - x = 160° - x，
+所以 AD = AC * (sin20° / sin(160° - x)) = AC * (sin20° / sin(20° + x))。
+
+在△ABD中，已知 ∠DBA = ∠CBA - ∠DBC = 40° - 20° = 20°。
+根据正弦定理有：
+AD / sin∠DBA = BD / sin∠DAB
+即 AD / sin20° = BD / sin(40° - x)。
+因为 BD = AC，所以 AD = AC * (sin20° / sin(40° - x))。
+
+联立上述两个关于 AD 的等式，可得：
+AC * (sin20° / sin(20° + x)) = AC * (sin20° / sin(40° - x))
+化简得：sin(20° + x) = sin(40° - x)。
+
+因为 D 为三角形内一点，所以 0° < x < 40°。
+因此 20° + x = 40° - x，
+解得 2x = 20°，即 x = 10°。
+所以 ∠DAC = 10°。
+
+∠DAC = 10°
+<<<REASONING>>>
+1.  **提取已知条件与所求**：
+    *   已知：在 $\Delta ABC$ 中，$\angle CAB = \angle CBA = 40^\circ$，$D$ 为三角形内一点，$\angle DBC = 20^\circ$，$\angle DCA = 20^\circ$。
+    *   求：$\angle DAC$ 的大小。
+
+2.  **几何分析与推导**：
+    *   因为 $\angle CAB = \angle CBA = 40^\circ$，所以 $\Delta ABC$ 是等腰三角形，且 $AC = BC$。
+    *   顶角 $\angle ACB = 180^\circ - 40^\circ - 40^\circ = 100^\circ$。
+    *   已知 $\angle DCA = 20^\circ$，所以 $\angle DCB = \angle ACB - \angle DCA = 100^\circ - 20^\circ = 80^\circ$。
+    *   在 $\Delta BCD$ 中，已知 $\angle DBC = 20^\circ$，$\angle DCB = 80^\circ$，所以 $\angle BDC = 180^\circ - 20^\circ - 80^\circ = 80^\circ$。
+    *   因为 $\angle DCB = \angle BDC = 80^\circ$，所以 $\Delta BCD$ 是等腰三角形，且 $BC = BD$。
+    *   结合前面得到的 $AC = BC$，可以得出 $AC = BD$。
+    *   现在考虑 $\Delta ABD$。已知 $\angle DBA = \angle CBA - \angle DBC = 40^\circ - 20^\circ = 20^\circ$。
+    *   设 $\angle DAC = x$，则 $\angle DAB = \angle CAB - \angle DAC = 40^\circ - x$。
+    *   在 $\Delta ACD$ 中，根据正弦定理：
+        $\frac{AD}{\sin \angle DCA} = \frac{AC}{\sin \angle ADC}$
+        其中 $\angle ADC = 180^\circ - \angle DCA - \angle DAC = 180^\circ - 20^\circ - x = 160^\circ - x$。
+        所以 $AD = AC \cdot \frac{\sin 20^\circ}{\sin(160^\circ - x)} = AC \cdot \frac{\sin 20^\circ}{\sin(20^\circ + x)}$。
+    *   在 $\Delta ABD$ 中，根据正弦定理：
+        $\frac{AD}{\sin \angle DBA} = \frac{BD}{\sin \angle DAB}$
+        即 $\frac{AD}{\sin 20^\circ} = \frac{BD}{\sin(40^\circ - x)}$。
+        因为 $BD = AC$，所以 $AD = AC \cdot \frac{\sin 20^\circ}{\sin(40^\circ - x)}$。
+    *   联立两个关于 $AD$ 的等式：
+        $AC \cdot \frac{\sin 20^\circ}{\sin(20^\circ + x)} = AC \cdot \frac{\sin 20^\circ}{\sin(40^\circ - x)}$
+    *   化简得：$\sin(20^\circ + x) = \sin(40^\circ - x)$。
+    *   因为 $D$ 在三角形内部，所以 $0^\circ < x < 40^\circ$。
+    *   因此 $20^\circ + x = 40^\circ - x$，解得 $2x = 20^\circ$，即 $x = 10^\circ$。
+    *   所以 $\angle DAC = 10^\circ$。
+
+3.  **格式化输出**：按要求分步骤写出，最后单独一行给出答案。

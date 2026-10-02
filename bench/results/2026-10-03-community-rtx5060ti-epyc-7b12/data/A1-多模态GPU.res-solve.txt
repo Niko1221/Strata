@@ -1,0 +1,103 @@
+## (1) 逐字读出已知条件与所求
+
+> 已知△ABC 中，∠CAB=∠CBA=40°，D 为三角形内一点，∠DBC=20°，∠DCA=20°，求∠DAC 的大小。
+
+## (2) 推导与证明
+
+**第一步：求出各基本角。**
+在△ABC 中，∠CAB=∠CBA=40°，故 ∠ACB=180°−40°−40°=100°，且 CA=CB（等腰）。
+由 ∠DBC=20° 得 ∠DBA=∠CBA−∠DBC=40°−20°=20°。
+由 ∠DCA=20° 得 ∠DCB=∠ACB−∠DCA=100°−20°=80°。
+
+**第二步：发现等腰三角形 BCD。**
+在△BCD 中，∠DBC=20°，∠DCB=80°，故 ∠BDC=180°−20°−80°=80°。
+于是 ∠BCD=∠BDC=80°，所以 **BD=BC**。又 BC=CA，故 **BD=CA**。
+
+**第三步：用正弦定理建立 AB 与 BD 的关系。**
+在△ABC 中：AB/sin∠ACB = BC/sin∠CAB，即 AB/sin100° = BC/sin40°。
+因 sin100°=sin80°=2 sin40°cos40°，得 AB = BC·(2 sin40°cos40°)/sin40° = 2·BC·cos40° = 2·BD·cos40°。
+
+**第四步：在△ABD 中求 ∠DAB。**
+设 ∠DAB=α，则 ∠ADB=180°−20°−α=160°−α。
+由正弦定理：AB/sin∠ADB = BD/sin∠DAB，即 AB/BD = sin(160°−α)/sinα = sin(20°+α)/sinα。
+结合第三步：sin(20°
+<<<REASONING>>>
+用户给出一道几何题，要求逐字读出条件，给出完整推导，最后单独一行写答案。
+
+先读题：已知△ABC中，∠CAB=∠CBA=40°，D为三角形内一点，∠DBC=20°，∠DCA=20°，求∠DAC的大小。
+
+分析图形：三角形ABC，顶角C，底边AB。∠CAB=∠CBA=40°，所以∠ACB=180-40-40=100°。等腰三角形，CA=CB。
+
+D在内部。∠DBC=20°，所以∠DBA=∠CBA-∠DBC=40-20=20°。即BD平分∠CBA？∠CBA=40，∠DBC=20，所以∠DBA=20，是的BD是角平分线。
+
+∠DCA=20°，所以∠DCB=∠ACB-∠DCA=100-20=80°。
+
+求∠DAC。设∠DAC=x，则∠DAB=40-x。
+
+这是经典的Langley问题变种？让我用三角法（Ceva三角形式）来求。
+
+在三角形ABC内一点D，对三个顶点连线，有三角形式的Ceva定理：
+
+(sin∠BAD / sin∠CAD) * (sin∠ACD / sin∠BCD) * (sin∠CBD / sin∠ABD) = 1。
+
+让我确认顶点顺序。Ceva三角形式：对于点D，
+
+(sin∠BAD/sin∠CAD)*(sin∠ACD/sin∠BCD)*(sin∠CBD/sin∠ABD)=1。
+
+代入：∠BAD = 40 - x，∠CAD = x。∠ACD = ∠DCA = 20，∠BCD = 80。∠CBD = ∠DBC = 20，∠ABD = 20。
+
+所以 (sin(40-x)/sin x)*(sin20/sin80)*(sin20/sin20)=1。
+
+即 (sin(40-x)/sin x)*(sin20/sin80)=1。
+
+所以 sin(40-x)/sin x = sin80/sin20。
+
+sin80 = cos10。sin20 = 2 sin10 cos10。所以 sin80/sin20 = cos10/(2 sin10 cos10) = 1/(2 sin10)。
+
+所以 sin(40-x)/sin x = 1/(2 sin10)。
+
+即 2 sin10 sin(40-x) = sin x。
+
+我们需要解x。猜测x=30？试x=30：左边=2 sin10 sin10 = 2 sin²10 ≈ 2*0.03015=0.0603。右边=sin30=0.5。不对。
+
+试x=10：左边=2 sin10 sin30 = 2*0.17365*0.5=0.17365。右边=sin10=0.17365。相等！所以x=10。
+
+验证：sin(40-10)=sin30=0.5，sin10≈0.173648。左边2 sin10 *0.5 = sin10 = 右边。完美。
+
+所以∠DAC=10°。
+
+但需要确认唯一性。函数f(x)=sin(40-x)/sin x在(0,40)单调递减，所以唯一解。x=10。
+
+所以答案10°。
+
+现在给出综合几何证明或三角证明。题目要求完整推导或证明过程。我可以给三角法（简洁严谨），也可以给纯几何构造。三角法已经足够严谨。但也许给一个漂亮的几何构造更好。不过三角法清晰。我提供三角法为主，可能补充几何思路。
+
+让我尝试纯几何构造以显得完整。但三角法已经完整。我担心用户期望纯几何。题目说“完整的推导或证明过程”，三角推导是证明。OK。
+
+不过我可以给一个几何构造证明，更优雅。让我想想。
+
+已知CA=CB，∠ACB=100°，∠CAB=∠CBA=40°。BD平分∠B（∠DBC=∠DBA=20°）。∠DCA=20°，∠DCB=80°。
+
+求∠DAC=10°。
+
+几何构造：因为BD是角平分线，D在角B平分线上。考虑三角形BCD：∠DBC=20，∠DCB=80，所以∠BDC=80，所以三角形BCD等腰，BC=BD？角DBC=20，角BCD=80，角BDC=180-20-80=80，所以∠BCD=∠BDC=80，所以对边相等：BD对应∠BCD=80，BC对应∠BDC=80，所以BD=BC。是的BD=BC。
+
+而BC=CA（等腰）。所以BD=CA。
+
+现在三角形ABD：∠ABD=20，BD=CA。嗯。
+
+考虑三角形ABC，CA=CB=BD。
+
+我们想求∠DAB。在三角形ABD中，已知∠ABD=20，边BD=BC。AB是底边。
+
+用正弦定理在三角形ABC：AB/sin100 = BC/sin40，所以AB = BC sin100/sin40 = BC * sin80/sin40 = BC * 2 sin40 cos40 / sin40 = 2 BC cos40。所以AB = 2 BC cos40 = 2 BD cos40。
+
+在三角形ABD中，已知AB=2 BD cos40，∠ABD=20，求∠DAB。
+
+设∠DAB=α，∠ADB=180-20-α=160-α。正弦定理：AB/sin∠ADB = BD/sin∠DAB => AB/sin(160-α)=BD/sin α => AB/BD = sin(160-α)/sin α = sin(20+α)/sin α。
+
+而AB/BD=2 cos40。所以 sin(20+α)/sin α = 2 cos40。
+
+展开：sin20 cos
+
+I have thought about this long enough; time to give my answer.

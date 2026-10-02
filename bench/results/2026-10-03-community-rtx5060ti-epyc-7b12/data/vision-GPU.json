@@ -1,0 +1,40 @@
+{
+ "tag": "GPU",
+ "text_1tok": {
+  "wall": 0.615,
+  "prompt_n": 19,
+  "cache_n": 0,
+  "prefill": 35.0,
+  "ct": 1
+ },
+ "image_runs": [
+  {
+   "wall": 3.92,
+   "prompt_n": 280,
+   "cache_n": 0,
+   "prefill": 74.1,
+   "ct": 1
+  },
+  {
+   "wall": 0.177,
+   "prompt_n": 7,
+   "cache_n": 273,
+   "prefill": 57.4,
+   "ct": 1
+  },
+  {
+   "wall": 0.199,
+   "prompt_n": 7,
+   "cache_n": 273,
+   "prefill": 57.2,
+   "ct": 1
+  }
+ ],
+ "encode_s_est": 3.743,
+ "engine": {
+  "expert_slots": 2076,
+  "vram_free_mib": 881,
+  "context": 262144,
+  "kv_resident": 32768
+ }
+}
