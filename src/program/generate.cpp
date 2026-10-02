@@ -4793,7 +4793,13 @@ int main(int argc, char** argv) {
         };
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
-            if (!pending.empty()) return true;   // the previous swaps are still in flight
+            static const bool trace_adapt_s = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+            if (!pending.empty()) {
+                if (trace_adapt_s)
+                    std::fprintf(stderr, "strata: SERVE ADAPT SKIPPED, %zu swaps still in flight\n",
+                                 pending.size());
+                                 return true;   // the previous swaps are still in flight
+            }
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
