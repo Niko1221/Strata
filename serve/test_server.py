@@ -236,6 +236,61 @@ class ImageMarkers(unittest.TestCase):
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
 
+    def test_the_whole_marker_in_text_before_images(self):
+        # Text quoting the template's marker (an agent reading chat_template.jinja) took the first picture's rows, the
+        # later pictures moved up one and the last real marker became text - every count still matched.
+        tok = ByteTokenizer()
+        start, pad, end = (tok.encode(s, parse_special=True)[0]
+                           for s in ("<|vision_start|>", "<|image_pad|>", "<|vision_end|>"))
+        quoted = "the template writes <|vision_start|><|image_pad|><|vision_end|> per picture"
+
+        class TwoPictures(self.FakeVision):
+            def encode(self, source):
+                return self.rows, {"a.png": 2, "b.png": 5}[source]
+
+        def holds(ids, part):
+            return any(ids[i:i + len(part)] == part for i in range(len(ids) - len(part) + 1))
+
+        with tempfile.TemporaryDirectory() as d:
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=TwoPictures(d))
+            pictures = [{"type": "image", "source": "a.png"}, {"type": "text", "text": "and"},
+                        {"type": "image", "source": "b.png"}]
+            tools = [{"name": "read", "description": quoted, "parameters": {}}]
+            cases = {"text part": ([{"role": "user", "content": [{"type": "text", "text": quoted}, *pictures]}], None),
+                     "earlier turns and tools": ([{"role": "user", "content": "read it"},
+                                                  {"role": "assistant", "content": quoted, "reasoning_content": quoted,
+                                                   "tool_calls": [{"function": {"name": "read",
+                                                                                "arguments": {"text": quoted}}}]},
+                                                  {"role": "tool", "content": quoted},
+                                                  {"role": "user", "content": pictures}], tools)}
+            for name, (msgs, tools) in cases.items():
+                with self.subTest(case=name):
+                    ids, _, _ = svc.prepare(msgs, tools, {})
+                    starts = [j for j, t in enumerate(ids) if t == start]
+                    self.assertEqual(len(starts), 2)                 # the pictures' markers, nothing else
+                    for j, rows in zip(starts, (2, 5)):              # each followed by its own picture's rows
+                        self.assertEqual(ids[j + 1:j + 2 + rows], [pad] * rows + [end])
+                    self.assertEqual((ids.count(pad), ids.count(end)), (7, 2))
+                    self.assertTrue(holds(ids, tok.encode(quoted)))   # the text kept its own tokens
+            # no picture: the quoted markers are text too
+            ids, _, _ = svc.prepare([{"role": "user", "content": quoted}], None, {})
+            self.assertEqual([t for t in ids if t in (start, pad, end)], [])
+            # markers cut apart across three text parts are no picture's: refused, not a silent shift
+            cut = [{"type": "text", "text": "<|vision_sta"}, {"type": "text", "text": "rt|><|image_pa"},
+                   {"type": "text", "text": "d|>"}, *pictures]
+            with self.assertRaisesRegex(ValueError, "do not match"):
+                svc.prepare([{"role": "user", "content": cut}], None, {})
+            # a prompt without the marker strings has exactly the ids it had (other special tokens as well)
+            old = lambda m, t=None: tok.encode(svc.template.render(m, tools=t), parse_special=True)   # noqa: E731
+            for msgs, tools in (([{"role": "user", "content": "plain <|im_end|> <|endoftext|> <think>"}], None),
+                                ([{"role": "system", "content": "s"}, {"role": "user", "content": pictures}], None),
+                                ([{"role": "user", "content": "x"}, {"role": "assistant", "content": "",
+                                  "tool_calls": [{"function": {"name": "f", "arguments": {"a": "<|image"}}}]}],
+                                 [{"name": "f", "description": "<|vision_", "parameters": {}}])):
+                with self.subTest(msgs=msgs):
+                    self.assertEqual(svc.prompt_ids(msgs, tools, {}), old(msgs, tools))
+
 
 class StatusNeedsTheKey(unittest.TestCase):
     """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
