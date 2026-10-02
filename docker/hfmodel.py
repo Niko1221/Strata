@@ -289,8 +289,11 @@ def main() -> int:
                            "DOWNLOAD_GB": info["download_gb"], "ARENA_GB": info["arena_gb"],
                            "RAM_GB": info["ram_gb"], "HF_INCLUDE": include,
                            "MTP_REPO": m.get("repo", ""), "MTP_FILE": m.get("file", ""),
-                           "MTP": "" if mp is None else (str(mp.resolve()) if a.resolve else str(mp)),
-                           "MTP_CACHED": int(mp is not None),
+                           # NOT "MTP": entrypoint-hip.sh evaluates this output and keeps its own
+                           # STRATA_MTP (the packed runtime directory).  A same-named key here would
+                           # clobber it and silently disable --spec for the Qwen3.8 packs.
+                           "MTP_GGUF": "" if mp is None else (str(mp.resolve()) if a.resolve else str(mp)),
+                           "MTP_GGUF_CACHED": int(mp is not None),
                            "MTP_DOWNLOAD_GB": m.get("download_gb", 0)}.items():
             print(f"STRATA_{key}={shlex.quote(str(value))}")
         return 0

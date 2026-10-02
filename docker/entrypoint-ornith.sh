@@ -65,7 +65,7 @@ POOL_WORKERS="${STRATA_POOL_WORKERS:-0}"
 KV="${STRATA_KV:-int8}"
 SPEC="${STRATA_SPEC:-3}"
 MODEL_NAME="${STRATA_MODEL_NAME:-ornith-1.5-35b-a3b-ad-q4-iq4}"
-MTP_MODE="${STRATA_MTP:-auto}"        # auto | 0 | a path inside the container
+MTP_MODE="${STRATA_MTP_MODE:-auto}"      # auto | 0 | a path inside the container
 
 log "resolving the Ornith artifact in the HF cache ..."
 "$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print available | sed 's/^/  /'
@@ -80,7 +80,7 @@ NATIVE="${STRATA_NATIVE:-$STRATA_SHARD1}"
 MTP_GGUF=""
 if [ "$MTP_MODE" != "0" ] && [ "$MTP_MODE" != "off" ]; then
   case "$MTP_MODE" in
-    auto) MTP_GGUF="${STRATA_MTP_PATH:-$STRATA_MTP}" ;;
+    auto) MTP_GGUF="${STRATA_MTP_PATH:-$STRATA_MTP_GGUF}" ;;
     *)    MTP_GGUF="$MTP_MODE" ;;
   esac
 fi

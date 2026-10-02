@@ -93,9 +93,13 @@ class OrnithResolver(unittest.TestCase):
                               "--model", "ornith", "--print", "shell"],
                              capture_output=True, text=True, check=True).stdout
         self.assertIn("STRATA_FILES=1", out)
-        self.assertIn("STRATA_MTP_CACHED=1", out)
+        self.assertIn("STRATA_MTP_GGUF_CACHED=1", out)
         self.assertIn("mtpdraft-Q8_0.gguf", out)
         self.assertIn("Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf", out)
+        # entrypoint-hip.sh evals this output and keeps its own STRATA_MTP (the packed runtime
+        # directory); a bare STRATA_MTP key here would clobber it and disable --spec.  Regression guard.
+        self.assertNotIn("STRATA_MTP=", out)
+        self.assertNotIn("STRATA_MTP_CACHED=", out)
 
 
 if __name__ == "__main__":
