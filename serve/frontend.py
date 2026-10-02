@@ -141,11 +141,17 @@ def images_of(messages: list[dict]) -> list[str]:
 # a user quoting "</think>" used to hand the model a real end-of-reasoning token.  Before the template is rendered
 # they are swapped for these private-use characters, and the server encodes the spans they mark as ordinary text.
 THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
-THINK_MARKS = {v: k for k, v in THINK_TAGS.items()}
+# #554: the vision markers the same way.  They are special tokens only where the template writes them for an image
+# item; the same strings in a message's text (an agent reading chat_template.jinja, a tool result quoting it) became
+# the same special ids, so text with <|vision_start|><|image_pad|> before a picture took that picture's embeddings
+VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", "<|vision_end|>": "\U000F0E05",
+               "<|video_pad|>": "\U000F0E06"}
+LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS}
+THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 
 
 def _mark(text: str) -> str:
-    for tag, mark in THINK_TAGS.items():
+    for tag, mark in LITERAL_TAGS.items():
         text = text.replace(tag, mark)
     return text
 
@@ -162,7 +168,7 @@ def _mark_deep(v):
 
 def _has_tag(v) -> bool:
     if isinstance(v, str):
-        return "<think>" in v or "</think>" in v
+        return any(tag in v for tag in LITERAL_TAGS)
     if isinstance(v, dict):
         return any(_has_tag(x) for x in v.values())
     if isinstance(v, list):
@@ -171,7 +177,8 @@ def _has_tag(v) -> bool:
 
 
 def mark_think_literals(messages: list[dict], tools: list[dict] | None):
-    """#537: (messages, tools) with every literal <think> / </think> in their text swapped for THINK_TAGS' marks, and
+    """#537: (messages, tools) with every literal <think> / </think> (#554: and vision marker) in their text swapped for
+    LITERAL_TAGS' marks, and
     whether there was one (None: no change, the same objects back - a prompt without them renders as it always did).
     An assistant message whose content opens with a whole <think>...</think> block (clients that send the reasoning
     inline) keeps that one block as the model's markers, as before."""

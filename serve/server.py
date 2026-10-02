@@ -2166,7 +2166,10 @@ class Service:
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
             out, k = [], 0
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start and k < len(encoded):
+                if t == pad and j > 0 and ids[j - 1] == start:
+                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                    if k == len(encoded):
+                        raise ValueError("the prompt and its images do not match")
                     out += [pad] * encoded[k][1]
                     k += 1
                 elif t == pad:
