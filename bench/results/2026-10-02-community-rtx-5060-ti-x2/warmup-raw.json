@@ -1,0 +1,105 @@
+{
+  "chunks": [
+    {
+      "id": "chatcmpl-a024603d3c8c4257b1644a5a",
+      "object": "chat.completion.chunk",
+      "created": 1790955032,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "role": "assistant",
+            "content": ""
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-a024603d3c8c4257b1644a5a",
+      "object": "chat.completion.chunk",
+      "created": 1790955032,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "content": "READY"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-a024603d3c8c4257b1644a5a",
+      "object": "chat.completion.chunk",
+      "created": 1790955032,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {},
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 2,
+        "total_tokens": 21,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 19,
+        "prompt_ms": 436.6,
+        "prompt_per_token_ms": 22.979,
+        "prompt_per_second": 43.5,
+        "predicted_n": 2,
+        "predicted_ms": 109.5,
+        "predicted_per_token_ms": 54.75,
+        "predicted_per_second": 18.3,
+        "draft_n": 3,
+        "draft_n_accepted": 3
+      }
+    }
+  ],
+  "row": {
+    "label": "warmup",
+    "expected_prompt_tokens": null,
+    "request_sha256": "b63e57873441a996a529b246a66cf12de70a7c671777f99329354d5c195f788f",
+    "client_ttft_s": 0.4742057909897994,
+    "client_elapsed_s": 0.5526986240001861,
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 19,
+      "completion_tokens": 2,
+      "total_tokens": 21,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1790955032.0978086,
+      "duration_s": 0.5,
+      "finish": "stop",
+      "prompt_tokens": 19,
+      "reused": 0,
+      "output_tokens": 2,
+      "engine_generated": 2,
+      "prompt_ms": 436.6,
+      "decode_ms": 109.5,
+      "decode_tok_s": 18.3,
+      "hit_rate": 0.484,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0,
+      "drafts_offered": 3,
+      "drafts_accepted": 3
+    },
+    "text": "READY"
+  }
+}
