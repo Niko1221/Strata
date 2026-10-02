@@ -4779,7 +4779,11 @@ int main(int argc, char** argv) {
             if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
-            else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
+            else if (cudaEventQuery(adapt_ev) != cudaSuccess) {
+                static const bool tp = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+                if (tp) std::fprintf(stderr, "strata: SERVE PENDING not landed, %zu stay out\n", pending.size());
+                return;
+            }
             for (auto& st : stages)
                 if (st->adapt_live) {
                     if (wait) cudaEventSynchronize(st->adapt_ev);
@@ -4794,6 +4798,8 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             static const bool trace_adapt_s = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+            if (trace_adapt_s)
+                std::fprintf(stderr, "strata: SERVE ADAPT entered, %zu swaps in flight\n", pending.size());
             if (!pending.empty()) {
                 if (trace_adapt_s)
                     std::fprintf(stderr, "strata: SERVE ADAPT SKIPPED, %zu swaps still in flight\n",
@@ -5760,7 +5766,11 @@ int main(int argc, char** argv) {
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
-                if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
+                static const bool tr_ad = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+                static const bool tr_ev = std::getenv("STRATA_TRACE_ADAPT_EVERY") != nullptr;
+                if (tr_ad) std::fprintf(stderr, "strata: SERVE trigger rounds=%lld mod=%d usage=%zu every=%d\n",
+                    (long long) rounds, o.adapt_every, drive.d.usage.size(), o.adapt_every);
+                if (tr_ev || !drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
