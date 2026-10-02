@@ -43,6 +43,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
@@ -1259,6 +1260,17 @@ class StrataEngine:
                 self.progress, self.last = None, {}
 
 
+IMAGE_URL_MAX = 32 << 20        # an image URL is read up to this (the web app attaches pictures of up to 20 MB)
+
+
+def network_path(path: str) -> bool:
+    r"""A path to another computer: \\host\share or //host/share (either slash), \\?\UNC\host\..., \\.\UNC\host\...
+    or the NT form \??\UNC\host\...  Windows connects to that host at the first look at the path (os.path.isfile is
+    enough) and signs in with the user's NTLM credentials.  \\?\ and \??\ name local files too; no client needs them."""
+    p = path.replace("/", "\\")
+    return p.startswith("\\\\") or p.startswith("\\??\\")
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -1310,13 +1322,34 @@ class Vision:
         if source.startswith("data:"):
             return base64.b64decode(source.split(",", 1)[1])
         if source.startswith(("http://", "https://")):
-            req = urllib.request.Request(source, headers={"User-Agent": "strata"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return r.read()
+            return Vision.download(source)
         path = source[7:] if source.startswith("file://") else source
+        # refused before anything looks at the path: file://host/share/x.png is \\host\share\x.png ("file://C:/x.png",
+        # a drive, is a client's spelling of file:///C:/x.png)
+        host = re.split(r"[/\\]", path, maxsplit=1)[0] if source.startswith("file://") else ""
+        if network_path(path) or host and not re.fullmatch(r"[A-Za-z]:|localhost", host, re.IGNORECASE):
+            raise ValueError("an image file must be on this computer: network paths (\\\\host\\share, //host/share, "
+                             "file://host/...) are not read")
         if path and os.path.isfile(path):
             return Path(path).read_bytes()
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
+
+    @staticmethod
+    def download(url: str) -> bytes:
+        """An image URL's bytes, at most IMAGE_URL_MAX of them: the whole response was read, so a huge or endless one
+        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection."""
+        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "strata"}), timeout=60) as r:
+                size = r.headers.get("Content-Length") or ""
+                if size.isdigit() and int(size) > IMAGE_URL_MAX:
+                    raise ValueError(too_big)
+                data = r.read(IMAGE_URL_MAX + 1)
+        except (OSError, HTTPException) as e:
+            raise ValueError(f"the image URL could not be read: {e}") from None
+        if len(data) > IMAGE_URL_MAX:
+            raise ValueError(too_big)
+        return data
 
     @staticmethod
     def normalize(data: bytes) -> bytes:
@@ -1346,9 +1379,9 @@ class Vision:
         im.save(out, format="PNG")
         return out.getvalue()
 
-    def encode(self, source: str) -> tuple[Path, int]:
-        """-> (embeddings file, number of image tokens)."""
-        data = self.normalize(self.load(source))
+    def encode(self, source: str | bytes) -> tuple[Path, int]:
+        """-> (embeddings file, number of image tokens).  `source`: what load() reads, or the image's bytes."""
+        data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
             if key in self.cache:
@@ -2154,6 +2187,9 @@ class Service:
                                  "'vision'), so it cannot read images")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
+            # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
+            # for as long as urlopen waited.
+            images = [Vision.download(src) if src.startswith(("http://", "https://")) else src for src in images]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -3246,12 +3282,7 @@ def make_handler(svc: Service):
             if not self.headers.get("Content-Type", "").startswith("application/json"):
                 self._json(415, {"error": {"message": "send application/json"}})
                 return False
-            # The Origin must be this server's own address (host and port), or an origin the config trusts
-            # (trusted_origins: the web app behind a reverse proxy or tunnel).  Headers a proxy adds (X-Forwarded-*,
-            # CF-Ray, CF-Connecting-IP) prove nothing about the page that sent the request, so they open nothing.
-            origin = (self.headers.get("Origin") or "").rstrip("/")
-            if origin and origin.split("://", 1)[-1] != self.headers.get("Host", "") and \
-                    origin not in svc.trusted_origins:
+            if self._foreign_origin():
                 self._json(403, {"error": {"message": f"{what} only from Strata's own page (or an origin in the "
                                                       f"config's trusted_origins)"}})
                 return False
@@ -3294,6 +3325,26 @@ def make_handler(svc: Service):
                 print(f"[strata] the Settings view changed {', '.join(changed)} in {Path(svc.config_path).name} "
                       f"(the earlier file: {bak.name}); used from the next start", flush=True)
             self._json(200, {**runconfig.view(new, svc.config_path), "changed": changed})
+        def _foreign_origin(self) -> bool:
+            """A web page of another origin sent this.  The Origin must be this server's own address (host and port),
+            or an origin the config trusts (trusted_origins: the web app behind a reverse proxy or tunnel); no Origin
+            is a client that is no browser.  Headers a proxy adds (X-Forwarded-*, CF-Ray, CF-Connecting-IP) prove
+            nothing about the page that sent the request, so they open nothing."""
+            origin = (self.headers.get("Origin") or "").rstrip("/")
+            return bool(origin) and origin.split("://", 1)[-1] != self.headers.get("Host", "") and \
+                origin not in svc.trusted_origins
+
+        def _no_local_images(self, messages):
+            """A web page of another origin must not have a file on this computer read as an image.  Without an
+            api_key, _foreign_page refuses such a page unless cors_origins lets it in - and a page cors_origins lets
+            in (["*"]: every page) could name any file and, CORS allowing, read what the model says about it.  data:
+            and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
+            client that is no browser.  ValueError (a 400)."""
+            if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
+                                              for src in images_of(messages)):
+                raise ValueError("a web page of another origin cannot have a file on this computer read as an "
+                                 "image: send it as a data: URL (or add the page's origin to the config's "
+                                 "trusted_origins)")
 
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
@@ -3361,6 +3412,7 @@ def make_handler(svc: Service):
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
+            self._no_local_images(messages)
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
@@ -3546,6 +3598,7 @@ def make_handler(svc: Service):
             svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            self._no_local_images(messages)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)

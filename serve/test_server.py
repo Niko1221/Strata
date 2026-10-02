@@ -2681,5 +2681,150 @@ class LostStep(unittest.TestCase):
         self.run_mode("stop", stream=False)
 
 
+class ImageSources(unittest.TestCase):
+    """What an image source may name: never a network path (Windows signs in to the host at the first look), a URL up
+    to IMAGE_URL_MAX and downloaded outside the request FIFO, a file on this computer not for a page of another site."""
+
+    NETWORK = [r"\\host\share\x.png", "//host/share/x.png", r"\\?\UNC\host\share\x.png", r"\\.\UNC\host\share\x.png",
+               r"\??\UNC\host\share\x.png", r"/\host\share\x.png", "file://host/share/x.png",
+               "file:////host/share/x.png", r"file://\\host\share\x.png"]
+
+    class Vision(ImageMarkers.FakeVision):
+        def __init__(self, d):
+            super().__init__(d)
+            self.got = []
+
+        def encode(self, source):
+            self.got.append(source)
+            return super().encode(source)
+
+    def test_network_paths_are_refused_before_any_look(self):
+        from serve.server import Vision
+        with mock.patch("os.path.isfile") as isfile, mock.patch.object(Path, "read_bytes") as read:
+            for src in self.NETWORK:
+                with self.subTest(src=src), self.assertRaisesRegex(ValueError, "network paths"):
+                    Vision.load(src)
+        isfile.assert_not_called()
+        read.assert_not_called()
+        with tempfile.TemporaryDirectory() as d:                    # files on this computer load as before
+            f = Path(d) / "x.png"
+            f.write_bytes(b"\x89PNG\r\n\x1a\n")
+            for src in (str(f), "file://" + str(f), "data:image/png;base64,iVBORw0KGgo="):
+                with self.subTest(src=src):
+                    self.assertEqual(Vision.load(src), b"\x89PNG\r\n\x1a\n")
+
+    def test_a_url_is_read_up_to_the_cap(self):
+        import http.server
+        import serve.server as server
+
+        class Files(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = {"/small": b"x" * 100, "/big": b"x" * 5000}.get(urllib.parse.urlsplit(self.path).path)
+                if body is None:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                if "length" in self.path:                           # else the body ends when the connection does
+                    self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except OSError:                                     # the reader stopped at the cap
+                    pass
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Files)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            with mock.patch.object(server, "IMAGE_URL_MAX", 1000):
+                for q in ("", "?length"):
+                    with self.subTest(q=q):
+                        self.assertEqual(server.Vision.load(base + "/small" + q), b"x" * 100)
+                        with self.assertRaisesRegex(ValueError, "is over"):
+                            server.Vision.load(base + "/big" + q)
+                with self.assertRaisesRegex(ValueError, "could not be read: HTTP Error 404"):
+                    server.Vision.load(base + "/missing")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_url_is_downloaded_outside_the_fifo(self):
+        import serve.server as server
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            vision = self.Vision(d)
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=vision)
+            held = []
+
+            def download(url):
+                held.append(svc.fifo.locked())
+                return b"the picture"
+
+            msgs = [{"role": "user", "content": [{"type": "image", "source": "https://example.com/x.png"},
+                                                 {"type": "image", "source": "x.png"}]}]
+            with mock.patch.object(server.Vision, "download", side_effect=download):
+                svc.prepare(msgs, None, {})
+            self.assertEqual(held, [False])                         # not while every other request waits
+            self.assertEqual(vision.got, [b"the picture", "x.png"])
+            svc.embeddings.path.unlink(missing_ok=True)
+
+    def test_a_page_of_another_site_cannot_name_a_file(self):
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            vision = self.Vision(d)
+            svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+            httpd = serve(svc, port=0)
+            host = f"127.0.0.1:{httpd.server_address[1]}"
+
+            def post(path, src, headers):
+                image = {"type": "image_url", "image_url": {"url": src}} if path.endswith("completions") else \
+                    {"type": "image", "source": {"type": "url", "url": src}}
+                body = {"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "what is it?"}, image]}]}
+                req = urllib.request.Request(f"http://{host}{path}", data=json.dumps(body).encode(), headers=headers)
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        return r.status, json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    with e:
+                        return e.code, json.loads(e.read())
+
+            try:
+                f = str(Path(d) / "secret.png")
+                # a page on any site, no api_key (the default): text/plain needs no CORS preflight - 0.1.38 refuses
+                # such a page outright (403)
+                page = {"Content-Type": "text/plain;charset=UTF-8", "Origin": "https://evil.example"}
+                status, b = post("/v1/chat/completions", f, page)
+                self.assertEqual(status, 403, b)
+                # a page cors_origins lets in (here every page) may send JSON, and still cannot name a file
+                svc.cors_origins = ["*"]
+                page = {"Content-Type": "application/json", "Origin": "https://evil.example"}
+                for path in ("/v1/chat/completions", "/v1/messages"):
+                    for src in (f, "file://" + f):
+                        with self.subTest(path=path, src=src):
+                            status, b = post(path, src, page)
+                            self.assertEqual(status, 400, b)
+                            self.assertIn("another origin", b["error"]["message"])
+                self.assertEqual(vision.got, [])                    # nothing was read
+                svc.trusted_origins = ["https://app.example"]
+                data = "data:image/png;base64,iVBORw0KGgo="
+                for src, headers in ((data, page),                  # the page's own picture
+                                     (f, {"Content-Type": "application/json"}),           # curl, SDKs, agents
+                                     (f, {"Content-Type": "application/json", "Origin": "http://" + host}),
+                                     (f, {"Content-Type": "application/json", "Origin": "https://app.example"})):
+                    with self.subTest(src=src[:20], headers=headers):
+                        status, b = post("/v1/chat/completions", src, headers)
+                        self.assertEqual(status, 200, b)
+                self.assertEqual(vision.got, [data, f, f, f])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
