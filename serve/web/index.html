@@ -17,6 +17,15 @@
 </script>
 </head>
 <body>
+<!-- icons used only by this page, in the sprite's style (web/sprite.svg carries a signed manifest, so it is left as is) -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-rename" viewBox="0 0 24 24" fill="none">
+    <path opacity="0.12" d="M4 20H8L18.5 9.5C19.6 8.4 19.6 6.6 18.5 5.5C17.4 4.4 15.6 4.4 14.5 5.5L4 16V20Z" fill="currentColor"></path>
+    <path d="M4 20H8L18.5 9.5C19.6 8.4 19.6 6.6 18.5 5.5C17.4 4.4 15.6 4.4 14.5 5.5L4 16V20Z" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    <path d="M13 7L17 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+  </symbol>
+</svg>
 <header class="st-header">
   <span class="st-header__brand">Strata</span>
   <nav class="st-tabs" role="tablist" aria-label="Views">
@@ -37,36 +46,54 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
-    <div class="chat-scroll" id="chat-scroll">
-      <div class="chat" id="chat">
-        <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+    <!-- saved chats (issue #361): kept in this browser's localStorage, like the open one -->
+    <aside class="chat-side" id="chat-side" data-open="false" aria-label="Your chats">
+      <div class="chat-side__head">
+        <span class="card-title">Chats</span>
+        <button type="button" class="st-btn st-btn--icon" id="side-new" title="New chat" aria-label="New chat">
+          <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+        <button type="button" class="st-btn st-btn--icon" id="side-close" title="Hide the list" aria-label="Hide the list">
+          <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+      </div>
+      <ul class="chat-list" id="chat-list"></ul>
+      <div class="chat-side__foot muted small">Kept in this browser only.</div>
+    </aside>
+    <div class="scrim" id="side-scrim" hidden></div>
+    <div class="chat-main">
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat" id="chat">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty__title">Ask anything</div>
+            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="composer-wrap">
-      <form class="st-composer" id="composer">
-        <div class="attachments" id="attachments" hidden></div>
-        <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
-        <div class="st-composer__bar">
-          <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
-            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
-          <input type="file" id="file" multiple hidden>
-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
-          <span class="spacer"></span>
-          <span class="composer-hint" id="composer-hint"></span>
-          <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
-          <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
-            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
-        </div>
-      </form>
+      <div class="composer-wrap">
+        <form class="st-composer" id="composer">
+          <div class="attachments" id="attachments" hidden></div>
+          <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
+          <div class="st-composer__bar">
+            <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
+              <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
+            <input type="file" id="file" multiple hidden>
+            <button type="button" class="st-btn st-btn--icon" id="chats-btn" title="Your chats" aria-label="Your chats"
+                    aria-controls="chat-side" aria-expanded="false">
+              <svg class="st-icon"><use href="web/sprite.svg#i-chat"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+              <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+            <span class="spacer"></span>
+            <span class="composer-hint" id="composer-hint"></span>
+            <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
+            <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
+              <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+          </div>
+        </form>
+      </div>
     </div>
   </section>
 

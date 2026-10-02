@@ -14,7 +14,9 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
+  // false when it was not kept: private mode, or the browser's storage for this page is full
+  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  del(k) { try { localStorage.removeItem("strata." + k); } catch (e) { /* ignore */ } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -463,14 +465,157 @@ function markdown(text) {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-let messages = store.get("chat", []);
+let messages = [];                    // the open chat (set by initChats)
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
-function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+// ------------------------------------------------------------------ saved chats (issue #361), in this browser only
+// strata.chats: [{id, title, time, named}], newest first; strata.chat.<id>: that chat's messages; strata.chat_open:
+// the one shown. A chat starts being kept with its first answer; the single chat of earlier versions (strata.chat)
+// becomes the first entry.
+let chats = [], chatId = null, storageWarned = false;
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+function chatTitle(msgs) {
+  const u = msgs.find((m) => m.role === "user");
+  const t = u ? u.text || (u.files && u.files.length ? u.files[0].name : "") || (u.images && u.images.length ? "Picture" : "") : "";
+  const s = t.replace(/\s+/g, " ").trim();
+  return s ? (s.length > 60 ? `${s.slice(0, 57)}…` : s) : "New chat";
 }
+function initChats() {
+  chats = store.get("chats", null);
+  if (!Array.isArray(chats)) {
+    chats = [];
+    const old = store.get("chat", []);
+    if (Array.isArray(old) && old.length) {
+      const id = newId();
+      chats.push({id, title: chatTitle(old), time: old[old.length - 1].time || Date.now()});
+      store.set(`chat.${id}`, old);
+      store.set("chat_open", id);
+    }
+    if (store.set("chats", chats)) store.del("chat");
+  }
+  const open = chats.find((c) => c.id === store.get("chat_open", null));
+  chatId = open ? open.id : null;
+  messages = open ? store.get(`chat.${open.id}`, []) : [];
+}
+function saveChat() {
+  if (!messages.length) return;
+  if (!chatId) chatId = newId();
+  let c = chats.find((x) => x.id === chatId);
+  if (!c) { c = {id: chatId, title: "", time: 0}; chats.push(c); }
+  if (!c.named) c.title = chatTitle(messages);
+  c.time = Date.now();
+  chats.sort((a, b) => b.time - a.time);
+  const kept = store.set(`chat.${chatId}`, messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                                                                   files: (m.files || []).map((f) => ({name: f.name}))})))
+               && store.set("chats", chats);
+  store.set("chat_open", chatId);
+  if (!kept && !storageWarned) {
+    storageWarned = true;
+    toast("warn", "This chat was not saved", "The browser's storage for this page is full (or off): delete old chats.", 8000);
+  }
+  renderChatList();
+}
+function showChat(id, msgs) {
+  chatId = id;
+  messages = msgs;
+  store.set("chat_open", id);
+  renderChat();
+  renderChatList();
+  if (narrowMq.matches) setSide(false);
+  $("input").focus();
+}
+function openChat(id) {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (id === chatId) { if (narrowMq.matches) setSide(false); return; }   // the open one: just back to it
+  if (chats.some((c) => c.id === id)) showChat(id, store.get(`chat.${id}`, []));
+}
+function newChat() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  showChat(null, []);
+}
+function deleteChat(id) {
+  if (busy && id === chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const c = chats.find((x) => x.id === id);
+  if (!c) return;
+  const data = store.get(`chat.${id}`, []), wasOpen = id === chatId;
+  chats = chats.filter((x) => x.id !== id);
+  store.set("chats", chats);
+  store.del(`chat.${id}`);
+  if (wasOpen) showChat(null, []); else renderChatList();
+  toast("info", "Chat deleted", c.title, 6000, {label: "Undo", run: () => {
+    chats.push(c);
+    chats.sort((a, b) => b.time - a.time);
+    store.set(`chat.${id}`, data);
+    store.set("chats", chats);
+    if (wasOpen && !messages.length && !busy) showChat(id, data); else renderChatList();
+  }});
+}
+function renameChat(id) {
+  const li = [...$("chat-list").children].find((x) => x.dataset.id === id), c = chats.find((x) => x.id === id);
+  if (!li || !c) return;
+  const input = document.createElement("input");
+  input.className = "st-input chat-item__edit";
+  input.value = c.title;
+  input.maxLength = 120;
+  input.setAttribute("aria-label", "Chat name");
+  li.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const v = input.value.replace(/\s+/g, " ").trim();
+    if (save && v && v !== c.title) { c.title = v; c.named = true; store.set("chats", chats); }
+    renderChatList();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+function whenStr(t) {
+  const d = new Date(t);
+  return d.toDateString() === new Date().toDateString() ? timeStr(t) : d.toLocaleDateString([], {day: "numeric", month: "short"});
+}
+function renderChatList() {
+  const list = $("chat-list");
+  if (!chats.length) { list.innerHTML = `<li class="chat-list__empty muted small">Your chats appear here.</li>`; return; }
+  list.innerHTML = chats.map((c) => `<li class="chat-item" data-id="${esc(c.id)}"${c.id === chatId ? ' aria-current="true"' : ""}>` +
+    `<button type="button" class="chat-item__open" data-chat-open title="${esc(c.title)}"><span class="chat-item__title">${esc(c.title)}</span>` +
+    `<span class="muted small">${esc(whenStr(c.time))}</span></button>` +
+    `<button type="button" class="st-btn st-btn--icon" data-chat-rename aria-label="Rename" title="Rename">` +
+    `<svg class="st-icon st-icon--sm" aria-hidden="true"><use href="#i-rename"/></svg></button>` +
+    `<button type="button" class="st-btn st-btn--icon" data-chat-delete aria-label="Delete" title="Delete">${icon("trash", "st-icon st-icon--sm")}</button></li>`).join("");
+}
+$("chat-list").addEventListener("click", (e) => {
+  const li = e.target.closest(".chat-item");
+  if (!li) return;
+  if (e.target.closest("[data-chat-rename]")) renameChat(li.dataset.id);
+  else if (e.target.closest("[data-chat-delete]")) deleteChat(li.dataset.id);
+  else if (e.target.closest("[data-chat-open]")) openChat(li.dataset.id);
+});
+// another tab of this page saved a chat: show it in the list (the open chat stays as it is here)
+window.addEventListener("storage", (e) => { if (e.key === "strata.chats") { chats = store.get("chats", []); renderChatList(); } });
+
+// the list: beside the chat on wide screens (open or closed as last chosen), over it on narrow ones
+const narrowMq = matchMedia("(max-width: 1000px)");
+let sideOpen = false;
+function setSide(open, save) {
+  sideOpen = open;
+  $("chat-side").dataset.open = String(open);
+  $("chats-btn").setAttribute("aria-expanded", String(open));
+  $("side-scrim").hidden = !(open && narrowMq.matches);
+  if (save && !narrowMq.matches) store.set("sidebar", open);
+}
+narrowMq.addEventListener("change", () => setSide(!narrowMq.matches && store.get("sidebar", true)));
+$("chats-btn").onclick = () => setSide(!sideOpen, true);
+$("side-close").onclick = () => setSide(false, true);
+$("side-scrim").onclick = () => setSide(false);
+$("side-new").onclick = newChat;
+
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
@@ -773,15 +918,7 @@ $("input").addEventListener("keydown", (e) => {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
-$("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-};
+$("new-btn").onclick = newChat;            // the last chat stays in the list
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
@@ -968,13 +1105,25 @@ $("s-apply").onclick = async () => {
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("drawer").dataset.open === "true") openDrawer(false);
+  else if (sideOpen && narrowMq.matches) setSide(false);
+});
 
 // ------------------------------------------------------------------ start
 setBusy(false);
+initChats();
+setSide(!narrowMq.matches && store.get("sidebar", true));
 renderChat();
+renderChatList();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadHealth().then(loadMcp).then(() => {
+  if (!startQuestion) return;
+  if (messages.length) showChat(null, []);   // a new chat, not the end of the last one
+  $("input").value = startQuestion;
+  send();
+});
 showTab(location.hash.slice(1) || "chat");
 poll();
