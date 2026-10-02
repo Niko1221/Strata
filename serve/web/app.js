@@ -189,7 +189,7 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -202,7 +202,32 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+// the conversation cache bars (--conversation-cache-mib): reuse and hits over the last N requests, slots and bytes now
+function renderConversationCache(cc) {
+  const on = !!(cc && cc.enabled);
+  $("conv-cache").hidden = !on;
+  if (!on) return;
+  const pct = (v) => (v == null ? "0%" : `${Math.min(100, Math.max(0, v))}%`);
+  const fill = (n, of) => (n == null || !of ? null : (100 * n) / of);
+  $("cc-reused-label").textContent = `Prompt reused (last ${cc.window})`;
+  $("cc-hits-label").textContent = `Hits on switches (last ${cc.window})`;
+  $("cc-reused-text").textContent = cc.reused_pct == null ? "–" : `${fmt(cc.reused_pct, 1)} %`;
+  $("cc-reused-bar").style.width = pct(cc.reused_pct);
+  $("cc-hits-text").textContent = cc.switches == null ? "–"
+    : `${fmt(cc.hits)} / ${fmt(cc.switches)} switches${cc.hit_pct == null ? "" : ` · ${fmt(Math.floor(cc.hit_pct))} %`}`;
+  $("cc-hits-bar").style.width = pct(cc.hit_pct);
+  const slots = fill(cc.parked, cc.slots), ram = fill(cc.parked_bytes, cc.budget_bytes);
+  $("cc-slots-text").textContent = cc.parked == null ? "–" : `${fmt(cc.parked)} / ${fmt(cc.slots)} slots`;
+  $("cc-slots-bar").style.width = pct(slots);
+  const dp = cc.budget_bytes < 10 * 1073741824 ? 1 : 0;   // a budget below 10 GB keeps its decimal (1.5, not 2)
+  $("cc-ram-text").textContent = cc.parked_bytes == null ? "–"
+    : `${gb(cc.parked_bytes, 1)} / ${gb(cc.budget_bytes, dp)} GB · ${fmt(cc.evictions)} evicted`;
+  $("cc-ram-bar").style.width = pct(ram);
+  for (const [id, v] of [["cc-slots-progress", slots], ["cc-ram-progress", ram]]) {
+    if (v != null && v >= 90) $(id).dataset.tone = "warn"; else delete $(id).dataset.tone;
+  }
+}
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, cc) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
@@ -290,6 +315,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
+  renderConversationCache(cc);
 
   // recent requests
   const body = $("req-body");

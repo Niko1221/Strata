@@ -309,7 +309,14 @@ app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
-  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
+  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests. With the
+  conversation cache on (`--conversation-cache-mib`), four bars show it at work: the prompt tokens reused and the hits
+  on switches (requests that switched to another conversation and came back from a parked snapshot; the next turn of
+  the same chat is usually a continuation, while a new conversation or a changed steering mode or thinking level
+  counts as a switch and is a miss when no parked snapshot matches) over the last 20 requests, and the parked
+  conversations and the cache RAM against their limits. `--monitor-cache-window N` (or `"monitor_cache_window": N`
+  in `strata-<model>.json`, 1 to 500) sets how many requests the first two sum up; like the other keys it is lost
+  when setup writes the config again.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
