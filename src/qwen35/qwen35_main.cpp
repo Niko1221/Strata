@@ -17,6 +17,7 @@ int main(int argc, char** argv) {
     std::string path;
     std::vector<int64_t> tokens;
     int64_t max_new = 8;
+    bool check_only = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -33,9 +34,10 @@ int main(int argc, char** argv) {
                 b = e + 1;
             }
         } else if (a == "--max-new") max_new = std::strtoll(next(), nullptr, 10);
+        else if (a == "--check") check_only = true;
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
-    if (path.empty() || tokens.empty()) {
+    if (path.empty() || (!check_only && tokens.empty())) {
         std::fprintf(stderr, "usage: strata-qwen35 --model M.gguf --tokens \"1,2,3\" [--max-new N]\n");
         return 2;
     }
@@ -51,6 +53,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "strata-qwen35: %lld layers, %lld wide, %lld experts top-%lld, vocab %lld\n",
                  (long long) g.n_layers, (long long) g.n_embd, (long long) g.n_expert,
                  (long long) g.n_expert_used, (long long) g.n_vocab);
+    if (check_only) { std::printf("check ok\n"); return 0; }
+
 
     strata::qwen35::TrunkState st;
     st.reset(g);

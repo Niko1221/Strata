@@ -30,10 +30,19 @@ Mat make_mat(const strata::GgufModel& m, const std::string& name, std::string& e
 
 /// One expert's slice of a 3-D expert tensor [n_in, n_out, n_expert].
 Mat make_expert(const strata::GgufModel& m, const std::string& name, int64_t expert, std::string& err) {
-    Mat base = make_mat(m, name, err);
-    if (!err.empty()) return {};
-    Mat r = base;
-    r.data = (const uint8_t*) base.data + (size_t) expert * base.row_bytes * (size_t) base.n_out;
+    size_t sh = 0;
+    const strata::TensorInfo* t = m.find(name, &sh);
+    if (!t) { err = "missing tensor " + name; return {}; }
+    if (t->shape.size() != 3) { err = name + " is not 3-D"; return {}; }
+    int be = 0, bb = 0;
+    if (!strata::block_geometry(t->type, be, bb)) { err = name + " is " + t->type_name() + " (no kernel)"; return {}; }
+    Mat r;
+    r.type = (int) t->type;
+    r.n_in = (int64_t) t->shape[0];
+    r.n_out = (int64_t) t->shape[1];
+    r.row_bytes = (size_t) (r.n_in / be) * (size_t) bb;
+    r.data = (const uint8_t*) m.shard(sh).tensor_data(*t) +
+             (size_t) expert * r.row_bytes * (size_t) r.n_out;
     return r;
 }
 
