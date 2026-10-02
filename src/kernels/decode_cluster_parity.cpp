@@ -276,6 +276,9 @@ int run_graph_case(std::mt19937& rng) {
         d_sc.put(sc);
         d_st.put(steps);
         d_l.put(l);
+        // the uploads (pageable, legacy stream) must land before the non-blocking stream's graph reads them: a pageable
+        // cudaMemcpy can return before its DMA has, and the graph then read the previous replay's logits now and then
+        ck(cudaDeviceSynchronize(), "uploads");
         ck(cudaGraphLaunch(ge, cs), "graph launch");
         k::qsa_block_topk(d_sc.p, d_st.p, nq, max_blocks, cap, s, d_old.p, cs);
         k::SamplerParams sp;
