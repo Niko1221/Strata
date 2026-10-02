@@ -1,0 +1,61 @@
+{
+ "arm": "A1-多模态GPU",
+ "port": 8087,
+ "kind": "topup",
+ "long": [
+  {
+   "tag": "long-topup0",
+   "wall": 21.5,
+   "prompt_n": 10383,
+   "cache_n": 0,
+   "prefill": 555.9,
+   "decode": 22.3,
+   "dn": 51,
+   "da": 33,
+   "accept": 64.7,
+   "ct": 61,
+   "finish": "stop"
+  },
+  {
+   "tag": "long-topup1",
+   "wall": 19.1,
+   "prompt_n": 10383,
+   "cache_n": 0,
+   "prefill": 622.9,
+   "decode": 25.8,
+   "dn": 53,
+   "da": 30,
+   "accept": 56.6,
+   "ct": 62,
+   "finish": "stop"
+  }
+ ],
+ "deep": [
+  {
+   "tag": "deep-topup0",
+   "wall": 184.5,
+   "prompt_n": 144618,
+   "cache_n": 0,
+   "prefill": 795.5,
+   "decode": 23.5,
+   "dn": 29,
+   "da": 21,
+   "accept": 72.4,
+   "ct": 46,
+   "finish": "stop"
+  },
+  {
+   "tag": "deep-topup1",
+   "wall": 23.3,
+   "prompt_n": 13546,
+   "cache_n": 131072,
+   "prefill": 650.6,
+   "decode": 28.5,
+   "dn": 28,
+   "da": 23,
+   "accept": 82.1,
+   "ct": 52,
+   "finish": "stop"
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "strata": "cd07d0891aacaed9ad7d95f0e804a46e71ea03379f25211364c88322e05fe082",
+ "strata-vision": "f6faf82fd4d0a797b62fbfb75fbb55d15a56f803a60a7fbafca0588aa4d440da",
+ "strata-vision-cpu": "d1fdd5e28de496c3adb8ffca06390df1422ec4ebb8ac5084e13f188cd2b21bad",
+ "pack/dense.bin": "f53174059b262ed342b82e143af62056081948ef5e5f1903a1a70eeb73fa4a23",
+ "pack/index.txt": "ea349751bd7da4b5d9fe03ac3f65f196b6cf3de4728ff11266f5fefe8cb3c20f",
+ "pack/native_experts.txt": "e4ef23629b6071a42b29483e1ce1e9e881cb5d84dabbd7ea6c2b280eac748161",
+ "pack/compat-bf16.json": "e5080ae8f69c70c8cffa621c01911b4dafd57dc64ae61944c4afaaca4a02c292",
+ "pack/conversions.json": "cb8de607a3332c2a33f22056b0036bef6ec0bc2f2be2ec876a351e393b4c6c12",
+ "expert-profile.bin": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+ "mtp/dense.bin": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+ "mtp/experts.bin": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f",
+ "mtp/draft_vocab.bin": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91",
+ "Qwen3.8-Flash-Next.gguf": null,
+ "mmproj-Qwen3.8-FN.gguf": null,
+ "mtp-Qwen3.8-FN.gguf": null
+}

@@ -1,0 +1,142 @@
+{
+ "arm": "A1-多模态GPU",
+ "port": 8087,
+ "vision": 1,
+ "engine": {
+  "kv": "q4_0",
+  "kv_resident": 32768,
+  "expert_slots": 2076,
+  "expert_cache_mib": 6192,
+  "vram_free_mib": 881,
+  "arena_mib": 67257,
+  "spec": 6,
+  "mtp_max": 4,
+  "lookup": 3,
+  "pool_workers": 63,
+  "pcie_frac": "0.30",
+  "context": 262144,
+  "gpu_mem_used_gib": 15.07,
+  "ram_used_gib": 180.5
+ },
+ "short": [
+  {
+   "tag": "short0",
+   "wall": 1.7,
+   "prompt_n": 25,
+   "cache_n": 0,
+   "prefill": 33.4,
+   "decode": 20.7,
+   "dn": 17,
+   "da": 13,
+   "accept": 76.5,
+   "ct": 18,
+   "finish": "stop",
+   "text": "我是通义千问，由阿里巴巴通义实验室独立开发的大型语言模型。"
+  },
+  {
+   "tag": "short1",
+   "wall": 1.3,
+   "prompt_n": 25,
+   "cache_n": 0,
+   "prefill": 39.0,
+   "decode": 28.4,
+   "dn": 17,
+   "da": 11,
+   "accept": 64.7,
+   "ct": 18,
+   "finish": "stop",
+   "text": "我是通义千问，由阿里巴巴通义实验室独立开发的大型语言模型。"
+  },
+  {
+   "tag": "short2",
+   "wall": 1.3,
+   "prompt_n": 25,
+   "cache_n": 0,
+   "prefill": 43.2,
+   "decode": 26.3,
+   "dn": 17,
+   "da": 13,
+   "accept": 76.5,
+   "ct": 18,
+   "finish": "stop",
+   "text": "我是通义千问，由阿里巴巴通义实验室独立开发的大语言模型。"
+  }
+ ],
+ "short_decode_med": 26.3,
+ "long": [
+  {
+   "tag": "long0",
+   "wall": 29.5,
+   "prompt_n": 10381,
+   "cache_n": 0,
+   "prefill": 392.6,
+   "decode": 23.2,
+   "dn": 50,
+   "da": 31,
+   "accept": 62.0,
+   "ct": 62,
+   "finish": "stop",
+   "text": "Strata 是一款专为 NVIDIA 和 AMD 显卡优化的本地大语言模型推理引擎，通过智能专家缓存、KV 缓存流式传输及低内存模式等技术，在有限硬件资源下实现 Qwen3.8-Flash-Next 系列模型的高速推理与长上下文支持。"
+  },
+  {
+   "tag": "long1",
+   "wall": 19.1,
+   "prompt_n": 10381,
+   "cache_n": 0,
+   "prefill": 618.3,
+   "decode": 27.1,
+   "dn": 51,
+   "da": 30,
+   "accept": 58.8,
+   "ct": 62,
+   "finish": "stop",
+   "text": "Strata 是一款专为 NVIDIA 和 AMD 显卡优化的本地大语言模型推理引擎，通过智能专家缓存、KV 缓存流式传输及低内存模式等技术，在有限硬件资源下实现 Qwen3.8-Flash-Next 系列模型的高速推理与长上下文支持。"
+  }
+ ],
+ "long_prefill_med": 505.45,
+ "long_prompt_n": 10381,
+ "deep": [
+  {
+   "tag": "deep",
+   "wall": 184.7,
+   "prompt_n": 144610,
+   "cache_n": 0,
+   "prefill": 795.3,
+   "decode": 25.8,
+   "dn": 33,
+   "da": 27,
+   "accept": 81.8,
+   "ct": 53,
+   "finish": "stop",
+   "text": "API 请求监控功能默认关闭，启用后会在内存中保留最近 100 个请求的详细信息（包括输入、输出和推理内容）供通过 `/api-monitor` 页面查看，但需注意其敏感性及内存占用限制。"
+  }
+ ],
+ "deep_prompt_n": 144610,
+ "solve": {
+  "wall": 72.2,
+  "prompt_n": 5,
+  "prefill": 0.9,
+  "decode": 33.2,
+  "finish": "length",
+  "ct": 2048,
+  "da": 364,
+  "dn": 454
+ },
+ "solve_grade": {
+  "conditions": {
+   "CAB=40": true,
+   "CBA=40": true,
+   "DBC=20": true,
+   "DCA=20": true
+  },
+  "conditions_ok": 4,
+  "final_answer": "10",
+  "answer_correct": true
+ },
+ "image_cached_call": {
+  "wall": 4.8,
+  "cache_n": 0,
+  "prompt_n": 329
+ },
+ "image_tokens_prompt_n": 5
+}
