@@ -259,6 +259,17 @@ int main() {
             }
             auto bad=a; bad.head_dim++;
             check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject incompatible geometry");
+            if (fmt==kKvInt8) {
+                // #293: INT8 K/V saved through the Hadamard rotation (STRATA_KV_ROT=1) never restores into a state
+                // without it, nor the reverse
+                f.state.kv_rot=true;
+                ConversationKv rotated;
+                check(conversation_kv_save(rotated,f.state,f.g,upto,index,err),"save rotated INT8");
+                check(!conversation_kv_restore(a,f.state,f.g,upto,index,err),"unrotated image into a rotated state rejected");
+                f.state.kv_rot=false;
+                check(!conversation_kv_restore(rotated,f.state,f.g,upto,index,err),"rotated image into an unrotated state rejected");
+                check(conversation_kv_restore(a,f.state,f.g,upto,index,err),"unrotated image still restores");
+            }
             if (!a.k.empty()) {
                 bad=a; bad.k.pop_back();
                 check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject malformed payload");

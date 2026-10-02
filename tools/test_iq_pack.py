@@ -126,6 +126,46 @@ class CompatibilityTests(unittest.TestCase):
                      "per_layer_token_embd.weight", "blk.0.attn_qkv.weight"]:
             self.assertFalse(iq_pack.needs_bf16(name, "IQ3_XXS"))
 
+    def test_experts_bin_is_kept_only_with_this_ggufs_blobs(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            out = root / "pack"
+            (out / "tokenizer").mkdir(parents=True)
+            for name in ["vocab.json", "chat_template.jinja"]:
+                (out / "tokenizer" / name).touch()
+
+            def model(name, scale):
+                path = root / name
+                write_gguf(path, [("blk.%d.hc_attn_down.weight" % l, np.ones((2, 32), np.float32), Q.BF16)
+                                  for l in range(3)] +
+                                 [("blk.%d.ffn_gate_inp.weight" % l, np.ones((4, 32), np.float32), Q.BF16)
+                                  for l in range(3)] +
+                                 [("blk.%d.ffn_%s_exps.weight" % (l, r),
+                                   scale * np.arange(4 * 2 * 32, dtype=np.float32).reshape(4, 2, 32) / 256, Q.Q8_0)
+                                  for l in range(3) for r in ("gate", "up", "down")])
+                return path
+
+            def pack(path):
+                log = io.StringIO()
+                argv = ["iq_pack.py", "--gguf", str(path), "--out", str(out), "--experts-bin"]
+                with patch.object(sys, "argv", argv), contextlib.redirect_stdout(log):
+                    self.assertEqual(iq_pack.main(), 0)
+                return log.getvalue()
+
+            first = model("a.gguf", 1)
+            pack(first)
+            written = (out / "experts.bin").read_bytes()
+            self.assertIn("not rewritten", pack(first))
+            self.assertEqual((out / "experts.bin").read_bytes(), written)
+            # the same geometry with other weights under the same file name: the size and the sidecar (shard names
+            # and sizes, native_experts.txt) match, the contents do not
+            second = model("a.gguf", -1)
+            self.assertIn("not this GGUF's expert blobs", pack(second))
+            rewritten = (out / "experts.bin").read_bytes()
+            self.assertEqual(len(rewritten), len(written))
+            self.assertNotEqual(rewritten, written)
+            self.assertIn("not rewritten", pack(second))
+
     def test_snapshot_symlinks_keep_split_discovery(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)

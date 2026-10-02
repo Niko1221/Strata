@@ -7,6 +7,7 @@
 //   1. against FP64, the new kernel's error is no larger than a small multiple of the old kernel's (both FP32 math);
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
+// HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
 // Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -19,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <vector>
 
@@ -196,12 +198,31 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(__HIP_PLATFORM_AMD__)
+    // S6: on AMD the kernel under test is the RDNA4 matrix-core one (opt-in in the engine); other cards skip
+    {
+        int dev = 0;
+        hipDeviceProp_t prop{};
+        if (hipGetDevice(&dev) != hipSuccess || hipGetDeviceProperties(&prop, dev) != hipSuccess) return 2;
+        if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0) {
+            std::printf("SKIP: %s is not gfx12 (the matrix-core prompt attention is RDNA4 only)\n", prop.gcnArchName);
+            return 77;
+        }
+#if defined(_WIN32)
+        _putenv_s("STRATA_HIP_WMMA", "1");
+#else
+        setenv("STRATA_HIP_WMMA", "1", 1);
+#endif
+    }
+#endif
     const int64_t ctx = argc > 1 ? std::atoll(argv[1]) : 32768;
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
     int fails = 0;
     fails += run(1, ctx, nq, reps);
-    fails += run(0, ctx, nq, reps);
+#if !defined(__HIP_PLATFORM_AMD__)
+    fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
+#endif
     fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
     fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
     std::printf("FAILURES: %d\n", fails);

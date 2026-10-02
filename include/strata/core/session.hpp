@@ -99,6 +99,9 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo = 0, int64_t layer_hi = -1);
+/// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
+/// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
+void session_release(SessionState& s);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);

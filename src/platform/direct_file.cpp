@@ -297,6 +297,7 @@ struct DirectFile::Impl {
     unsigned* cq_head = nullptr;
     unsigned* cq_tail = nullptr;
     unsigned* cq_mask = nullptr;
+    struct io_uring_cqe* cqes = nullptr;   // the completion array, at `cq_off.cqes` inside the CQ ring
     unsigned entries = 0;
     std::mutex submit_mu;                 // serializes SQ producers and pending submission
 
@@ -361,6 +362,7 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     impl_->cq_head = (unsigned*) ((char*) cq + p.cq_off.head);
     impl_->cq_tail = (unsigned*) ((char*) cq + p.cq_off.tail);
     impl_->cq_mask = (unsigned*) ((char*) cq + p.cq_off.ring_mask);
+    impl_->cqes = (struct io_uring_cqe*) ((char*) cq + p.cq_off.cqes);
     impl_->uring = true;
     impl_->pending = 0;
     return true;
@@ -445,11 +447,11 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     {
         std::lock_guard<std::mutex> lk(m.submit_mu);
         if (m.pending > 0) {
-            const unsigned pending = m.pending;
             if (!m.flush()) {
-                // Enter failed: report the reads as failed so the caller errors out instead of waiting forever.
-                const int written = std::min<int>((int) pending, max);
-                for (int i = 0; i < written; ++i) out[i] = Completion{~0ull, 0, false};
+                // Enter failed: report the reads it could not submit as failed so the caller errors out instead
+                // of waiting forever. `pending` was decremented by whatever WAS submitted; those still complete.
+                const int written = std::min<int>((int) m.pending, max);
+                for (int i = 0; i < written; ++i) out[i] = Completion{WAKE_TAG - 1, 0, false};  // not WAKE_TAG
                 return written;
             }
         }
@@ -464,8 +466,8 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     }
     int n = 0;
     while (head != tail && n < max) {
-        struct io_uring_cqe* cqe = (struct io_uring_cqe*) ((char*) m.cq_ring +
-                                                            ((size_t) (head & *m.cq_mask) * sizeof(struct io_uring_cqe)));
+        // The completion array lives at `cq_off.cqes` (64 bytes into the ring on every kernel), not at offset 0.
+        struct io_uring_cqe* cqe = &m.cqes[head & *m.cq_mask];
         Completion c{cqe->user_data, cqe->res < 0 ? 0u : (uint32_t) cqe->res, cqe->res >= 0};
         out[n++] = c;
         ++head;

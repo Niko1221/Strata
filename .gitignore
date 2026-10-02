@@ -38,6 +38,7 @@ td.log
 /strata-*.log
 /build-strata.bat
 /.strata-service.env
+/.strata-mcp/
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/
@@ -50,3 +51,4 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+/.rocm-win/

@@ -10,6 +10,7 @@
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/direct_file.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ng = strata::ngram;
@@ -134,6 +136,56 @@ int selftest(const std::string& dir) {
         check_rows(rd, rows, N, "delayed");
         CHECK(now_us() - t0 >= 3000, "injected delay not observed (%.0f us)", now_us() - t0);
         CHECK(rd.stats().late_injected > 0, "no read was held back");
+    }
+    // keep-alive: while rows are asked for, a page goes out after `period` without a read; it stops once the
+    // window after the last issue has passed, starts again with the next issue (even one the row cache serves),
+    // and never shows up as a row read or changes a row
+    {
+        ng::PleReader rd;
+        std::string err;
+        CHECK(rd.open(path, HEADER, N, 16, 4096, err, true), "open: %s", err.c_str());
+        rd.set_keepalive(20.0, 0.5);
+        std::vector<uint32_t> rows(16);
+        for (auto& r : rows) r = rng() % N;
+        check_rows(rd, rows, N, "keep-alive, first ticket");
+        const uint64_t reads0 = rd.snapshot().reads;
+        const auto nap = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+        nap(300);
+        const uint64_t k1 = rd.snapshot().keepalive_reads;
+        CHECK(k1 >= 8 && k1 <= 20, "keep-alive: %llu reads in 300 ms at a 20 ms period", (unsigned long long) k1);
+        CHECK(rd.snapshot().reads == reads0, "keep-alive reads were counted as row reads");
+        nap(600);                                          // the 0.5 s window has passed
+        const uint64_t k2 = rd.snapshot().keepalive_reads;
+        nap(300);
+        const uint64_t k3 = rd.snapshot().keepalive_reads;
+        CHECK(k3 == k2, "keep-alive went on after the window (%llu -> %llu)", (unsigned long long) k2,
+              (unsigned long long) k3);
+        CHECK(k2 <= k1 + 20, "keep-alive: %llu reads by the end of a 0.5 s window", (unsigned long long) k2);
+        check_rows(rd, rows, N, "keep-alive, cached ticket");   // the row cache serves all 16: no row read
+        CHECK(rd.snapshot().reads == reads0, "cached rows were read again");
+        nap(200);
+        CHECK(rd.snapshot().keepalive_reads >= k3 + 5, "the keep-alive did not start again (%llu -> %llu)",
+              (unsigned long long) k3, (unsigned long long) rd.snapshot().keepalive_reads);
+        std::vector<uint32_t> more(2000);
+        for (auto& r : more) r = rng() % N;
+        check_rows(rd, more, N, "keep-alive, rows afterwards");
+        rd.set_keepalive(0, 0.5);                           // off
+        const uint64_t k4 = rd.snapshot().keepalive_reads;
+        nap(200);
+        CHECK(rd.snapshot().keepalive_reads <= k4 + 1, "keep-alive went on after it was turned off");
+        rd.reset_stats();
+        CHECK(rd.snapshot().keepalive_reads == 0 && rd.snapshot().keepalive_us_max == 0, "reset_stats kept keep-alive counts");
+    }
+    {   // the caller's thread does the reads: no worker, so no keep-alive
+        ng::PleReader rd;
+        std::string err;
+        CHECK(rd.open(path, HEADER, N, 16, 0, err, false), "open: %s", err.c_str());
+        rd.set_keepalive(20.0, 1.0);
+        std::vector<uint32_t> rows(16);
+        for (auto& r : rows) r = rng() % N;
+        check_rows(rd, rows, N, "keep-alive, caller thread");
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        CHECK(rd.snapshot().keepalive_reads == 0, "keep-alive without the worker thread");
     }
     std::filesystem::remove(path);
     std::printf("ple_reader selftest: %s\n", g_fail ? "FAILED" : "OK");

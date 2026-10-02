@@ -49,13 +49,21 @@ namespace strata::core {
 /// The longest penalty window the coupled drafter mirrors (serve's kPenaltyWindowCap).
 inline constexpr int kCoupledHistCap = 4096;
 
-/// STRATA_SPEC_COUPLED=1 (any value but empty or "0"): read once.
-inline bool coupled_draft_env() {
-    static const bool on = [] {
+inline bool& coupled_draft_state() {
+    static bool on = [] {
         const char* e = std::getenv("STRATA_SPEC_COUPLED");
         return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
     }();
     return on;
+}
+
+/// Whether coupled draft sampling is enabled (via STRATA_SPEC_COUPLED=1 or --coupled-draft CLI flag).
+inline bool coupled_draft_env() {
+    return coupled_draft_state();
+}
+
+inline void set_coupled_draft(bool on) {
+    coupled_draft_state() = on;
 }
 
 /// The MTP cell of chain step j after a window at `p` with `a` drafts accepted (draft() runs step j there).

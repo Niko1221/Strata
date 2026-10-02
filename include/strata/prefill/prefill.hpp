@@ -73,6 +73,9 @@ public:
     /// ring (a big one only pays when the copy engine, not the host copies, is the limit); set before bytes_needed.
     static void set_pinned_share(double share);
     static double pinned_share();
+    /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
+    /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
+    static void set_ring_override(int slots);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);

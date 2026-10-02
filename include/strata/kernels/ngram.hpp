@@ -44,7 +44,9 @@ inline constexpr float NG_RMS_EPS = 1e-6f;
 // The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements =
 // 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
-inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90
+inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90: an IQ4_NL row
+inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160: an F8_E4M3 row, one byte a value
+inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_FP8;
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -96,6 +98,11 @@ int iq4nl_code(int code);
 /// a perfectly plausible embedding of the wrong 160 values.
 void iq4nl_dequant_row(const uint8_t* row, float* out160);
 
+/// One FP8 row -> 160 floats: each byte an E4M3 value (the "fn" variant: no infinities, 0x7F/0xFF are NaN), times the
+/// table's one scale. This is the table as Qwen3.8-Flash-Next ships it (`...ngram_embedding.shard_k`, F8_E4M3, and
+/// `weight_scale`), kept byte for byte by tools/ple_fp8_pack.py; IQ4_NL is 8% off it per row.
+void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160);
+
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
 /// A/B arm; it returns the same bytes.
@@ -113,6 +120,11 @@ struct PleIoOptions {
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
     /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
     bool lock = false;
+    /// Direct mode with the I/O worker only: keep the SSD awake while rows are asked for - one page of the table
+    /// after this long without a read (0 = off), until `keepalive_window_s` after the last request for rows
+    /// (see PleReader::set_keepalive).
+    double keepalive_ms = 0;
+    double keepalive_window_s = 60;
 };
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every
@@ -150,6 +162,8 @@ public:
     /// True when `PleIoOptions::lock` was asked for and mlock succeeded (false: pages only pre-touched).
     bool locked() const;
     uint64_t rows() const;
+    /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
+    const char* format() const;
 
     /// 16 row indices -> 2560 floats.  The gathered rows are flattened HEAD-SLOWEST: row h's 160 values
     /// occupy `out[h*160, (h+1)*160)`, which is what `ggml_get_rows` does and what makes the result a plain

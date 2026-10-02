@@ -5,7 +5,7 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N]
+//                 [--max-tokens N] [--flash-attn on|off|auto]
 //
 // Resident: prints "READY <n_embd>", then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
@@ -17,6 +17,7 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +25,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
     std::string mmproj, model;
     bool gpu = false;
     int threads = 0, max_tokens = 0;
+    llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -61,12 +64,26 @@ int main(int argc, char** argv) {
         else if (a == "--gpu") gpu = true;
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
+        else if (a == "--flash-attn") {   // FA keeps K and V in FP16; off = the attention in FP32
+            const std::string v = next();
+            fa = v == "on" ? LLAMA_FLASH_ATTN_TYPE_ENABLED : v == "off" ? LLAMA_FLASH_ATTN_TYPE_DISABLED
+                                                                        : LLAMA_FLASH_ATTN_TYPE_AUTO;
+        }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: strata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--max-tokens N]\n");
+                             "[--max-tokens N] [--flash-attn on|off|auto]\n");
         return 2;
+    }
+    // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
+    // 150-260 expert slots less for the engine beside it).  Before anything reaches the CUDA runtime.
+    if (!gpu) {
+#ifdef _WIN32
+        _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+#else
+        setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+#endif
     }
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
@@ -81,6 +98,9 @@ int main(int argc, char** argv) {
     cp.use_gpu = gpu;
     cp.print_timings = false;
     cp.warmup = false;
+    cp.flash_attn_type = fa;
+    // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
+    if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);
     if (threads > 0) cp.n_threads = threads;
     if (max_tokens > 0) cp.image_max_tokens = max_tokens;
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
@@ -103,7 +123,10 @@ int main(int argc, char** argv) {
     // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
     // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
     // the engine crawl to a standstill.  (A square image well above any cap; mtmd scales it to the token limit.)
-    {
+    // On the CPU there is no VRAM to reserve, and the warm-up would only delay the engine's start by one encode
+    // (~6 s at 1,024 tokens).
+    if (!gpu) std::fprintf(stderr, "strata-vision: on the CPU, %d threads, no warm-up\n", threads);
+    else {
         const uint32_t side = 2048;
         std::vector<unsigned char> rgb((size_t) side * side * 3, 128);
         mtmd_bitmap* bm = mtmd_bitmap_init(side, side, rgb.data());
