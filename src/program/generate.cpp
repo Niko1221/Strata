@@ -1349,6 +1349,36 @@ int main(int argc, char** argv) {
                          o.main_device, o.draft_device, n_dev, n_dev == 1 ? "" : "s");
             return 2;
         }
+        // Fase 4 (hetero multi-GPU): the role plan's premises, read from the Fase 2 capability records
+        // (strata-device prints the same view).  Informational - the only refusal here is the range check
+        // above, because the kernel paths self-select per device (dp4a's software fallback, the tensor-core
+        // fallbacks) and the cross-device handoff needs no peer pair (the Fase 3 gate's mapped host mirror),
+        // so refusing on anything else would fabricate a threshold the code has no need for.
+        std::vector<strata::core::DeviceCaps> role_cards;
+        try {
+            role_cards = strata::core::device_caps();
+        } catch (...) {
+            cudaGetLastError();   // a failed count query already shows the range check's answer; stay silent
+        }
+        if (!role_cards.empty() && o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device})
+                if (role_dev >= 0 && role_dev < (int) role_cards.size()) {
+                    const auto& c = role_cards[(size_t) role_dev];
+                    std::fprintf(stderr, "strata generate: role device %d: %s, cc %d.%d, dp4a %s, free VRAM %llu MiB\n",
+                                 role_dev, c.name.c_str(), c.cc_major, c.cc_minor,
+                                 c.dp4a ? "yes" : "software-fallback",
+                                 (unsigned long long) (c.free_bytes / (1024ull * 1024ull)));
+                }
+            const size_t cards = role_cards.size();
+            if (o.main_device >= 0 && o.draft_device >= 0 && o.main_device < (int) cards &&
+                o.draft_device < (int) cards) {
+                const std::vector<uint8_t> peers = strata::core::peer_access_matrix();
+                if (peers.size() == cards * cards)
+                    std::fprintf(stderr, "strata generate: peer access %d -> %d: %s (reported only; the mapped-mirror handoff needs none)\n",
+                                 o.main_device, o.draft_device,
+                                 peers[(size_t) o.main_device * cards + o.draft_device] ? "yes" : "no");
+            }
+        }
         if (o.mtp.empty() || o.spec < 2) {
             std::fprintf(stderr, "strata generate: --draft-device needs the MTP drafter (--mtp and --spec >= 2): without one there is nothing to place\n");
             return 2;

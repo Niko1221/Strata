@@ -197,7 +197,21 @@ DeviceInfo device_info(int ordinal) {
 
 namespace {
 
+// Fase 4 (hetero multi-GPU): the capability queries need a device's context (the free-VRAM probe
+// runs cudaSetDevice), and cudaSetDevice moves the CALLER'S ambient current device.  Measured leak
+// 2026-10-02: a roles view (generate.cpp) left the last probed ordinal current, and the engine's
+// later device picks then read the wrong device all the way to an illegal access.  This guard hands
+// the ambient device back on every path (the throw paths too).
+struct CurrDeviceGuard {
+    CurrDeviceGuard() { cudaGetDevice(&prev_); cudaGetLastError(); }
+    ~CurrDeviceGuard() { if (prev_ >= 0 && cudaSetDevice(prev_) == cudaSuccess) cudaGetLastError(); }
+    CurrDeviceGuard(const CurrDeviceGuard&) = delete;
+    CurrDeviceGuard& operator=(const CurrDeviceGuard&) = delete;
+    int prev_ = 0;
+};
+
 DeviceCaps caps_from(const int ordinal, const cudaDeviceProp& p) {
+    CurrDeviceGuard cdg_;   // hands the caller's ambient device back (see above)
     DeviceCaps c;
     c.ordinal = ordinal;
     c.name = p.name;
