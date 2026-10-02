@@ -1,4 +1,5 @@
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/on_device.hpp"   // Fase 6: the drafter-ring restore runs on the draft device
 #include "strata/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 #include <cuda_runtime.h>
@@ -210,6 +211,19 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
     if (st.kv_mode == 2 && upto > 0) {
+        // Hetero multi-GPU (Fase 6): the drafter's ring lives on the DRAFT device's memory (Fase 3b places it
+        // there), and `kv_ring_restore` launches a KERNEL - it must launch with THAT device current, or a
+        // same-device run is right only by accident and a role run writes another GPU's memory (a peer pair
+        // would permit it; none is ever required).  The state's device is read from where its memory lives:
+        // attributes of `st.step`, which `qsa_state_init` allocates unconditionally.  A same-device state
+        // resolves to the caller's device, so the guard is a no-op today.
+        cudaPointerAttributes st_attr{};
+        int ring_dev = -1;
+        if (cudaPointerGetAttributes(&st_attr, (const void*) st.step) == cudaSuccess)
+            ring_dev = (int) st_attr.device;
+        else
+            cudaGetLastError();
+        const OnDevice on_ring(ring_dev);
         auto shapes = strata::kernels::qsa_real_shapes();
         shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
         const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
