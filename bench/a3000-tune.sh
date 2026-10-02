@@ -3,8 +3,11 @@
 #
 #   ./bench/a3000-tune.sh
 #
-# Run as the user (nicky). sudo is used only to reserve hugepages and to raise the
-# per-process locked-memory limit (MAP_HUGETLB needs it; see src/core/pinned.cu:202).
+# Run as the user (nicky). Hugepages need an unlimited locked-memory limit
+# (MAP_HUGETLB; see src/core/pinned.cu:202). On NixOS set
+# systemd.user.settings.Manager.DefaultLimitMEMLOCK = "infinity" and run this
+# script from a systemd unit/scope; an interactive shell only gets the limit
+# after a PAM login (security.pam.loginLimits).
 #
 # Runs, in order:
 #   A  0.1.18 engine backup,       --kv int8   - baseline (uses the installed server.py)
@@ -34,9 +37,9 @@ if [ "$cur" -lt "$HUGEPAGES" ]; then
 fi
 echo "nr_hugepages=$(cat /proc/sys/vm/nr_hugepages) HugePages_Free=$(grep '^HugePages_Free:' /proc/meminfo | awk '{print $2}')"
 if [ "$(ulimit -l)" != "unlimited" ]; then
-    # -n so the script does not hang on an interactive password prompt when run
-    # from a shell that has not inherited the pam_limits memlock setting.
-    sudo -n prlimit --pid $$ --memlock=unlimited:-1 2>/dev/null || echo "warning: memlock still $(ulimit -l); MAP_HUGETLB will not be used"
+    echo "warning: memlock is $(ulimit -l); MAP_HUGETLB will not be used."
+    echo "         Run this script from a systemd unit/scope with LimitMEMLOCK=infinity"
+    echo "         (see systemd.user.settings.Manager.DefaultLimitMEMLOCK) to enable hugepages."
 fi
 echo "memlock=$(ulimit -l)"
 
