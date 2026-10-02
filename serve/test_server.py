@@ -208,6 +208,84 @@ class FitMaxTokens(unittest.TestCase):
         self.assertIn("no room to answer", b["error"]["message"])
 
 
+class VisionTempFiles(unittest.TestCase):
+    """A request's combined image file (req-*.sve, ~10 MB a picture) goes with the request: one refused after prepare()
+    wrote it (the engine starting, no room) or whose answer never started left it in the vision directory for good."""
+
+    MSGS = [{"role": "user", "content": [{"type": "text", "text": "what is it?"},
+                                         {"type": "image", "source": "x.png"}]}]
+
+    @staticmethod
+    def leftovers(d):
+        return sorted(p.name for p in Path(d).glob("req-*.sve"))
+
+    def test_a_refused_request_writes_none(self):
+        from serve.server import EngineStarting
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            engine = MockEngine(tok, "ok", max_context=0)
+            svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=ImageMarkers.FakeVision(d))
+            with self.assertRaises(EngineStarting):
+                svc.prepare(self.MSGS, None, {}, 16)
+            engine.max_context = 64                                  # the prompt alone fills it
+            with self.assertRaisesRegex(ValueError, "no room to answer"):
+                svc.prepare(self.MSGS, None, {})
+            engine.max_context = CTX
+            with self.assertRaisesRegex(ValueError, "exceeds the context"):
+                svc.prepare(self.MSGS, None, {}, CTX)
+            self.assertEqual(self.leftovers(d), [])
+            svc.prepare(self.MSGS, None, {}, 16)                     # one that fits has it
+            self.assertEqual(len(self.leftovers(d)), 1)
+            svc.drop_embeddings()                                    # ... until the request is done
+            self.assertEqual(self.leftovers(d), [])
+
+    def test_over_http(self):
+        import serve.server as server
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            engine = MockEngine(tok, "</think>\n\nok", max_context=0)
+            svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=ImageMarkers.FakeVision(d))
+            httpd = serve(svc, port=0)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+            def post(path):
+                image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}} \
+                    if path.endswith("completions") else \
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+                body = {"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "what is it?"}, image]}]}
+                req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        return r.status
+                except urllib.error.HTTPError as e:
+                    with e:
+                        return e.code
+
+            try:
+                paths = ("/v1/chat/completions", "/v1/messages")
+                for path in paths:
+                    self.assertEqual(post(path), 503)                # the engine is starting (#344); clients retry
+                engine.max_context = 64
+                for path in paths:
+                    self.assertEqual(post(path), 400)                # no room to answer
+                engine.max_context = CTX
+                # the client gone after prepare(), before the answer started
+                with mock.patch.object(server, "_debug_req", side_effect=ConnectionResetError("the client is gone")):
+                    for path in paths:
+                        with self.assertRaises(OSError):
+                            post(path)
+                for path in paths:
+                    self.assertEqual(post(path), 200)
+                self.assertEqual(self.leftovers(d), [])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+
 class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
