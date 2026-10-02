@@ -81,6 +81,26 @@ class HuggingFacePins(unittest.TestCase):
         self.assertEqual([m for m, _ in seen], ["HEAD", "HEAD", "GET"])
         self.assertTrue(all("/resolve/main/" in u for _, u in seen[1:]))
 
+    def test_a_complete_part_is_finished_without_a_request(self):
+        """A .part with every byte (setup stopped between the last byte and the rename): renamed, not resumed with a
+        range past its end - the server answers that with 416, which download() retried 30 times, 10 s apart."""
+        seen = []
+
+        def urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.headers.get("Range")))
+            if req.get_method() == "HEAD":
+                return Response(b"model bytes")
+            raise urllib.error.HTTPError(req.full_url, 416, "Range Not Satisfiable", {}, None)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup.time, "sleep", lambda s: None):
+            dst = Path(d) / "m.gguf"
+            dst.with_name("m.gguf.part").write_bytes(b"model bytes")
+            quiet(setup.download, "https://example.com/m.gguf", dst)
+            self.assertEqual(dst.read_bytes(), b"model bytes")
+            self.assertTrue(setup.done(dst))
+        self.assertEqual(seen, [("HEAD", None)])
+
     def test_mtp_fetch_is_pinned_and_falls_back(self):
         import mtp_fetch
         self.assertRegex(mtp_fetch.REPO, SHA)
