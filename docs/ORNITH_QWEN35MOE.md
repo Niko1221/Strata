@@ -13,11 +13,14 @@ records the model, the architecture, the artifacts, what is implemented and veri
 | Architecture identity (`ModelKind`) and the Qwen35MoE geometry/tensor guard | done, 16-case test + the real header |
 | Native routed experts at 2048/512 with IQ4_XS gate/up + Q4_K down (grouped HIP) | done, GPU parity |
 | Single-file (Ornith) cache resolution and `run3.sh` host-side launcher | done, dry-run verified |
-| Qwen35MoE execution backend (GDN, dense attention, MoE block, embedding/head, session) | **not implemented** |
-| External Qwen3.6 MTP backend, speculative rollback, `run3.sh` end-to-end serve | **not implemented** |
+| Qwen35 forward pass: GDN, full attention, MoE, ordinary-residual trunk (float reference) | done, host tests (llama.cpp's recurrence re-derived) |
+| GGUF loader + quantized (ggml-cpu) matvec | **not implemented** |
+| Session/serve wiring, so `run3.sh` executes the model | **not implemented** |
+| External Qwen3.6 MTP backend and speculative rollback | **not implemented** |
+| gfx1101 kernels for the new layers (the current forward pass is plain float on the host) | **not implemented** |
 
-The guard and the expert kernel are what this increment proves; the execution backend is the next
-increment. See "Remaining work" at the bottom for the phase map.
+The layer math and the artifact contract are proven; the loader and the serve integration are what stand
+between them and a running `./run3.sh`. See "Remaining work" at the bottom.
 
 ## The model
 
@@ -145,7 +148,10 @@ run.** No throughput is claimed for it.
 
 ## Measured on gfx1101
 
-- Full HIP `ctest`: 67/70 pass (the 3 failures need a local `pack/full/experts.bin` fixture).
+- Full HIP `ctest`: 69/72 registered pass (3 fixture-dependent failures unchanged); the three `qwen35_*` tests
+  pass in the runtime build.
+- Qwen35 layer math: `qwen35_gdn_test` (0 failures) and `qwen35_layers_test` (0 failures) on the host and in
+  the container.
 - Ornith-dimension Q4_K-down expert parity: 0 failures, down rows bitwise-equal to ggml.
 - The Qwen35MoE guard accepts the real Ornith header and reads back the geometry above.
 
@@ -153,12 +159,13 @@ run.** No throughput is claimed for it.
 
 The phase map from the task, and where this increment stops:
 
-- **Done:** Phase 1 (inspect), Phase 2/3 (architecture identity and guards), Phase 5 (Q4_K down), Phase 15
-  (launcher, host side), Phase 18A/B (unit and HIP primitive tests for the above), Phase 26 (this page).
-- **Next, in order:** Phase 6 (GDN backend and state), Phase 7 (dense full attention), Phase 8 (ordinary
-  residual + 256×8 MoE + shared expert), Phase 9 (embedding/final norm/head), Phase 10 (session), Phase 11
-  (prefill), Phase 12 (trained Qwen3.6 MTP), Phase 13/14 (speculative rollback and tuning), then Phase
-  16/17/19-25 (cache/pool/context/performance/quality/API), and finally the end-to-end `run3.sh` numbers.
+- **Done:** Phase 1 (inspect), Phase 2/3 (architecture identity and guards), Phase 5 (Q4_K down), Phase 6/7/8/9
+  (the GDN, attention, MoE and trunk math, in float), Phase 15 (launcher, host side), Phase 18A/B (unit and HIP
+  primitive tests for the above), Phase 26 (this page).
+- **Next, in order:** the GGUF loader and a quantized matvec backed by ggml-cpu's type traits (so the 35B model
+  stays quantized), then the session/serve wiring so `run3.sh` executes it, then gfx1101 kernels for the new
+  layers, then the external Qwen3.6 MTP and speculative rollback (Phases 10-14), and finally the performance,
+  cache/pool/context and quality phases (16/17/19-25).
 - **Out of scope, explicitly:** DFlash. It is not implemented, not stubbed, and not part of the design.
 
 ## Building and testing
