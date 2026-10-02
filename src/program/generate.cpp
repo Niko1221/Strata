@@ -3785,7 +3785,7 @@ int main(int argc, char** argv) {
         strata::prefill::Prefill::set_pinned_share(total ? (double) pinned / (double) total : 1.0);
     }
     auto lend_slots = [&](int64_t c) -> int64_t {
-        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ss, c);
+        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ss, c, srcp != nullptr);
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
         if (xcache.slot_offsets() != nullptr) {   // sized slots: take slots from the end until they hold `need`
@@ -3933,7 +3933,7 @@ int main(int argc, char** argv) {
             std::vector<std::pair<int32_t, int32_t>> lent;
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
-            const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, c);
+            const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, c, srcp != nullptr);
             strata::core::ExpertCache& xc = *p.cache;
             if (xc.slot_offsets() != nullptr) {   // sized slots: from the end until they hold `need`
                 int64_t k = 0;
@@ -4061,7 +4061,7 @@ int main(int argc, char** argv) {
                         const strata::core::OnDevice on(p.dev);
                         size_t fb = 0, tb = 0;
                         if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) { (void) cudaGetLastError(); continue; }
-                        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk);
+                        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk, srcp != nullptr);
                         if ((uint64_t) fb >= need + (3ull << 29)) {
                             std::fprintf(stderr, "strata serve:   CUDA%d keeps its own prompt buffers (%.2f GiB of "
                                                  "%.2f GiB free): no loan\n", p.dev < 0 ? 0 : p.dev,
@@ -4148,7 +4148,7 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(dev);
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
-                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c);
+                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c, srcp != nullptr);
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
                         return false;
