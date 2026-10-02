@@ -59,6 +59,8 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
 VISION_START = "<|vision_start|>"
+# the vision markers: special tokens only where the template writes them for an image item, text anywhere else
+VISION_MARKERS = (VISION_START, IMAGE_PAD, "<|vision_end|>", "<|video_pad|>")
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
@@ -941,6 +943,23 @@ class Detokenizer:
         return delta
 
 
+def hide_markers(x, swap: dict):
+    """`x` (the messages, the tools) with each vision marker in its strings replaced by swap[marker]; what holds none
+    is returned as it is, not copied (the caller's messages are never changed)."""
+    if isinstance(x, str):
+        for marker, placeholder in swap.items():
+            if marker in x:
+                x = x.replace(marker, placeholder)
+        return x
+    if isinstance(x, list):
+        out = [hide_markers(v, swap) for v in x]
+        return x if all(a is b for a, b in zip(out, x)) else out
+    if isinstance(x, dict):
+        out = {k: hide_markers(v, swap) for k, v in x.items()}
+        return x if all(out[k] is v for k, v in x.items()) else out
+    return x
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -1329,11 +1348,34 @@ class Service:
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
 
+    def prompt_ids(self, messages, tools, kwargs) -> list[int]:
+        """The rendered prompt's token ids.  The vision markers are special tokens only where the template writes
+        them for an image item: the same strings in the conversation's text (an agent reading chat_template.jinja or
+        these docs, a tool result quoting them) became the same special ids, so text with <|vision_start|>
+        <|image_pad|> before a picture took that picture's embeddings, every later picture moved up one and the last
+        real marker became text - the counts still matched, nothing said so.  Those strings render as placeholders
+        and are tokenized as text (#150 did this for a bare <|image_pad|> only); a prompt without them is tokenized
+        exactly as before."""
+        tag = f"[[strata-{uuid.uuid4().hex}-"                    # appears nowhere else; JSON (tojson) keeps it
+        swap = {m: f"{tag}{i}]]" for i, m in enumerate(VISION_MARKERS)}
+        hidden_messages, hidden_tools = hide_markers(messages, swap), hide_markers(tools, swap)
+        prompt = self.template.render(hidden_messages, tools=hidden_tools, **kwargs)
+        if hidden_messages is messages and hidden_tools is tools:
+            return self.tok.encode(prompt, parse_special=True)
+        # a special token splits the text around it anyway, so the pieces between placeholders are tokenized as
+        # they were; only each marker's own ids change, to its text's
+        ids = []
+        for k, piece in enumerate(re.split(re.escape(tag) + r"(\d)\]\]", prompt)):
+            if k % 2:
+                ids += self.tok.encode(VISION_MARKERS[int(piece)], parse_special=False)
+            elif piece:
+                ids += self.tok.encode(piece, parse_special=True)
+        return ids
+
     def prepare(self, messages, tools, kwargs, max_new=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
-        prompt = self.template.render(messages, tools=tools, **kwargs)
-        ids = self.tok.encode(prompt, parse_special=True)
+        ids = self.prompt_ids(messages, tools, kwargs)
         self.embeddings.path = None
         images = images_of(messages)
         if images:
@@ -1354,7 +1396,10 @@ class Service:
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
             out, k = [], 0
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start and k < len(encoded):
+                if t == pad and j > 0 and ids[j - 1] == start:
+                    # more pairs than images: text parts that cut both markers apart (prompt_ids keeps whole ones text)
+                    if k == len(encoded):
+                        raise ValueError("the prompt and its images do not match")
                     out += [pad] * encoded[k][1]
                     k += 1
                 elif t == pad:
@@ -2415,8 +2460,7 @@ def make_handler(svc: Service):
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
-            prompt = svc.template.render(messages, tools=tools, **kw)
-            self._json(200, {"input_tokens": len(svc.tok.encode(prompt, parse_special=True))})
+            self._json(200, {"input_tokens": len(svc.prompt_ids(messages, tools, kw))})
 
         def _anthropic(self, req):
             svc.load()
