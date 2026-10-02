@@ -164,8 +164,44 @@ public:
         return true;
     }
 
+    // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
+    // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
+    // is the tail the client rewrote (the reply as it was generated, before the next request re-rendered it) and
+    // checkpoints older than that one.  A subagent's successive turns parked one such copy each, and make_room's
+    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
+    // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
+    // shares the system prompt's root with it), is kept.  Returns how many were dropped.
+    size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+        auto held = [&](const ConversationCheckpoint& c) {
+            if (c.ids == ids && c.imgs == images) return true;
+            for (const auto& k : checkpoints)
+                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+            return false;
+        };
+        size_t dropped = 0;
+        for (size_t i = 0; i < entries_.size();) {
+            const auto& e = entries_[i];
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest)) {
+                bytes_ -= e.bytes();
+                entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+                ++dropped;
+                continue;
+            }
+            ++i;
+        }
+        superseded_ += dropped;
+        return dropped;
+    }
+    size_t superseded() const { return superseded_; }
+
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
+        if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
+        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         bytes_ += n;
@@ -173,7 +209,7 @@ public:
     }
 
 private:
-    size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0;
+    size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0;
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;
 };

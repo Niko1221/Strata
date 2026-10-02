@@ -92,7 +92,7 @@ __global__ void gate_softplus(const float* __restrict__ alpha, const float* __re
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
     const float value = __fadd_rn(alpha[i], dt[i]);
-    const float softplus = value > 20.0f ? value : logf(1.0f + expf(value));
+    const float softplus = value > 20.0f ? value : log1pf(expf(value));   // 1 + e^v loses e^v below ~1e-7
     gate[i] = softplus * ssm_a[i];
 }
 

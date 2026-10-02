@@ -42,19 +42,14 @@ inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
 inline constexpr float NG_RMS_EPS = 1e-6f;
 
 // The table: [160, 320001536].  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements = 5 blocks
-// of 32.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.
+// of 32.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.  How many BYTES those 160 values
+// take follows the checkpoint's quantization, so the stride is a property of the tensor's own GGML type and
+// never a constant: IQ4_NL (90), Q5_0 (110), F8_E4M3 (160) and Q8_0 (170) are all the same geometry.
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
-inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90, the IQ4_NL row
-
-/// The row size of the same table under a different quantization.  The published checkpoints carry the PLE
-/// table as IQ4_NL (90 B/row) or as Q8_0 (5 blocks of 34 = 170 B/row, `d` once per 32 values, no min term);
-/// the geometry above is identical, so only the stride and the block decoder differ.  Returns 0 for a type
-/// this engine has no PLE decoder for.
-inline constexpr int ple_row_bytes(int ggml_type) {
-    return ggml_type == 20 ? PLE_ROW_BYTES : (ggml_type == 8 ? (PLE_HEAD_DIM / 32) * 34 : 0);
-}
-/// The largest `ple_row_bytes` of any supported type: a scratch buffer for 16 rows is sized with this.
-inline constexpr int PLE_ROW_BYTES_MAX = (PLE_HEAD_DIM / 32) * 34;       // 170
+inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90: an IQ4_NL row
+inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160: an F8_E4M3 row, one byte a value
+inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;      // 170: a Q8_0 row: one fp16 `d` per 32
+inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_Q8_0;             // the widest row a scratch buffer holds
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
@@ -96,7 +91,7 @@ void ngram_rows(const int32_t* tokens, const int32_t* prev, int n_tokens, const 
 /// codebook value; at 3cf03257 they do not, and the difference would shift every one of the 51.2e9 elements.
 int iq4nl_code(int code);
 
-/// One 90-byte IQ4_NL row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
+/// One 90-byte row -> 160 floats.  The canonical rule `value = cb[code] * scale + offset` with offset 0,
 /// because IQ4_NL has no min term (`has_offset` is false in the manifest).
 ///
 /// THE NIBBLE ORDER IS SPLIT-HALF, NOT INTERLEAVED, and that is the trap here.  `dequantize_row_iq4_nl` is
@@ -106,13 +101,24 @@ int iq4nl_code(int code);
 /// a perfectly plausible embedding of the wrong 160 values.
 void iq4nl_dequant_row(const uint8_t* row, float* out160);
 
-/// One row of the table -> 160 floats, for whichever type the checkpoint carries it as.  `ggml_type` 20 is
-/// IQ4_NL and 8 is Q8_0 (5 blocks of 34, `d` once per 32 values, no min term); the row must be
-/// `ple_row_bytes(ggml_type)` bytes.  Returns false for a type with no decoder, leaving `out160` untouched.
-///
-/// Q8_0's blocks are 34 bytes instead of 18 and there is no codebook: `qs` is already signed, so a block is
-/// one fp16 `d` followed by 32 int8.  Both decoders live in `artifact/dequant.hpp` and this only dispatches,
-/// so the PLE row and the artifact reader cannot drift apart on the layout.
+/// One FP8 row -> 160 floats: each byte an E4M3 value (the "fn" variant: no infinities, 0x7F/0xFF are NaN), times the
+/// table's one scale. This is the table as Qwen3.8-Flash-Next ships it (`...ngram_embedding.shard_k`, F8_E4M3, and
+/// `weight_scale`), kept byte for byte by tools/ple_fp8_pack.py; IQ4_NL is 8% off it per row.
+void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160);
+
+/// The row size of the same table under a different quantization, keyed by GGML type: 20 (IQ4_NL) is 90 bytes
+/// and 8 (Q8_0) is 170 (5 blocks of 34, one fp16 `d` per 32 values, no min term).  Returns 0 for a type this
+/// engine has no PLE decoder for.  The geometry is identical either way, so only the stride and the block
+/// decoder differ - which is why `PleReader::open` takes the row size and nothing downstream is a constant.
+inline constexpr int ple_row_bytes(int ggml_type) {
+    return ggml_type == 20 ? PLE_ROW_BYTES : (ggml_type == 8 ? PLE_ROW_BYTES_Q8_0 : 0);
+}
+
+/// One row of the table -> 160 floats, for either type a published checkpoint carries it as (see
+/// `ple_row_bytes`); the row must be that many bytes.  Returns false for a type with no decoder here, leaving
+/// `out160` untouched.  Both block decoders live in `artifact/dequant.hpp` and this only dispatches, so the PLE
+/// row and the artifact reader cannot drift apart on the layout.  The FP8 and Q5_0 tables are `PleTable`'s own
+/// arms (`format()`), and decode with the table's scale and the Q5_0 block instead.
 bool ple_dequant_row(int ggml_type, const uint8_t* row, float* out160);
 
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
@@ -127,11 +133,16 @@ enum class PleIo { Direct, Mmap };
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
     uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
-    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows ~ 95 MB IQ4_NL / 180 MB Q8_0; 0 = off
+    uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
     /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
     bool lock = false;
+    /// Direct mode with the I/O worker only: keep the SSD awake while rows are asked for - one page of the table
+    /// after this long without a read (0 = off), until `keepalive_window_s` after the last request for rows
+    /// (see PleReader::set_keepalive).
+    double keepalive_ms = 0;
+    double keepalive_window_s = 60;
 };
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every
@@ -169,6 +180,8 @@ public:
     /// True when `PleIoOptions::lock` was asked for and mlock succeeded (false: pages only pre-touched).
     bool locked() const;
     uint64_t rows() const;
+    /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
+    const char* format() const;
 
     /// 16 row indices -> 2560 floats.  The gathered rows are flattened HEAD-SLOWEST: row h's 160 values
     /// occupy `out[h*160, (h+1)*160)`, which is what `ggml_get_rows` does and what makes the result a plain

@@ -186,10 +186,185 @@ __global__ void router_top10_kernel(const float* __restrict__ logits, int n_toke
     }
 }
 
+#if defined(__HIPCC__)
+// ---- S6, AMD: the same router, BIT-IDENTICAL, without its serial parts. Measured on RDNA4 (gfx1201) the kernel
+// above took 39 us per call in decode (16% of the GPU's decode time): the ascending double sum is 512 dependent FP64
+// adds (~50 cycles each there), the ten selection passes are 20 block barriers, and the renormalisation re-reads its
+// ten weights from global memory one by one.  Here:
+//   * the sum's ONLY use is inv = (float) (1.0 / sum).  Every term is positive and the largest is exactly 1
+//     (exp(0)), so the serial sum and any other summation order both lie within 2^-43 (relative) of the exact sum
+//     (|serial - exact| <= 511u, |tree - exact| <= 21u, u = 2^-53).  1.0 / x and the float cast are monotone: when
+//     the bracket [tree (1 - 2^-40), tree (1 + 2^-40)] maps to ONE float, that float is the serial sum's.  Otherwise
+//     (about 1 row in 1000 in the parity test, or a non-finite sum) thread 0 runs the serial sum as before;
+//   * the selection runs on wave 0 alone with the probabilities in registers (16 per lane): the largest p with the
+//     lowest index on ties is unique, so the butterfly finds the same expert as the block reduction did;
+//   * the renormalisation sums the ten weights in rank order from registers and divides them in parallel.
+// Same expressions, same operands: the ids and weights are bitwise those of router_top10_kernel (hip_router_fast
+// checks it on 65,536 rows with ties, near-ties, NaN rows and the forced serial path). STRATA_HIP_ROUTER_OLD=1: the
+// kernel above.
+template <bool FORCE_SERIAL>
+__global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n_tokens, int n_expert, int k,
+                                         int* __restrict__ ids, float* __restrict__ weights) {
+    extern __shared__ unsigned char s_raw[];
+    const size_t taken_bytes = ((size_t) n_expert + 15u) & ~(size_t) 15u;
+    double* s_ex = (double*) (s_raw + taken_bytes);
+    __shared__ float s_red[RT_MAX_THREADS / 32];
+    __shared__ double s_dred[RT_MAX_THREADS / 32];
+    __shared__ float s_inv;
+    const int t = blockIdx.x;
+    if (t >= n_tokens) return;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int nt = blockDim.x, nw = (nt + 31) >> 5;
+    const float* l = logits + (size_t) t * n_expert;
+    // the max: as router_top10_kernel (exact, order-independent)
+    float mx = -INFINITY;
+    for (int e = tid; e < n_expert; e += nt) mx = fmaxf(mx, l[e]);
+    for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xffffffffu, mx, off));
+    if (lane == 0) s_red[warp] = mx;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < nw) ? s_red[tid] : -INFINITY;
+        for (int off = 16; off > 0; off >>= 1) v = fmaxf(v, __shfl_down_sync(0xffffffffu, v, off));
+        if (tid == 0) s_red[0] = v;
+    }
+    __syncthreads();
+    mx = s_red[0];
+    // the exponentials (the same expression), and a tree sum of them for the bracket
+    double part = 0.0;
+    for (int e = tid; e < n_expert; e += nt) {
+        const double x = exp((double) l[e] - (double) mx);
+        s_ex[e] = x;
+        part += x;
+    }
+    for (int off = 16; off > 0; off >>= 1) part += __shfl_xor_sync(0xffffffffu, part, off);
+    if (lane == 0) s_dred[warp] = part;
+    __syncthreads();
+    double tot = 0.0;
+    for (int w = 0; w < nw; ++w) tot += s_dred[w];
+    const double lo = tot * (1.0 - 0x1p-40), hi = tot * (1.0 + 0x1p-40);
+    const float f_lo = (float) (1.0 / hi), f_hi = (float) (1.0 / lo);
+    float inv;
+    if (!FORCE_SERIAL && tot >= 1.0 && hi < 1e300 && f_lo == f_hi) {
+        inv = f_lo;
+    } else {   // block-uniform (every thread computed the same tot): the serial sum, exactly as router_top10_kernel
+        if (tid == 0) {
+            double sum = 0.0;
+            for (int e = 0; e < n_expert; ++e) sum += s_ex[e];
+            s_inv = (float) (1.0 / sum);
+        }
+        __syncthreads();
+        inv = s_inv;
+    }
+    if (warp != 0) return;
+    // wave 0: lane holds experts lane + 32 j; p is router_top10_kernel's expression
+    constexpr int PER = 16;
+    float pv[PER];
+    unsigned live = 0;
+#pragma unroll
+    for (int j = 0; j < PER; ++j) {
+        const int e = lane + 32 * j;
+        pv[j] = -INFINITY;
+        if (e < n_expert) { pv[j] = (float) (s_ex[e] * inv); live |= 1u << j; }
+    }
+    float my_w = 0.0f;
+    int my_id = 0, nsel = 0;
+    for (int i = 0; i < k; ++i) {
+        float bv = -INFINITY;
+        int bi = n_expert;   // a sentinel that loses to every real index
+#pragma unroll
+        for (int j = 0; j < PER; ++j)
+            if (((live >> j) & 1u) && pv[j] > bv) { bv = pv[j]; bi = lane + 32 * j; }
+        for (int off = 16; off > 0; off >>= 1) {
+            const float ov = __shfl_xor_sync(0xffffffffu, bv, off);
+            const int oi = __shfl_xor_sync(0xffffffffu, bi, off);
+            if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+        }
+        if (bi >= n_expert) break;   // as router_top10_kernel: no rank i or later is written (every p left is NaN)
+        if ((bi & 31) == lane) live &= ~(1u << (bi >> 5));
+        if (lane == i) { my_w = bv; my_id = bi; }
+        nsel = i + 1;
+    }
+    if (nsel == k) {
+        double s = 0.0;
+        for (int i = 0; i < k; ++i) s += (double) __shfl_sync(0xffffffffu, my_w, i);
+        const double sc = fmax(s, 6.103515625e-05);       // 2**-14
+        if (lane < k) {
+            ids[(size_t) t * k + lane] = my_id;
+            weights[(size_t) t * k + lane] = (float) ((double) my_w / sc);
+        }
+    } else {   // router_top10_kernel's tail exactly: unwritten ranks keep what the buffer held and are renormalised too
+        if (lane < nsel) { ids[(size_t) t * k + lane] = my_id; weights[(size_t) t * k + lane] = my_w; }
+        __threadfence();
+        if (lane == 0) {
+            double s = 0.0;
+            for (int i = 0; i < k; ++i) s += (double) weights[(size_t) t * k + i];
+            const double sc = fmax(s, 6.103515625e-05);
+            for (int i = 0; i < k; ++i)
+                weights[(size_t) t * k + i] = (float) ((double) weights[(size_t) t * k + i] / sc);
+        }
+    }
+}
+
+void launch_generic(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights, void* stream,
+                    int mode) {   // mode 0: router_top10_kernel, 1: the HIP fast kernel, 2: the fast kernel's serial path
+    int threads = n_expert < RT_MAX_THREADS ? n_expert : RT_MAX_THREADS;
+    threads = (threads + 31) & ~31;
+    const size_t taken_bytes = ((size_t) n_expert + 15u) & ~(size_t) 15u;
+    const size_t smem = taken_bytes + (size_t) n_expert * sizeof(double) + (size_t) n_expert * sizeof(float);
+    if (mode == 1) {
+        router_top10_fast_kernel<false><<<(unsigned) n_tokens, threads, smem, (cudaStream_t) stream>>>(
+            logits, n_tokens, n_expert, k, ids, weights);
+        return;
+    }
+    if (mode == 2) {
+        router_top10_fast_kernel<true><<<(unsigned) n_tokens, threads, smem, (cudaStream_t) stream>>>(
+            logits, n_tokens, n_expert, k, ids, weights);
+        return;
+    }
+    router_top10_kernel<<<(unsigned) n_tokens, threads, smem, (cudaStream_t) stream>>>(
+        logits, n_tokens, n_expert, k, ids, weights);
+}
+#endif
+
 }  // namespace
+
+bool router_top10_variant(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights,
+                          void* stream, int variant) {
+#if defined(__HIPCC__)
+    if (n_tokens <= 0 || n_expert <= 64 || n_expert > 512 || k <= 0 || k > 32) return false;
+    if (variant < 0 || variant > 2) return false;
+    launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, variant);
+    return cudaGetLastError() == cudaSuccess;
+#else
+    (void) logits; (void) n_tokens; (void) n_expert; (void) k; (void) ids; (void) weights; (void) stream;
+    (void) variant;
+    return false;
+#endif
+}
 
 void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights,
                   void* stream) {
+#if defined(__HIPCC__)
+    {
+        static const bool old = std::getenv("STRATA_HIP_ROUTER_OLD") != nullptr;
+        if (!old && n_tokens > 0 && n_expert > 64 && n_expert <= 512 && k > 0 && k <= 32) {
+            launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, 1);
+            const cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                std::fprintf(stderr, "router_top10 launch: %s\n", cudaGetErrorString(e));
+                std::exit(1);
+            }
+            if (stream == nullptr) {
+                const cudaError_t s = cudaDeviceSynchronize();
+                if (s != cudaSuccess) {
+                    std::fprintf(stderr, "router_top10: %s\n", cudaGetErrorString(s));
+                    std::exit(1);
+                }
+            }
+            return;
+        }
+    }
+#endif
     if (n_tokens <= 0 || n_expert <= 0 || k <= 0) return;
     if (k > 64) {
         std::fprintf(stderr, "router_top10: k %d exceeds the kernel's 64\n", k);

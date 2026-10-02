@@ -143,6 +143,67 @@ int main() {
         check(!cache.make_room(0, one*2+1), "held larger than budget cannot underflow");
     }
     {
+        // #342: MAIN -> SUB (9 turns) -> MAIN with 4 slots.  Every SUB turn parks the previous turn's live state
+        // (its reply as generated, which the next request re-rendered) with a chain that holds that turn's
+        // boundary checkpoint; the copy a turn back adds only that stale tail and is dropped, so MAIN survives.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        auto with = [](std::vector<int32_t> prefix, std::initializer_list<int32_t> more) {
+            prefix.insert(prefix.end(), more); return prefix;
+        };
+        const std::vector<int32_t> root = {1, 2, 3, 4};
+        SavedConversation main = image({});
+        main.live.ids = with(with(root, {10, 11, 12}), {13, 14});
+        main.checkpoints = {cp(root), cp(with(root, {10, 11, 12}))};
+        const size_t big = 1 << 20;
+        ConversationCache cache(big, 4);
+        check(cache.put(std::move(main)), "park MAIN");
+        std::vector<int32_t> history = with(root, {20});         // SUB's conversation so far, re-rendered
+        std::vector<ConversationCheckpoint> chain = {cp(root)};
+        for (int turn = 1; turn <= 9; ++turn) {
+            chain.push_back(cp(history));                        // the turn boundary the next request resumes from
+            SavedConversation sub = image({});
+            sub.live.ids = with(history, {900, (int32_t) turn});   // + the reply with its thinking (stale tail)
+            sub.checkpoints = chain;
+            check(cache.put(std::move(sub)), "park SUB turn");
+            check(cache.size() <= 2, "one parked copy of SUB at a time");
+            history = with(history, {30, (int32_t) turn});       // the reply as the next request renders it
+        }
+        check(cache.evictions() == 0 && cache.superseded() == 8, "8 superseded copies dropped, nothing evicted");
+        const auto m = cache.best(with(with(root, {10, 11, 12}), {13, 14, 15}), {}, true);
+        check(m.tokens == 9 && m.live, "MAIN still restores in full");
+        const auto s = cache.best(with(history, {40}), {}, true);
+        check(s.tokens == (int64_t) history.size() - 2, "SUB resumes from its last turn boundary");
+    }
+    {
+        // what is NOT superseded: another conversation sharing only the root, an entry without checkpoints, the
+        // other steering mode, a branch whose deepest checkpoint the new chain does not hold
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache cache(1 << 20, 8);
+        SavedConversation other = image({1, 2, 3, 4, 50, 51, 52});
+        other.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 50, 51})};
+        cache.put(std::move(other));
+        cache.put(image({1, 2, 3, 4, 7, 7}));                    // no checkpoints
+        SavedConversation steered = image({1, 2, 3, 4, 60, 61}, false);
+        steered.checkpoints = {cp({1, 2, 3, 4, 60})};
+        cache.put(std::move(steered));
+        SavedConversation branch = image({1, 2, 3, 4, 60, 70, 71});
+        branch.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60, 70})};
+        cache.put(std::move(branch));
+        SavedConversation incoming = image({1, 2, 3, 4, 60, 80, 81});
+        incoming.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
+        check(cache.put(std::move(incoming)), "park a conversation sharing roots with all of them");
+        check(cache.size() == 5 && cache.superseded() == 0, "none of them is superseded");
+        SavedConversation same_state = image({1, 2, 3, 4, 60, 70});   // live equal to the branch's deepest point
+        same_state.checkpoints = {cp({1, 2, 3, 4})};
+        check(cache.put(std::move(same_state)) && cache.superseded() == 1 && cache.size() == 5,
+              "the live state equal to an entry's deepest checkpoint supersedes it");
+        SavedConversation huge = image({1, 2, 3, 4, 60, 80});
+        huge.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
+        huge.live.gdn.resize(2 << 20);
+        check(!cache.put(std::move(huge)) && cache.size() == 5 && cache.superseded() == 1,
+              "an oversized put drops nothing");
+    }
+    {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");

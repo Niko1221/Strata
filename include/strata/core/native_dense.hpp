@@ -38,6 +38,10 @@ public:
     /// `per_layer` comes back sized to `n_layers`; summing a range equals what `load` allocates for it.
     static bool served_layer_bytes(const std::vector<std::string>& shards, bool include_ple_key, int64_t n_layers,
                                    std::vector<uint64_t>& per_layer, std::string& err);
+    /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
+    /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
+    /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
+    static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
     uint64_t weight_bytes() const { return bytes_; }
     size_t tensor_count() const { return weights_.size(); }
 

@@ -91,13 +91,48 @@ bool built() { return true; }
 
 bool supported(int t) {
     switch ((ggml_type) t) {
-        case GGML_TYPE_Q2_0: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_Q2_0:
+#ifdef STRATA_ORCA_Q4KS_MMQ
+        case GGML_TYPE_Q5_0:   // #296 (Q4_K and Q5_1: STRATA_MMQ_KQUANTS)
+#endif
+        case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
+#ifdef STRATA_MMQ_KQUANTS
+        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1:   // Unsloth's UD-Q4_K_XL experts (CUDA)
+#endif
             return true;
         default:
             return false;
     }
+}
+
+bool fits(int t, int64_t w_rows) {
+    if (!supported(t)) return false;
+    // mul_mat_q_case's choice: the "fallback" configs when the rows are not a multiple of 128; then
+    // mul_mat_q_switch_J's loop - a tile size whose config exists for this card and fits its shared memory
+    const bool fallback = w_rows % 128 != 0;
+    const ggml_cuda_device_info& info = ggml_cuda_info();
+    for (int id = 0; id < info.device_count; ++id) {
+        const int cc = info.devices[id].cc;
+        const size_t smpbo = info.devices[id].smpbo;
+        bool any = false;
+        for (int J = 8; J <= 128 && !any; J += 8) {
+            const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, fallback, cc);
+            any = c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, cc) <= smpbo;
+        }
+        if (!any) {
+            static bool said[GGML_TYPE_COUNT] = {};
+            if (t >= 0 && t < GGML_TYPE_COUNT && !said[t]) {
+                said[t] = true;
+                std::fprintf(stderr, "strata: prompt kernels: llama.cpp's MMQ has no tile for %s (%lld rows) on GPU %d "
+                                     "(cc %d, %zu bytes of shared memory per block): that product takes the non-MMQ path "
+                                     "(#420)\n", ggml_type_name((ggml_type) t), (long long) w_rows, id, cc, smpbo);
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
@@ -134,6 +169,9 @@ void Context::run(const Product& p, void* stream) {
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
     const cudaStream_t s = (cudaStream_t) stream;
     switch (t) {
+#ifdef STRATA_ORCA_Q4KS_MMQ
+        case GGML_TYPE_Q5_0: mul_mat_q_case<GGML_TYPE_Q5_0>(ctx, a, s); break;
+#endif
         case GGML_TYPE_Q2_0: mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, a, s); break;
         case GGML_TYPE_IQ2_XXS: mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, a, s); break;
         case GGML_TYPE_IQ2_XS: mul_mat_q_case<GGML_TYPE_IQ2_XS>(ctx, a, s); break;
@@ -143,6 +181,11 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_IQ4_NL: mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, a, s); break;
         case GGML_TYPE_IQ4_XS: mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, a, s); break;
         case GGML_TYPE_Q8_0: mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, a, s); break;
+#ifdef STRATA_MMQ_KQUANTS
+        case GGML_TYPE_Q4_K: mul_mat_q_case<GGML_TYPE_Q4_K>(ctx, a, s); break;
+        case GGML_TYPE_Q5_K: mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, a, s); break;
+        case GGML_TYPE_Q5_1: mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, a, s); break;
+#endif
         default:
             std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);
             std::exit(1);

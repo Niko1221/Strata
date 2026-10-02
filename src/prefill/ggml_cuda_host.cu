@@ -1,5 +1,6 @@
 // src/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
 // and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
+#include "strata/core/emulate.hpp"
 #include "common.cuh"
 
 #include <cstdio>
@@ -80,8 +81,8 @@ const ggml_cuda_device_info & ggml_cuda_info() {
             d.integrated = false;
             d.supports_cooperative_launch = false;
 #else
-            d.cc = 100 * prop.major + 10 * prop.minor;
-            d.smpbo = prop.sharedMemPerBlockOptin;
+            d.cc = 100 * strata::cc_major_of(prop.major) + 10 * strata::cc_minor_of(prop.minor);   // STRATA_EMULATE_CC
+            d.smpbo = strata::smem_optin_of((int) prop.sharedMemPerBlockOptin);
             d.integrated = prop.integrated != 0;
             d.supports_cooperative_launch = prop.cooperativeLaunch != 0;
 #endif

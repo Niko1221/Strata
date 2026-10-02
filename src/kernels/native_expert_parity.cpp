@@ -467,6 +467,59 @@ int check_q5_1_min(cudaStream_t s) {
                 "(largest per-block sum shift %.3g)  %s\n", e_q, e_s, shift, ok ? "ok" : "FAIL");
     return ok ? 0 : 1;
 }
+// #290: the BF16 token embedding (--embd-gguf) - iq_embed_rows and iq_dequant_f32 on a random BF16 table against
+// the exact widening (bits << 16), every bit; rows gathered out of order, with repeats
+int check_bf16_embd(cudaStream_t s) {
+    constexpr int kBf16 = 30;
+    const int64_t H = 2560, V = 61, NT = 97;
+    int failures = 0;
+    if (!strata::kernels::embed_type_supported(kBf16) || strata::kernels::iq_supported(kBf16) ||
+        strata::kernels::iq_row_bytes(kBf16, H) != (size_t) H * 2) {
+        std::printf("bf16 embedding: type support / row bytes wrong\n");
+        return 1;
+    }
+    std::mt19937 rng(290);
+    std::vector<uint16_t> table((size_t) (V * H));
+    for (auto& v : table) {   // any bit pattern but NaN (a NaN's payload is not what the test is about)
+        do v = (uint16_t) (rng() & 0xffff); while ((v & 0x7f80) == 0x7f80 && (v & 0x7f));
+    }
+    std::vector<int32_t> tok((size_t) NT);
+    for (auto& t : tok) t = (int32_t) (rng() % V);
+    void* dt = nullptr;
+    int32_t* dtok = nullptr;
+    float* dout = nullptr;
+    cudaMalloc(&dt, table.size() * 2);
+    cudaMalloc((void**) &dtok, tok.size() * 4);
+    const int64_t out_rows = NT > V ? NT : V;   // the gathered rows (NT) and the whole table (V) share the buffer
+    cudaMalloc((void**) &dout, (size_t) (out_rows * H) * 4);
+    cudaMemcpy(dt, table.data(), table.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dtok, tok.data(), tok.size() * 4, cudaMemcpyHostToDevice);
+    auto widen = [](uint16_t b) { const uint32_t u = (uint32_t) b << 16; float f; std::memcpy(&f, &u, 4); return f; };
+    std::vector<float> got((size_t) (out_rows * H));
+    strata::kernels::iq_embed_rows(kBf16, dt, (size_t) H * 2, dtok, NT, H, dout, s);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(got.data(), dout, (size_t) (NT * H) * 4, cudaMemcpyDeviceToHost);
+    size_t rows_differ = 0;
+    for (int64_t r = 0; r < NT; ++r)
+        for (int64_t d = 0; d < H; ++d) {
+            const float want = widen(table[(size_t) (tok[(size_t) r] * H + d)]);
+            if (std::memcmp(&got[(size_t) (r * H + d)], &want, 4) != 0) { ++rows_differ; break; }
+        }
+    strata::kernels::iq_dequant_f32(kBf16, dt, V * H, dout, s);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(got.data(), dout, table.size() * 4, cudaMemcpyDeviceToHost);
+    size_t values_differ = 0;
+    for (size_t i = 0; i < table.size(); ++i) {
+        const float want = widen(table[i]);
+        values_differ += std::memcmp(&got[i], &want, 4) != 0;
+    }
+    cudaFree(dt); cudaFree(dtok); cudaFree(dout);
+    std::printf("bf16 embedding: %lld gathered rows, %zu differ; dequant of %lld values, %zu differ in any bit\n",
+                (long long) NT, rows_differ, (long long) (V * H), values_differ);
+    if (rows_differ || values_differ) ++failures;
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -474,7 +527,8 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"
-                             "       native_expert_parity --q5_1-min\n");
+                             "       native_expert_parity --q5_1-min\n"
+                             "       native_expert_parity --bf16-embd\n");
         return 2;
     }
     // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
@@ -491,6 +545,8 @@ int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "--q5_1-min") {
         failures += check_q5_1_min(s);
+    } else if (mode == "--bf16-embd") {
+        failures += check_bf16_embd(s);
     } else if (mode == "--synthetic") {
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];

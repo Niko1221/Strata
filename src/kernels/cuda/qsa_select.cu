@@ -1,4 +1,7 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
+#include "strata/core/emulate.hpp"
+#include <cstdlib>
+#include <cstring>
 #include "strata/kernels/qsa_select.hpp"
 
 #include <cuda_runtime.h>
@@ -6,6 +9,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace strata::kernels {
 namespace {
@@ -276,6 +280,160 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
     }
 }
 
+#if defined(__HIPCC__)
+// ---- gfx12 (RDNA4: gfx1200 / gfx1201) scorer on v_wmma_f32_16x16x16_bf16 (wave32).  Same GEMM as above: for a tile of 16
+// queries, every block's score is sum over the 4 indexer heads of relu(q_h . k), K = 128.  FP32-level accuracy from a
+// three-way bf16 split of both operands (x = hi + mid + lo EXACTLY - the top 8, next 8 and last 8 bits of the fp32
+// mantissa, so bf16's fp32-sized exponent range needs no scaling) and the six products of order <= 2, smallest first;
+// like the TF32 kernel it sums in another order than the warp kernel (not bitwise).  The tail block n_bid is the warp
+// kernel's arithmetic (block_scores_tail_kernel).
+//   D = A x B with A = 16 key blocks (row l%16 of a lane, k = 8*(l/16)+i), B = 16 queries (column l%16, same k):
+//   a lane ends up with 8 consecutive blocks of ONE query, written as one run.  No LDS for keys: a lane reads its
+//   32-byte slice of the key row from global (the 16 query tiles of a launch re-read them from L2); the queries are
+//   split once per CTA into LDS.
+#if defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_SEL_GFX12 1
+#else
+#define STRATA_SEL_GFX12 0
+#endif
+typedef short sel_s8 __attribute__((ext_vector_type(8)));
+typedef float sel_f8 __attribute__((ext_vector_type(8)));
+typedef uint32_t sel_u4 __attribute__((ext_vector_type(4)));
+constexpr int WQT = 16;                    // queries per CTA (the N of one WMMA)
+constexpr int WITER = 4;                   // key tiles per warp (the CTA covers 4 warps * WITER * 16 blocks)
+constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 bytes, conflict-free 16-byte reads
+
+__device__ __forceinline__ sel_f8 wmma_bf16(const sel_s8& a, const sel_s8& b, const sel_f8& c) {
+#if STRATA_SEL_GFX12
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
+#else
+    __trap();
+    return c;
+#endif
+}
+// the bf16 pieces of x as fp32 bit patterns whose upper 16 bits are the bf16 (lower 16 are zero)
+__device__ __forceinline__ void split3(float x, uint32_t& hi, uint32_t& mid, uint32_t& lo) {
+    hi = __float_as_uint(x) & 0xffff0000u;
+    const float r1 = x - __uint_as_float(hi);                   // exact
+    mid = __float_as_uint(r1) & 0xffff0000u;
+    lo = __float_as_uint(r1 - __uint_as_float(mid)) & 0xffff0000u;   // exact: at most 8 significant bits left
+}
+__device__ __forceinline__ uint32_t pack_bf16x2(uint32_t a, uint32_t b) {   // low half = a's bf16, high half = b's
+#if STRATA_SEL_GFX12
+    return __builtin_amdgcn_perm(b, a, 0x07060302u);
+#else
+    return (a >> 16) | (b & 0xffff0000u);
+#endif
+}
+
+__global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __restrict__ pooled,
+                                                                const float* __restrict__ q_idx,
+                                                                const int32_t* __restrict__ steps, int64_t nq,
+                                                                int64_t max_blocks, int64_t reach,
+                                                                float* __restrict__ out) {
+    __shared__ __align__(16) uint16_t sq[3][IDX_HEADS][WQT][WQS];   // hi / mid / lo, [head][query][dim]
+    __shared__ int s_nbid[WQT];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5, l16 = lane & 15, g = lane >> 4;
+    const int64_t q0 = (int64_t) blockIdx.y * WQT;
+    for (int i = t; i < WQT * IDX_HEADS * IDX_DIM / 4; i += 128) {
+        const int row = i / (IDX_DIM / 4), c = i % (IDX_DIM / 4);
+        const int qr = row / IDX_HEADS, h = row % IDX_HEADS;
+        float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (q0 + qr < nq) v = reinterpret_cast<const float4*>(q_idx + (q0 + qr) * IDX_HEADS * IDX_DIM)[h * (IDX_DIM / 4) + c];
+        const float x[4] = {v.x, v.y, v.z, v.w};
+        uint32_t hb[4], mb[4], lb[4];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) split3(x[j], hb[j], mb[j], lb[j]);
+        *reinterpret_cast<uint2*>(&sq[0][h][qr][c * 4]) = make_uint2(pack_bf16x2(hb[0], hb[1]), pack_bf16x2(hb[2], hb[3]));
+        *reinterpret_cast<uint2*>(&sq[1][h][qr][c * 4]) = make_uint2(pack_bf16x2(mb[0], mb[1]), pack_bf16x2(mb[2], mb[3]));
+        *reinterpret_cast<uint2*>(&sq[2][h][qr][c * 4]) = make_uint2(pack_bf16x2(lb[0], lb[1]), pack_bf16x2(lb[2], lb[3]));
+    }
+    if (t < WQT) s_nbid[t] = q0 + t < nq ? steps[(q0 + t) * kStepCount + kStepNBid] : 0;
+    __syncthreads();
+    int hi_nbid = 0;
+#pragma unroll
+    for (int i = 0; i < WQT; ++i) hi_nbid = max(hi_nbid, s_nbid[i]);
+    const int64_t qi = q0 + l16;
+    const int nb_q = s_nbid[l16];
+    for (int it = 0; it < WITER; ++it) {
+        const int64_t b0 = (((int64_t) blockIdx.x * WITER + it) * 4 + warp) * 16;
+        if (b0 >= reach || b0 >= hi_nbid) break;          // warp-uniform; later tiles start higher
+        const int64_t row = b0 + l16;
+        const bool rv = row < hi_nbid && row < max_blocks;
+        const float* kp = pooled + (rv ? row : 0) * IDX_DIM + g * 8;
+        // acc: the hi*hi products; cor: the five smaller ones (<= 2^-8 of it). Kept apart and added once at the end: a
+        // correction summed into the big accumulator is rounded to ITS ulp at every one of the 48 steps (measured: 8e-7
+        // of the score scale; apart, near the warp kernel's)
+        sel_f8 acc[IDX_HEADS], cor[IDX_HEADS];
+#pragma unroll
+        for (int h = 0; h < IDX_HEADS; ++h) acc[h] = cor[h] = sel_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll 2
+        for (int kk = 0; kk < IDX_DIM / 16; ++kk) {
+            float4 k0 = make_float4(0.f, 0.f, 0.f, 0.f), k1 = k0;
+            if (rv) {
+                k0 = *reinterpret_cast<const float4*>(kp + kk * 16);
+                k1 = *reinterpret_cast<const float4*>(kp + kk * 16 + 4);
+            }
+            const float x[8] = {k0.x, k0.y, k0.z, k0.w, k1.x, k1.y, k1.z, k1.w};
+            uint32_t hb[8], mb[8], lb[8];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) split3(x[j], hb[j], mb[j], lb[j]);
+            sel_u4 ah, am, al;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                ah[j] = pack_bf16x2(hb[2 * j], hb[2 * j + 1]);
+                am[j] = pack_bf16x2(mb[2 * j], mb[2 * j + 1]);
+                al[j] = pack_bf16x2(lb[2 * j], lb[2 * j + 1]);
+            }
+            const sel_s8 Ah = __builtin_bit_cast(sel_s8, ah), Am = __builtin_bit_cast(sel_s8, am),
+                         Al = __builtin_bit_cast(sel_s8, al);
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const sel_s8 Bh = *reinterpret_cast<const sel_s8*>(&sq[0][h][l16][kk * 16 + g * 8]);
+                const sel_s8 Bm = *reinterpret_cast<const sel_s8*>(&sq[1][h][l16][kk * 16 + g * 8]);
+                const sel_s8 Bl = *reinterpret_cast<const sel_s8*>(&sq[2][h][l16][kk * 16 + g * 8]);
+                cor[h] = wmma_bf16(Al, Bh, cor[h]);
+                cor[h] = wmma_bf16(Ah, Bl, cor[h]);
+                cor[h] = wmma_bf16(Am, Bm, cor[h]);
+                cor[h] = wmma_bf16(Ah, Bm, cor[h]);
+                cor[h] = wmma_bf16(Am, Bh, cor[h]);
+                acc[h] = wmma_bf16(Ah, Bh, acc[h]);
+            }
+        }
+        // relu per head, heads added in order (as the warp kernel); this lane: query qi, blocks b0 + 8g .. 8g+7
+        if (qi < nq) {
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                const int64_t b = b0 + g * 8 + i;
+                if (b >= nb_q || b >= max_blocks) continue;
+                float score = 0.0f;
+#pragma unroll
+                for (int h = 0; h < IDX_HEADS; ++h) {
+                    const float d = acc[h][i] + cor[h][i];
+                    score += d > 0.0f ? d : 0.0f;
+                }
+                out[qi * max_blocks + b] = score;
+            }
+        }
+    }
+}
+
+// the gfx12 kernel needs gfx1200/gfx1201 code objects and a gfx12 device (gfx1100 has WMMA too, with another layout)
+bool sel_gfx12_device() {
+    static int ok[64] = {};   // per device: 0 unknown, 1 yes, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (ok[dev] == 0) {
+        cudaDeviceProp prop;
+        ok[dev] = (cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+                   (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0))
+                      ? 1 : 2;
+        cudaGetLastError();
+    }
+    return ok[dev] == 1;
+}
+#endif  // __HIPCC__
+
 // the tail block n_bid of each query: exactly block_scores_kernel's arithmetic for that block
 __global__ void __launch_bounds__(32) block_scores_tail_kernel(const float* __restrict__ dead,
                                                                const float* __restrict__ q_idx,
@@ -308,6 +466,14 @@ __global__ void __launch_bounds__(32) block_scores_tail_kernel(const float* __re
 // block_topk_kernel's (radix threshold, ties to the lowest index, cells ascending): identical ids.
 constexpr int TK_T = 1024;
 constexpr int TK_PER = 33;
+#if defined(__HIPCC__)
+// AMD (RDNA, wave32): a 1,024-thread block may use 192 VGPRs per lane, so the keys of 66 blocks per thread fit - contexts
+// up to 4 * 1024 * 66 = 270,336 cells (the 262,144 --max-context) keep the register kernel. NVIDIA's 64 registers per
+// thread at 1,024 threads allow only TK_PER.
+constexpr int TK_PER_MAX = 66;
+#else
+constexpr int TK_PER_MAX = TK_PER;
+#endif
 
 __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
@@ -337,6 +503,7 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     return r;
 }
 
+template <int PER>
 __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __restrict__ scores,
                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
                                                               int64_t cap, int32_t* __restrict__ ids) {
@@ -354,11 +521,11 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     }
     const float* sc = scores + qi * max_blocks;
     const int64_t nb = n_bid + 1;
-    const int64_t per = (nb + TK_T - 1) / TK_T;       // <= TK_PER (the caller checks)
+    const int64_t per = (nb + TK_T - 1) / TK_T;       // <= PER (the caller checks)
     const int64_t b0 = (int64_t) t * per, b1 = (b0 + per < nb) ? b0 + per : nb;
-    uint32_t key[TK_PER];
+    uint32_t key[PER];
 #pragma unroll
-    for (int j = 0; j < TK_PER; ++j) key[j] = (b0 + j < b1) ? order_key(sc[b0 + j]) : 0u;
+    for (int j = 0; j < PER; ++j) key[j] = (b0 + j < b1) ? order_key(sc[b0 + j]) : 0u;
     auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
     uint32_t prefix = 0;
     int above = 0;
@@ -367,7 +534,7 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
         __syncwarp();
         const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
 #pragma unroll
-        for (int j = 0; j < TK_PER; ++j) {
+        for (int j = 0; j < PER; ++j) {
             const int64_t b = b0 + j;
             if (b >= b1) break;
             const int w = weight(b);
@@ -399,7 +566,7 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     const int64_t eq_budget = width - above;
     int gt = 0, eq = 0;
 #pragma unroll
-    for (int j = 0; j < TK_PER; ++j) {
+    for (int j = 0; j < PER; ++j) {
         const int64_t b = b0 + j;
         if (b >= b1) break;
         const int w = weight(b);
@@ -416,7 +583,7 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     int64_t wpos = block_excl_scan(sel, s_warp, tot);
     int64_t eq_left = my_eq;
 #pragma unroll
-    for (int j = 0; j < TK_PER; ++j) {
+    for (int j = 0; j < PER; ++j) {
         const int64_t b = b0 + j;
         if (b >= b1) break;
         const int w = weight(b);
@@ -507,6 +674,25 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
                          int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
+#if defined(__HIPCC__)
+    // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (STRATA_SELECT_WMMA=1): it selects slightly differently from the warp
+    // kernel (254/256 queries the same), so the default keeps the warp kernel; every other target keeps it too (false)
+    static const bool wmma_on = [] {
+        const char* v = std::getenv("STRATA_SELECT_WMMA");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    if (!wmma_on || !sel_gfx12_device()) return false;
+    {
+        const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+        const int64_t per = (int64_t) 4 * WITER * 16;
+        const dim3 grid((unsigned) ((reach + per - 1) / per), (unsigned) ((nq + WQT - 1) / WQT));
+        block_scores_wmma_kernel<<<grid, 128, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+        block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks, scores);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_tc: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return true;
+    }
+#else
     {   // sm_80 or newer (TF32 MMA); an older card keeps the warp kernel
         static int cc_major[64] = {};
         int dev = 0;
@@ -517,13 +703,12 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
                 cudaGetLastError();
                 return false;
             }
-            cc_major[dev] = major;
+            // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("STRATA_QSA_WARP");
+            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
         }
         if (cc_major[dev] < 8) return false;
     }
-#if defined(__HIPCC__)
-    return false;   // the tensor-core kernel is compiled out on AMD (its major version is not a CUDA sm)
-#endif
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;
     cudaGetDevice(&adev);
@@ -545,6 +730,7 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_tc: %s\n", cudaGetErrorString(e)); std::exit(1); }
     return true;
+#endif
 }
 
 void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
@@ -560,12 +746,30 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
 }
 
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
-                    const QsaShapes& s, int32_t* ids, void* stream) {
+                    const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
     // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. STRATA_TOPK_OLD=1:
     // the kernel that reads them from memory on every pass
     static const bool old = std::getenv("STRATA_TOPK_OLD") != nullptr;
     if (nq <= 0) return;
-    if (old || max_blocks > (int64_t) TK_T * TK_PER) {
+    // the blocks a query can have: the call's active count when the caller knows it (the prompt path), else the capacity.
+    // Decode (no count) keeps the capacity rule and the original register width: nothing changes there.
+#if defined(__HIPCC__)
+    const bool counted = active_blocks > 0;
+#else
+    // CUDA keeps 0.1.32's capacity rule: #337's dispatch was measured on RDNA4 only, and on the RTX 5070 the 64K
+    // prompts read 1-3% slower with it
+    const bool counted = false;
+    (void) active_blocks;
+#endif
+    const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
+    const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
+#if defined(__HIPCC__)
+    constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
+    const bool too_small = counted && reach < kRegMinBlocks;
+#else
+    const bool too_small = false;
+#endif
+    if (old || too_small || reach > fit) {
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
@@ -573,7 +777,10 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
-    block_topk_reg_kernel<<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    if (reach <= (int64_t) TK_T * TK_PER)
+        block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    else
+        block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }

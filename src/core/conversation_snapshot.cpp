@@ -43,8 +43,12 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
-    // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.
-    l = {st.kv_hybrid ? 3 : qsa_kv_format(st), cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.  Rotated INT8 K/V (#293,
+    // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
+    // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
+    // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
+    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,

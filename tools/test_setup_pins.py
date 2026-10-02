@@ -154,6 +154,26 @@ class Engine(unittest.TestCase):
         self.assertEqual(got, [setup.PREBUILT_URL + setup.PREBUILT_ASSET])
         self.assertIn("No ready-made engine for v0.1.31", out)
 
+    def test_a_refused_archive_is_not_kept(self):
+        """PR #324: a refused archive (too old, or no code for the GPU) kept its zip and .done mark, and every later
+        run reused it ("already downloaded") instead of the published one."""
+        for meta in ({"version": "0.1.0", "archs": [89]},
+                     {"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [120]}):
+            with self.subTest(meta=meta):
+                def download(url, dst, what=None):
+                    with zipfile.ZipFile(dst, "w") as z:
+                        z.writestr("BUILD.json", json.dumps(meta))
+                        z.writestr(setup.EXE, b"engine")
+                    setup.mark(dst)
+
+                with mock.patch.object(setup.urllib.request, "urlopen", lambda req, timeout=None: Response()), \
+                        mock.patch.object(setup, "download", download):
+                    eng, _ = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
+                self.assertIsNone(eng)
+                z = self.root / "engine" / setup.PREBUILT_ASSET
+                self.assertFalse(z.exists())
+                self.assertFalse(z.with_name(z.name + ".done").exists())
+
     def test_an_installed_engine_is_kept(self):
         (self.root / "engine" / "BUILD.json").write_text(json.dumps(
             {"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))

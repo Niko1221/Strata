@@ -526,6 +526,25 @@ def main() -> int:
     sidecar = out / "experts.bin.src.json"
     want = experts_source(model, text, offset)
     reuse = path.exists() and path.stat().st_size == offset and read_json(sidecar) == want
+
+    def layer_blobs(blob, ts):
+        chunk = np.concatenate([model.bytes(t.name).reshape(n_expert, -1) for t in ts], axis=1)
+        assert chunk.shape == (n_expert, blob)             # (n_expert, blob): gate | up | down per expert
+        return chunk
+
+    if reuse:
+        # the sidecar names the shards by name and size, which a re-quantized or fine-tuned checkpoint of the same
+        # geometry packed into the same folder can share: compare the first and last blobs of the first, middle and
+        # last layers with the GGUF too (six blobs, so an unchanged pack is still reused at once)
+        with open(path, "rb") as f:
+            for l, gt, dt, off, blob, ts in (layout[0], layout[len(layout) // 2], layout[-1]):
+                for e in (0, n_expert - 1):
+                    f.seek(off + e * blob)
+                    want_blob = b"".join(model.bytes(t.name).reshape(n_expert, -1)[e].tobytes() for t in ts)
+                    if f.read(blob) != want_blob:
+                        reuse = False
+        if not reuse:
+            print("%s matches %s but not this GGUF's expert blobs" % (path, sidecar.name))
     if path.exists() and not reuse and not a.experts_bin:
         if sidecar.exists():
             print("%s was cut from another source than this model (%s): the engine would read it instead of "
@@ -567,10 +586,7 @@ def main() -> int:
     part = out / "experts.bin.tmp"
     with open(part, "wb") as fo:
         for l, gt, dt, off, blob, ts in layout:
-            parts = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
-            chunk = np.concatenate(parts, axis=1)          # (n_expert, blob): gate | up | down per expert
-            assert chunk.shape == (n_expert, blob)
-            fo.write(chunk.tobytes())
+            fo.write(layer_blobs(blob, ts).tobytes())
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
