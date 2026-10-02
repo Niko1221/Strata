@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/device.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
@@ -694,20 +695,14 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     }
 #else
     {   // sm_80 or newer (TF32 MMA); an older card keeps the warp kernel
-        static int cc_major[64] = {};
         int dev = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
-        if (cc_major[dev] == 0) {
-            int major = 0;
-            if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) {
-                cudaGetLastError();
-                return false;
-            }
-            // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
-            const char* w = std::getenv("STRATA_QSA_WARP");
-            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
-        }
-        if (cc_major[dev] < 8) return false;
+        int cc = strata::core::device_cc_major(dev);
+        if (cc < 0) return false;
+        // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+        const char* w = std::getenv("STRATA_QSA_WARP");
+        if (w && (!std::strcmp(w, "1") || !std::strcmp(w, "select"))) cc = 7;
+        if (cc < 8) return false;
     }
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;

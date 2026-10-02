@@ -370,6 +370,27 @@ struct Options {
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
+
+    /// Fase 3 (hetero multi-GPU), explicit roles: MAIN runs the model + KV + verify, DRAFT keeps the MTP drafter
+    /// (its weights, own KV, drafting) in VRAM on its own GPU.  Opt-in and unset-by-default: without the flags
+    /// everything runs on CUDA0 exactly as today, and `--main-device 0 --draft-device 0` is the degenerate
+    /// all-on-one-GPU roles run.  Refused with --layer-split or --expert-cache-deviceN: those already own the
+    /// second GPU.  docs/HETERO_MGPU_PLAN.md
+    int main_device = -1;
+    int draft_device = -1;
+    /// Fase 8 (hetero multi-GPU), opt-in: the prompt fill queues on the drafter's stream and the wait moves to
+    /// the next prefill's entry - the main model's next chunk computes while the drafter catches up.  Only with
+    /// `--main-device != --draft-device`: the queued copy reads the verifier's mapped window (on one GPU the
+    /// device window is overwritten by the very next run).
+    bool draft_prefill_parallel = false;
+    /// Fase 9 (hetero multi-GPU), opt-in: the draft round's chain graphs launch back to back and ONE wait
+    /// reads the whole chain - the min-p cut reads the mapped probabilities after it instead of waiting
+    /// between the steps.  Works with or without the roles (it changes only the drafter's own stream).
+    bool draft_chain_batch = false;
+    /// Fase 10 (hetero multi-GPU), opt-in: pick the roles from the capability records and behave as if the
+    /// flags came in - MAIN keeps today's default ordinal, DRAFT takes the remaining device with the most free
+    /// bytes.  Explicit flags still win (the pick runs only when none was given).
+    int auto_roles = 0;
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -544,6 +565,21 @@ void usage() {
                  "  --expert-cache-device3 N  pre-fill N more experts on CUDA3\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
+                 "  --main-device N --draft-device M  Fase 3 (hetero multi-GPU): the roles. MAIN runs the\n"
+                 "                       model, its KV and verify; DRAFT keeps the MTP drafter (weights, own\n"
+                 "                       KV, drafting) in VRAM. Unset = everything on GPU 0, today's run.\n"
+                 "                       Not with --layer-split or --expert-cache-deviceN.\n"
+                 "  --draft-prefill-parallel  Fase 8 (hetero multi-GPU): the prompt fill queues on the\n"
+                 "                       drafter's stream and the wait moves to the next prefill's entry -\n"
+                 "                       the main model's next chunk computes while the drafter catches up.\n"
+                 "                       Needs the roles (--main-device != --draft-device).\n"
+                 "  --draft-chain-batch  Fase 9 (hetero multi-GPU): the draft round's chain graphs\n"
+                 "                       launch back to back and ONE wait reads the whole chain; the\n"
+                 "                       min-p cut reads the mapped probabilities after it.  Works\n"
+                 "                       with or without the roles.\n"
+                 "  --auto-roles  Fase 10 (hetero multi-GPU): pick the roles from the capability records -\n"
+                 "                       MAIN = the default ordinal, DRAFT = the remaining GPU with the most\n"
+                 "                       free bytes. Needs two GPUs (and --mtp, as the roles always do).\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1142,6 +1178,11 @@ int main(int argc, char** argv) {
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
         else if (a == "--split-device") o.split_device = next("--split-device");
+        else if (a == "--main-device") o.main_device = std::atoi(next("--main-device"));
+        else if (a == "--draft-device") o.draft_device = std::atoi(next("--draft-device"));
+        else if (a == "--draft-prefill-parallel") o.draft_prefill_parallel = true;
+        else if (a == "--draft-chain-batch") o.draft_chain_batch = true;
+        else if (a == "--auto-roles") o.auto_roles = 1;
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -1310,6 +1351,110 @@ int main(int argc, char** argv) {
                                  "distinct GPU per K in --split-device (1..%d; or 0 with one K: the same GPU)\n", n_dev - 1);
             return 2;
         }
+    }
+    // Fase 3 (hetero multi-GPU): explicit device roles (docs/HETERO_MGPU_PLAN.md).  This step validates and
+    // reports; the wiring lands with the next steps (the drafter's device override, the per-device head, the
+    // reservation that follows the role), so the banner says exactly what is already placed.
+    // Fase 8 (hetero multi-GPU): the pipelined prompt fill queues the drafter's chunk and only waits at the
+    // next prefill's entry - it reads the verifier's MAPPED window, whose rows survive until the run after
+    // next; a same-device run has only the device window, which the very next run overwrites.  The roles are
+    // required, and the check sits before their defaults so a bare `--draft-prefill-parallel` cannot slip in.
+    if (o.draft_prefill_parallel && o.main_device < 0 && o.draft_device < 0) {
+        std::fprintf(stderr, "strata generate: --draft-prefill-parallel is a hetero multi-GPU mode: it needs the roles, --main-device != --draft-device\n");
+        return 2;
+    }
+    // Fase 10 (hetero multi-GPU): the auto pick.  The records are the Fase 2 view (strata-device prints it);
+    // the rules (docs/HETERO_MGPU_PLAN.md): the main keeps ordinal 0, the draft takes the remaining device
+    // with the most free bytes, and fewer than two visible cards refuse - the drafter needs a device that is
+    // not the main's.  An explicit --main-device/--draft-device wins; the pick only runs when none was given.
+    if (o.auto_roles && o.main_device < 0 && o.draft_device < 0) {
+        std::vector<strata::core::DeviceCaps> auto_cards;
+        try {
+            auto_cards = strata::core::device_caps();
+        } catch (...) {
+            cudaGetLastError();   // the count query failed: the roles' own validation reports what it can below
+        }
+        if (auto_cards.size() < 2) {
+            std::fprintf(stderr, "strata generate: --auto-roles needs at least two visible GPUs (%zu found): the drafter must sit on a device that is not the main's\n",
+                         auto_cards.size());
+            return 2;
+        }
+        int best = -1;
+        uint64_t best_free = 0;
+        for (const auto& c : auto_cards)
+            if (c.ordinal != 0 && c.free_bytes > best_free) { best_free = c.free_bytes; best = c.ordinal; }
+        o.main_device = 0;
+        o.draft_device = best >= 0 ? best : 1;   // no free-bytes record survived the query: fall back to ordinal 1
+        std::fprintf(stderr, "strata generate: --auto-roles picked: MAIN %d (the engine's default ordinal), DRAFT %d (%s, %llu MiB free)\n",
+                     o.main_device, o.draft_device, auto_cards[(size_t) o.draft_device].name.c_str(),
+                     (unsigned long long) (auto_cards[(size_t) o.draft_device].free_bytes / (1024ull * 1024ull)));
+    }
+    if (o.main_device >= 0 || o.draft_device >= 0) {
+        int n_dev = 1;
+        if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
+        cudaGetLastError();
+        if (o.main_device < 0) o.main_device = 0;
+        if (o.draft_device < 0) o.draft_device = 0;
+        if (!o.layer_split.empty()) {
+            std::fprintf(stderr, "strata generate: --main-device/--draft-device and --layer-split are mutually exclusive: a layer split already places stages on several GPUs\n");
+            return 2;
+        }
+        if (o.main_device != o.draft_device &&
+            (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0)) {
+            std::fprintf(stderr, "strata generate: a remote draft (--main-device %d --draft-device %d) and the remote expert caches (--expert-cache-deviceN) both address the second GPU; with both roles on one GPU the caches are fine\n",
+                         o.main_device, o.draft_device);
+            return 2;
+        }
+        if (o.main_device >= n_dev || o.draft_device >= n_dev) {
+            std::fprintf(stderr, "strata generate: --main-device %d / --draft-device %d: out of range (%d visible GPU%s)\n",
+                         o.main_device, o.draft_device, n_dev, n_dev == 1 ? "" : "s");
+            return 2;
+        }
+        // Fase 4 (hetero multi-GPU): the role plan's premises, read from the Fase 2 capability records
+        // (strata-device prints the same view).  Informational - the only refusal here is the range check
+        // above, because the kernel paths self-select per device (dp4a's software fallback, the tensor-core
+        // fallbacks) and the cross-device handoff needs no peer pair (the Fase 3 gate's mapped host mirror),
+        // so refusing on anything else would fabricate a threshold the code has no need for.
+        std::vector<strata::core::DeviceCaps> role_cards;
+        try {
+            role_cards = strata::core::device_caps();
+        } catch (...) {
+            cudaGetLastError();   // a failed count query already shows the range check's answer; stay silent
+        }
+        if (!role_cards.empty() && o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device})
+                if (role_dev >= 0 && role_dev < (int) role_cards.size()) {
+                    const auto& c = role_cards[(size_t) role_dev];
+                    std::fprintf(stderr, "strata generate: role device %d: %s, cc %d.%d, dp4a %s, free VRAM %llu MiB\n",
+                                 role_dev, c.name.c_str(), c.cc_major, c.cc_minor,
+                                 c.dp4a ? "yes" : "software-fallback",
+                                 (unsigned long long) (c.free_bytes / (1024ull * 1024ull)));
+                }
+            const size_t cards = role_cards.size();
+            if (o.main_device >= 0 && o.draft_device >= 0 && o.main_device < (int) cards &&
+                o.draft_device < (int) cards) {
+                const std::vector<uint8_t> peers = strata::core::peer_access_matrix();
+                if (peers.size() == cards * cards)
+                    std::fprintf(stderr, "strata generate: peer access %d -> %d: %s (reported only; the mapped-mirror handoff needs none)\n",
+                                 o.main_device, o.draft_device,
+                                 peers[(size_t) o.main_device * cards + o.draft_device] ? "yes" : "no");
+            }
+        }
+        if (o.mtp.empty() || o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --draft-device needs the MTP drafter (--mtp and --spec >= 2): without one there is nothing to place\n");
+            return 2;
+        }
+        if (o.main_device != o.draft_device) {
+            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (two GPUs; the drafter and its own K/V load on the draft device)\n",
+                         o.main_device, o.draft_device);
+            // Fase 3 note (measured on the rig): cudaDeviceEnablePeerAccess DEADLOCKED here (two GTX 1080 Ti,
+            // driver 12.6) and a graph replay reading the other device without it faults - the cross-device
+            // handoff therefore needs the portable-mapped step before remote drafting can run; until then the
+            // drafter keeps the main path
+        }
+        else
+            std::fprintf(stderr, "strata generate: device roles: main %d, draft %d (degenerate: both roles on this one GPU)\n",
+                         o.main_device, o.draft_device);
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
@@ -2508,7 +2653,12 @@ int main(int argc, char** argv) {
         // so it always sees the canonical geometry; `static` because MtpDrafter keeps a reference
         static const strata::core::ModelGeometry draft_geometry{};
         // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device
-        const strata::core::OnDevice on_mtp(last_st ? last_st->dev : -1);
+        // Fase 3 (hetero multi-GPU): the DRAFT role owns the drafter.  Without the roles: today's device - the
+        // last stage's when split (it reads THAT stage's residual), else CUDA0.  With roles: the draft device,
+        // so its weights, its own K/V arena and its buffers are placed there while it keeps binding INTO the
+        // main session's state.
+        const int draft_dev = o.draft_device >= 0 ? o.draft_device : (last_st ? last_st->dev : -1);
+        const strata::core::OnDevice on_mtp(draft_dev);
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st ? last_st->ss : ss, o.spec, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     }
     // Create the additional contexts after MTP has secured CUDA0 memory, but
@@ -2681,7 +2831,9 @@ int main(int argc, char** argv) {
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         const int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
-                                     ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
+            ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab,
+                                       o.main_device >= 0 && o.draft_device >= 0 && o.main_device != o.draft_device)
+            : 0;
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind;
         int64_t slots = ((int64_t) free_b - reserve) / (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -2868,8 +3020,10 @@ int main(int argc, char** argv) {
             const uint8_t* b = srcp->blob(profile[(size_t) i].first, profile[(size_t) i].second);
             if (b == nullptr || !xcache.fill_slot_blocking(slot, b, err,
                     (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first))) {
-                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
-                             (long long) i, err.c_str());
+                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld (layer %lld expert %lld "
+                             "slot %d slots=%lld): %s\n", (long long) i, (long long) profile[(size_t) i].first,
+                             (long long) profile[(size_t) i].second, (int) slot, (long long) xcache.slots(),
+                             err.c_str());
                 return 1;
             }
             ++prefilled;
@@ -4267,8 +4421,17 @@ int main(int argc, char** argv) {
                           " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
             std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
         }
+        // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill - a no-op without the flag (the mode sits
+        // on the drafter; the binding and the prompt loop below stay unchanged when it is off)
+        mtp.set_prefill_async(o.draft_prefill_parallel);
+        mtp.set_chain_batch(o.draft_chain_batch);   // Fase 9: the chain batching (a no-op without --draft-chain-batch)
+        // Fase 3 gate: with the DRAFT role on another GPU the window crosses as the verifier's mapped mirror -
+        // no peer pair needed (measured on the rig: EnablePeerAccess deadlocks, a replay reading the other
+        // device without it faults); a same-device run keeps the device pointer
+        if (o.main_device != o.draft_device) ver.set_R_mirror(true);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err) ||
-            !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head, ver.final_R_all(), err)) {
+            !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
+                      ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
@@ -4283,6 +4446,20 @@ int main(int argc, char** argv) {
         const strata::core::PoolMultiFn win_pool_fn = n_stages > 1 ? &drive_pool_split : &drive_pool_multi;
         void* const win_pool_user = n_stages > 1 ? (void*) &split_drive : (void*) &drive;
         mem_mark("the verifier and the drafter's binding");
+        // Fase 11 (hetero multi-GPU): the role plan's VRAM accounting, per device right after the binding - the
+        // verifier and its pools live on the MAIN device, the drafter's weights, state and buffers (and its
+        // remote head) on the DRAFT one.  Informational; STRATA_TRACE marks the current device only.
+        if (o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device}) {
+                const strata::core::OnDevice on_report(role_dev);
+                size_t free_b = 0, total_b = 0;
+                if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                    std::fprintf(stderr, "strata generate: role device %d after the binding: %zu MiB free of %zu\n",
+                                 role_dev, free_b >> 20, total_b >> 20);
+                else
+                    cudaGetLastError();
+            }
+        }
         ver.set_split(o.spec_split);
         // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
         // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;
@@ -4572,6 +4749,14 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(st->dev);
                     cudaEventRecord(st->adapt_ev, st->adapt_stream);
                 }
+            // Fase 7 (hetero multi-GPU): the EVICTIONS are visible on every device's table now.  The copies above
+            // write the evicted experts' slots as they run, and the residency table (d_res) reached the devices only
+            // in apply_pending - whose non-blocking call DROPS while the copy is in flight, leaving a window that
+            // would read the evicted expert on the device table staring into a slot mid-overwrite (measured
+            // 2026-10-02: outputs nondeterministic in the roles run, the first divergent window is always the one
+            // right after the first adapt round).  Upload here: the evicted expert goes to the CPU pool path at once,
+            // the swapped-in experts stay non-resident until the copies land (admitted by apply_pending's event).
+            res_upload();
             for (float& v : drive.d.usage) v *= 0.7f;
             return true;
         };
@@ -5126,7 +5311,8 @@ int main(int argc, char** argv) {
                     }();
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
-                    if (!ver.commit(T, e) || !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e)) return false;
+                    const float* prefill_R = ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all();
+                    if (!ver.commit(T, e) || !mtp.prefill(prefill_R, nxt.data(), T, q, e)) return false;
                     q += T;
                 }
                 // the batched prompt path (other streams), checkpoints and snapshots may follow: the last commit first
@@ -5384,6 +5570,11 @@ int main(int argc, char** argv) {
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
+            // Fase 8: the queued async prompt fill finishes before the first window (a no-op without the flag)
+            if (!mtp.prefill_barrier(err)) {
+                std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
             if (cancelled) finish = "cancel";
             while (!cancelled && produced_n < max_new) {
                 int T = S_mtp;
@@ -5412,7 +5603,13 @@ int main(int argc, char** argv) {
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
-                apply_pending(false);
+                apply_pending(true);   // wait: the residency table must be settled before the window plans.
+                                   // A non-blocking call drops while the swap copy is in flight, and the
+                                   // admitted expert then switches from the CPU pool to the GPU-resident
+                                   // path at whichever window the copy happens to have landed by - the
+                                   // two expert paths round differently (measured 2026-10-02: the roles run
+                                   // was nondeterministic, the first divergent window was the first one
+                                   // after adapt).  Blocking is bounded by one copy (~1.4 MB, ~1 ms).
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
@@ -5499,12 +5696,12 @@ int main(int argc, char** argv) {
                 const double w = (double) dec_windows, L = (double) g.n_layers;
                 std::fprintf(stderr, "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
                                      "verify %.2f (GPU-reach wait %.2f + per-layer host %.2f [plan %.2f actq %.2f jobs %.2f "
-                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f; per layer-window: CPU experts "
+                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f + mirror %.2f; per layer-window: CPU experts "
                                      "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f\n",
                              (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_run / w,
                              (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w, (d1.plan - ds0.plan) / w,
                              (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w, (d1.run - ds0.run) / w,
-                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, (d1.misses - ds0.misses) / (w * L),
+                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, ver.ms_mirror, (d1.misses - ds0.misses) / (w * L),
                              (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L));
                 const std::string pr = ver.profile_report();
                 if (!pr.empty()) std::fprintf(stderr, "strata decode GPU stages (ms/window):%s\n", pr.c_str());
@@ -6059,16 +6256,35 @@ int main(int argc, char** argv) {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        // Fase 3 gate: the mapped mirror for a remote DRAFT role (see the serve path)
+        if (o.main_device != o.draft_device) ver.set_R_mirror(true);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
-        if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
+        if (use_mtp && !mtp.bind(wt, &native_head, ver.r_mirror_all() ? ver.r_mirror_all() : ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        // Fase 8 (hetero multi-GPU): the opt-in pipelined prompt fill (see the serve path)
+        mtp.set_prefill_async(o.draft_prefill_parallel);
+        mtp.set_chain_batch(o.draft_chain_batch);   // Fase 9: the chain batching (a no-op without --draft-chain-batch)
         mem_mark("the verifier and the drafter's binding");
+        // Fase 11 (hetero multi-GPU): the role plan's VRAM accounting, per device right after the binding - the
+        // verifier and its pools live on the MAIN device, the drafter's weights, state and buffers (and its
+        // remote head) on the DRAFT one.  Informational; STRATA_TRACE marks the current device only.
+        if (o.main_device != o.draft_device) {
+            for (const int role_dev : {o.main_device, o.draft_device}) {
+                const strata::core::OnDevice on_report(role_dev);
+                size_t free_b = 0, total_b = 0;
+                if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                    std::fprintf(stderr, "strata generate: role device %d after the binding: %zu MiB free of %zu\n",
+                                 role_dev, free_b >> 20, total_b >> 20);
+                else
+                    cudaGetLastError();
+            }
+        }
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
         ver.set_split(o.spec_split);
@@ -6170,6 +6386,10 @@ int main(int argc, char** argv) {
         // plan v0.3 P6: with a native pack the first window is the last prompt token alone (it produces the first
         // generated token and the MTP's first cell); otherwise the token loop already did that.
         bool first_window = native_pack;
+        if (use_mtp && !mtp.prefill_barrier(err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
         if (use_mtp && !first_window &&
             !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -6225,7 +6445,13 @@ int main(int argc, char** argv) {
             drive.d.layers = 0;
             drive.d.experts = 0;
             drive.d.failed = false;
-            apply_pending(false);
+            apply_pending(true);   // wait: the residency table must be settled before the window plans.
+                                   // A non-blocking call drops while the swap copy is in flight, and the
+                                   // admitted expert then switches from the CPU pool to the GPU-resident
+                                   // path at whichever window the copy happens to have landed by - the
+                                   // two expert paths round differently (measured 2026-10-02: the roles run
+                                   // was nondeterministic, the first divergent window was the first one
+                                   // after adapt).  Blocking is bounded by one copy (~1.4 MB, ~1 ms).
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;

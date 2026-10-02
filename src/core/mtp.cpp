@@ -60,6 +60,16 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
+// Fase 3 gate (hetero multi-GPU): the hand-off window may be the verifier's mapped host mirror - under unified
+// addressing its pointer is legal to READ from any device (zero-copy) and its attributes say Host, while the
+// same-device window is the verifier's device arena
+bool window_src_on_host(const float* p) {
+    if (p == nullptr) return false;
+    cudaPointerAttributes a{};
+    if (cudaPointerGetAttributes(&a, p) != cudaSuccess) { cudaGetLastError(); return false; }
+    return a.type == cudaMemoryTypeHost;
+}
+
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head;
@@ -121,6 +131,7 @@ MtpDrafter::~MtpDrafter() {
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
     if (dhead_) cudaFree(dhead_);
+    if (head_dev_) cudaFree(head_dev_);
     if (dvocab_) cudaFree(dvocab_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
@@ -229,9 +240,70 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
+    // Fase 3 (hetero multi-GPU): the RoPE tables are the main state's BY POINTER (qsa_state_init), which is
+    // that session's device's memory.  With the roles the drafter can sit on ANOTHER GPU, where those pointers
+    // are only readable through peer access - which the engine never requires.  When the pointers belong to
+    // another device the drafter gets its own tables, filled by ONE cross-device cudaMemcpy (peer-direct on a
+    // peer-capable rig, driver-staged through host otherwise); a same-device run keeps passing by reference,
+    // byte-identical to today.
+    const auto localize_rope = [&](QsaState& st, const QsaState& share, uint64_t& added) {
+        cudaPointerAttributes attr{};
+        if (cudaPointerGetAttributes(&attr, share.cos_tab) != cudaSuccess) { cudaGetLastError(); return; }
+        if (attr.type != cudaMemoryTypeDevice || (int) attr.device == (int) device_) return;
+        // UVA: the raw pointers are the valid cross-device addresses; attrs from a foreign context
+        // give a nil devicePointer here (measured), which is what made the copies 'invalid argument'
+        float* from = share.cos_tab;
+        const int64_t rows = max_cells * (s.n_rot / 2);
+        float* my_cos = nullptr, *my_sin = nullptr;
+        if (cudaMalloc(&my_cos, (size_t) rows * sizeof(float)) != cudaSuccess) { cudaGetLastError(); return; }
+        if (cudaMalloc(&my_sin, (size_t) rows * sizeof(float)) != cudaSuccess) {
+            cudaGetLastError();
+            cudaFree(my_cos);
+            return;
+        }
+        cudaGetLastError();   // a leftover error must not fail this pair of copies
+        const cudaError_t a = cudaMemcpy(my_cos, from, (size_t) rows * sizeof(float), cudaMemcpyDeviceToDevice);
+        const cudaError_t b = cudaMemcpy(my_sin, share.sin_tab, (size_t) rows * sizeof(float),
+                                         cudaMemcpyDeviceToDevice);
+        cudaGetLastError();   // ditto before the sync
+        const cudaError_t sync_e = cudaDeviceSynchronize();
+        if (a != cudaSuccess || b != cudaSuccess || sync_e != cudaSuccess) {
+            cudaGetLastError();
+            std::fprintf(stderr, "strata mtp: the RoPE tables on the draft device could not be filled (%s / %s; sync %s); the drafter stays on the main path\n",
+                         cudaGetErrorString(a), cudaGetErrorString(b), sync_e == cudaSuccess ? "ok" : cudaGetErrorString(sync_e));
+            cudaFree(my_cos); cudaFree(my_sin);
+            return;
+        }
+        st.cos_tab = my_cos;
+        st.sin_tab = my_sin;
+        added += (uint64_t) rows * 2 * sizeof(float);
+    };
+    uint64_t rope_vram = 0;
+    const auto localize = [&]() { localize_rope(st_, ss.qsa_states[ss.qsa_primary()], rope_vram); };
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
-    qsa_state_zero(st_, g, nullptr);
+    localize();
+    vram_ += rope_vram;
+    // Fase 3 (hetero multi-GPU): the session's block workspace (ss.block.gr - gr_read's scratch,
+    // see block_buffers_init) lives in the session's arena on the MAIN device; a drafter on ANOTHER
+    // GPU read it from its own kernels and faulted (measured: eager ck grmix, 2026-10-02).  The rope
+    // localization above already identified the roles case; same-device runs keep passing the
+    // session's workspace by reference, byte-identical to today.
+    if (rope_vram > 0) {
+        const strata::kernels::GrShapes gss{g.n_embd, g.hc, g.hc_lr};
+        const size_t wb = strata::kernels::gr_workspace_bytes(gss);
+        if (cudaMalloc((void**) &gr_ws_base_, wb) != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft layer's gr workspace does not fit";
+            return false;
+        }
+        strata::kernels::gr_workspace_init(gss, gr_ws_base_, gr_ws_);
+        vram_ += wb;
+        local_gr_ = true;
+        std::fprintf(stderr, "strata mtp: the draft layer's gr workspace runs on the draft device (%.1f MiB)\n",
+                     (double) wb / 1048576.0);
+    }
+        qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
 
@@ -301,7 +373,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     return true;
 }
 
-uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
+uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab, bool remote_head) const {
     uint64_t bytes = head_logits_ ? 0 : (uint64_t) max_t_ * (uint64_t) n_vocab * sizeof(float);
     if (dhead_ == nullptr) {
         if (FILE* f = std::fopen((rt_dir_ + "/draft_vocab.bin").c_str(), "rb")) {
@@ -309,6 +381,10 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
             const long size = std::ftell(f);
             std::fclose(f);
             if (size >= 4 && size % 4 == 0) bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
+        } else if (remote_head) {
+            // Fase 3 (hetero multi-GPU): without a token subset the full head is the draft head - when the roles
+            // place the drafter on another GPU, that whole table crosses to it (bind makes the copy)
+            bytes += (uint64_t) n_vocab * head_row_bytes;
         }
     }
     // coupled draft sampling (STRATA_SPEC_COUPLED=1 only): an upper bound - the id -> subset map, the penalty ring,
@@ -377,6 +453,45 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
     wt_ = &wt;
     head_ = head;
     window_R_ = window_R;
+    // Fase 3 (hetero multi-GPU): the head's weights are the model's device's memory (the main device; a layer
+    // split has none here).  This drafter reads them across GPUs only through peer access, which the engine
+    // never requires - when they belong to another device, both paths below copy what they read to THIS device:
+    // the token-subset head rows one row through the host (a one-time gather), the full head as one table.
+    bool remote_head = false;
+    {
+        cudaPointerAttributes attr{};
+        const cudaError_t q = cudaPointerGetAttributes(&attr, head->weights());
+        if (q == cudaSuccess)
+            remote_head = attr.type == cudaMemoryTypeDevice && (int) attr.device != (int) device_;
+        else
+            cudaGetLastError();
+    }
+    bool have_subset = false;
+    if (dhead_ == nullptr) {
+        if (FILE* f = std::fopen((rt_dir_ + "/draft_vocab.bin").c_str(), "rb")) {
+            std::fseek(f, 0, SEEK_END);
+            const long size = std::ftell(f);
+            std::fclose(f);
+            have_subset = size >= 4 && size % 4 == 0;
+        }
+    }
+    if (remote_head && head_dev_ == nullptr && !have_subset) {
+        const uint64_t rows = (uint64_t) (head->weight_bytes() / head->row_bytes());
+        if (cudaMalloc((void**) &head_dev_, head->weight_bytes()) != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft head's copy on the draft device does not fit";
+            return false;
+        }
+        const cudaError_t cp = cudaMemcpy(head_dev_, head->weights(), head->weight_bytes(), cudaMemcpyDeviceToDevice);
+        if (cp != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+            cudaGetLastError();
+            err = "mtp: the draft head's copy on the draft device failed";
+            return false;
+        }
+        vram_ += head->weight_bytes();
+        std::fprintf(stderr, "strata mtp: the draft head copied to the draft device (%.1f MiB)\n",
+                     (double) head->weight_bytes() / 1048576.0);
+    }
     const WeightRef* wo = wt.find("output.weight");
     if (!wo) { err = "mtp: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
@@ -398,8 +513,26 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 return false;
             }
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
-            strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
-            cudaDeviceSynchronize();
+            if (remote_head) {
+                // one-time: the subset rows gather on the head's device's rows through the host, then land here
+                std::vector<uint8_t> rows((size_t) (n_dvocab_ * row_bytes));
+                std::vector<uint8_t> staging((size_t) row_bytes);
+                for (int64_t i = 0; i < n_dvocab_; ++i) {
+                    const int32_t id = ((const int32_t*) raw.data())[i];
+                    cudaMemcpy(staging.data(), (const uint8_t*) head->weights() + (size_t) id * row_bytes,
+                               (size_t) row_bytes, cudaMemcpyDeviceToHost);
+                    std::memcpy(rows.data() + (size_t) i * row_bytes, staging.data(), (size_t) row_bytes);
+                }
+                if (cudaMemcpy(dhead_, rows.data(), rows.size(), cudaMemcpyHostToDevice) != cudaSuccess ||
+                    cudaDeviceSynchronize() != cudaSuccess) {
+                    cudaGetLastError();
+                    err = "mtp: the draft head's rows failed to cross to the draft device";
+                    return false;
+                }
+            } else {
+                strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+                cudaDeviceSynchronize();
+            }
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
@@ -553,12 +686,13 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         for (int t = 0; t < T; ++t)
             gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
                     bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
+                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs,
+                    local_gr_ ? gr_ws_ : ss.block.gr,
                     sample_ + t * N, dummy_inj_, cs);
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        native_mmvq(head_->type(), sub ? (const void*) dhead_ : (const void*) (head_dev_ ? head_dev_ : head_->weights()), xq_, head_logits_, (int) N, (int) nv, T, cs);
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
             // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
@@ -683,6 +817,16 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
+    const bool r_host = window_src_on_host(R_rows);   // the mapped mirror: an explicit Host copy, no peer needed
+    // Fase 8 (opt-in `--draft-prefill-parallel`): waiting HERE for the chunk before is where the overlap is
+    // won - the main model's chunk just ran while this stream caught up.  It also stream-orders every staging
+    // write after the chunk before (one staging set, no race) and consumes the mapped window's rows before the
+    // verifier's next run can overwrite them.
+    if (prefill_async_ && pf_pending_ && cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = std::string("mtp prefill barrier: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    pf_pending_ = false;
     // cells the window can never reach again need no K/V
     const int64_t first_needed = (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
     // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
@@ -729,17 +873,21 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             if (cudaMemcpyAsync(tok_, d_tk + c, (size_t) T * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(step_, d_stp + c * 4, (size_t) T * 16, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                                cs_) != cudaSuccess ||
+                (r_host ? cudaMemcpy((void*) Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                     cudaMemcpyHostToDevice)
+                        : cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                          cudaMemcpyDeviceToDevice, cs_))
+                    != cudaSuccess ||
                 cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
                 err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
         }
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        if (!prefill_async_ && cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
+        pf_pending_ = prefill_async_;   // the barrier owns it: the next prefill's entry, or prefill_barrier
         ms_prefill += ms_since(t0);
         return true;
     }
@@ -756,8 +904,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             h_step_[t * 4 + 3] = (int32_t) (cell + 1);
             for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
         }
-        if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                            cs_) != cudaSuccess ||
+        if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                            r_host ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
             cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess ||
             cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
@@ -765,6 +913,16 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
         }
     }
     ms_prefill += ms_since(t0);
+    return true;
+}
+
+bool MtpDrafter::prefill_barrier(std::string& err) {
+    if (cs_ == nullptr || !pf_pending_) return true;
+    pf_pending_ = false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = std::string("mtp prefill barrier: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
     return true;
 }
 
@@ -790,6 +948,49 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     h_row_[0] = a;
     h_row_[1] = 0;
+    const int cap = std::min(max_t_ - 1, max_drafts_);
+    // Fase 9 (opt-in --draft-chain-batch): the chain's steps no longer wait on the host's cut.  Nothing a
+    // step reads comes from the host between the steps: mtp_select leaves the next step's residual and token
+    // in Rin_[0] / tok_[0], and every step's cell (p + a + j) is known before any launch - so the round graph
+    // and ALL the step graphs launch back to back and ONE wait reads the whole chain.  The min-p cut then
+    // reads the mapped probabilities - the same rule as the per-step loop below (the count of drafts whose
+    // probability and every one before it reaches min_p); drafts past the cut are zeroed, and such a step
+    // writes only cells whose ring slots the chain rewrites when it reaches them again.  The graphs are
+    // captured BEFORE the round's launch: a stream cannot capture while it is executing.
+    if (chain_batch_) {
+        for (int j = 1; j < cap; ++j) put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+        for (int j = 1; j < cap; ++j)
+            if (!capture_step(j, cp, err)) return false;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        for (int j = 1; j < cap; ++j)
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
+                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        drafts[0] = ((volatile int32_t*) h_out_)[0];
+        float pj = ((volatile float*) h_prob_)[0];
+        if (probs) probs[0] = pj;
+        int n = 1;
+        for (int j = 1; j < cap && pj >= min_p; ++j) {
+            drafts[j] = ((volatile int32_t*) h_out_)[j];
+            pj = ((volatile float*) h_prob_)[j];
+            if (probs) probs[j] = pj;
+            ++n;
+        }
+        for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
+        if (n_drafts) *n_drafts = n;
+        ms_draft += ms_since(t0);
+        ++rounds;
+        return true;
+    }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess ||
         cudaStreamSynchronize(cs_) != cudaSuccess) {
@@ -827,9 +1028,10 @@ bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t c
     const OnDevice on_device(device_);
     // row 0 is the real pair; rows 1.. repeat it and only write cells the next round overwrites
     const int64_t HCN = g_->hc * g_->n_embd;
+    const bool win_host = window_src_on_host(window_R_);   // the mapped mirror: an explicit Host write
     for (int t = 0; t < T; ++t)
         if (cudaMemcpy((void*) (window_R_ + (size_t) t * HCN), R_row, (size_t) HCN * sizeof(float),
-                       cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                       win_host ? cudaMemcpyDeviceToHost : cudaMemcpyDeviceToDevice) != cudaSuccess) {
             err = "mtp: staging the first residual failed";
             return false;
         }

@@ -48,6 +48,20 @@ public:
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     /// At most this many drafts per round (below max_t - 1): a window longer than the MTP's comes from elsewhere.
     void set_max_drafts(int k) { max_drafts_ = k; }
+    /// Hetero multi-GPU (Fase 8, opt-in `--draft-prefill-parallel`): when set, `prefill` returns after
+    /// ENQUEUEING its chunk on its stream - the main model's next chunk then computes while the drafter catches
+    /// up, and the wait moves to the next prefill's entry (or `prefill_barrier`).  Off by default: the wait sits
+    /// at the end, today's behaviour.
+    void set_prefill_async(bool on) { prefill_async_ = on; }
+    /// Fase 9 (opt-in `--draft-chain-batch`): the round stops waiting between the chain's steps - the round
+    /// graph and ALL the step graphs launch back to back and ONE wait reads the whole chain's drafts (the
+    /// min-p cut then reads the mapped probabilities after that wait; a step past the cut only leaves a dead
+    /// write in a ring cell the chain rewrites when it reaches it again).  Off by default: the wait sits
+    /// between the steps, today's behaviour.
+    void set_chain_batch(bool on) { chain_batch_ = on; }
+    /// Waits for a queued async prompt fill (a no-op with nothing pending): the first round of the decode must
+    /// start against a finished prompt K/V.
+    bool prefill_barrier(std::string& err);
     uint64_t vram_bytes() const { return vram_; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
@@ -56,7 +70,7 @@ public:
     void kv_restore(int64_t upto);
     /// The VRAM bind() will allocate for a native head of `head_row_bytes` per vocabulary row: the draft logits and
     /// the draft head over rt/draft_vocab.bin's subset.  The expert cache is sized before bind(), so it reserves this.
-    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const;
+    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab, bool remote_head = false) const;
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
 
@@ -130,6 +144,9 @@ private:
     int max_t_ = 0;
     int device_ = -1;   ///< the device `load` ran on: the public calls switch to it (layer split)
     int max_drafts_ = 1 << 30;
+    bool prefill_async_ = false;   ///< Fase 8: the prompt fill queues and the wait moves to the next entry
+    bool pf_pending_ = false;      ///< Fase 8: an enqueued prompt fill the barrier has not drained yet
+    bool chain_batch_ = false;     ///< Fase 9: the chain's step graphs launch back to back (one wait per round)
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;
@@ -178,8 +195,12 @@ private:
     void* hit_scratch_ = nullptr;
     float* sh_scratch_ = nullptr;
     uint16_t* x_bf16_ = nullptr;
-    float* head_logits_ = nullptr;
+    float* head_logits_ = nullptr;    uint8_t* head_dev_ = nullptr;   /// Fase 3 (hetero multi-GPU): the draft head when it must live here
     float* dummy_inj_ = nullptr;
+    // Fase 3 (hetero multi-GPU): a drafter-local gr_read workspace (the session's block.gr is main-device memory)
+    bool local_gr_ = false;
+    strata::kernels::GrWorkspace gr_ws_{};
+    void* gr_ws_base_ = nullptr;
     int64_t cap_ = 0, attn_scratch_floats_ = 0;
 };
 
