@@ -617,7 +617,9 @@ persisted across restarts.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
-seed** are honored per request (OpenAI and Anthropic fields); with the default adaptive expert tier a sampled result
+seed** are honored per request (OpenAI and Anthropic fields), and so are stop strings (OpenAI `stop`, a string or up
+to 4; Anthropic `stop_sequences`): the answer ends before the first one, which is not sent, and the engine stops
+there (`finish_reason` "stop"; `stop_reason` "stop_sequence" with `stop_sequence` set to the one found); with the default adaptive expert tier a sampled result
 is not reproducible run to run - for seed-reproducible output add `--adapt-every 100000` (static residency) to the
 engine arguments. The run config's optional `sampling` block sets the defaults for requests that leave the fields out
 (`"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}`); a request's own fields always win, and with no
