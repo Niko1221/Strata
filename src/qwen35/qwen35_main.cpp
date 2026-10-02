@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     // CPU path's 10, so it is a building block for device-resident execution, not a usable tier yet.
     {
         const char* e = std::getenv("STRATA_QWEN35_GPU");
-        if (e != nullptr && std::atoi(e) == 1) {
+        if (e == nullptr || std::atoi(e) != 0) {   // on when a device is usable; STRATA_QWEN35_GPU=0 forces CPU
             std::string gerr;
             if (q::qwen35_gpu_init(gerr) && q::qwen35_gpu_upload(w, gerr)) {
                 std::fprintf(stderr, "strata-qwen35: GPU dense tier: %.2f GiB in VRAM\n",

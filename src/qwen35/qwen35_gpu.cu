@@ -13,6 +13,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <vector>
 
@@ -22,10 +23,31 @@ namespace {
 cudaStream_t g_stream = nullptr;
 float* d_x = nullptr;
 float* d_y = nullptr;
+float* d_out = nullptr;
 void* d_q8 = nullptr;
-int64_t cap_x = 0, cap_y = 0;
-size_t cap_q8 = 0;
+void* d_weights = nullptr;
+int64_t cap_x = 0, cap_y = 0, cap_out = 0;
+size_t cap_q8 = 0, cap_w = 0;
 uint64_t g_dense = 0;
+const float* g_last_x = nullptr;
+int64_t g_last_n = 0;
+
+bool ensure_in(int64_t n) {
+    if (n <= cap_x) return true;
+    if (d_x) cudaFree(d_x);
+    if (cudaMalloc((void**) &d_x, (size_t) n * sizeof(float)) != cudaSuccess) return false;
+    cap_x = n;
+    g_last_x = nullptr;
+    return true;
+}
+bool ensure_q8(size_t sb) {
+    if (sb <= cap_q8) return true;
+    if (d_q8) cudaFree(d_q8);
+    if (cudaMalloc(&d_q8, sb) != cudaSuccess) return false;
+    cap_q8 = sb;
+    g_last_x = nullptr;
+    return true;
+}
 
 bool gpu_matvec(const Mat& m, const float* x, float* y) {
     if (!m.dev || !g_stream) return false;
@@ -39,18 +61,69 @@ bool gpu_matvec(const Mat& m, const float* x, float* y) {
         if (cudaMalloc((void**) &d_y, (size_t) m.n_out * sizeof(float)) != cudaSuccess) return false;
         cap_y = m.n_out;
     }
-    const size_t sb = kernels::native_q8_1_bytes((int) m.n_in, 1);
-    if (sb > cap_q8) {
-        if (d_q8) cudaFree(d_q8);
-        if (cudaMalloc(&d_q8, sb) != cudaSuccess) return false;
-        cap_q8 = sb;
-    }
+    if (!ensure_in(m.n_in) || !ensure_q8(kernels::native_q8_1_bytes((int) m.n_in, 1))) return false;
     cudaMemcpyAsync(d_x, x, (size_t) m.n_in * sizeof(float), cudaMemcpyHostToDevice, g_stream);
     kernels::native_quantize_q8_1(d_x, d_q8, (int) m.n_in, 1, g_stream);
     kernels::native_mmvq(m.type, m.dev, d_q8, d_y, (int) m.n_in, (int) m.n_out, 1, g_stream);
     cudaMemcpyAsync(y, d_y, (size_t) m.n_out * sizeof(float), cudaMemcpyDeviceToHost, g_stream);
     cudaStreamSynchronize(g_stream);
     return true;
+}
+
+/// Several projections of the same width, each with its own input, in ONE upload/sync/download.  The input is
+/// re-uploaded only when it changes (the GDN's four projections share one activation), and the outputs are all
+/// downloaded after the last kernel, so a layer needs one round trip instead of one per matvec.
+int gpu_batch(const Mat* const* mats, const float* const* xs, float* const* ys, int count) {
+    if (!g_stream || count <= 0) return 0;
+    const int64_t n_in = mats[0]->n_in;
+    size_t maxw = 0;
+    for (int i = 0; i < count; ++i) {
+        if (mats[i]->n_in != n_in || !mats[i]->dev) return 0;   // device-resident only; streaming measured slower than ggml-cpu
+        if (!kernels::native_mmvq_supported(mats[i]->type)) return 0;
+        if (!mats[i]->dev) maxw = std::max(maxw, mats[i]->row_bytes * (size_t) mats[i]->n_out);
+    }
+    if (!ensure_in(n_in) || !ensure_q8(kernels::native_q8_1_bytes((int) n_in, 1))) return 0;
+    // Weights the GPU tier did not upload (the routed experts) stream through one reusable device buffer: on a
+    // single stream the next upload cannot overwrite the buffer before this matvec has read it.
+    if (maxw > 0) {
+        if (d_weights == nullptr || maxw > cap_w) {
+            if (d_weights) cudaFree(d_weights);
+            if (cudaMalloc(&d_weights, maxw) != cudaSuccess) return 0;
+            cap_w = maxw;
+        }
+    }
+    int64_t total = 0;
+    for (int i = 0; i < count; ++i) total += mats[i]->n_out;
+    if (total > cap_out) {
+        if (d_out) cudaFree(d_out);
+        if (cudaMalloc((void**) &d_out, (size_t) total * sizeof(float)) != cudaSuccess) return 0;
+        cap_out = total;
+    }
+    int64_t off = 0;
+    for (int i = 0; i < count; ++i) {
+        const void* wdev = mats[i]->dev;
+        if (!wdev) {
+            cudaMemcpyAsync(d_weights, mats[i]->data, mats[i]->row_bytes * (size_t) mats[i]->n_out,
+                            cudaMemcpyHostToDevice, g_stream);
+            wdev = d_weights;
+        }
+        if (xs[i] != g_last_x || g_last_n != n_in) {
+            cudaMemcpyAsync(d_x, xs[i], (size_t) n_in * sizeof(float), cudaMemcpyHostToDevice, g_stream);
+            kernels::native_quantize_q8_1(d_x, d_q8, (int) n_in, 1, g_stream);
+            g_last_x = xs[i];
+            g_last_n = n_in;
+        }
+        kernels::native_mmvq(mats[i]->type, wdev, d_q8, d_out + off, (int) n_in, (int) mats[i]->n_out, 1, g_stream);
+        off += mats[i]->n_out;
+    }
+    cudaStreamSynchronize(g_stream);
+    off = 0;
+    for (int i = 0; i < count; ++i) {
+        cudaMemcpyAsync(ys[i], d_out + off, (size_t) mats[i]->n_out * sizeof(float), cudaMemcpyDeviceToHost, g_stream);
+        off += mats[i]->n_out;
+    }
+    cudaStreamSynchronize(g_stream);
+    return count;
 }
 
 }  // namespace
@@ -86,6 +159,7 @@ bool qwen35_gpu_upload(TrunkWeights& w, std::string& err) {
         if (!up(d.gate_shexp) || !up(d.up_shexp) || !up(d.down_shexp)) return false;
     }
     if (!up(w.output)) return false;
+    g_gpu_batch = gpu_batch;
     g_gpu_matvec = gpu_matvec;
     return true;
 }

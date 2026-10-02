@@ -52,6 +52,11 @@ extern QuantMatvecFn g_quant_matvec;
 /// back to `g_quant_matvec` otherwise.  Installed by qwen35_gpu_upload.
 using GpuMatvecFn = bool (*)(const Mat& m, const float* x, float* y);
 extern GpuMatvecFn g_gpu_matvec;
+/// BATCHED GPU matvec: several projections of the SAME width, each with its own input, in one upload/sync/
+/// download.  This is what makes the GPU tier worthwhile - a per-matvec sync costs more than the matvec.
+/// Returns the number of entries handled (0 = not applicable; the caller falls back to `matvec`).
+using GpuBatchFn = int (*)(const Mat* const* mats, const float* const* xs, float* const* ys, int count);
+extern GpuBatchFn g_gpu_batch;
 /// Dequantize one row of a quantized matrix to `n_in` floats.
 using RowDequantFn = void (*)(int type, const void* row, int64_t n, float* out);
 extern RowDequantFn g_row_dequant;

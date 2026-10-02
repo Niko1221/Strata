@@ -17,6 +17,7 @@ namespace strata::qwen35 {
 QuantMatvecFn g_quant_matvec = nullptr;
 RowDequantFn g_row_dequant = nullptr;
 GpuMatvecFn g_gpu_matvec = nullptr;
+GpuBatchFn g_gpu_batch = nullptr;
 
 Mat mat_row(const Mat& m, int64_t i) {
     Mat r = m;
@@ -117,11 +118,24 @@ void gdn_layer(const Qwen35Geometry& g, const GdnLayerWeights& w, GdnState& st, 
 
     std::vector<float> qkv((size_t) qkv_dim), z((size_t) value_dim);
     std::vector<float> beta((size_t) Hv), alpha((size_t) Hv), gate((size_t) Hv);
-    matvec(w.wqkv, xn.data(), qkv.data());
-    matvec(w.wgate, xn.data(), z.data());
+    bool batched = false;
+    if (g_gpu_batch) {
+        const Mat* bm[4] = {&w.wqkv, &w.wgate, &w.ssm_beta, &w.ssm_alpha};
+        const float* bx[4] = {xn.data(), xn.data(), xn.data(), xn.data()};
+        float* by[4] = {qkv.data(), z.data(), beta.data(), alpha.data()};
+        batched = g_gpu_batch(bm, bx, by, 4) == 4;
+    }
+    if (!batched) {
+        matvec(w.wqkv, xn.data(), qkv.data());
+        matvec(w.wgate, xn.data(), z.data());
+        for (int64_t h = 0; h < Hv; ++h) {
+            beta[(size_t) h] = mat_dot(mat_row(w.ssm_beta, h), xn.data());
+            alpha[(size_t) h] = mat_dot(mat_row(w.ssm_alpha, h), xn.data());
+        }
+    }
     for (int64_t h = 0; h < Hv; ++h) {
-        beta[(size_t) h] = sigmoid(mat_dot(mat_row(w.ssm_beta, h), xn.data()));
-        alpha[(size_t) h] = mat_dot(mat_row(w.ssm_alpha, h), xn.data()) + w.ssm_dt[h];
+        beta[(size_t) h] = sigmoid(beta[(size_t) h]);
+        alpha[(size_t) h] += w.ssm_dt[h];
         gate[(size_t) h] = softplus(alpha[(size_t) h]) * w.ssm_a[h];
     }
 
@@ -203,9 +217,18 @@ void attn_layer(const Qwen35Geometry& g, const AttnLayerWeights& w, AttnState& s
     rms_norm(x, w.attn_norm, H, eps, xn.data());
 
     std::vector<float> qfull((size_t) 2 * Nh * D), kf((size_t) kv), vf((size_t) kv);
-    matvec(w.wq, xn.data(), qfull.data());
-    matvec(w.wk, xn.data(), kf.data());
-    matvec(w.wv, xn.data(), vf.data());
+    bool batched = false;
+    if (g_gpu_batch) {
+        const Mat* bm[3] = {&w.wq, &w.wk, &w.wv};
+        const float* bx[3] = {xn.data(), xn.data(), xn.data()};
+        float* by[3] = {qfull.data(), kf.data(), vf.data()};
+        batched = g_gpu_batch(bm, bx, by, 3) == 3;
+    }
+    if (!batched) {
+        matvec(w.wq, xn.data(), qfull.data());
+        matvec(w.wk, xn.data(), kf.data());
+        matvec(w.wv, xn.data(), vf.data());
+    }
 
     for (int64_t h = 0; h < Nh; ++h) {
         float* qh = qfull.data() + h * 2 * D;
@@ -281,20 +304,64 @@ void moe_layer(const Qwen35Geometry& g, const MoeLayerWeights& w, const float* x
     for (int64_t i = 0; i < K; ++i) { wts[(size_t) i] = probs[(size_t) idx[(size_t) i]]; wsum += wts[(size_t) i]; }
     for (int64_t i = 0; i < K; ++i) wts[(size_t) i] = (float) (wts[(size_t) i] / wsum);
 
-    std::vector<float> acc((size_t) H, 0.0f), h((size_t) F), y((size_t) H);
-    for (int64_t i = 0; i < K; ++i) {
-        const ExpertWeights& ew = w.experts[idx[(size_t) i]];
-        std::vector<float> gg((size_t) F), uu((size_t) F);
-        matvec(ew.gate, x, gg.data());
-        matvec(ew.up, x, uu.data());
-        for (int64_t f = 0; f < F; ++f) h[(size_t) f] = silu(gg[(size_t) f]) * uu[(size_t) f];
-        matvec(ew.down, h.data(), y.data());
-        for (int64_t d = 0; d < H; ++d) acc[(size_t) d] += wts[(size_t) i] * y[(size_t) d];
+    std::vector<float> acc((size_t) H, 0.0f);
+    std::vector<std::vector<float>> gg((size_t) K, std::vector<float>((size_t) F));
+    std::vector<std::vector<float>> uu((size_t) K, std::vector<float>((size_t) F));
+    std::vector<std::vector<float>> hh((size_t) K, std::vector<float>((size_t) F));
+    std::vector<std::vector<float>> yy((size_t) K, std::vector<float>((size_t) H));
+    const auto expert = [&](int64_t i) -> const ExpertWeights& { return w.experts[idx[(size_t) i]]; };
+    // The K experts' gate and up share the input x: one batched GPU call streams their weights and runs all
+    // 2K projections with a single upload/sync/download.  Then the down projections share nothing but are
+    // still batched (one input each).
+    {
+        bool ok = false;
+        if (g_gpu_batch) {
+            std::vector<const Mat*> bm;
+            std::vector<const float*> bx;
+            std::vector<float*> by;
+            for (int64_t i = 0; i < K; ++i) {
+                bm.push_back(&expert(i).gate); bx.push_back(x); by.push_back(gg[(size_t) i].data());
+                bm.push_back(&expert(i).up);   bx.push_back(x); by.push_back(uu[(size_t) i].data());
+            }
+            ok = g_gpu_batch(bm.data(), bx.data(), by.data(), (int) (2 * K)) == 2 * K;
+        }
+        if (!ok) {
+            for (int64_t i = 0; i < K; ++i) {
+                matvec(expert(i).gate, x, gg[(size_t) i].data());
+                matvec(expert(i).up, x, uu[(size_t) i].data());
+            }
+        }
     }
+    for (int64_t i = 0; i < K; ++i)
+        for (int64_t f = 0; f < F; ++f) hh[(size_t) i][(size_t) f] = silu(gg[(size_t) i][(size_t) f]) * uu[(size_t) i][(size_t) f];
+    {
+        bool ok = false;
+        if (g_gpu_batch) {
+            std::vector<const Mat*> bm;
+            std::vector<const float*> bx;
+            std::vector<float*> by;
+            for (int64_t i = 0; i < K; ++i) {
+                bm.push_back(&expert(i).down); bx.push_back(hh[(size_t) i].data()); by.push_back(yy[(size_t) i].data());
+            }
+            ok = g_gpu_batch(bm.data(), bx.data(), by.data(), (int) K) == K;
+        }
+        if (!ok) for (int64_t i = 0; i < K; ++i) matvec(expert(i).down, hh[(size_t) i].data(), yy[(size_t) i].data());
+    }
+    for (int64_t i = 0; i < K; ++i)
+        for (int64_t d = 0; d < H; ++d) acc[(size_t) d] += wts[(size_t) i] * yy[(size_t) i][(size_t) d];
 
     std::vector<float> sg((size_t) Fs), su((size_t) Fs), sh((size_t) Fs), sy((size_t) H);
-    matvec(w.gate_shexp, x, sg.data());
-    matvec(w.up_shexp, x, su.data());
+    bool sh_batched = false;
+    if (g_gpu_batch) {
+        const Mat* bm[2] = {&w.gate_shexp, &w.up_shexp};
+        const float* bx[2] = {x, x};
+        float* by[2] = {sg.data(), su.data()};
+        sh_batched = g_gpu_batch(bm, bx, by, 2) == 2;
+    }
+    if (!sh_batched) {
+        matvec(w.gate_shexp, x, sg.data());
+        matvec(w.up_shexp, x, su.data());
+    }
     for (int64_t f = 0; f < Fs; ++f) sh[(size_t) f] = silu(sg[(size_t) f]) * su[(size_t) f];
     matvec(w.down_shexp, sh.data(), sy.data());
     double gs = 0.0;
