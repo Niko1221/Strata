@@ -947,9 +947,15 @@ bool load_control_vectors(const Options& o, const strata::core::ModelGeometry& g
 // The effective host->device bandwidth of the PCIe link: copies from pinned host memory, as the expert arena's
 // reads are.  The native default share (0.55) was measured on x16 links (~26-28 GB/s); a x8 card in a x8 slot
 // carries about half of that.  Returns < 0 when the probe cannot run (then the caller keeps the default).
+//
+// A single burst is not enough.  On one x16 PCIe 4.0 laptop link the same binary read 18.5 GB/s on one start and
+// 5.8-6.9 GB/s on another (concurrent copy-engine work, ASPM/low link power, or a context that has not ramped);
+// the low sample then pins pcie_frac ~3x below what tools/calibrate.py picks for the same machine.  Prime the
+// link, then take the MEDIAN of several bursts so one contended sample cannot decide the load's share.
 double probe_pcie_h2d_gbps() {
     constexpr size_t kBytes = 256ull << 20;
-    constexpr int kIters = 4;
+    constexpr int kWarm = 2;      // untimed: context up, copy engine and link ramped
+    constexpr int kRuns = 5;      // timed bursts; the median of these is the result
     void* h = nullptr;
     void* d = nullptr;
     cudaEvent_t ev0, ev1;
@@ -961,19 +967,29 @@ double probe_pcie_h2d_gbps() {
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
-    cudaMemcpyAsync(d, h, kBytes, cudaMemcpyHostToDevice);   // warmup: context up, copy engine primed
-    cudaEventRecord(ev0);
-    for (int i = 0; i < kIters; ++i) cudaMemcpyAsync(d, h, kBytes, cudaMemcpyHostToDevice);
-    cudaEventRecord(ev1);
-    const bool ok = cudaEventSynchronize(ev1) == cudaSuccess;
-    float ms = 0.f;
-    const bool timed = ok && cudaEventElapsedTime(&ms, ev0, ev1) == cudaSuccess && ms > 0.01f;
-    const double bw = timed ? ((double) kIters * (double) kBytes / (ms * 1e-3)) / 1e9 : -1.0;
+    for (int i = 0; i < kWarm; ++i) cudaMemcpyAsync(d, h, kBytes, cudaMemcpyHostToDevice);
+    double bw[kRuns];
+    int n = 0;
+    for (int i = 0; i < kRuns; ++i) {
+        cudaEventRecord(ev0);
+        cudaMemcpyAsync(d, h, kBytes, cudaMemcpyHostToDevice);
+        cudaEventRecord(ev1);
+        float ms = 0.f;
+        if (cudaEventSynchronize(ev1) == cudaSuccess && cudaEventElapsedTime(&ms, ev0, ev1) == cudaSuccess &&
+            ms > 0.01f) {
+            bw[n++] = ((double) kBytes / (ms * 1e-3)) / 1e9;
+        }
+    }
+    double median = -1.0;
+    if (n > 0) {
+        std::sort(bw, bw + n);
+        median = (n % 2 == 1) ? bw[n / 2] : 0.5 * (bw[n / 2 - 1] + bw[n / 2]);
+    }
     cudaEventDestroy(ev0);
     cudaEventDestroy(ev1);
     cudaFree(d);
     cudaFreeHost(h);
-    return bw;
+    return median;
 }
 
 }  // namespace
