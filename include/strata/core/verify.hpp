@@ -161,6 +161,9 @@ public:
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
+    /// Hetero multi-GPU (Fase 7): the mapped mirror's per-window stop (the D2H + sync at the end of `run`);
+    /// 0 unless the mirror is on (the cross-roles hand-off)
+    double ms_mirror = 0;
     int64_t windows = 0;
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.

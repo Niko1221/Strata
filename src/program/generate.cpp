@@ -4670,6 +4670,14 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(st->dev);
                     cudaEventRecord(st->adapt_ev, st->adapt_stream);
                 }
+            // Fase 7 (hetero multi-GPU): the EVICTIONS are visible on every device's table now.  The copies above
+            // write the evicted experts' slots as they run, and the residency table (d_res) reached the devices only
+            // in apply_pending - whose non-blocking call DROPS while the copy is in flight, leaving a window that
+            // would read the evicted expert on the device table staring into a slot mid-overwrite (measured
+            // 2026-10-02: outputs nondeterministic in the roles run, the first divergent window is always the one
+            // right after the first adapt round).  Upload here: the evicted expert goes to the CPU pool path at once,
+            // the swapped-in experts stay non-resident until the copies land (admitted by apply_pending's event).
+            res_upload();
             for (float& v : drive.d.usage) v *= 0.7f;
             return true;
         };
@@ -5511,7 +5519,13 @@ int main(int argc, char** argv) {
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
-                apply_pending(false);
+                apply_pending(true);   // wait: the residency table must be settled before the window plans.
+                                   // A non-blocking call drops while the swap copy is in flight, and the
+                                   // admitted expert then switches from the CPU pool to the GPU-resident
+                                   // path at whichever window the copy happens to have landed by - the
+                                   // two expert paths round differently (measured 2026-10-02: the roles run
+                                   // was nondeterministic, the first divergent window was the first one
+                                   // after adapt).  Blocking is bounded by one copy (~1.4 MB, ~1 ms).
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
@@ -5598,12 +5612,12 @@ int main(int argc, char** argv) {
                 const double w = (double) dec_windows, L = (double) g.n_layers;
                 std::fprintf(stderr, "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
                                      "verify %.2f (GPU-reach wait %.2f + per-layer host %.2f [plan %.2f actq %.2f jobs %.2f "
-                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f; per layer-window: CPU experts "
+                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f + mirror %.2f; per layer-window: CPU experts "
                                      "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f\n",
                              (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_run / w,
                              (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w, (d1.plan - ds0.plan) / w,
                              (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w, (d1.run - ds0.run) / w,
-                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, (d1.misses - ds0.misses) / (w * L),
+                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, ver.ms_mirror, (d1.misses - ds0.misses) / (w * L),
                              (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L));
                 const std::string pr = ver.profile_report();
                 if (!pr.empty()) std::fprintf(stderr, "strata decode GPU stages (ms/window):%s\n", pr.c_str());
@@ -6326,7 +6340,13 @@ int main(int argc, char** argv) {
             drive.d.layers = 0;
             drive.d.experts = 0;
             drive.d.failed = false;
-            apply_pending(false);
+            apply_pending(true);   // wait: the residency table must be settled before the window plans.
+                                   // A non-blocking call drops while the swap copy is in flight, and the
+                                   // admitted expert then switches from the CPU pool to the GPU-resident
+                                   // path at whichever window the copy happens to have landed by - the
+                                   // two expert paths round differently (measured 2026-10-02: the roles run
+                                   // was nondeterministic, the first divergent window was the first one
+                                   // after adapt).  Blocking is bounded by one copy (~1.4 MB, ~1 ms).
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;

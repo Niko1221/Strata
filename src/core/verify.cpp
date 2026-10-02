@@ -1185,6 +1185,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
     if (h_Rmirror_ != nullptr) {   // hetero multi-GPU: the drafter on its device reads this alias (zero-copy)
+        const Clock::time_point tm0 = Clock::now();   // Fase 7: the hand-off's per-window stop, measured
         if (cudaMemcpyAsync(h_Rmirror_, R_, (size_t) T * (size_t) g.hc * (size_t) g.n_embd * sizeof(float),
                             cudaMemcpyDeviceToHost, cs_) != cudaSuccess ||
             cudaStreamSynchronize(cs_) != cudaSuccess) {
@@ -1192,6 +1193,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             err = "verify: the final residual could not be mirrored to the host";
             return false;
         }
+        ms_mirror += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
     }
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
