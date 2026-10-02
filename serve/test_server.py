@@ -409,6 +409,12 @@ class GpuDraftField(unittest.TestCase):
         self.assertEqual(eng.info["gpu_draft_mib"], "-")
         self.assertEqual(eng.info["gpu_dev"], 0)             # one device: "0" is a number, as it always has been
 
+    def test_the_prompt_chunk_reaches_the_monitor_facts(self):
+        # `engine` in /metrics spreads `info`, so the pair the Monitor tab shows only has to survive the INFO line
+        eng = self.engine_with("INFO context=262144 prefill_chunk=6144 prefill_ring=65 engine=0.1.31\n")
+        self.assertEqual(eng.info["prefill_chunk"], 6144)
+        self.assertEqual(eng.info["prefill_ring"], 65)
+
 
 class StatusNeedsTheKey(unittest.TestCase):
     """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""

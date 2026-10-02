@@ -367,6 +367,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, vis) 
   $("slots-text").textContent = eng.expert_slots
     ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)}${hw.gpu_mem_total ? ` / ${gb(hw.gpu_mem_total, 0)}` : ""} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
+  // The engine's prompt chunk and its streamed ring - the pair it settled on at startup (INFO prefill_chunk/
+  // prefill_ring).  An engine older than those fields leaves the row at its dash.
+  $("chunk-text").textContent = eng.prefill_chunk
+    ? `${fmt(eng.prefill_chunk)} tokens${eng.prefill_ring ? ` · ${fmt(eng.prefill_ring)}-slot stream ring` : ""}` : "–";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
@@ -420,6 +424,8 @@ function renderAbout(eng, hw, st) {
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    ["Prompt chunk", eng.prefill_chunk
+      ? `${fmt(eng.prefill_chunk)} tokens${eng.prefill_ring ? `, a ${fmt(eng.prefill_ring)}-slot stream ring` : ""}` : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
