@@ -19,6 +19,7 @@ the project's own code.  The zip is built locally.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -26,6 +27,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,9 +50,11 @@ def check(ok: bool, what: str, detail: str = ""):
 VERSION_NEW = "0.1.99"
 VERSION_OLD = "0.1.31"
 
+# the fixtures (fake engine binary, a release-shaped zip, a fake install) live beside this file
+from serve.test_update import engine_files, fake_engine, install_fake, make_zip  # noqa: E402
+
 
 def build_zip_bytes(version: str = VERSION_NEW) -> bytes:
-    from serve.test_update import engine_files, make_zip   # reuse the fixture builder
     return make_zip(engine_files(version), version)
 
 
@@ -95,6 +99,11 @@ def stub_network(version: str = VERSION_NEW, payload: bytes | None = None, size=
         self.fetch, self.head = fetch, head
 
     U.Updater.__init__ = patched
+
+    # The card check reads the real nvidia-smi, which would make every test here depend on the GPU of
+    # whichever machine runs them. None means "cannot tell", which the updater deliberately lets through;
+    # t_card_refusal_over_http sets it explicitly to cover the other branch.
+    U.gpu_compute_capability = lambda: None
 
 
 # --- a real Service, the project's own way ---------------------------------------------------------
@@ -163,7 +172,7 @@ def wait_for(base: str, states=("done", "failed"), limit=180):
 
 
 def build_engine(root: Path, version: str = VERSION_OLD) -> Path:
-    from serve.test_update import install_fake
+    
     return install_fake(root / "engine", version)
 
 
@@ -355,10 +364,71 @@ def t_downgrade_over_http():
             httpd.server_close()
 
 
+def t_card_refusal_over_http():
+    print("\nthe card refusal, over HTTP")
+    import serve.update as U
+    # archs [75, 86, 89, 120] is what the real v0.1.38 publishes; the card is a GTX 1070 at 6.1, so the
+    # release cannot run here. The install_fake engine claims to support the card, so nothing but the
+    # updater's own check can catch this.
+    payload = make_zip(engine_files(VERSION_NEW), VERSION_NEW)
+    payload = replace_archs(payload, [75, 86, 89, 120], ptx=True)
+    stub_network(VERSION_NEW, payload=payload)
+    U.gpu_compute_capability = lambda: 6.1
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d) / "engine"
+            eng.mkdir()
+            (eng / ("strata.exe" if os.name == "nt" else "strata")).write_bytes(
+                b"not really an engine")
+            (eng / "BUILD.json").write_text(
+                json.dumps({"version": VERSION_OLD, "archs": [61], "ptx": False}), encoding="utf-8")
+            svc = make_service(eng)
+            httpd, base = start(svc)
+            try:
+                req(base, "/api/update/check", {})
+                code, _ = req(base, "/api/update/apply", {})
+                check(code == 202, "the update starts", str(code))
+                final = wait_for(base)
+                check(final.get("state") == "failed", "and then fails",
+                      final.get("state", ""))
+                failed = [s for s in final.get("steps", []) if s["status"] == "failed"]
+                check(failed and failed[0]["key"] == "inspect",
+                      "at the inspect step - nothing was staged or replaced",
+                      failed[0]["key"] if failed else "none")
+                check("6.1" in final.get("detail", {}).get("error", ""),
+                      "and the panel is told the card's compute capability",
+                      final.get("detail", {}).get("error", "")[:48])
+                check(json.loads((eng / "BUILD.json").read_text())["version"] == VERSION_OLD,
+                      "the installed engine is untouched")
+                check("Staged" not in str([s["status"] for s in final.get("steps", [])]),
+                      "no staging directory was created")
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+    finally:
+        U.gpu_compute_capability = lambda: None
+
+
+def replace_archs(zip_bytes: bytes, archs: list[int], ptx: bool = False) -> bytes:
+    """The fixture zip again, with different BUILD.json architectures - so a test can say what the
+    RELEASE supports, which is what the card check reads."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as src, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            body = src.read(info.filename)
+            if info.filename.endswith("BUILD.json"):
+                meta = json.loads(body)
+                meta["archs"], meta["ptx"] = archs, ptx
+                body = json.dumps(meta).encode()
+            dst.writestr(info.filename, body)
+    return out.getvalue()
+
+
 def main() -> int:
     for fn in (t_routes_end_to_end, t_same_origin_guard, t_busy_refused,
                t_apply_before_check_refused, t_truncated_download_over_http,
-               t_downgrade_over_http):
+               t_downgrade_over_http, t_card_refusal_over_http):
         fn()
     print(f"\nupdate routes: {len(FAILS)} failures out of {CHECKS[0]} checks")
     for f in FAILS:

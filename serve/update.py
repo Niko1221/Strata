@@ -84,9 +84,41 @@ KEEP_BACKUPS = 3
 # stage is treated as broken.  Measured on a Windows build: under a second.
 PROBE_TIMEOUT_S = 30
 
+# The nine steps, in order, and the method that carries each one out.  The ORDER is the safety property:
+# nothing on disk changes until `backup`, and everything before it is a check that can refuse.  The
+# web panel shows exactly this list, so it lives here once and the panel reads it from the state.
+#
+#   plan     what we are installing
+#   room     there is space for the download, the staging tree and the backup
+#   download the archive, to a temp file
+#   inspect  member paths, CRCs, the version inside - then, now that the release's own architectures are
+#            known, whether this card can run it (see _check_gpu for why the card is checked HERE and not
+#            before the download)
+#   stage    unpack to a staging directory, not over the install
+#   test     run the STAGED engine, before the installed one is touched
+#   backup   copy the installed files - the first step that changes anything
+#   apply    copy the new files over
+#   verify   read the new BUILD.json back
+STEPS = (
+    ("plan", "Check the release"),
+    ("room", "Check the free disk space"),
+    ("download", "Download the engine"),
+    ("inspect", "Inspect the archive"),
+    ("stage", "Unpack to a staging area"),
+    ("test", "Run the staged engine"),
+    ("backup", "Back up the installed engine"),
+    ("apply", "Install the new engine"),
+    ("verify", "Start it and check the version"),
+)
+
 
 class UpdateError(RuntimeError):
     """Any refusal or failure.  The message is shown to the user, so it says what to do next."""
+
+
+def tag_word(tag: str | None) -> str:
+    """A release tag for a message: 'v0.1.38', or 'the release' when there is none."""
+    return tag or "the release"
 
 
 def parse_version(text: str | None) -> tuple[int, ...]:
@@ -218,6 +250,8 @@ class Updater:
     state: str = "idle"                            # idle | checking | ready | running | done | failed
     detail: dict = field(default_factory=dict)
     backup_dir: Path | None = None
+    staging: Path | None = None           # set by _do_stage, cleared when the run ends
+    backup: Path | None = None            # set by _do_backup; what a rollback restores from
     _changed: bool = False                         # has anything on disk been replaced yet?
 
     def __post_init__(self):
@@ -387,77 +421,33 @@ class Updater:
             self.state = "ready"
             return self.state_dict()
 
-        self.steps = [Step(k, lbl) for k, lbl in (
-            ("plan", "Check the release"),
-            ("room", "Check the card and free disk space"),
-            ("download", "Download the engine"),
-            ("inspect", "Inspect the archive"),
-            ("stage", "Unpack to a staging area"),
-            ("test", "Run the staged engine"),
-            ("backup", "Back up the installed engine"),
-            ("apply", "Install the new engine"),
-            ("verify", "Start it and check the version"),
-        )]
+        self.steps = [Step(k, lbl) for k, lbl in STEPS]
         self.state = "running"
 
-        staging = backup = None
+        self.staging = self.backup = None
         try:
-            for key in ("plan", "room", "download", "inspect", "stage", "test", "backup", "apply", "verify"):
-                self._step(key, next(s.label for s in self.steps if s.key == key), "active")
-                if key == "plan":
-                    self._step("plan", "Check the release", "done", f"installing {tag}")
-                elif key == "room":
-                    self._check_gpu()
-                    self._check_room()
-                    self._step("room", "Check the card and free disk space", "done",
-                               f"{self.detail.get('free_gb')} GB free")
-                elif key == "download":
-                    self.root.mkdir(parents=True, exist_ok=True)
-                    zip_path = self.root / f"download-{tag}.zip.part"
-                    self._download(self.detail["asset_url"], zip_path,
-                                   self.detail.get("asset_size"), "the engine archive")
-                    zip_path.replace(self.root / f"download-{tag}.zip")
-                    self.detail.pop("percent", None)
-                    self._step("download", "Download the engine", "done",
-                               f"{self.detail['asset_mb']} MB")
-                elif key == "inspect":
-                    self._inspect()
-                    self._step("inspect", "Inspect the archive", "done",
-                               f"{self.detail['members']} files, BUILD.json says {tag}")
-                elif key == "stage":
-                    staging = Path(tempfile.mkdtemp(prefix="stage-", dir=str(self.root)))
-                    self._extract(staging)
-                    self._step("stage", "Unpack to a staging area", "done", str(staging.name))
-                elif key == "test":
-                    self._probe(staging)
-                    self._step("test", "Run the staged engine", "done", "it starts and prints its usage")
-                elif key == "backup":
-                    backup = self._backup()
-                    self._step("backup", "Back up the installed engine", "done", str(backup.name))
-                elif key == "apply":
-                    self._apply(staging)
-                    self._changed = True
-                    self._step("apply", "Install the new engine", "done", "replaced")
-                elif key == "verify":
-                    self._verify(tag)
-                    self._step("verify", "Start it and check the version", "done",
-                               f"running {self.detail['verified_version']}")
+            for key, label in STEPS:
+                self._step(key, label, "active")
+                # each step is one method that returns the note to show when it finishes
+                note = getattr(self, f"_do_{key}")()
+                if note:
+                    self._step(key, label, "done", note)
             # A successful run keeps the backup (that is the point of it) but not the 124 MB archive it
             # came from, and never the staging copy: those are what fill the disk when setup.py and the
             # updater both run on a machine nobody prunes.
             self._put(installed=tag)
-            self._clean_workspace(keep_zip=False)
+            self._clean_workspace()
             self.state = "done"
         except Exception as e:
             note = str(e)
             failed = next((s for s in self.steps if s.status == "active"), None)
             if self._changed:
                 try:
-                    restored = self.rollback(backup)
+                    restored = self.rollback(self.backup)
                     note += f" Restored the previous engine from {restored.name}."
                 except Exception as rb:
                     note += (f" ROLLBACK FAILED: {rb}. The engine is left as it is; restore "
-                             f"{backup} by hand if it will not start.")
+                             f"{self.backup} by hand if it will not start.")
             # The step is marked failed AFTER the rollback above, so its note is the whole outcome and
             # not just the error. The panel shows that note on the step; detail["error"] is the same
             # text for anything reading the state as JSON, and detail["action"] is the short version.
@@ -468,29 +458,28 @@ class Updater:
             # A short, separate line for the panel: what was DONE about the failure. The full `error`
             # belongs to the step that failed and is shown there, so repeating it here would print the
             # same 300-character paragraph twice on one screen.
-            self._put(action=(f"Restored the previous engine from {backup.name}."
-                            if self._changed and backup and "Restored" in note
+            self._put(action=(f"Restored the previous engine from {self.backup.name}."
+                            if self._changed and self.backup and "Restored" in note
                             else "Nothing on this PC was changed."))
-            # A failed run keeps the backup too, and also the archive: it is what a user would re-run
-            # the install from, and it is already downloaded. `keep_zip` only says whether to KEEP it -
-            # so it is False in both cases, and the argument is what says whether the backup survives.
-            self._clean_workspace(keep_zip=False)
+            # The backup is kept on failure as well as on success - it is the only way back. The
+            # archive and the staging tree are not: see _clean_workspace.
+            self._clean_workspace()
         finally:
-            if staging and staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-            for leftover in self.root.glob("*.part"):
-                leftover.unlink(missing_ok=True)
+            # _clean_workspace() also removes the staging tree and any partial download, so this is a
+            # second, belt-and-braces sweep for the case where the run died before root/ existed.
+            self._clean_workspace()
         return self.state_dict()
 
-    def _clean_workspace(self, keep_zip: bool = False):
-        """Remove the staging copy and the downloaded archive. Never touches a backup-<...> directory.
+    def _clean_workspace(self):
+        """Remove the staging tree, the downloaded archive and any partial download.
 
-        The archive is 124 MB per run and the staging tree another 221 MB; on a machine where setup.py
-        has also left copies, leaving them accumulates. It is not kept even after a failure: the release
-        URL is stable for a tag, so re-running downloads it again, and keeping it would mean the engine
-        directory's parent grows by 124 MB per attempt with no way to tell what is stale.
+        Never touches a backup-<...> directory - that is the only way back, on success and on failure
+        alike.  The archive is 124 MB and the staging tree another 221 MB, and a machine where setup.py
+        has also run accumulates them; a release URL is stable for its tag, so re-running downloads it
+        again and keeping it only grows the engine directory's parent.
         """
-        for path in list(self.root.glob("stage-*")) + list(self.root.glob("*.zip")):
+        for path in list(self.root.glob("stage-*")) + list(self.root.glob("*.zip")) + \
+                list(self.root.glob("*.part")):
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
             else:
@@ -499,38 +488,88 @@ class Updater:
     # ---- the individual checks ---------------------------------------------------------------------
 
     def _check_gpu(self):
-        """Refuse a release that has no code for this card, before downloading it.
+        """Refuse a release that carries no code for this card.
 
-        The check is deliberately cheap and does not run anything: it compares the card's compute
-        capability against the release's own BUILD.json.  That BUILD.json only exists INSIDE the zip, so
-        this reads the installed engine's archs as a proxy - which is what setup.py does before installing
-        - and treats an unknown card as "cannot tell" rather than refusing.
+        This runs AFTER the archive is inspected, not before the download, and that placement is the whole
+        point.  The release's own BUILD.json - the only honest source of what it can run - is inside the
+        zip, so a check before the download can only compare the card against the *installed* engine's
+        archs.  That is what setup.py's get_prebuilt() does too, and it has a consequence worth stating:
+        it cannot see the case that actually bites, where a new release drops an architecture the installed
+        one had.  Doing it here costs the download and removes the guesswork.
 
-        The fallback matters as much as the check: if the download is refused here, nothing changes, and
-        if this ever wrongly refuses, the user can still update by hand.  A wrong refusal is annoying; a
-        wrong install leaves an engine that will not start.
+        Nothing on disk has changed when this runs: the apply step is four steps later.
+
+        An unknown card is NOT refused.  A wrong refusal costs the user their update; a wrong install costs
+        them an engine that will not start, and they can always update by hand.
         """
         if self.backend != "cuda" or self.gpu_cc is None:
             return
-        archs, ptx = installed_archs(self.engine_dir)
+        archs, ptx = self.detail.get("release_archs") or ([], False)
         if not archs:
             return
-        # BUILD.json lists architectures as compute capability x10 (86 = 8.6), the way nvidia-smi's
-        # "compute_cap" is turned into an int by setup.py (`cc.replace(".", "")`). The card here is a
-        # float, so it is converted the same way before comparing - comparing 8.6 against [75, 86, ...]
-        # directly never matches and refuses every supported card.
-        cc10 = int(round(float(self.gpu_cc) * 10))
+        # BUILD.json lists architectures as compute capability x10 (86 = 8.6), the way setup.py turns
+        # nvidia-smi's "compute_cap" into an int (`cc.replace(".", "")`). The card here is a float, so it
+        # is converted the same way - comparing 8.6 against [75, 86, ...] directly never matches.
+        cc = float(self.gpu_cc)
+        cc10 = int(round(cc * 10))
         if cc10 in archs or (ptx and cc10 > max(archs)):
             return
-        cc = float(self.gpu_cc)
-        name = self.detail.get("gpu_name") or "the graphics card"
         listed = ", ".join(f"{a / 10:g}" for a in sorted(archs))
         raise UpdateError(
-            f"{name} (compute capability {cc:g}) is not one of the architectures this engine has code "
-            f"for ({listed}), and it is older than the newest of them, so the PTX cannot run it either. "
-            f"This is the check setup.py makes before installing anything. Nothing was downloaded and "
-            f"nothing was changed. Strata needs compute capability {MIN_CC:g} or newer (RTX 20 or later); "
-            f"cards below that need the community CUDA 12.x build (STRATA_EXPERIMENTAL_SM60=1)")
+            f"{tag_word(self.detail.get('latest'))} has no code for this graphics card (compute capability "
+            f"{cc:g}; it was built for {listed}), so the engine would not start on it. This is the same "
+            f"check setup.py makes before installing - see get_prebuilt() - and nothing has been changed. "
+            f"Strata needs compute capability {MIN_CC:g} or newer (RTX 20 or later); cards below that "
+            f"need the community CUDA 12.x build (STRATA_EXPERIMENTAL_SM60=1)")
+
+    # ---- the nine steps ----------------------------------------------------------------------
+    # Each returns the note to show when it finishes, and raises UpdateError to fail the run.  run()
+    # does the state bookkeeping, so nothing here has to know about steps or the panel.
+
+    def _do_plan(self) -> str:
+        return f"installing {self.detail['latest']}"
+
+    def _do_room(self) -> str:
+        self._check_room()
+        return f"{self.detail.get('free_gb')} GB free"
+
+    def _do_download(self) -> str:
+        tag = self.detail["latest"]
+        self.root.mkdir(parents=True, exist_ok=True)
+        part = self.root / f"download-{tag}.zip.part"
+        self._download(self.detail["asset_url"], part, self.detail.get("asset_size"),
+                       "the engine archive")
+        part.replace(self.root / f"download-{tag}.zip")
+        return f"{self.detail['asset_mb']} MB"
+
+    def _do_inspect(self) -> str:
+        self._inspect()
+        self._check_gpu()          # after _inspect, which is where the release's archs come from
+        return f"{self.detail['members']} files, BUILD.json says {self.detail['latest']}"
+
+    def _do_stage(self) -> str:
+        self.staging = Path(tempfile.mkdtemp(prefix="stage-", dir=str(self.root)))
+        self._extract(self.staging)
+        return self.staging.name
+
+    def _do_test(self) -> str:
+        self._probe(self.staging)
+        return "it starts and prints its usage"
+
+    def _do_backup(self) -> str:
+        self.backup = self._backup()
+        return self.backup.name
+
+    def _do_apply(self) -> str:
+        self._apply(self.staging)
+        self._changed = True
+        return "replaced"
+
+    def _do_verify(self) -> str:
+        self._verify(self.detail["latest"])
+        return f"running {self.detail['verified_version']}"
+
+    # ---- the individual checks ---------------------------------------------------------------------
 
     def _check_room(self):
         free = shutil.disk_usage(self.root if self.root.exists() else self.engine_dir).free
@@ -555,7 +594,10 @@ class Updater:
                     raise UpdateError("the archive has no BUILD.json, so its version cannot be checked")
                 if not any(Path(n).name.startswith("strata") and n.endswith((".exe", "")) for n in safe):
                     raise UpdateError("the archive has no engine binary in it")
-                build = json.loads(zf.read(next(n for n in safe if n.endswith("BUILD.json"))))
+                build = json.loads(zf.read(next(n for n in safe if n.endswith("BUILD.json")))
+                                   .decode("utf-8-sig"))    # utf-8-sig: a release zipped on Windows can carry a BOM
+            self._put(release_archs=([int(a) for a in (build.get("archs") or []) if str(a).isdigit()],
+                                     bool(build.get("ptx"))))
         except zipfile.BadZipFile:
             raise UpdateError("the download is not a valid zip; nothing on disk was changed")
         got = str(build.get("version") or "")

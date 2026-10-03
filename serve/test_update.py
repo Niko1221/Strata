@@ -47,12 +47,16 @@ def check(ok: bool, what: str, detail: str = ""):
 # a fake release + a fake network
 
 
-def make_zip(files: dict[str, bytes], version: str) -> bytes:
+def make_zip(files: dict[str, bytes], version: str, archs=(120,), ptx=False) -> bytes:
+    """A release-shaped zip.  `archs`/`ptx` go into its BUILD.json, which is where the updater reads the
+    release's own GPU architectures from - so a test can say what the RELEASE supports, separately from
+    what the installed engine claims."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, body in files.items():
             zf.writestr(name, body)
-        zf.writestr("BUILD.json", json.dumps({"version": version, "archs": [120], "src": "abc123"}))
+        zf.writestr("BUILD.json", json.dumps({"version": version, "archs": list(archs), "ptx": ptx,
+                                              "src": "abc123"}))
     return buf.getvalue()
 
 
@@ -465,16 +469,15 @@ def t_backup_retention():
 
 
 def t_gpu_arch_refused_before_download():
-    print("\na card the release has no code for is refused BEFORE downloading")
-    # The real case: v0.1.38's BUILD.json says archs [75, 86, 89, 120] and this PC's GTX 1070 is 6.1.
-    # The probe catches it, but only after a 124 MB download - so the check runs first.
+    print("\na card the RELEASE has no code for is refused, at the inspect step")
+    # The case the live run on this PC hit: the release's own BUILD.json lists archs [75, 86, 89, 120]
+    # and "ptx", the card is a GTX 1070 at compute capability 6.1, so the engine cannot run here. The
+    # check runs where the release's archs are finally known - after the archive is inspected, which is
+    # still four steps before anything is changed.
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[75, 86, 89, 120], ptx=True)
     with tempfile.TemporaryDirectory() as d:
-        eng = Path(d) / "engine"
-        eng.mkdir()
-        (eng / "strata.exe").write_bytes(fake_engine("0.1.37"))
-        (eng / "BUILD.json").write_text(
-            json.dumps({"version": "0.1.37", "archs": [75, 86, 89, 120], "ptx": True}), encoding="utf-8")
-        net = Fake("0.1.38")
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38", zip_bytes=release)
         up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=6.1)
         up.fetch, up.head = net.fetch, net.head
         up.check()
@@ -482,72 +485,86 @@ def t_gpu_arch_refused_before_download():
 
         check(state["state"] == "failed", "the update is refused", state["state"])
         failed = [s for s in state["steps"] if s["status"] == "failed"]
-        check(failed and failed[0]["key"] == "room", "at the disk/GPU step, before the download",
+        check(failed and failed[0]["key"] == "inspect", "at the inspect step, before staging",
               failed[0]["key"] if failed else "none")
         err = state["detail"].get("error", "")
         check("6.1" in err, "the message names the card's compute capability", err[:56])
-        check("7.5" in err or "8.6" in err, "and the architectures the release has", err[:80])
-        check("nothing was downloaded" in err.lower() or "nothing was changed" in err.lower(),
-              "and says nothing was downloaded", err[-40:])
-        check(not net.hits or all("api.github.com" in h for h in net.hits),
-              "only the release metadata was fetched - no asset request", str(len(net.hits)))
-        check(U.installed_version(eng) == "0.1.37", "the installed engine is untouched")
+        check("7.5" in err or "8.6" in err, "and the architectures the release was built for", err[:90])
+        check("v0.1.38" in err, "and names the release", err[:40])
+        check(U.installed_version(eng) == "0.1.31", "the installed engine is untouched")
+        check(up.backup is None, "no backup was taken, so there is nothing to restore")
 
-    print("\n  ... and a card the release DOES support is not refused")
+    print("\n  ... and it uses the RELEASE's archs, not the installed engine's")
+    # The bug this placement fixes: checked against the INSTALLED engine, a card the installed build
+    # happens not to support would be refused even when the new release does support it - and, worse,
+    # a release that DROPS an architecture could never be caught before the probe. Here the installed
+    # engine claims [75, 86, 89, 120] and the card is 6.1, but the release carries [61]: it must go
+    # through, because the release is what will actually run.
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[61])
     with tempfile.TemporaryDirectory() as d:
         eng = Path(d) / "engine"
         eng.mkdir()
-        (eng / "strata.exe").write_bytes(fake_engine("0.1.37"))
+        (eng / ("strata.exe" if os.name == "nt" else "strata")).write_bytes(fake_engine("0.1.31"))
         (eng / "BUILD.json").write_text(
-            json.dumps({"version": "0.1.37", "archs": [75, 86, 89, 120], "ptx": True}), encoding="utf-8")
-        net = Fake("0.1.38")
+            json.dumps({"version": "0.1.31", "archs": [75, 86, 89, 120], "ptx": True}), encoding="utf-8")
+        net = Fake("0.1.38", zip_bytes=release)
+        up = U.Updater(engine_exe=eng / ("strata.exe" if os.name == "nt" else "strata"), gpu_cc=6.1)
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+        state = up.run()
+        check(state["state"] == "done",
+              "a 6.1 card is allowed when the RELEASE supports 6.1, whatever the old engine claimed",
+              state["state"])
+
+    print("\n  ... a supported card is not refused")
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[75, 86, 89, 120], ptx=True)
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38", zip_bytes=release)
         up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=8.6)      # a supported card
         up.fetch, up.head = net.fetch, net.head
         up.check()
-        state = up.run()
-        check(state["state"] == "done", "an 8.6 card updates normally", state["state"])
+        check(up.run()["state"] == "done", "an 8.6 card updates normally")
 
-    print("\n  ... and PTX covers anything NEWER than the newest listed architecture")
+    print("\n  ... PTX covers anything NEWER than the newest architecture listed")
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[75], ptx=True)
     with tempfile.TemporaryDirectory() as d:
-        eng = Path(d) / "engine"
-        eng.mkdir()
-        (eng / "strata.exe").write_bytes(fake_engine("0.1.37"))
-        (eng / "BUILD.json").write_text(
-            json.dumps({"version": "0.1.37", "archs": [75], "ptx": True}), encoding="utf-8")
-        net = Fake("0.1.38")
-        up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=12.0)      # newer than archs, but has PTX
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38", zip_bytes=release)
+        up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=12.0)     # newer than archs, but has PTX
         up.fetch, up.head = net.fetch, net.head
         up.check()
-        state = up.run()
-        check(state["state"] == "done", "a 12.0 card is covered by the PTX", state["state"])
+        check(up.run()["state"] == "done", "a 12.0 card is covered by the PTX")
 
-    print("\n  ... and an unknown card is not refused (a wrong refusal would be worse)")
+    print("\n  ... an unknown card is not refused (a wrong refusal is worse than a download)")
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[75, 86, 89, 120])
     with tempfile.TemporaryDirectory() as d:
-        eng = Path(d) / "engine"
-        eng.mkdir()
-        (eng / "strata.exe").write_bytes(fake_engine("0.1.37"))
-        (eng / "BUILD.json").write_text(
-            json.dumps({"version": "0.1.37", "archs": [75, 86, 89, 120]}), encoding="utf-8")
-        net = Fake("0.1.38")
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38", zip_bytes=release)
         up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=None)     # cannot tell
         up.fetch, up.head = net.fetch, net.head
         up.check()
-        state = up.run()
-        check(state["state"] == "done", "an unknown card is let through", state["state"])
+        check(up.run()["state"] == "done", "an unknown card is let through")
 
-    print("\n  ... and an engine with no BUILD.json has no archs to check against")
+    print("\n  ... a release with no archs at all is not refused either")
+    release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[])
     with tempfile.TemporaryDirectory() as d:
-        eng = Path(d) / "engine"
-        eng.mkdir()
-        (eng / "strata.exe").write_bytes(fake_engine("0.1.37"))
-        (eng / "BUILD.json").write_text(json.dumps({"version": "0.1.37"}), encoding="utf-8")
-        net = Fake("0.1.38")
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38", zip_bytes=release)
         up = U.Updater(engine_exe=eng / "strata.exe", gpu_cc=6.1)
         up.fetch, up.head = net.fetch, net.head
         up.check()
-        state = up.run()
-        check(state["state"] == "done", "no archs means no refusal", state["state"])
+        check(up.run()["state"] == "done", "no archs means no refusal")
 
+    print("\n  ... and the AMD backend skips the check entirely")
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        release = make_zip(engine_files("0.1.38"), "0.1.38", archs=[120])
+        net = Fake("0.1.38", zip_bytes=release, asset_name="strata-windows-x64-hip.zip")
+        up = U.Updater(engine_exe=eng / "strata.exe", backend="hip", gpu_cc=6.1)
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+        check(up.run()["state"] == "done", "a HIP build is never judged on NVIDIA compute capability")
 
 def t_missing_asset_refused():
     print("\na release with no build for this platform is refused, not half-applied")
