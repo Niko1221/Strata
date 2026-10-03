@@ -85,7 +85,7 @@ Save as `strata-gyro-s.json` at the repository root:
     "--pack", "packs/gyro-s",
     "--native", "models/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
     "--expert-profile", "data/expert-profile.bin", "--expert-cache", "auto",
-    "--prefill", "512", "--spec", "4", "--spec-min-p", "0.5",
+    "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
     "--mtp", "mtp/rt", "--max-context", "131072", "--kv", "int8"
   ],
   "cwd": ".",

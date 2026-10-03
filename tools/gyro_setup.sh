@@ -68,7 +68,7 @@ cat > "strata-$P.json" <<JSON
     "--pack", "packs/$P",
     "--native", "$G",
     "--expert-profile", "data/expert-profile.bin", "--expert-cache", "auto",
-    "--prefill", "512", "--spec", "4", "--spec-min-p", "0.5",
+    "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
     "--mtp", "mtp/rt", "--max-context", "$CTX", "--kv", "int8"
   ],
   "cwd": ".",
