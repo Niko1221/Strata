@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -2327,6 +2328,95 @@ class LostStep(unittest.TestCase):
 
     def test_stop_never_acknowledged(self):
         self.run_mode("stop", stream=False)
+
+
+class AnswerBeforeTheBody(unittest.TestCase):
+    """An answer sent before the request body was read must still reach a client that sends the body after the headers
+    (http.client, urllib and requests do): closing the connection on unread bytes sends a reset that eats the answer."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.engine = UnloadableEngine(tok, "</think>\n\nok", max_context=CTX)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.port = self.httpd.server_address[1]
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def status(self, method, path, headers=None, body=b'{"x": 1}'):
+        """The status line of the answer to a request whose body follows the headers after a pause."""
+        head = {"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "Content-Length": str(len(body)),
+                **(headers or {})}
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall((f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in head.items()) +
+                       "\r\n").encode())
+            time.sleep(0.3)                                  # the server answers (and, unfixed, closes) meanwhile
+            try:
+                s.sendall(body)
+            except OSError:
+                pass
+            answer = b""
+            while chunk := s.recv(65536):                    # Windows raises a reset here, where Linux keeps the answer
+                answer += chunk
+            time.sleep(0.2)
+            # Linux shows the reset only as a pending socket error, after the answer and the end of the stream
+            self.assertEqual(s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR), 0, "the connection was reset")
+        return answer.split(b"\r\n", 1)[0].decode()
+
+    def test_a_wrong_key(self):
+        self.svc.api_key = "secret"
+        try:
+            self.assertEqual(self.status("POST", "/v1/chat/completions"), "HTTP/1.0 401 Unauthorized")
+        finally:
+            self.svc.api_key = ""
+
+    def test_a_wrong_key_and_a_body_of_megabytes(self):
+        """An agent client's conversation, or one screenshot, is several MiB, and a rotated key is when the 401 matters."""
+        self.svc.api_key = "secret"
+        try:
+            self.assertEqual(self.status("POST", "/v1/chat/completions", body=b'{"x": "' + b"a" * (80 << 20) + b'"}'),
+                             "HTTP/1.0 401 Unauthorized")
+        finally:
+            self.svc.api_key = ""
+
+    def test_a_body_that_comes_in_drops_does_not_hold_the_connection(self):
+        """A client that announces a body and sends it a byte at a time is let go after DRAIN_SECONDS, with its
+        answer: the time limit is on the whole body, not on each read."""
+        self.svc.api_key = "secret"
+        try:
+            with mock.patch.object(self.httpd.RequestHandlerClass, "DRAIN_SECONDS", 0.5), \
+                    socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+                s.sendall((f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                           f"Content-Length: {1 << 20}\r\n\r\n").encode())
+                started, answer = time.monotonic(), b""
+                s.settimeout(0.2)
+                while True:
+                    try:
+                        if not (chunk := s.recv(65536)):
+                            break
+                        answer += chunk
+                    except TimeoutError:
+                        s.sendall(b"a")                      # a byte every 0.2 s keeps each read of the server alive
+            self.assertEqual(answer.split(b"\r\n", 1)[0], b"HTTP/1.0 401 Unauthorized")
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            self.svc.api_key = ""
+
+    def test_load_and_unload(self):
+        self.assertEqual(self.status("POST", "/unload"), "HTTP/1.0 200 OK")
+        self.assertEqual(self.status("POST", "/load"), "HTTP/1.0 200 OK")
+
+    def test_not_the_apps_own_page(self):
+        self.assertEqual(self.status("POST", "/load", {"Origin": "https://example.com"}), "HTTP/1.0 403 Forbidden")
+
+    def test_a_host_the_server_does_not_answer_to(self):
+        self.assertEqual(self.status("POST", "/v1/chat/completions", {"Host": "rebind.example.com"}),
+                         "HTTP/1.0 403 Forbidden")
+
+    def test_a_method_with_no_handler(self):
+        self.assertEqual(self.status("PUT", "/v1/chat/completions"), "HTTP/1.0 501 Unsupported method ('PUT')")
 
 
 if __name__ == "__main__":
