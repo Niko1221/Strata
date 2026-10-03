@@ -82,6 +82,21 @@ public:
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
 
+    /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
+    /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
+    static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+
+    /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
+    /// max_blob, never past ring_cap()):
+    /// what the auto chunk scan treats as a full ring.  A slot is one whole blob, so a pack with bigger blobs than
+    /// Q2_0's gets fewer of them for the same bytes - 384 on Q2_0, 199 on a 2.54 MiB-blob IQ3_S pack.
+    static int64_t ring_max_slots();
+
+    /// What the ring actually resolves to for a chunk of `chunk` tokens, after the override, STRATA_PREFILL_RING
+    /// and the pinned-share rule - the slot count `init` lays out.  The engine reports it on its INFO line so the
+    /// Monitor tab shows the pair the run really got, not what it asked for.
+    static int64_t ring_slots_for(int64_t chunk);
+
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
