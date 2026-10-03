@@ -568,6 +568,8 @@ class OutputParser:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
                 out.append(Event("tool_call", call=self.scall))
+            else:
+                out.append(Event("content", CALL_START + self.buf))
             self.buf = ""
             self._reset_scan()
             return out
