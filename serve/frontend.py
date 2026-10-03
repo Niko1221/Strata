@@ -160,6 +160,30 @@ def _object_list(value, name: str) -> list[dict]:
     return value
 
 
+def _tool_list(value, api: str) -> list[dict] | None:
+    """#592: a request's "tools" as the template's tool objects, or None without any.  `api` "openai" unwraps the
+    {"type": "function", "function": {...}} envelope (a bare object is the unwrapped form); "anthropic" maps name /
+    description / input_schema.  A value that is not a list of objects, an entry whose "function" is not an object
+    or that has no "name" string, or a schema that is not an object is a ValueError (the server's 400): such an
+    entry used to reach the consumers as-is and take the request thread down on t.get / t["name"], closing the
+    connection with no reply."""
+    tools = []
+    for i, t in enumerate(_object_list(value, "tools")):
+        fn = t.get("function", t) if api == "openai" and t.get("type") == "function" else t
+        if not isinstance(fn, dict):
+            raise ValueError(f'tools[{i}]: "function" must be an object')
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f'tools[{i}] has no "name" string')
+        key = "parameters" if api == "openai" else "input_schema"
+        schema = fn.get(key)
+        if schema is not None and not isinstance(schema, dict):
+            raise ValueError(f'tools[{i}] ({name}): "{key}" must be an object')
+        tools.append(fn if api == "openai" else
+                     {"name": name, "description": fn.get("description", ""), "parameters": schema or {}})
+    return tools or None
+
+
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
@@ -182,8 +206,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                 calls.append({"function": {"name": fn.get("name"), "arguments": args or {}}})
             out["tool_calls"] = calls
         messages.append(out)
-    tools = [t.get("function", t) if isinstance(t, dict) and t.get("type") == "function" else t
-             for t in req.get("tools") or []] or None
+    tools = _tool_list(req.get("tools"), "openai")
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
@@ -232,8 +255,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             if calls:
                 out["tool_calls"] = calls
             messages.append(out)
-    tools = [{"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})}
-             for t in req.get("tools") or []] or None
+    tools = _tool_list(req.get("tools"), "anthropic")
     kwargs = {}
     # Anthropic: "thinking": {"type": "disabled"} or {"type": "enabled", "budget_tokens": N};
     # "output_config": {"effort": "low" | "medium" | "high"}

@@ -499,6 +499,51 @@ class ClientShapes(unittest.TestCase):
                 self.assertEqual(status, 400, b)
                 self.assertIn("messages must be a list of objects", b["error"]["message"])
 
+    def test_malformed_tools_is_a_400(self):
+        # #592: a "tools" that is not a list of tool objects raised in the request thread (t.get on a string,
+        # t["name"] on a string, a missing "name") and the connection closed with no reply; now a 400 naming the field
+        msgs = [{"role": "user", "content": "hi"}]
+        bad = {"/v1/chat/completions": ["auto", ["get_weather"], [{"type": "function", "function": "get_weather"}],
+                                        [{"type": "function", "function": {"description": "no name"}}], [{"name": 5}],
+                                        [{"name": "f", "parameters": []}], [{"name": "f"}, 3]],
+               "/v1/messages": ["auto", ["get_weather"], [{"input_schema": {}}], [{"name": None}],
+                                [{"name": "f", "input_schema": "x"}], [{"name": "f"}, "g"]]}
+        for path, shapes in bad.items():
+            for tools in shapes:
+                with self.subTest(path=path, tools=tools):
+                    status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                    self.assertEqual(status, 400, b)
+                    self.assertEqual(b["error"]["type"], "invalid_request_error")
+                    self.assertIn("tools", b["error"]["message"])
+        status, b = self.post("/v1/messages/count_tokens", {"model": "x", "messages": msgs, "tools": "auto"})
+        self.assertEqual(status, 400, b)                        # reads the same request
+        status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 8, "messages": msgs, "tools": []})
+        self.assertEqual(status, 200, b)                        # the server goes on
+
+    def test_well_formed_tools_still_render(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        schema = {"type": "object", "properties": {"city": {"type": "string"}}}
+        good = {"/v1/chat/completions": [{"type": "function",
+                                          "function": {"name": "get_weather", "description": "d", "parameters": schema}}],
+                "/v1/messages": [{"name": "get_weather", "description": "d", "input_schema": schema}]}
+        for path, tools in good.items():
+            with self.subTest(path=path):
+                status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                self.assertEqual(status, 200, b)
+                self.assertIn('"name": "get_weather"', self.prompt_text())
+                self.assertIn('"city"', self.prompt_text())
+        # a bare object with a name is the unwrapped form on both APIs (the issue's third shape; it answered before)
+        for path in good:
+            status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": [{"name": "get_weather"}]})
+            self.assertEqual(status, 200, b)
+            self.assertIn('"name": "get_weather"', self.prompt_text())
+        from serve.frontend import anthropic_to_messages, openai_to_messages
+        for req in ({}, {"tools": None}, {"tools": []}):          # no tools, as before
+            self.assertIsNone(openai_to_messages(req)[1])
+            self.assertIsNone(anthropic_to_messages(req)[1])
+        self.assertEqual(anthropic_to_messages({"tools": [{"name": "f"}]})[1],
+                         [{"name": "f", "description": "", "parameters": {}}])
+
     def test_vision_temp_image_removed_when_the_pipe_fails(self):
         # #352: the temporary image goes even when the encoder's pipe raises
         from serve.server import Vision
