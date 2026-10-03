@@ -5994,7 +5994,13 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                         std::printf("ERR refilling a lent slot failed%s: %s\n", rid_suffix().c_str(), err.c_str());
                         return 1;
                     }
-                    if (!win && !lend(to - at, err)) {
+                    // Lend the CHUNK size, not the segment size: a resumed request's tail segment would
+                    // otherwise run its draft-KV batched path on a smaller relayout than an uninterrupted
+                    // request's same cells do, and that path is E-9 non-bit-identical across layouts
+                    // (different scratch tiling) - the drafts would differ and with them the decode's shape.
+                    // Buffers are sized >= needed, so running a short segment on a chunk-sized carve is fine;
+                    // it only lends a few more cache slots for that one segment.
+                    if (!win && !lend(std::max<int64_t>(to - at, o.prefill_chunk), err)) {
                         std::printf("ERR lending the prompt path its slots failed%s: %s\n", rid_suffix().c_str(),
                                     err.c_str());
                         return 1;
