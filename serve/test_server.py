@@ -18,8 +18,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
-                          engine_args, prompt_tokens_seen, request_timings, serve, start_failure_hint)
+from serve.server import (CTX_SLACK, ByteTokenizer, DiskStats, EngineDied, GpuBusy, MockEngine, Service,  # noqa: E402
+                          StrataEngine, engine_args, parse_disk_line, prompt_tokens_seen, request_timings, serve,
+                          start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2076,6 +2077,67 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+class DiskCacheStats(unittest.TestCase):
+    """The L3 conversation store's readings, from the engine's own log lines (src/program/generate.cpp).  The
+    Monitor's card is shown only once the store reports that it opened, so a failed open must not look like one."""
+
+    LINES = (
+        "strata serve: conversation disk: /mnt/strata-models/strata-conversations budget=25 GiB recovered=3 "
+        "bytes=792758838 evictions=0 corruptions=0",
+        "strata serve: conversation disk: parked 2668 tokens in 985.0 ms; records=3 bytes=792758838 evictions=0 "
+        "corruptions=0 snapshot_bytes=277641640",
+        "strata serve: conversation disk: read c711e9065f14d1773-0000000000000a30 2 stages in 452.7 ms; hit 2580 "
+        "tokens records=1 bytes=276721618 hits=1 misses=2",
+        "strata serve: conversation disk: restored 2580 tokens (checkpoint) in 102.9 ms; records=1 "
+        "bytes=276721618 hits=1 misses=2",
+        "strata serve: conversation disk: miss (ram_resume=0) in 0.0 ms; hits=2 misses=3 records=3 "
+        "bytes=792758838 evictions=0 corruptions=0",
+    )
+
+    def test_the_store_stays_hidden_until_it_opens(self):
+        stats = DiskStats()
+        self.assertFalse(stats.snapshot()["on"])           # no line yet: the Monitor shows no card
+        for line in self.LINES[1:]:                        # parks before the opening line cannot happen, but be safe
+            stats.feed(line)
+        self.assertFalse(stats.snapshot()["on"])
+        stats.feed(self.LINES[0])
+        self.assertTrue(stats.snapshot()["on"])
+        self.assertEqual(stats.snapshot()["records"], 3)    # recovered=3: the store already holds that many
+
+    def test_every_line_shape_accumulates(self):
+        stats = DiskStats()
+        for line in self.LINES:
+            stats.feed(line)
+        s = stats.snapshot()
+        self.assertEqual(s["path"], "/mnt/strata-models/strata-conversations")
+        self.assertEqual(s["budget_bytes"], 25 << 30)
+        self.assertEqual((s["records"], s["bytes"]), (3, 792758838))
+        self.assertEqual((s["hits"], s["misses"], s["evictions"], s["corruptions"]), (2, 3, 0, 0))
+        self.assertEqual((s["parks"], s["parked_tokens"], s["parked_bytes"]), (1, 2668, 277641640))
+        self.assertEqual((s["reads"], s["last_read_ms"]), (1, 452.7))
+        self.assertEqual((s["restores"], s["restored_tokens"], s["last_restore_ms"]), (1, 2580, 102.9))
+        self.assertEqual(s["miss_events"], 1)
+
+    def test_other_lines_and_a_failed_open_are_ignored(self):
+        for line in ("", "strata serve: 496 MiB of VRAM free with everything loaded",
+                     "strata serve: conversation disk: cannot open /x: permission denied", "DONE 5 3"):
+            with self.subTest(line=line):
+                self.assertIsNone(parse_disk_line(line))
+        stats = DiskStats()
+        stats.feed("strata serve: conversation disk: cannot open /x: permission denied")
+        self.assertFalse(stats.snapshot()["on"])           # a store that did not open shows no card
+
+    def test_a_skipped_or_failed_park_is_counted_not_treated_as_a_park(self):
+        stats = DiskStats()
+        stats.feed(self.LINES[0])
+        stats.feed("strata serve: conversation disk: skip parking (cannot start async write: too many files)")
+        stats.feed("strata serve: conversation disk: write failed in 12.0 ms (no space left on device); "
+                   "records=1 bytes=100 hits=0 misses=1")
+        s = stats.snapshot()
+        self.assertEqual((s["skips"], s["write_failures"], s["parks"]), (1, 1, 0))
+        self.assertEqual(s["last_read_ms"], None)          # a failed write reports no read
+
 
 if __name__ == "__main__":
     unittest.main()

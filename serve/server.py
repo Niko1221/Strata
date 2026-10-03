@@ -181,6 +181,145 @@ def echo_requests(log_path: str, offset: int) -> None:
                                                  m["tg"]), flush=True)
 
 
+# ------------------------------------------------------------------ the L3 conversation disk cache
+# `--conversation-cache-disk`: the engine writes one line per park, read, restore and miss to its log (which is its
+# stderr, so nothing else sees them).  A follower thread turns them into the readings the Monitor tab shows.
+DISK_LINE = "conversation disk:"
+_DISK_COUNTERS = ("records", "bytes", "hits", "misses", "evictions", "corruptions", "recovered", "snapshot_bytes")
+_disk_stats: dict[str, "DiskStats"] = {}    # one accumulator per log, fed by one follower (restarts reuse it)
+
+
+def _disk_counters(text: str) -> dict:
+    out = {}
+    for token in text.split():
+        k, eq, v = token.partition("=")
+        if eq and k in _DISK_COUNTERS and v.lstrip("-").isdigit():
+            out[k] = int(v)
+    return out
+
+
+def parse_disk_line(line: str) -> dict | None:
+    """One `strata serve: conversation disk: ...` line -> the reading it carries, or None for anything else.
+
+    The engine writes six shapes (src/program/generate.cpp): the store opening, a park, a read, a restore, a miss
+    and a skipped or failed park.  The opening line is `<dir> budget=N GiB recovered=N bytes=N ...` and is the only
+    one with `budget=`; the others start with their event and end their head at `;`, followed by the counters that
+    matter (a skipped park has no `;` at all).  So the opening line is recognised by its budget, the counters are
+    read generically, and only the event's own numbers are matched.  Anything unrecognised gives None: a log line
+    must never be able to stop the server, and an engine without the feature writes none of these at all."""
+    i = line.find(DISK_LINE)
+    if i < 0:
+        return None
+    head, sep, tail = line[i + len(DISK_LINE):].strip().partition(";")
+    budget = re.search(r"budget=(\d+)", head)
+    if budget and not sep:                               # the store opened: "<dir> budget=<n> GiB recovered=<n> ..."
+        words = head.split()
+        if words and "=" not in words[0]:                # not "<x>=<n> ...": the path comes first
+            return {"event": "open", "path": words[0], "budget_gib": int(budget.group(1)),
+                    **_disk_counters(head)}
+    counters = _disk_counters(tail or head)
+    ms = re.search(r"in ([\d.]+) ms", head)
+    if head.startswith("parked"):
+        m = re.match(r"parked (\d+) tokens", head)
+        return {"event": "park", "tokens": int(m.group(1)) if m else None,
+                "ms": float(ms.group(1)) if ms else None, **counters}
+    if head.startswith("read "):
+        m = re.match(r"read \S+ (\d+) stages", head)
+        return {"event": "read", "stages": int(m.group(1)) if m else None,
+                "ms": float(ms.group(1)) if ms else None, **counters}
+    if head.startswith("restored "):
+        m = re.match(r"restored (\d+) tokens", head)
+        return {"event": "restore", "tokens": int(m.group(1)) if m else None,
+                "ms": float(ms.group(1)) if ms else None, **counters}
+    if head.startswith("miss"):
+        return {"event": "miss", "ms": float(ms.group(1)) if ms else None, **counters}
+    if head.startswith("skip"):
+        return {"event": "skip", "ms": float(ms.group(1)) if ms else None, **counters}
+    if head.startswith("write failed"):
+        return {"event": "write_failed", "ms": float(ms.group(1)) if ms else None, **counters}
+    return None
+
+
+class DiskStats:
+    """The L3 store's readings, accumulated from the engine's log (one follower thread feeds it, the dashboard reads
+    it under the lock).  `on` becomes True only when the store's own opening line arrives, so a configured path that
+    failed to open leaves the dashboard's card hidden instead of showing a row of zeros."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        """A new engine run: the store's persisted state comes back on its opening line, the event counters restart
+        (the engine's own hits/misses restart with it, so the two agree)."""
+        with self.lock:
+            self.on, self.path, self.budget_bytes = False, None, None
+            self.counters: dict = {}
+            self.totals = {"parks": 0, "parked_bytes": 0, "parked_tokens": 0, "park_ms": 0.0, "last_park_ms": None,
+                           "reads": 0, "read_ms": 0.0, "last_read_ms": None,
+                           "restores": 0, "restored_tokens": 0, "restore_ms": 0.0, "last_restore_ms": None,
+                           "miss_events": 0, "skips": 0, "write_failures": 0}
+
+    def feed(self, line: str) -> None:
+        parsed = parse_disk_line(line)
+        if parsed is None:
+            return
+        event = parsed.pop("event", None)
+        with self.lock:
+            for k, v in parsed.items():
+                if k in _DISK_COUNTERS:
+                    self.counters[k] = v
+            t = self.totals
+            if event == "open":
+                self.on = True
+                self.path = parsed.get("path")
+                if parsed.get("budget_gib"):
+                    self.budget_bytes = int(parsed["budget_gib"]) * (1 << 30)
+                # the opening line counts the records it recovered, not the store's `records=`: the same number,
+                # and without this the card would read "0 records" until the first park
+                if "records" not in self.counters and self.counters.get("recovered") is not None:
+                    self.counters["records"] = self.counters["recovered"]
+            elif event == "park":
+                t["parks"] += 1
+                t["parked_bytes"] += parsed.get("snapshot_bytes") or 0
+                t["parked_tokens"] += parsed.get("tokens") or 0
+                t["park_ms"] += parsed.get("ms") or 0.0
+                t["last_park_ms"] = parsed.get("ms")
+            elif event == "read":
+                t["reads"] += 1
+                t["read_ms"] += parsed.get("ms") or 0.0
+                t["last_read_ms"] = parsed.get("ms")
+            elif event == "restore":
+                t["restores"] += 1
+                t["restored_tokens"] += parsed.get("tokens") or 0
+                t["restore_ms"] += parsed.get("ms") or 0.0
+                t["last_restore_ms"] = parsed.get("ms")
+            elif event == "skip":
+                t["skips"] += 1
+            elif event == "write_failed":
+                t["write_failures"] += 1
+            elif event == "miss":
+                t["miss_events"] += 1
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {"on": self.on, "path": self.path, "budget_bytes": self.budget_bytes,
+                    **self.counters, **self.totals}
+
+
+def follow_disk(log_path: str, offset: int, stats: DiskStats) -> None:
+    """Feed `stats` from the engine's log as it grows.  A read that fails is retried, so a rotated or replaced log
+    cannot end the follower."""
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        f.seek(offset)
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(0.2)
+                continue
+            stats.feed(line)
+
+
 def narrate_start(log_path: str, offset: int, args: list, done: threading.Event, heartbeat=20.0) -> None:
     """While the engine starts, say in the server window what it is doing, from its log: the start reads tens of GB
     into RAM and locks part of it for the GPU, and on many PCs everything is slow or frozen for a minute or more -
@@ -255,6 +394,7 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.disk = None                 # DiskStats when --conversation-cache-disk is set: the L3 store's readings
         try:                             # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -272,6 +412,16 @@ class StrataEngine:
             if os.environ.get("STRATA_REQUEST_LINES") and os.path.abspath(log) not in _echoing:
                 _echoing.add(os.path.abspath(log))
                 threading.Thread(target=echo_requests, args=(log, os.path.getsize(log)), daemon=True).start()
+        if log and "--conversation-cache-disk" in args:
+            # one follower per log, started at this run's first line; a restart reuses it and only clears the
+            # counters, because the store's persisted state comes back on its own opening line
+            stats = _disk_stats.get(os.path.abspath(log))
+            if stats is None:
+                stats = _disk_stats[os.path.abspath(log)] = DiskStats()
+                threading.Thread(target=follow_disk, args=(log, log_start, stats), daemon=True).start()
+            else:
+                stats.reset()
+            self.disk = stats
         self.proc = subprocess.Popen([exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         contain(self.proc)                               # ends with the server, however it ends (Windows)
@@ -850,11 +1000,12 @@ class Service:
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
+        self._io_prev = None                             # the engine's own disk counters, for the L3 read/write rate
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0,
+                       "prompt_ms": 0.0, "decode_ms": 0.0, "ttft_ms": 0.0,
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
@@ -1066,11 +1217,41 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
-                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean()},
+            self.telemetry = Telemetry(extra=self._telemetry_extra,
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
+
+    def _telemetry_extra(self):
+        """The series the sampler takes from this server each second, beside the hardware: its speeds, and the
+        engine's own disk I/O - with the L3 store on, its parking and restoring is what moves that."""
+        read, write = self._engine_io()
+        return {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
+                "prefill_tok_s_mean": self._prefill_tok_s_mean(),
+                "l3_read_mb": read, "l3_write_mb": write}
+
+    def _engine_io(self):
+        """(read, write) MB/s for the engine's own process since the last call, or (None, None) without psutil or
+        without the L3 store.  The model's own read is over by then, so a park or a restore is what moves this."""
+        if not getattr(self.engine, "disk", None):
+            return None, None
+        try:
+            import psutil
+        except ImportError:
+            return None, None
+        proc = getattr(self.engine, "proc", None)
+        if proc is None or proc.poll() is not None:
+            return None, None
+        try:
+            c = psutil.Process(proc.pid).io_counters()
+        except (psutil.Error, OSError):
+            return None, None
+        t = time.time()
+        prev, self._io_prev = self._io_prev, (t, c.read_bytes, c.write_bytes)
+        if prev is None or t <= prev[0]:
+            return None, None
+        dt = t - prev[0]
+        return (c.read_bytes - prev[1]) / dt / 2 ** 20, (c.write_bytes - prev[2]) / dt / 2 ** 20
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating."""
@@ -1162,10 +1343,13 @@ class Service:
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+        disk = getattr(self.engine, "disk", None)
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "time": now,
+                # the L3 conversation disk cache (None when this run has none): the Monitor shows its card only then
+                "l3": disk.snapshot() if disk else None}
 
     def v1_status(self) -> dict:
         """GET /v1/status: what this server is and does, for a client that would rather ask than guess (a front-end
@@ -1418,6 +1602,8 @@ class Service:
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            ft = self.status.get("first_token")
+                            ttft_ms = round((ft - started) * 1000, 1) if ft and started else None
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
@@ -1431,9 +1617,9 @@ class Service:
                                 if n and last.get("generated") and last.get("decode_ms") else None,
                                 "hit_rate": hit_rate, "ram_blobs": last.get("ram_blobs"),
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
-                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                                "drafts_accepted": last.get("drafts_accepted"), "ttft_ms": ttft_ms})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
@@ -1442,6 +1628,7 @@ class Service:
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
+                            t["ttft_ms"] += ttft_ms or 0.0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
