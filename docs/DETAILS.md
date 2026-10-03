@@ -919,12 +919,14 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
 
-### Start the text API without occupying the GPU
+### Start the API without loading the model
 
 `serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true` in that
-config) starts the lightweight HTTP API without spawning the native engine. The first generation request
-loads it through the existing reload path, including `before_load` and `min_free_vram_mib`. Eager startup
-remains the default. This option is text-only: a vision configuration with lazy startup is rejected explicitly.
+config) starts the lightweight HTTP API without starting the native engine or the vision encoder. The first
+generation request, or `POST /load`, starts the vision encoder first when configured, then loads the engine through
+the existing reload path, including `before_load` and `min_free_vram_mib`. This also works with image requests:
+the load finishes before Strata encodes the image. `POST /unload` stops both processes. Eager startup remains the
+default.
 
 `POST /v1/load` and `/v1/unload` are JSON control aliases for integrations, accepting `{}` or
 `{"model":"<configured model>"}` and returning model status. They require the configured API key,
