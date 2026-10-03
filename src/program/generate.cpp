@@ -3980,15 +3980,28 @@ int main(int argc, char** argv) {
     };
     // `lend_bytes` went with the single-cache serve loan: a participant's loan is priced by `part_bytes` from its
     // OWN cache, and the only other user of the old helper was the serve path's own relayout.
+    // A segment of `tokens` reads in as few chunks as `max_chunk` allows, of equal size: n = ceil(tokens / max_chunk)
+    // chunks of ceil(tokens / n), rounded up to 256.  A chunk of stream_all_min_tokens() or more streams every expert
+    // the GPU does not hold (~1.7 s each on PCIe 3.0, whatever its length), so a long prompt's cost is its number of
+    // such chunks: a bigger chunk pays only where it saves one, and equal chunks borrow no more slots than that count
+    // needs (RTX 5070 Ti, IQ3_XXS: 20,036 tokens in 3 x 6,912 read 2.2% faster than in 2 x 8,192 + 3,652).  Full
+    // chunks and a short last one stay when that last one is below stream_all_min_tokens(): it moves only the experts
+    // its own tokens route to, where equal chunks would all stream every expert (16,402 tokens in 3 equal chunks read
+    // 22% slower than in 2 x 8,192 + 18).
     auto request_chunk = [](int64_t tokens, int64_t max_chunk) -> int64_t {
         if (tokens <= 0 || max_chunk <= 0) return 0;
-        const int64_t rounded = tokens > std::numeric_limits<int64_t>::max() - 255
-                                    ? tokens
-                                    : ((tokens + 255) / 256) * 256;
+        const int64_t n = tokens / max_chunk + (tokens % max_chunk != 0);
+        const int64_t last = tokens - (n - 1) * max_chunk;
+        const int64_t per = n > 1 && last < strata::prefill::Prefill::stream_all_min_tokens()
+                                ? max_chunk
+                                : tokens / n + (tokens % n != 0);
+        const int64_t rounded = per > std::numeric_limits<int64_t>::max() - 255
+                                    ? per
+                                    : ((per + 255) / 256) * 256;
         return std::min(max_chunk, rounded);
     };
     // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,
-    // or with --prefill auto the largest of kAutoChunks whose buffers take at most kAutoLendPct % of the slots (a
+    // or with --prefill auto the largest of auto_chunks() whose buffers take at most kAutoLendPct % of the slots (a
     // lent slot's expert is streamed during the prompt and refilled after it; measured on a 12 GB card, 32K Q2_0
     // prompt: 4096 791 tok/s, 6144 878, 8192 973 with 69% of the slots lent).  A request lends only what its own
     // prompt needs (Prefill::relayout), so a big chunk costs short prompts nothing.  0 = none fits.
@@ -4001,16 +4014,24 @@ int main(int argc, char** argv) {
         return v ? (int64_t) std::atoi(v)
                  : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
     }();
+    // --prefill auto's sizes, largest first.  Above 8192 (#282, opt-in: --prefill auto:16384 / auto:32768: a 32K prompt
+    // with IQ2_XS on an RTX 5090 read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk) every 1024
+    // tokens up to what a prompt of the context can use, so the largest chunk the cache can lend is found: with equal
+    // chunks (request_chunk) a bigger one never costs a prompt a chunk.  RTX 5070 Ti 16 GB (PCIe 3.0), IQ3_XXS, 4,170
+    // slots: 13312 fits where 16384 does not, and reads 32K / 64K / 100K prompts at 3,120 / 3,392 / 3,275 tok/s
+    // instead of 2,570 / 2,597 / 2,428 in 8192 (bench/results/2026-10-03-prompt-chunks).  Then the usual sizes from
+    // 8192 down.
+    auto auto_chunks = [&]() {
+        std::vector<int64_t> v;
+        for (int64_t c = std::min<int64_t>(o.prefill_auto_max, o.max_context) / 1024 * 1024; c > 8192; c -= 1024)
+            v.push_back(c);
+        for (const int64_t c : {8192, 6144, 4096, 3072, 2048, 1024, 512, 256}) v.push_back(c);
+        return v;
+    };
     auto plan_lend = [&](int64_t& chunk) -> int64_t {
-        // 32768 and 16384 (#282, opt-in: --prefill auto:32768): a 32K prompt with IQ2_XS (RTX 5090, 64K context)
-        // read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K -> 18K experts streamed; an
-        // NVFP4 pack at 262K: 3,535 -> 5,201)
-        static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
         auto slots_for = lend_slots;
         if (o.prefill_auto) {
-            for (const int64_t c : kAutoChunks) {
-                // above 8192: only when asked for, and only when a prompt of the context can use it
-                if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
+            for (const int64_t c : auto_chunks()) {
                 const int64_t k = slots_for(c);
                 if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) { chunk = c; return k; }
             }
@@ -4173,13 +4194,10 @@ int main(int argc, char** argv) {
                     if (!fits_one(p, c, cap)) return false;
                 return true;
             };
-            static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
             auto pick = [&](const PfPart* only) -> int64_t {
                 if (o.prefill_auto) {
-                    for (const int64_t c : kAutoChunks) {
-                        if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;   // #282, as plan_lend
+                    for (const int64_t c : auto_chunks())   // the sizes plan_lend tries
                         if (fits(c, true, only)) return c;
-                    }
                 } else {
                     for (int64_t c = o.prefill_chunk; c >= 256; c /= 2)
                         if (fits(c, false, only)) return c;
