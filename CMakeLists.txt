@@ -34,6 +34,7 @@ endif()
 
 option(STRATA_ENABLE_CUDA "Build the CUDA targets (Phase 2+)" OFF)
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1030 unvalidated)" OFF)
+option(STRATA_ENABLE_XPU "Build the Intel GPU backend (SYCL / Level Zero, Battlemage and newer)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # CUDA: MMQ prompt kernels for Q4_K / Q5_K / Q5_1 (Unsloth's UD-Q4_K_XL experts).  Off by default: the engine loads
 # every kernel when it starts (CUDA_MODULE_LOADING=EAGER), so these took ~5 MB of VRAM - 1-3 expert slots - from every
@@ -43,11 +44,14 @@ option(STRATA_ORCA_Q4KS_MMQ "Build the GGML Q5_0 MMQ instance for OrcaRouter Q4_
 if(STRATA_PREFILL_MMQ AND NOT STRATA_ENABLE_HIP)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_ENABLE_HIP=ON")
 endif()
-if(STRATA_ENABLE_CUDA AND STRATA_ENABLE_HIP)
-  message(FATAL_ERROR "STRATA_ENABLE_CUDA and STRATA_ENABLE_HIP are separate backends; enable only one")
+if((STRATA_ENABLE_CUDA AND STRATA_ENABLE_HIP) OR (STRATA_ENABLE_CUDA AND STRATA_ENABLE_XPU) OR (STRATA_ENABLE_HIP AND STRATA_ENABLE_XPU))
+  message(FATAL_ERROR "STRATA_ENABLE_CUDA, STRATA_ENABLE_HIP and STRATA_ENABLE_XPU are separate backends; enable only one")
 endif()
 if(STRATA_ENABLE_HIP)
   include(cmake/hip_backend.cmake)
+endif()
+if(STRATA_ENABLE_XPU)
+  include(cmake/xpu_backend.cmake)
 endif()
 # The test suite and the micro benchmarks live in tests/ and bench/micro/, which the published source leaves out.
 set(_strata_tests_default OFF)
@@ -115,6 +119,8 @@ elseif(STRATA_ENABLE_HIP)
   set(_strata_gpu_runtime_target strata_hip_runtime)
   set(_strata_gpu_blas_target roc::hipblas)
   set(_strata_gpu_include_directories ${STRATA_HIP_COMPAT_INCLUDE_DIR})
+elseif(STRATA_ENABLE_XPU)
+  # runtime and BLAS targets are set by cmake/xpu_backend.cmake
 endif()
 
 # Warnings live on an INTERFACE target the project's own code links, NOT in add_compile_options: applied
@@ -178,7 +184,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
-if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR STRATA_ENABLE_XPU)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -190,6 +196,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # cudaEventQuery: the .cu sources get cudart through the CUDA language rules, a .cpp does not, and the
   # linker error ("unresolved external symbol cudaGraphInstantiate") names the function rather than the cause.
   target_link_libraries(strata_core PUBLIC strata_plan strata_warnings ${_strata_gpu_runtime_target})
+  if(STRATA_ENABLE_XPU)
+    strata_xpu_adapt(strata_core)
+  endif()
 
   add_executable(strata-device src/core/device_main.cpp)
   target_link_libraries(strata-device PRIVATE strata_core)
@@ -267,6 +276,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  if(STRATA_ENABLE_XPU)
+    strata_xpu_adapt(strata_kernels)
+  endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)
@@ -412,6 +424,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
   target_include_directories(strata_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
   target_link_libraries(strata_prefill PUBLIC strata_engine ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+  if(STRATA_ENABLE_XPU)
+    strata_xpu_adapt(strata_prefill)
+  endif()
   if(STRATA_ENABLE_HIP AND STRATA_HIPBLASLT_AVAILABLE)
     target_compile_definitions(strata_prefill PRIVATE STRATA_HIPBLASLT_AVAILABLE=1)
     target_link_libraries(strata_prefill PRIVATE roc::hipblaslt)

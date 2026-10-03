@@ -230,6 +230,8 @@ DeviceInfo device_info(int ordinal) {
     if (count == 0) {
 #if defined(STRATA_USE_HIP)
         throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
+#elif defined(STRATA_USE_XPU)
+        throw CudaError("no Intel GPU is present; this engine was compiled for SYCL / Level Zero", -1);
 #else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
@@ -266,6 +268,10 @@ DeviceInfo device_info(int ordinal) {
 #if defined(STRATA_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
+#elif defined(STRATA_USE_XPU)
+    d.arch = "intel-xpu";
+    d.cc_major = 8;
+    d.cc_minor = 0;
 #else
     // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
     // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
