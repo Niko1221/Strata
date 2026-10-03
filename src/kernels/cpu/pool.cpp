@@ -18,6 +18,7 @@
 #else
 #include <pthread.h>
 #include <sched.h>
+#include "pool_affinity_linux.hpp"
 #endif
 
 namespace strata::kernels::cpu {
@@ -171,12 +172,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     };
 
     std::vector<int> allowed;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    if (sched_getaffinity(0, sizeof set, &set) == 0) {
-        for (int i = 0; i < CPU_SETSIZE; ++i)
-            if (CPU_ISSET(i, &set)) allowed.push_back(i);
-    } else {
+    std::vector<unsigned long> allowed_mask;
+    if (detail::get_thread_affinity(allowed_mask, &allowed) != 0) {
         for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) allowed.push_back((int) i);
     }
 
@@ -278,10 +275,11 @@ bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
 #if defined(_WIN32)
     return detail::set_thread_group_affinity(core, worker);
 #else
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(core, &set);
-    return pthread_setaffinity_np(pthread_self(), sizeof set, &set) == 0;
+    const int error = detail::pin_thread_to_cpu(core);
+    if (error != 0)
+        std::fprintf(stderr, "strata cpu pool: affinity for worker %d (CPU %d) failed: %d; previous affinity kept\n",
+                     worker, core, error);
+    return error == 0;
 #endif
 }
 
@@ -301,14 +299,15 @@ ThreadAffinity pin_current_thread(int core) {
     previous.valid = true;
     return previous;
 #else
-    cpu_set_t prev;
-    CPU_ZERO(&prev);
-    if (pthread_getaffinity_np(pthread_self(), sizeof prev, &prev) != 0) return {};
-    unsigned long mask = 0;
-    for (int i = 0; i < CPU_SETSIZE && i < 64; ++i)
-        if (CPU_ISSET(i, &prev)) mask |= 1ul << i;
-    if (!pin_this_thread(core)) return {};
-    return {mask, true};
+    ThreadAffinity previous;
+    int error = detail::get_thread_affinity(previous.mask);
+    if (error == 0) error = detail::pin_thread_to_cpu(core);
+    if (error != 0) {
+        std::fprintf(stderr, "strata cpu pool: host affinity for CPU %d failed: %d; previous affinity kept\n", core, error);
+        return {};
+    }
+    previous.valid = true;
+    return previous;
 #endif
 }
 
@@ -322,12 +321,9 @@ void restore_thread_affinity(const ThreadAffinity& previous) {
         std::fprintf(stderr, "strata cpu pool: host CPU Set restoration failed: %lu\n",
                      (unsigned long) GetLastError());
 #else
-    if (previous.mask == 0) return;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    for (int i = 0; i < 64; ++i)
-        if ((previous.mask >> i) & 1) CPU_SET(i, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+    const int error = detail::set_thread_affinity(previous.mask);
+    if (error != 0)
+        std::fprintf(stderr, "strata cpu pool: host affinity restoration failed: %d\n", error);
 #endif
 }
 

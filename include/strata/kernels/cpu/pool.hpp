@@ -103,12 +103,12 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity = PoolAff
 /// The previous host placement. `valid` is false when querying or setting placement failed.
 /// Windows uses a reversible CPU Set selection, leaving hard affinity (including Windows 11's implicit
 /// all-group eligibility) untouched. An empty selection restores inheritance from the process defaults.
-/// Linux retains the low 64 CPUs from the prior affinity API.
+/// Linux stores the complete, dynamically sized native CPU mask, including CPU IDs above 63.
 struct ThreadAffinity {
 #if defined(_WIN32)
     std::vector<unsigned long> cpu_sets;
 #else
-    uint64_t mask = 0;
+    std::vector<unsigned long> mask;
 #endif
     bool valid = false;
 };
