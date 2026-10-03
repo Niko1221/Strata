@@ -290,6 +290,43 @@ class ToolResultImages(unittest.TestCase):
             svc.embeddings.path.unlink(missing_ok=True)
 
 
+class BadImageSource(unittest.TestCase):
+    """A source the encoder cannot read must come back as a 400, not as no reply at all.
+
+    The request dispatcher maps ValueError to a status and nothing else, so an OSError escaping out of
+    `Vision.load` (a 404, a refused connection, an unknown host - HTTPError and URLError are both
+    OSError) closed the client's connection without a reply: `curl: (52) Empty reply from server`."""
+
+    def test_a_fetch_that_fails_is_a_value_error(self):
+        for err in (urllib.error.HTTPError("http://h/x.png", 404, "Not Found", None, None),
+                    urllib.error.URLError("connection refused"),
+                    urllib.error.URLError("[Errno -2] Name or service not known")):
+            with mock.patch("urllib.request.urlopen", side_effect=err):
+                with self.assertRaises(ValueError):
+                    Vision.load("http://h/x.png")
+
+    def test_a_data_url_that_is_not_base64_is_a_value_error(self):
+        for source in ("data:image/png;base64",                     # no comma: nothing after it
+                       "data:image/png;base64,not base64!!"):       # binascii.Error, a ValueError
+            with self.assertRaises(ValueError):
+                Vision.load(source)
+
+    def test_a_file_that_cannot_be_read_is_a_value_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.png"
+            p.write_bytes(b"\x89PNG\r\n\x1a\n")
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("permission denied")):
+                with self.assertRaises(ValueError):
+                    Vision.load(str(p))
+
+    def test_a_readable_source_still_loads(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.png"
+            p.write_bytes(b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(Vision.load(str(p)), b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(Vision.load("data:image/png;base64,aGk="), b"hi")
+
+
 class ThinkTokenizer(ByteTokenizer):
     """The byte tokenizer with the model's reasoning markers as specials that are matched even without parse_special,
     as the real tokenizer does (GGUF token type 4)."""
