@@ -9,6 +9,19 @@ project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_HIP "run the vision encoder on AMD GPUs (builds ggml-hip)" OFF)
+if(STRATA_VISION_CUDA AND STRATA_VISION_HIP)
+  message(FATAL_ERROR "Choose one GPU backend for strata-vision")
+endif()
+if(STRATA_VISION_HIP)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  # The pinned ggml backend compiles .cu as CXX on Windows. hip::device takes
+  # GPU_TARGETS, rather than CMAKE_HIP_ARCHITECTURES, for its --offload-arch flags.
+  if(WIN32 AND CMAKE_HIP_ARCHITECTURES)
+    set(GPU_TARGETS "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "HIP GPU targets" FORCE)
+    set(GPU_BUILD_TARGETS "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "HIP build targets" FORCE)
+  endif()
+endif()
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" OFF)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -35,6 +48,7 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 

@@ -69,8 +69,10 @@ On Linux setup uses a system ROCm 7 when there is one, or installs ROCm into `.v
 sudo), and compiles the engine on your PC for the card (10-20 minutes, once; it needs a C++ compiler and git:
 `sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA.
 
-What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, 10-30 s per
-picture), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
+What differs from NVIDIA for now: Linux pictures are read by the image encoder on the CPU (`--vision cpu`, 10-30 s per
+picture). Published Windows AMD packages are text-only; an optional source build can include a CPU or HIP image
+encoder ([Windows build and measured checks](AMD_HIP.md#windows)). `--calibrate` is NVIDIA-only, and Unsloth's
+4-bit model needs an NVIDIA card. Measurements per card, the
 build by hand and the tuning tables: [AMD_HIP.md](AMD_HIP.md).
 
 ## Two or three cards

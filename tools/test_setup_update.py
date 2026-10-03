@@ -141,5 +141,25 @@ class SettingsLine(unittest.TestCase):
         self.assertIn("--vram-reserve-mib 2048", text)
 
 
+class WindowsHipEncoderUpdate(unittest.TestCase):
+    def test_package_update_preserves_encoder_capability(self):
+        for mode in ("none", "cpu", "gpu"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                eng = root / "engine"
+                eng.mkdir()
+                (eng / setup.EXE).write_bytes(b"installed engine")
+                (eng / "BUILD.json").write_text(json.dumps({
+                    "backend": "hip", "source": "prebuilt", "version": "0.1.30", "vision": mode}))
+                gpu = {"arch": "gfx1100"}
+                with (mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "ROOT", root),
+                      mock.patch.object(setup, "amd_gpus", return_value=[gpu]),
+                      mock.patch.object(setup, "amd_problem", return_value=None),
+                      mock.patch.object(setup, "get_prebuilt_hip", return_value=eng) as download,
+                      contextlib.redirect_stdout(io.StringIO())):
+                    setup.update_installed_engine("URL")
+                download.assert_called_once_with("URL", gpu, updating=True, vision=mode)
+
+
 if __name__ == "__main__":
     unittest.main()
