@@ -1,0 +1,91 @@
+{
+  "scope": "GPU-free serving checks of the Responses PR merged with upstream 0.1.37",
+  "checked_at_utc": "2026-10-03T01:19:02.192865+00:00",
+  "feature_commit": "c216fea72a1cec10761eda404afebd5c47b714e5",
+  "upstream_commit": "db4f91a1171d697928b0d2e1f50ef95e25559d4c",
+  "merge_tree": "3e9c0d4c3aa1681b9456d5de169e1bdc2d4e0cdc",
+  "merge_conflicts": false,
+  "platform": "Windows",
+  "python": "3.13.15",
+  "run_mode": "separate module processes",
+  "passed": 204,
+  "skipped": 5,
+  "skip_reason": "Model pack tokenizer unavailable for tokenizer-dependent cases",
+  "dependencies": {
+    "openai": "3.23.0",
+    "jsonschema": "4.26.0",
+    "jinja2": "3.1.6",
+    "regex": "2026.9.10"
+  },
+  "modules": [
+    {
+      "module": "serve.test_responses",
+      "exit_code": 0,
+      "tests": 39,
+      "skipped": 0,
+      "elapsed_s": 10.82,
+      "log_sha256": "6968f2e9c5ae37570e6b0f0edef854c96b5133041094b8a3bb75f1691324bbbd"
+    },
+    {
+      "module": "serve.test_server",
+      "exit_code": 0,
+      "tests": 114,
+      "skipped": 0,
+      "elapsed_s": 66.16,
+      "log_sha256": "78ff0f2f8b31cd66941bed68b6e7a15b7caaaf25f59c4501108d377fb0a28729"
+    },
+    {
+      "module": "serve.test_lifecycle",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 0,
+      "elapsed_s": 5.62,
+      "log_sha256": "8eae633eb9449bf2f3baa42f7a017fdbbee0e5d67fafaedf7fb64a1b17534636"
+    },
+    {
+      "module": "serve.test_structured",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 0,
+      "elapsed_s": 6.49,
+      "log_sha256": "3d46cca7e1341febe2ba022704ddbb16fbc25fce5bdb795027c18b20a6de2e94"
+    },
+    {
+      "module": "serve.test_monitor",
+      "exit_code": 0,
+      "tests": 7,
+      "skipped": 0,
+      "elapsed_s": 5.02,
+      "log_sha256": "b490a067e68e92c7b6fb9d556de4c3237a182bae89891dc6c0c4cc2c6c9c3f76"
+    },
+    {
+      "module": "serve.test_mcp",
+      "exit_code": 0,
+      "tests": 25,
+      "skipped": 0,
+      "elapsed_s": 17.55,
+      "log_sha256": "a04afdac67460266faf1392c785ee72f2b67d811df0633ec53fd9392a22da1b1"
+    },
+    {
+      "module": "serve.test_detok",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 5,
+      "elapsed_s": 37.18,
+      "log_sha256": "d3868791f5e29ed67354c45535406705b4a8882d442dceda92e1746d2e191155"
+    }
+  ],
+  "source_sha256": {
+    "serve/server.py": "757c57a773be4074689ce6701cfb6c4e1cbc80d6b4f1b35f02e1398b75c08ce9",
+    "serve/frontend.py": "e7b295d5240fac3b1bec1736e2c8d468030f8fe0c96bcc6a6b1570301258f3cf",
+    "serve/responses.py": "e4945f6cca5a17f230f53cc1794328eb4215fe2a7a93393f269be636eccc83de",
+    "serve/response_store.py": "8fde009f3f06b56c8dc9dc9b18c9c4d09bd35d0009e40c70122c2a0e5a10f936",
+    "serve/test_server.py": "36fafa8f689df33e8fcd3015732669dba5426aa530279d3a852b177d40b606de",
+    "serve/test_responses.py": "5ced30b2d811de2af8e2b2951109fba55134c1a98d69ed071165f1e17ed7ecae"
+  },
+  "scope_notes": [
+    "These are unit, mock-engine and scripted-engine protocol checks of a clean merge with upstream 0.1.37.",
+    "The native RTX 4090 result in 2026-10-02-responses-cuda.json remains evidence for its recorded 0.1.34 source.",
+    "This record publishes module outcomes and source identities. Full local test logs are not linked as public downloads."
+  ]
+}

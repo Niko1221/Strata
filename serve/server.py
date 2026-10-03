@@ -955,6 +955,7 @@ class Service:
         self.fifo = threading.Lock()
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.responses = None                          # opt-in protocol controller; no store when disabled
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
         self.cors_origins: list[str] = []
@@ -1427,7 +1428,7 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, *, lifecycle=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
         budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
@@ -1454,6 +1455,9 @@ class Service:
                             trace["queue_s"] += round(time.perf_counter() - waiting, 3)
                             trace["state"] = "generating"
                         self.status["queued"] -= 1
+                    if lifecycle and cancel.is_set():
+                        yield "done", {"finish": "cancel", "completion_tokens": 0}
+                        return
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
                     with self.status_lock:
@@ -1462,6 +1466,8 @@ class Service:
                                            max_tokens=max_new)
                         self.last_request_at = time.time()
                         self.rate.clear()               # the previous request's samples must not leak into this one
+                    if lifecycle:
+                        yield "started", None           # after the existing FIFO, before engine work
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
@@ -2063,7 +2069,9 @@ def make_handler(svc: Service):
             else:
                 return
             self.send_header("Access-Control-Allow-Origin", allow)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE" if
+                             svc.responses is not None and self.path.split("?")[0].startswith("/v1/responses")
+                             else "GET, POST, OPTIONS")
             # the headers the preflight asks for (SDKs add their own; "*" does not cover Authorization)
             asked = self.headers.get("Access-Control-Request-Headers")
             self.send_header("Access-Control-Allow-Headers",
@@ -2106,6 +2114,9 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/responses" or path.startswith("/v1/responses/"):
+                self._response_resource(path)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -2223,6 +2234,12 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
                 return
+            if path == "/v1/responses" or path.startswith("/v1/responses/"):
+                if path != "/v1/responses" or svc.responses is None:
+                    self._json(404, {"error": {"message": "not found"}})
+                else:
+                    self._responses()
+                return
             if path == "/settings":
                 self._settings()
                 return
@@ -2309,6 +2326,140 @@ def make_handler(svc: Service):
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
                     svc.request_trace.record = None
+
+        def do_DELETE(self):
+            self._response_resource(self.path.split("?")[0].rstrip("/"), delete=True)
+
+        def _response_resource(self, path, delete=False):
+            if not self._authorized():
+                return
+            controller = svc.responses
+            parts = path.split("/")
+            is_item_list = len(parts) == 5 and parts[4] == "input_items" and not delete
+            if controller is None or parts[:3] != ["", "v1", "responses"] or not (
+                    len(parts) == 4 or is_item_list):
+                self._json(404, {"error": {"message": "not found"}})
+                return
+            from serve.responses import RequestError
+            try:
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                allowed = {"order", "after", "limit"} if is_item_list else set()
+                for key, values in query.items():
+                    if key not in allowed or len(values) != 1:
+                        raise RequestError("unsupported or repeated query parameter", key)
+                if delete:
+                    result = controller.delete_response(parts[3])
+                elif is_item_list:
+                    options = {key: values[0] for key, values in query.items()}
+                    if "limit" in options:
+                        if not re.fullmatch(r"[0-9]+", options["limit"]):
+                            raise RequestError("limit must be an integer between 1 and 100", "limit")
+                        options["limit"] = int(options["limit"])
+                    result = controller.list_input_items(parts[3], **options)
+                else:
+                    result = controller.get_response(parts[3])
+                self._json(200, result)
+            except RequestError as exc:
+                self._json(exc.status, exc.wire())
+            except (OSError, ValueError, KeyError, TypeError):
+                self._json(500, {"error": {"type": "server_error", "message": "response storage unavailable"}})
+
+        def _responses(self):
+            from serve.responses import RequestError, strict_json
+            controller = svc.responses
+            handle = events = None
+            streaming = False
+
+            def observe(change):
+                if self.record is not None:
+                    with svc.status_lock:
+                        self.record["state"] = change["status"]
+                        self.record["response_id"] = change["response_id"]
+                        self.record.setdefault("transitions", []).append(change)
+
+            try:
+                if urlsplit(self.path).query:
+                    raise RequestError("create does not support query parameters")
+                if self.headers.get("Upgrade"):
+                    raise RequestError("WebSocket Responses are not supported", code="unsupported_parameter")
+                if self.headers.get("Transfer-Encoding"):
+                    raise RequestError("send a Content-Length body")
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    raise RequestError("invalid Content-Length") from None
+                if not 0 < size <= 8 * 1024 * 1024:
+                    raise RequestError("request body must contain 1 byte to 8 MiB", status=413)
+                try:
+                    req = strict_json(self.rfile.read(size))
+                except (ValueError, UnicodeError, RecursionError) as exc:
+                    raise RequestError("invalid JSON body: " + str(exc)) from exc
+                if not isinstance(req, dict):
+                    raise RequestError("send a JSON object")
+                self.record = svc.begin_request("/v1/responses", req)
+                # Service traces describe processing phases. Responses state comes only from the controller.
+                svc.request_trace.record = None
+                handle = controller.create_response(req, observer=observe)
+                events = controller.events(handle)
+                self._watch_client(handle.cancel)
+                if req.get("stream"):
+                    streaming = True
+                    self._sse()  # all capability/context validation has already succeeded
+                    for event in events:
+                        if event is None:
+                            self.wfile.write(b": keep-alive\n\n")
+                        else:
+                            self.wfile.write(("event: " + event["type"] + "\ndata: " +
+                                              json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n\n").encode())
+                        self.wfile.flush()
+                else:
+                    for _ in events:
+                        pass
+                    self._json(200, controller.snapshot(handle))
+            except RequestError as exc:
+                self._note(state="error", error=exc.wire()["error"])
+                self._json(exc.status, exc.wire())
+            except (BrokenPipeError, ConnectionError, TimeoutError):
+                if handle is not None:
+                    handle.cancel.set()
+            except Exception as exc:
+                error = {"type": "server_error", "code": "server_error", "message": str(exc)}
+                if streaming:
+                    # Transport/storage failures after headers use the documented error event, never a second HTTP response.
+                    event = {"type": "error", "sequence_number": handle.sequence, "code": "server_error",
+                             "message": str(exc), "param": None}
+                    try:
+                        self.wfile.write(("event: error\ndata: " + json.dumps(event) + "\n\n").encode())
+                        self.wfile.flush()
+                    except OSError:
+                        pass
+                else:
+                    self._note(state="error", error=error)
+                    self._json(503, {"error": error})
+            finally:
+                try:
+                    if events is not None:
+                        events.close()
+                finally:
+                    try:
+                        if handle is not None:
+                            controller.close_response(handle)
+                    finally:
+                        if self.watch_done is not None:
+                            self.watch_done.set()
+                        if self.record is not None:
+                            if handle is not None:
+                                snapshot = controller.snapshot(handle)
+                                raw = json.dumps(snapshot, ensure_ascii=False)
+                                output = "".join(p["text"] for item in snapshot["output"] if item["type"] == "message"
+                                                 for p in item["content"])
+                                self._note(response=raw[:262144], response_truncated=len(raw) > 262144,
+                                           output=output[:262144], output_truncated=len(output) > 262144,
+                                           error=snapshot["error"], usage=snapshot["usage"],
+                                           response_format=snapshot["text"]["format"]["type"])
+                            self._note(wallclock_s=round(time.perf_counter() - self.record["_clock"], 3),
+                                       finished_at=time.time())
+                        svc.request_trace.record = None
 
         def _props(self):
             model = parse_qs(urlsplit(self.path).query).get("model", [svc.model])[0]
@@ -2856,6 +3007,8 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--experimental-responses", action="store_true",
+                    help="enable /v1/responses (also experimental_responses:true in the config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -2867,6 +3020,9 @@ def main() -> int:
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if type(cfg.get("experimental_responses", False)) is not bool:
+        ap.error("experimental_responses must be true or false")
+    experimental_responses = a.experimental_responses or cfg.get("experimental_responses", False)
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -2951,6 +3107,14 @@ def main() -> int:
               file=sys.stderr)
         return 2
     svc.api_key = a.api_key or cfg.get("api_key", "")
+    if experimental_responses:
+        from serve.response_store import ResponseStore
+        from serve.responses import ResponseController
+        config_path = Path(a.config).resolve() if a.config else None
+        directory = (config_path.parent if config_path else ROOT) / ".responses" / (
+            config_path.stem if config_path else "default")
+        svc.responses = ResponseController(svc, ResponseStore(directory))
+        print(f"[strata] experimental Responses API on; retained responses: {directory}", flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
     svc.trusted_origins = origins_of(cfg.get("trusted_origins"), "trusted_origins", wildcard=False)
     try:

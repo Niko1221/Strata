@@ -1,0 +1,107 @@
+{
+  "scope": "Responses protocol and lifecycle integration",
+  "tested_at_utc": "2026-10-02T23:46:34.481346+00:00",
+  "source": {
+    "branch": "feat/responses-api-451",
+    "base_commit": "1678de333d0e0711bc414ad992b640e1a37dd814",
+    "sha256": {
+      "serve/server.py": "fc366e6bc4b9d90077e06a30e02e58810c84dae5d3123ced735fdb00e784d0e1",
+      "serve/responses.py": "e4945f6cca5a17f230f53cc1794328eb4215fe2a7a93393f269be636eccc83de",
+      "serve/response_store.py": "8fde009f3f06b56c8dc9dc9b18c9c4d09bd35d0009e40c70122c2a0e5a10f936",
+      "serve/test_responses.py": "5ced30b2d811de2af8e2b2951109fba55134c1a98d69ed071165f1e17ed7ecae",
+      "serve/web/monitor.js": "0e5fe988c16e5c81a3182675a683a19627066e37b4d0d8ab71a4f3aa7c2e5dbd",
+      "serve/web/monitor.html": "5b68938b49178e717339416e078e8ff4affb4767dd3055d8cfbbb8a9b81c3112"
+    }
+  },
+  "unit_and_contract_tests": {
+    "platform": "Windows, Python 3.13",
+    "run_mode": "separate module processes",
+    "modules": [
+      "serve.test_detok",
+      "serve.test_lifecycle",
+      "serve.test_mcp",
+      "serve.test_monitor",
+      "serve.test_server",
+      "serve.test_structured",
+      "serve.test_responses"
+    ],
+    "passed": 178,
+    "skipped": 5,
+    "skip_reason": "Model pack tokenizer unavailable for tokenizer-dependent cases",
+    "responses_tests_passed": 39
+  },
+  "native_integration": {
+    "platform": "Linux",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "vram_mib": 24564,
+    "engine": "Strata 0.1.34, native CUDA",
+    "engine_sha256": "821ee43df768457da42c001c732207cc052f48d2c0eef63c7a3b1daad6a01b11",
+    "cuda_toolkit": "13.3",
+    "cuda_architecture": "89",
+    "ggml_commit": "4c68013ea5fc413199584932b23fc654daf2bb5c",
+    "model": "qwen3.8-flash-next-coder-iq1_m",
+    "context_tokens": 4096,
+    "expert_storage": "mmap-experts",
+    "kv": "int8",
+    "mtp_window": 4,
+    "mtp_min_probability": 0.5,
+    "client_versions": {
+      "openai": "3.23.0",
+      "jsonschema": "4.26.0",
+      "jinja2": "3.1.6",
+      "regex": "2026.9.29"
+    },
+    "cases": [
+      {
+        "name": "native_json",
+        "status": "passed"
+      },
+      {
+        "name": "native_stream_reconstruction",
+        "status": "passed"
+      },
+      {
+        "name": "crud_auth_cors",
+        "status": "passed"
+      },
+      {
+        "name": "retained_continuation_forks",
+        "status": "passed"
+      },
+      {
+        "name": "strict_structured_output",
+        "status": "passed"
+      },
+      {
+        "name": "function_stream_and_client_loop",
+        "status": "passed"
+      },
+      {
+        "name": "output_budget_incomplete",
+        "status": "passed"
+      },
+      {
+        "name": "validation_and_store_false",
+        "status": "passed"
+      },
+      {
+        "name": "disconnect_drain_and_next_request",
+        "status": "passed"
+      },
+      {
+        "name": "existing_chat_and_monitor",
+        "status": "passed"
+      }
+    ],
+    "server_exit_code": 0,
+    "cleanup": {
+      "test_port_closed": true,
+      "remaining_gpu_compute_processes": 0
+    }
+  },
+  "scope_notes": [
+    "One native GPU/model configuration was exercised with short prompts.",
+    "Schema/function support validates completion; the engine has no grammar decoder.",
+    "Raw local evidence also includes server and engine logs and recorded text/function SSE events."
+  ]
+}

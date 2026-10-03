@@ -5,7 +5,7 @@ let apiKey = sessionStorage.getItem("strata.monitor.key") || "";
 document.documentElement.dataset.theme = localStorage.getItem("strata.theme") || "dark";
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
 const speed = n => typeof n === "number" ? n.toFixed(1) : "—";
-const active = r => !["completed", "error", "disconnected"].includes(r.state);
+const active = r => !["completed", "failed", "cancelled", "incomplete", "error", "disconnected"].includes(r.state);
 function text(id, value) { const el = $(id); if (el.textContent !== String(value)) el.textContent = value; }
 async function api(path, body) {
   const response = await fetch(path, {cache:"no-store", headers:{...(apiKey ? {Authorization:`Bearer ${apiKey}`} : {}), ...(body !== undefined ? {"Content-Type":"application/json"} : {})}, ...(body !== undefined ? {method:"POST", body:JSON.stringify(body)} : {})});
@@ -19,7 +19,8 @@ async function api(path, body) {
 function notice(message) { $("error").hidden = !message; text("error", message || ""); }
 function list() {
   const query = $("search").value.toLowerCase(), filter = $("filter").value;
-  const visible = records.filter(r => `${r.id} ${r.path} ${r.model}`.toLowerCase().includes(query) && (filter === "all" || (filter === "active" ? active(r) : r.state === filter)));
+  const visible = records.filter(r => `${r.id} ${r.path} ${r.model}`.toLowerCase().includes(query) &&
+    (filter === "all" || (filter === "active" ? active(r) : filter === "error" ? ["error", "failed"].includes(r.state) : r.state === filter)));
   const nextStamp = JSON.stringify([visible, selected]);
   if (stamp === nextStamp) return;
   stamp = nextStamp;
@@ -62,6 +63,7 @@ async function showDetail() {
   detail = value; $("selection").hidden = false; $("no-selection").hidden = true;
   text("detail-title", `${value.id} · ${value.path}`);
   text("detail-status", value.state); $("detail-status").className = `tag ${value.state}`;
+  text("detail-transitions", (value.transitions || []).map(t => t.status).join(" → "));
   text("detail-time", new Date(value.started_at * 1000).toLocaleString());
   text("detail-wall", seconds(value.wallclock_s ?? ((Date.now() / 1000) - value.started_at)));
   text("detail-load", seconds(value.load_s)); text("detail-queue", seconds(value.queue_s)); text("detail-first", seconds(value.first_token_s));

@@ -1,0 +1,97 @@
+{
+  "scope": "Responses integration with upstream 0.1.38 and its browser protections",
+  "checked_at_utc": "2026-10-03T01:51:15.508821+00:00",
+  "feature_parent": "ccbb062ec5a1990b1253b0bc65fc2df6a0c75ca1",
+  "upstream_parent": "99f3dbd0b21d1401b3769e0c0d963913607f380b",
+  "conflict_resolution": "Run the existing _foreign_page check before dispatching Responses, preserving the Host check on all methods.",
+  "platform": "Windows",
+  "python": "3.13.15",
+  "run_mode": "separate module processes",
+  "passed": 231,
+  "skipped": 5,
+  "skip_reason": "Model pack tokenizer unavailable for tokenizer-dependent cases",
+  "modules": [
+    {
+      "module": "serve.test_responses",
+      "exit_code": 0,
+      "tests": 41,
+      "skipped": 0,
+      "elapsed_s": 23.41,
+      "log_sha256": "1fa3797a33a59bb8a20c9687e697777382751fd4d9ec5f2415a2d4aef755de3e"
+    },
+    {
+      "module": "serve.test_security",
+      "exit_code": 0,
+      "tests": 21,
+      "skipped": 0,
+      "elapsed_s": 11.55,
+      "log_sha256": "da807e35daff17357e4240c4ed69fa81441d308319198cb1afea7377765af50e"
+    },
+    {
+      "module": "serve.test_server",
+      "exit_code": 0,
+      "tests": 118,
+      "skipped": 0,
+      "elapsed_s": 82.45,
+      "log_sha256": "2a81635127fa94c4097db5a47c690b8122c68fb67bb56a4c5d758646dc240dad"
+    },
+    {
+      "module": "serve.test_lifecycle",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 0,
+      "elapsed_s": 7.33,
+      "log_sha256": "e2c0314f90e871969175f997adb5adf1233448f7088378f7e8d7af01da6d377e"
+    },
+    {
+      "module": "serve.test_structured",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 0,
+      "elapsed_s": 8.27,
+      "log_sha256": "d50d519061a5b527726503bb11e715e5c133fffd0363e0b661318323f303a256"
+    },
+    {
+      "module": "serve.test_monitor",
+      "exit_code": 0,
+      "tests": 7,
+      "skipped": 0,
+      "elapsed_s": 6.16,
+      "log_sha256": "09e53fc9db31248e96760ca6e8a6332ed01ddd108cb655c69d774d502da3c3c3"
+    },
+    {
+      "module": "serve.test_mcp",
+      "exit_code": 0,
+      "tests": 25,
+      "skipped": 0,
+      "elapsed_s": 23.96,
+      "log_sha256": "1f718655841a63dc311b92da6ec151ff68ac1eb07ff1a449da561633d87fac0f"
+    },
+    {
+      "module": "serve.test_detok",
+      "exit_code": 0,
+      "tests": 8,
+      "skipped": 5,
+      "elapsed_s": 22.96,
+      "log_sha256": "5c5d0d473149a8a131e57d3ec9b975abe3be85fb2f51a62b4592f1bed901df3c"
+    }
+  ],
+  "source_sha256": {
+    "serve/server.py": "5d6cf1b94cd6c96c154924a0a3968c6f73a7974ad7264414146fe4ee0cb535b7",
+    "serve/frontend.py": "e7b295d5240fac3b1bec1736e2c8d468030f8fe0c96bcc6a6b1570301258f3cf",
+    "serve/responses.py": "e4945f6cca5a17f230f53cc1794328eb4215fe2a7a93393f269be636eccc83de",
+    "serve/response_store.py": "8fde009f3f06b56c8dc9dc9b18c9c4d09bd35d0009e40c70122c2a0e5a10f936",
+    "serve/test_server.py": "cc983e23f23dd42738d01f393e2f10d7b0ea57253342e3548f8dd80f56a0841f",
+    "serve/test_security.py": "1df16c3cf1a978b97038bbacfe4cfb1a76dc8bbb449b1dfaebb1bd7b71415a7d",
+    "serve/test_responses.py": "c39e4d25162275b994084f57bf4b003b1ad189a4adcbe6bc34d38b324b2262e8"
+  },
+  "new_regressions": [
+    "Responses Host protection covers create, retrieve, input items, delete and preflight.",
+    "Keyless Responses create rejects unapproved browser origins before SSE headers or retained records; approved origins and SDK requests remain supported."
+  ],
+  "scope_notes": [
+    "The tests use mock/scripted engines; this is not a native GPU run of upstream 0.1.38.",
+    "The earlier native RTX 4090 result remains identified by its original 0.1.34 source and hashes.",
+    "This record publishes outcomes and source identities. Full local test logs are not linked as public downloads."
+  ]
+}

@@ -565,6 +565,13 @@ print(r.choices[0].message.content)
   an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
   own page (or no `Origin`), like `/settings`.
 
+**Responses API (experimental, off by default).** `--experimental-responses` or
+`"experimental_responses": true` enables `/v1/responses` for text, client-owned
+function calls, typed streaming, retained continuations, retrieval, input listing
+and deletion. It uses the existing service and API key/CORS settings.
+See [RESPONSES.md](RESPONSES.md) for examples, supported parameters, JSON Schema
+validation, retention and lifecycle behavior.
+
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
 assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens

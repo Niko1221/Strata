@@ -1,3 +1,13 @@
+> **Responses API contribution:** this branch adds the ordinary `/v1/responses`
+> interface for [upstream issue #451](https://github.com/Niko1221/Strata/issues/451).
+> It is **off by default**. Start the server with `--experimental-responses`, or
+> set `"experimental_responses": true` in its run config and restart.
+> [Enable, verify and disable](docs/RESPONSES.md#enable-and-verify) ·
+> [CUDA smoke-test evidence](docs/benchmarks/2026-10-02-responses-cuda.json) ·
+> [Other fork branches and public evidence](https://github.com/CC-David-CC/Strata-a5500/blob/contrib/gfx1012-community/docs/FORK_BRANCHES.md).
+> The engine and existing service are from [Niko1221/Strata](https://github.com/Niko1221/Strata).
+> The upstream introduction follows below.
+
 <h1 align="center">Strata</h1>
 
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>

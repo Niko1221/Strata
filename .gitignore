@@ -51,3 +51,4 @@ build-vision.bat
 /third_party/*.zip
 
 /.rocm-win/
+/.responses/
