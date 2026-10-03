@@ -164,7 +164,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 if (status == cudaSuccess)
                     status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
                 if (status != cudaSuccess) {
-                    err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
+                    err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status) +
+                          " bytes=" + std::to_string(bytes) + " type=" + std::to_string((int) tensor.type);
+                    return false;
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;

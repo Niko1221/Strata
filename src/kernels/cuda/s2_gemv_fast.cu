@@ -41,6 +41,19 @@ constexpr int QK_S2 = 64;
 constexpr int MAX_SHARED_HALVES = 4096;      // 8 KB of shared for x; n_embd 2560 fits with room
 
 // byte -> the four code values with the -1 bias already applied, in element order (bits 0,2,4,6).
+#if defined(STRATA_USE_XPU)
+struct StrataCCodes { float v[256][4]; };
+constexpr StrataCCodes strata_make_c_codes() {
+    StrataCCodes a{};
+    for (int b = 0; b < 256; ++b)
+        for (int k = 0; k < 4; ++k)
+            a.v[b][k] = (float) (((b >> (2 * k)) & 3) - 1);
+    return a;
+}
+constexpr StrataCCodes strata_c_codes = strata_make_c_codes();
+#define c_codes strata_c_codes.v
+void ensure_lut() {}
+#else
 __constant__ float c_codes[256][4];
 
 bool g_lut_ready[64] = {};   // per device: __constant__ memory is per device (a layer split runs on two)
@@ -63,6 +76,7 @@ void ensure_lut() {
     }
     g_lut_ready[dev] = true;
 }
+#endif
 
 // One block per output row.  `staged` says whether x was copied to shared, so the SAME kernel covers both
 // configurations and the bench can measure them against each other with nothing else changed.

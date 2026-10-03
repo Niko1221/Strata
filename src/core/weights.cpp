@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -80,7 +81,12 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err, 
 #else
     if (fseeko(f, (off_t) off, SEEK_SET) != 0) { err = std::string(what) + ": seek failed"; return false; }
 #endif
-    if (std::fread(dst, 1, n, f) != n) { err = std::string(what) + ": short read"; return false; }
+    const size_t got = std::fread(dst, 1, n, f);
+    if (got != n) {
+        err = std::string(what) + ": short read off=" + std::to_string(off) + " n=" + std::to_string(n) +
+              " got=" + std::to_string(got) + " errno=" + std::to_string(errno);
+        return false;
+    }
     return true;
 }
 

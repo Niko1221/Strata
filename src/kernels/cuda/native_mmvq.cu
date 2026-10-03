@@ -412,7 +412,11 @@ __global__ void native_q3_k_mmvq_kernel(const Q3KBlock* __restrict__ w,
 
 // The pinned nonlinear IQ4 codebook and its CUDA two-stage byte lookup. The
 // explicit alignment satisfies the four 32-bit table loads; values are unchanged.
+#if defined(STRATA_USE_XPU)
+alignas(4) constexpr int8_t iq4nl_values[16] = {
+#else
 __device__ __align__(4) int8_t iq4nl_values[16] = {
+#endif
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113
 };
 
