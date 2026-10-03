@@ -168,7 +168,9 @@ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | No
     # probabilities, and the drafter's prompt KV is E-9 non-bit-identical territory - one flipped probability
     # threshold reshuffles every later window shape and, through it, the main state's ULPs.  Constant shapes
     # keep the comparison about the park, not about the drafter.
-    out += ["--adapt-swaps", "0", "--pcie-frac", "0", "--suffix-draft", "0", "--spec-min-p", "0",
+    # adapt-every 100000: the expert tier's rotation starts only after 100,000 rounds - static residency for the
+    # whole run, through the engine's own armed path (the rope-scaling benchmarks' recipe).
+    out += ["--adapt-every", "100000", "--pcie-frac", "0", "--suffix-draft", "0", "--spec-min-p", "0",
             "--prompt-cache", "6", "--prefill", str(prefill)]
     out += ["--max-context", str(max_context or 32768)]
     if kv_resident is not None:
