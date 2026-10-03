@@ -2,6 +2,8 @@
 
 Measured on 2026-10-03 (Asia/Tokyo), using the real RX 6900 XT through HIP. Coder IQ1_M generated **45.3–48.0 tokens/s across the three workload medians** after selecting 31 CPU pool workers. Setup's default 63 workers produced medians of 6.1–12.5 tokens/s. [Japanese results and usage](RESULTS-JA.md).
 
+**Historical release-binary sweep:** the 31-worker selection below describes the initial installation. The later [processor-group correction and final automatic 63-worker check](../2026-10-03-windows-groups/README.md) supersede that local selection; this report does not propose a 31-worker default. Saved configs below preserve the original measurements.
+
 ## Hardware and software
 
 - AMD Radeon RX 6900 XT, 16 GiB VRAM, gfx1030.
@@ -25,7 +27,7 @@ Source: <https://github.com/Niko1221/Strata/releases/tag/v0.1.38>
 
 Application: `C:\Dev\Strata`; model data: `C:\Dev\Strata-data`. Both GGUF files' complete SHA-256 hashes and byte counts matched Hugging Face's pinned LFS metadata; see `model-integrity.json`. The second shard is shared with the original model.
 
-The selected configuration is saved in `C:\Dev\Strata\strata-coder-iq1_m.json` and starts with `run-coder-iq1_m.bat`. Its local-only endpoint is **http://127.0.0.1:8081**, with OpenAI base URL **http://127.0.0.1:8081/v1**. `selected-config.json` and `selected-launcher.txt` preserve the installed settings. The original setup configuration is preserved as `setup-default-config.json`.
+At the time of this sweep, the selected configuration was saved in `C:\Dev\Strata\strata-coder-iq1_m.json` and starts with `run-coder-iq1_m.bat`. Its local-only endpoint is **http://127.0.0.1:8081**, with OpenAI base URL **http://127.0.0.1:8081/v1**. `selected-config.json` and `selected-launcher.txt` preserve the installed settings. The original setup configuration is preserved as `setup-default-config.json`.
 
 Coder source: `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF`, pinned revision `5348543e0147355ac9cbcb031184a3546350988e`. Coder retains 256 experts per layer; its IQ1_M label does not mean every tensor is uniformly one bit. Setup also obtains and prepares the original checkpoint's MTP draft tensors.
 
@@ -84,7 +86,7 @@ A separate generated `clamp_score` function passed all **2,001 integer inputs fr
 
 ### Reproduce the selected configuration
 
-Start the installed model using `run-coder-iq1_m.bat`, then:
+To repeat this historical sweep, use the official release binary with the saved `selected-config.json` (31 workers), updating local paths as needed. The current local launcher uses the later group fix with automatic workers; see the follow-up report. With the historical configuration loaded, run:
 
 ```powershell
 .\.venv\Scripts\python.exe bench/results/2026-10-03-rx6900xt-coder/benchmark.py --url http://127.0.0.1:8081 --cases short,4k,32k --runs 3 --out bench/results/2026-10-03-rx6900xt-coder/repeat --log strata-coder-iq1_m.log

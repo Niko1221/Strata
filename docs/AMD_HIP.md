@@ -100,6 +100,17 @@ libraries on the PATH, `strata-device` lists the card and a hipBLAS BF16 GEMM ma
 52 of 56, the 4 failures the same as on the RX 9070 XT (`hip_handoff`, and three tests that need a pack fixture).
 The ready-made zip itself has not run a model on a discrete card yet - please report.
 
+**Windows processor groups on high-core-count CPUs:** on Windows 11 systems with more than 64 logical processors,
+the topology can include processors from multiple groups, while a legacy affinity mask is relative to one group.
+Without preserving the group, distinct CPU IDs can collapse onto the same processor mask. In an experiment, a
+[group-aware source build](https://github.com/Yasei-no-otoko/Strata/commit/fba17b6ec6e50104aa194443eaee17728db14135)
+kept the group when pinning pool workers and the session host. On one Threadripper 3990X + RX 6900 XT, that build
+with 63 explicitly selected workers decoded Coder IQ1_M at 46.09 tok/s on short prompts and 47.43 tok/s on 4K
+prompts, versus 12.69 and 13.08 tok/s before the change. The default worker selection remains unchanged (63 on this
+machine), and manual `--pool-workers` settings remain available. See the
+[measurement and limits](benchmarks/windows-zen2-gfx1030-workers.md). This evidence is from one Windows machine
+and model, not a general performance claim for other CPUs or GPUs.
+
 **Reporting a Windows AMD run** (an issue, or on #325): your card and driver version (AMD Software > System), then
 
 ```bat
