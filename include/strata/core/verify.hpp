@@ -139,8 +139,14 @@ public:
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err);
-    /// Keep every row of the last batch window: each slot's state advances by its one token.
-    bool commit_slots(std::string& err);
+    /// Keep every row of the last batch window: each slot's state advances by its one token.  With rows per slot
+    /// (set_batch_rows > 1) `n_keep[s]` (1..rows) is how many of slot s's rows to keep - its accepted prefix.
+    bool commit_slots(std::string& err, const int* n_keep = nullptr);
+    /// SPECULATIVE BATCH: every slot of the next batch windows holds `rows` rows - its token and rows-1 drafts at
+    /// consecutive positions - and `out` gets the head's pick after each row (slot s's rows at s * rows).  1 = one
+    /// token per slot, the plain batch window.  S * rows <= max_t.  Continues into the next stage.
+    void set_batch_rows(int rows) { bT_ = rows < 1 ? 1 : rows; if (next_) next_->set_batch_rows(rows); }
+    int batch_rows() const { return bT_; }
 
     // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
     // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window
@@ -206,6 +212,8 @@ private:
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
+    int bT_ = 1;                           ///< rows per slot in a batch window (set_batch_rows)
+    int64_t last_pos_r_[8] = {};           ///< the last batch window's position of every row
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
     int row_base_ = 0;                     ///< ... over slots [row_base_, row_base_ + T)
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
