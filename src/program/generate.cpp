@@ -5386,7 +5386,10 @@ int main(int argc, char** argv) {
                 sl.x = outb[b * TB + a];
                 sl.p += a + 1;
                 static const bool sb_nodraft = std::getenv("STRATA_SB_NODRAFT") != nullptr;   // debug: rows without drafts
-                if (o.batch_spec > 1 && b < (int) bdraft.size() && !sb_nodraft) {
+                int n_act = 0;
+                for (const BSlot& x : bs) n_act += x.active ? 1 : 0;
+                if (o.batch_spec > 1 && n_act > o.batch_spec_max_active) sl.have_drafts = false;   // next windows: one row
+                else if (o.batch_spec > 1 && b < (int) bdraft.size() && !sb_nodraft) {
                     // the slot drafter catches up over this window's rows of the slot, then drafts from row a
                     strata::core::MtpDrafter& d = *bdraft[(size_t) b];
                     const int TD = TB;   // the rows this window held for the slot
@@ -5515,7 +5518,10 @@ int main(int argc, char** argv) {
                     sl.x = outb[t * TR + a];
                     sl.p += a + 1;
                     const int b = gi * GS + t;
-                    if (TBP > 1 && b < (int) bdraft.size()) {
+                    int n_act = 0;
+                    for (const BSlot& x : bs) n_act += x.active ? 1 : 0;
+                    if (TBP > 1 && n_act > o.batch_spec_max_active) sl.have_drafts = false;   // next windows: one row
+                    else if (TBP > 1 && b < (int) bdraft.size()) {
                         // before the last stage runs another window: the slot's rows of this one, then its drafts
                         strata::core::MtpDrafter& d = *bdraft[(size_t) b];
                         bool dok = cudaMemcpy(d.own_window_R(), ver.final_R_all() + (size_t) t * TR * hcn,
