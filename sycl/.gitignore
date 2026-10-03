@@ -2,3 +2,4 @@
 dpct_report.*
 **/*.yaml
 migrate.log
+benchy-results/
