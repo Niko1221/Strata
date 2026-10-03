@@ -216,6 +216,21 @@ class Engine(unittest.TestCase):
                 self.assertFalse(z.exists())
                 self.assertFalse(z.with_name(z.name + ".done").exists())
 
+    def test_an_archive_that_does_not_unpack_is_not_kept(self):
+        """#397, for an archive that does not unpack (not a zip, or a damaged one): it kept its zip and .done mark,
+        so every later run failed on it, even after the right one was published."""
+        with tempfile.TemporaryDirectory() as folder:  # a --prebuilt folder, through the real download()
+            asset = Path(folder) / setup.PREBUILT_ASSET
+            asset.write_bytes(b"<html>not a zip</html>")
+            with self.assertRaises(zipfile.BadZipFile):
+                quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+            with zipfile.ZipFile(asset, "w") as z:
+                z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
+                z.writestr(setup.EXE, b"engine")
+            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+        self.assertEqual(eng, self.root / "engine")
+        self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"engine")
+
     def test_an_installed_engine_is_kept(self):
         (self.root / "engine" / "BUILD.json").write_text(json.dumps(
             {"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))

@@ -1711,8 +1711,12 @@ def get_prebuilt(url_base, gpu, vision, updating=False) -> Path | None:
     download(base + PREBUILT_ASSET, z, "Strata engine")
     tmp = ROOT / "engine" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+    try:
+        with zipfile.ZipFile(z) as f:
+            f.extractall(tmp)
+    except zipfile.BadZipFile:                         # not a zip, or a damaged one: a kept .done mark would make
+        drop_archive(z)                                # every later run fail on it instead of downloading it again
+        raise
     meta = json.loads((tmp / "BUILD.json").read_text())
     if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit()) < MIN_ENGINE:
         need = ".".join(map(str, MIN_ENGINE))
