@@ -203,7 +203,28 @@ def sha256(path: pathlib.Path, chunk: int = 1 << 24) -> str:
     return h.hexdigest()
 
 
+# The files the engine reads a pack's identity from (src/core/expert_source.cpp, the fingerprint): one of them in
+# --out means the directory already holds a pack, this tool's or iq_pack.py's.  experts.bin on its own does not:
+# build writes manifest.json last, so experts.bin without it is a build that did not finish, and is rebuilt.
+PACK_MARKERS = ("manifest.json", "index.txt", "native_experts.txt")
+
+
+def occupied(out_dir: pathlib.Path) -> pathlib.Path | None:
+    """The pack marker already in `out_dir`, or None when the directory is empty, absent or holds no pack."""
+    for name in PACK_MARKERS:
+        if (out_dir / name).exists():
+            return out_dir / name
+    return None
+
+
 def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_hash: bool) -> int:
+    # refused before anything is opened or written: build used to mkdir(exist_ok=True) and overwrite experts.bin,
+    # dense.bin, embd.bin and manifest.json of whatever pack was there, with nothing said
+    marker = occupied(out_dir)
+    if marker is not None:
+        print("%s already holds a pack (%s is there) - refusing to build; delete the directory or pass another "
+              "--out" % (out_dir, marker.name))
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
     g = G.GGUFFile(gguf)
     head, flen = open_shard(gguf)
