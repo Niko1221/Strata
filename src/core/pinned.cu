@@ -199,15 +199,32 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         return (uint8_t*) map + kSharedArenaHeaderBytes;
     }
 
-    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
-    if (p != MAP_FAILED) {
-        got = PageBacking::LargePages;
-        note = "hugetlb 2 MB pages";
-        return p;
+    // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
+    // here too, so the large-page path can be compared without changing the pool or rebooting.
+    if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
+        note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
+    } else {
+        void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
+        if (p != MAP_FAILED) {
+            got = PageBacking::LargePages;
+            note = "hugetlb 2 MB pages";
+            return p;
+        }
+        // MAP_HUGETLB is all-or-nothing: a pool smaller than the mapping fails exactly like an absent
+        // one, and the old message guessed "no hugetlb pool configured" either way. Name the shortfall:
+        // how many 2 MiB pages the mapping needs against what vm.nr_hugepages actually holds.
+        const unsigned long long need = ((unsigned long long) bytes + (1ull << 21) - 1) / (1ull << 21);
+        unsigned long long pool = 0;
+        bool have_pool = false;
+        if (std::FILE* f = std::fopen("/proc/sys/vm/nr_hugepages", "r")) {
+            have_pool = std::fscanf(f, "%llu", &pool) == 1;
+            std::fclose(f);
+        }
+        note = "MAP_HUGETLB unavailable (needed " + std::to_string(need) + " 2 MiB pages, vm.nr_hugepages=" +
+               (have_pool ? std::to_string(pool) : std::string("?")) + "); using 4 KB pages";
     }
-    note = "MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages";
-    p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     got = PageBacking::NormalPages;
     return p == MAP_FAILED ? nullptr : p;
 #endif
@@ -411,6 +428,141 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
     std::vector<uint64_t> off((size_t) layers), n((size_t) layers, blobs_per_layer * blob_bytes);
     for (uint64_t L = 0; L < layers; ++L) off[(size_t) L] = L * blobs_per_layer * blob_bytes;
     return load_experts_ranges(path, dst, off, n, threads, chunk);
+}
+
+LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+    LoadStats st;
+    st.ok = false;
+#ifdef _WIN32
+    constexpr uint64_t kAlign = 4096;
+    if (((uintptr_t) dst % kAlign) != 0 || chunk == 0 || chunk % kAlign != 0) return st;
+    struct Piece { uint64_t off, n; };
+    std::vector<Piece> pieces;
+    uint64_t bytes = 0;
+    for (size_t L = 0; L < layer_off.size(); ++L) {
+        if (layer_off[L] % kAlign != 0 || layer_bytes[L] % kAlign != 0) return st;
+        for (uint64_t p = 0; p < layer_bytes[L]; p += chunk)
+            pieces.push_back({layer_off[L] + p, std::min<uint64_t>(chunk, layer_bytes[L] - p)});
+        bytes += layer_bytes[L];
+    }
+    if (threads < 1) threads = 1;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::atomic<size_t> next{0};
+    std::mutex err_mu;
+    std::string err;
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::vector<wchar_t> wpath((size_t) std::max(wide, 1), L'\0');
+    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    auto worker = [&]() {
+        HANDLE h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            std::lock_guard<std::mutex> g(err_mu);
+            if (err.empty())
+                err = "cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+            next = pieces.size();
+            return;
+        }
+        for (;;) {
+            const size_t i = next.fetch_add(1);
+            if (i >= pieces.size()) break;
+            OVERLAPPED ov{};
+            ov.Offset = (DWORD) pieces[i].off;
+            ov.OffsetHigh = (DWORD) (pieces[i].off >> 32);
+            DWORD got = 0;
+            if (!ReadFile(h, dst + pieces[i].off, (DWORD) pieces[i].n, &got, &ov) || got != pieces[i].n) {
+                std::lock_guard<std::mutex> g(err_mu);
+                if (err.empty())
+                    err = "short unbuffered read at offset " + std::to_string(pieces[i].off) + ": got " + std::to_string(got) +
+                          " of " + std::to_string(pieces[i].n) + " B (error " +
+                          std::to_string((unsigned long long) GetLastError()) + ")";
+                next = pieces.size();
+                break;
+            }
+        }
+        CloseHandle(h);
+    };
+    std::vector<std::thread> pool;
+    for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+    worker();
+    for (auto& t : pool) t.join();
+    st.layers = layer_off.size();
+    if (!err.empty()) {
+        st.seconds = -1.0;
+        st.error = err;
+        return st;
+    }
+    st.ok = true;
+    st.bytes = bytes;
+    st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+#else
+    (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk;
+#endif
+    return st;
+}
+
+bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
+                        bool cache_counts) {
+    const char* env = std::getenv("STRATA_UNBUFFERED_LOAD");
+    if (env != nullptr && env[0] != '\0') {
+        why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
+        return env[0] != '0';
+    }
+#ifdef _WIN32
+    LARGE_INTEGER freq{}, a{}, b{};
+    QueryPerformanceFrequency(&freq);
+    constexpr DWORD kRead = 64 << 10;
+    constexpr int kSamples = 16;
+    std::vector<uint8_t> buf(kRead);
+    uint64_t total_bytes = 0;
+    int fast = 0, n = 0;
+    uint64_t seed = (uint64_t) GetTickCount64() * 6364136223846793005ull + 1442695040888963407ull;
+    for (const std::string& f : files) {
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, w.data(), wide);
+        HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS,
+                               nullptr);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        LARGE_INTEGER size{};
+        GetFileSizeEx(h, &size);
+        total_bytes += (uint64_t) size.QuadPart;
+        // random offsets: a probe must not find the blocks an earlier probe put into the cache
+        for (int i = 0; i < kSamples && (uint64_t) size.QuadPart > 2ull * kRead; ++i) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            const uint64_t off = ((seed >> 17) % ((uint64_t) size.QuadPart - kRead)) / kRead * kRead;
+            OVERLAPPED ov{};
+            ov.Offset = (DWORD) off;
+            ov.OffsetHigh = (DWORD) (off >> 32);
+            DWORD got = 0;
+            QueryPerformanceCounter(&a);
+            const BOOL ok = ReadFile(h, buf.data(), kRead, &got, &ov);
+            QueryPerformanceCounter(&b);
+            if (!ok) continue;
+            ++n;
+            fast += (double) (b.QuadPart - a.QuadPart) * 1e6 / (double) freq.QuadPart < 30.0;
+        }
+        CloseHandle(h);
+    }
+    const bool cached = n > 0 && fast * 4 >= n * 3;
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof ms;
+    GlobalMemoryStatusEx(&ms);
+    const uint64_t avail = ms.ullAvailPhys;
+    // what the cache could keep beside the arena (~4 GiB for everything else)
+    const uint64_t room = avail > arena_bytes + (4ull << 30) ? avail - arena_bytes - (4ull << 30) : 0;
+    const bool keepable = room >= total_bytes;
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
+                  fast, n, (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
+    why = msg;
+    return (!cached || !cache_counts) && !keepable;
+#else
+    (void) files; (void) arena_bytes; (void) cache_counts;
+    why = "buffered (not Windows)";
+    return false;
+#endif
 }
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,

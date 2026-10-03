@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -18,7 +20,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine, request_timings, serve  # noqa: E402
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
+                          engine_args, prompt_tokens_seen, request_timings, serve, start_failure_hint)
+from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
@@ -95,6 +99,13 @@ class MaxTokens(unittest.TestCase):
         m = ENGINE_REQUEST.search(line)
         self.assertIsNotNone(m)
         self.assertEqual((m["prompt"], m["reused"], m["gen"], m["tg"]), ("1200", "1000", "30", "100.0"))
+        # #471: a request cancelled while its prompt was read says how far it got
+        m = ENGINE_REQUEST.search("strata serve: prompt 98179 tokens = 0 reused + 12288 of 98179 read in 17565 ms "
+                                  "(699.6 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, "
+                                  "0 checkpoints (cancelled)")
+        self.assertIsNotNone(m)
+        self.assertEqual((m["prompt"], m["reused"], m["read"], m["pp"], m["gen"]),
+                         ("98179", "0", "17565", "699.6", "0"))
 
     def test_unset_budget_is_the_rest_of_the_context(self):
         cases = {"openai": [{"max_tokens": -1}, {"max_tokens": 0}, {}, {"max_tokens": None},
@@ -126,6 +137,8 @@ class MaxTokens(unittest.TestCase):
                 s, b, _, _ = self.call(api, max_tokens=CTX)
                 self.assertEqual(s, 400)
                 self.assertIn("exceeds the context", b["error"]["message"])
+                self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
+                self.assertRegex(b["error"]["message"], r"at most \d+ here")
 
     def test_unset_budget_with_a_near_full_prompt(self):
         _, _, pt0, _ = self.call("openai", max_tokens=1)
@@ -667,7 +680,7 @@ class ClientHangUp(unittest.TestCase):
         body = json.dumps({"model": "x", "max_tokens": 20, "stream": stream,
                            "messages": [{"role": "user", "content": "a long prompt"}]}).encode()
         c = so.create_connection(("127.0.0.1", self.port))
-        c.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        c.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
                   b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
         time.sleep(1.0)
         c.close()
@@ -790,6 +803,239 @@ class DraftCounts(unittest.TestCase):
         rows = m["requests"]                                      # newest first
         self.assertEqual([(r["drafts_offered"], r["drafts_accepted"]) for r in rows], [(5, 3), (None, None), (12, 7)])
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
+
+
+class LearnedProfile(unittest.TestCase):
+    """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start
+    begins from it when it is a profile of the same model; without the key the arguments are unchanged."""
+
+    def write(self, path, nl=48, ne=512, n=4):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import make_profile
+        old = make_profile.N_LAYER
+        make_profile.N_LAYER = nl
+        try:
+            make_profile.write_profile(path, [(i % nl, i // nl) for i in range(n)], n_expert=ne)
+        finally:
+            make_profile.N_LAYER = old
+
+    def test_without_the_key_nothing_changes(self):
+        args = ["--native", "x", "--expert-profile", "data/expert-profile.bin", "--adapt-every", "4"]
+        self.assertEqual(engine_args({"args": list(args)}), args)
+        self.assertEqual(engine_args({"args": list(args), "expert_profile_save": ""}), args)
+
+    def test_save_and_start_from_it(self):
+        d = Path(tempfile.mkdtemp())
+        self.write(d / "base.bin")
+        cfg = {"args": ["--expert-profile", "base.bin"], "cwd": str(d), "expert_profile_save": "learned.bin",
+               "expert_profile_save_every": 5}
+        # nothing saved yet: the config's profile, and the engine is told where to save
+        self.assertEqual(engine_args(cfg), ["--expert-profile", "base.bin", "--expert-profile-save", "learned.bin",
+                                            "--expert-profile-save-every", "5"])
+        self.write(d / "learned.bin")
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "learned.bin"])
+        self.write(d / "learned.bin", ne=256)                    # another model's: not used
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+        (d / "learned.bin").write_bytes(b"STRP" + bytes(20))     # not a whole profile
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+        self.write(d / "learned.bin")
+        (d / "learned.bin").write_bytes((d / "learned.bin").read_bytes()[:30])   # truncated
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+
+    def test_no_profile_in_the_args(self):
+        cfg = {"args": ["--native", "x"], "expert_profile_save": "learned.bin"}
+        self.assertEqual(engine_args(cfg), ["--native", "x", "--expert-profile-save", "learned.bin"])
+
+
+class DraftHeadHint(unittest.TestCase):
+    """#474: a start that stopped at "the draft head does not fit" says what to change, from this start's log lines."""
+
+    def log(self, text, before=""):
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        p.write_text(before + text, encoding="utf-8")
+        return str(p), len(before.encode())
+
+    def test_the_engines_hint_is_relayed(self):
+        p, off = self.log("strata mtp: the draft head over 106299 tokens needs 348 MiB of VRAM and 120 MiB is free.\n"
+                          "strata mtp: hint: a smaller draft vocabulary needs less VRAM: --draft-vocab en (...)\n"
+                          "strata serve: mtp: the draft head does not fit\n")
+        h = start_failure_hint(p, off)
+        self.assertIn("the draft head does not fit", h)
+        self.assertIn("348 MiB", h)
+        self.assertIn("--draft-vocab en", h)
+
+    def test_an_older_engine_gets_the_advice_in_words(self):
+        p, off = self.log("strata serve: mtp: the draft head does not fit\n")
+        self.assertIn("--draft-vocab en", start_failure_hint(p, off))
+
+    def test_other_failures_and_earlier_starts_add_nothing(self):
+        p, off = self.log("strata serve: cannot open the pack\n")
+        self.assertEqual(start_failure_hint(p, off), "")
+        # an earlier start's failure (before this start's offset) is not this one's
+        p, off = self.log("strata serve: cannot open the pack\n",
+                          before="strata serve: mtp: the draft head does not fit\n")
+        self.assertEqual(start_failure_hint(p, off), "")
+        self.assertEqual(start_failure_hint(None, 0), "")
+        self.assertEqual(start_failure_hint(str(Path(tempfile.mkdtemp()) / "missing.log"), 0), "")
+
+
+class DesktopVramNote(unittest.TestCase):
+    """#560 #516: an AMD card on a Linux desktop with little VRAM left after the start gets a recommended reserve."""
+
+    def test_when_it_applies(self):
+        from serve.server import desktop_vram_note
+        note = desktop_vram_note("hip", 624, ["--kv", "int8"], True)
+        self.assertIn("624 MiB of VRAM free", note)
+        self.assertIn("--vram-reserve-mib 3072", note)
+        self.assertIn("2.3 GB less", note)
+
+    def test_when_it_does_not(self):
+        from serve.server import desktop_vram_note
+        self.assertEqual(desktop_vram_note(None, 624, [], True), "")               # NVIDIA
+        self.assertEqual(desktop_vram_note("hip", 624, [], False), "")             # no desktop session
+        self.assertEqual(desktop_vram_note("hip", 2994, [], True), "")             # room left
+        self.assertEqual(desktop_vram_note("hip", None, [], True), "")             # lazy start: no INFO yet
+        self.assertEqual(desktop_vram_note("hip", 900, ["--vram-reserve-mib", "4000"], True), "")   # already raised
+
+    def test_desktop_detection(self):
+        from serve import server
+        with mock.patch.object(server.os, "name", "posix"), mock.patch.object(server.sys, "platform", "linux"):
+            self.assertTrue(server.linux_desktop({"WAYLAND_DISPLAY": "wayland-0"}))
+            self.assertFalse(server.linux_desktop({}))
+
+
+class StartFailureLog(unittest.TestCase):
+    """#496: whatever stopped the engine before READY, the error carries this start's last log lines."""
+
+    def test_the_last_lines_of_this_start(self):
+        from serve.server import start_log_tail
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        before = "strata serve: an earlier start's line\n"
+        p.write_text(before + "".join(f"strata serve: line {i}\n" for i in range(30)) + "\n"
+                     "strata serve: cannot open the pack\n", encoding="utf-8")
+        tail = start_log_tail(str(p), len(before.encode()))
+        self.assertIn("the engine log's last lines:", tail)
+        self.assertIn("cannot open the pack", tail)
+        self.assertIn("line 29", tail)
+        self.assertNotIn("line 10\n", tail + "\n")                 # 20 lines: 11..29 and the last one
+        self.assertIn("line 11", tail)
+        self.assertNotIn("earlier start", tail)
+        short = start_log_tail(str(p), len(before.encode()), n=3)
+        self.assertEqual(short.count("\n  "), 3)
+        self.assertEqual(start_log_tail(str(p), p.stat().st_size), "")   # nothing from this start
+        self.assertEqual(start_log_tail(None, 0), "")
+        self.assertEqual(start_log_tail(str(Path(d) / "missing.log"), 0), "")
+
+    def test_the_start_error_has_them(self):
+        import serve.server as server
+        fake = "import sys\nsys.stderr.write('strata serve: cannot open the pack packs/x\\n')\nsys.exit(2)\n"
+        with tempfile.TemporaryDirectory() as d:
+            script, log = Path(d) / "fake_strata.py", Path(d) / "strata.log"
+            script.write_text(fake, encoding="utf-8")
+            log.write_text("an earlier start\n", encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                    mock.patch.object(server, "narrate_start", lambda *a, **k: None):
+                with self.assertRaises(RuntimeError) as cm:
+                    StrataEngine("strata", [], log=str(log))
+            text = str(cm.exception)
+            self.assertIn("exited before it was ready", text)
+            self.assertIn("cannot open the pack packs/x", text)
+            self.assertNotIn("an earlier start", text)
+
+
+class StartNarrator(unittest.TestCase):
+    """#505: the start's words say what happens to the experts - --mmap-experts loads nothing into RAM up front."""
+
+    def test_the_words_follow_the_flags(self):
+        from serve.server import experts_loading_words
+        self.assertIn("loading the experts into RAM (about 38 GB)", experts_loading_words([], "about 38 GB"))
+        mapped = experts_loading_words(["--mmap-experts"], "about 47 GB")
+        self.assertIn("mapping the experts from the model files (about 47 GB", mapped)
+        self.assertIn("not loaded into RAM", mapped)
+        self.assertIn("the GPU does not hold", experts_loading_words(["--resident-experts"], "about 47 GB"))
+        budget = experts_loading_words(["--mmap-experts", "--resident-budget-gib", "71"], "about 50 GB")
+        self.assertIn("up to 71 GiB", budget)
+        self.assertNotIn("about 50 GB", budget)
+
+    def narrate(self, args, lines):
+        import contextlib
+        import io
+        from serve.server import narrate_start
+        d = tempfile.mkdtemp()
+        log = Path(d) / "engine.log"
+        log.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+        done, out = threading.Event(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            t = threading.Thread(target=narrate_start, args=(str(log), 0, args, done))
+            t.start()
+            time.sleep(0.8)
+            done.set()
+            t.join(5)
+        return out.getvalue()
+
+    def test_a_mapped_start(self):
+        said = self.narrate(["--mmap-experts"], ["strata generate: experts via mmap (--mmap-experts; the GGUF shards "
+                                                 "in place, no experts.bin)"])
+        self.assertIn("mapping the experts from the model files", said)
+        self.assertNotIn("loading the experts into RAM", said)
+
+    def test_an_arena_start(self):
+        said = self.narrate([], ["strata generate: expert arena: resident, 31.64 GiB",
+                                 "strata generate: loaded 31.64 GiB at 3.17 GiB/s"])
+        self.assertIn("loading the experts into RAM (tens of GB)", said)
+        self.assertIn("experts loaded: 31.64 GiB at 3.17 GiB/s", said)
+
+
+class CancelledRead(unittest.TestCase):
+    """#471: a request cancelled while its prompt was read is recorded with the tokens the engine read (the DONE
+    line's 15th field), not the whole prompt; an older engine's line (no such field) keeps the whole prompt."""
+
+    def test_parse_done_read_field(self):
+        e = SimpleNamespace()
+        StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0 12288")
+        self.assertEqual((e.last["prompt_tokens"], e.last["prompt_read"], e.last["finish"]), (98179, 12288, "cancel"))
+        StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0")
+        self.assertNotIn("prompt_read", e.last)
+
+    def test_prompt_tokens_seen(self):
+        last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}
+        self.assertEqual(prompt_tokens_seen(98179, last), 3000)
+        self.assertEqual(prompt_tokens_seen(98179, {**last, "finish": "stop"}), 98179)   # read in full: all of it
+        self.assertEqual(prompt_tokens_seen(98179, {"finish": "cancel", "reused": 0}), 98179)   # an older engine
+        self.assertEqual(prompt_tokens_seen(98179, {}), 98179)                          # no DONE at all
+        self.assertEqual(prompt_tokens_seen(10, {**last, "prompt_read": 50}), 10)       # never past the prompt
+
+    def test_history_and_totals(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 0 20 400.0 0.0 cancel 0 0 0 0 0 0 0 0.0 8",      # stopped after 8 prompt tokens
+            "DONE 4 20 40.0 30.0 stop 0 0 0 0 0 0 0 0.0 20",
+            "DONE 0 20 400.0 0.0 cancel 0 0 0"])                   # an older engine: no read count
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(3):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                m = json.loads(r.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        rows = m["requests"][::-1]                                # oldest first
+        total = rows[0]["prompt_total"]
+        self.assertGreater(total, 8)
+        self.assertEqual([r["prompt_total"] for r in rows], [total] * 3)
+        self.assertEqual([(r["prompt_tokens"], r["prompt_read"]) for r in rows], [(8, 8), (total, 20), (total, None)])
+        self.assertEqual(m["totals"]["prompt_tokens"], 8 + 2 * total)
 
 
 class LiveRate(unittest.TestCase):
@@ -1594,6 +1840,20 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 1)
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20])
 
+    def test_a_reply_cut_while_thinking_is_named_in_the_log(self):
+        """#530: max tokens reached inside the thinking gives an empty answer; the server log says what helps."""
+        hint = "reached max tokens while still thinking"
+        for extra, said in (({"max_tokens": 10}, True), ({}, False)):
+            with self.subTest(extra=extra):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code, b = self.openai(**extra)
+                self.assertEqual(code, 200, b)
+                self.assertEqual(b["choices"][0]["finish_reason"], "length" if said else "stop")
+                self.assertEqual(hint in out.getvalue(), said, out.getvalue())
+                if said:
+                    self.assertIn("reasoning_budget_tokens", out.getvalue())
+
     def test_a_bad_value_is_a_400(self):
         for bad in ("lots", 2.5, True, [1]):
             with self.subTest(value=bad):
@@ -1909,6 +2169,164 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class SilentEngine(unittest.TestCase):
+    """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
+    lost step with the server: it is ended and the request fails with EngineDied, instead of waiting forever."""
+
+    def bare(self, silence, can_stop=False):
+        import io
+        import queue
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = mock.Mock()
+        engine.proc.stdin = io.StringIO()
+        engine.proc.poll.return_value = None
+        engine.lines, engine.can_stop, engine.max_context = queue.Queue(), can_stop, 4096
+        engine.silence_s, engine.log_path = silence, None
+        return engine
+
+    def later(self, engine, delay, *lines):
+        def put():
+            time.sleep(delay)
+            for x in lines:
+                engine.lines.put(x)
+        threading.Thread(target=put, daemon=True).start()
+
+    def test_silence_mid_answer_ends_the_engine(self):
+        from serve.server import EngineSilent
+        engine = self.bare(0.3)
+        engine.lines.put("T 5")
+        gen = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(gen), 5)
+        t0 = time.monotonic()
+        with self.assertRaises(EngineSilent) as cm:
+            next(gen)
+        self.assertIsInstance(cm.exception, EngineDied)          # every EngineDied path handles it
+        self.assertLess(time.monotonic() - t0, 5)
+        engine.proc.kill.assert_called_once()
+        self.assertFalse(engine.alive())                          # the next request restarts it
+        self.assertIn("#481", engine.death_note())
+        self.assertNotIn("STOP", engine.proc.stdin.getvalue())    # nothing is listening: no STOP, no drain
+
+    def test_prompt_chunks_set_the_wait(self):
+        # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
+        engine = self.bare(0.3)
+        engine.lines.put("RESUME 0")
+        engine.lines.put("PP 100 300 1000 100.0")
+        self.later(engine, 1.0, "PP 200 300 2000 100.0", "T 7", "DONE 1 300 2000 1 length")
+        self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [None, None, 7])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_long_first_chunk_is_allowed(self):
+        # 100 prompt tokens at the slowest prompt reading (50 tok/s): 2 s on top of the silence before the first PP
+        engine = self.bare(0.3)
+        self.later(engine, 1.0, "PP 100 100 1000 100.0", "DONE 0 100 1000 0 length")
+        self.assertEqual(list(engine.generate([1] * 100, 10, {}, threading.Event())), [None])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_stop_never_acknowledged(self):
+        from serve.server import EngineSilent
+        engine = self.bare(0.3, can_stop=True)
+        engine.lines.put("T 5")
+        gen = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(gen), 5)
+        with self.assertRaises(EngineSilent):
+            gen.close()                                           # the consumer stopped: STOP, then the drain
+        self.assertIn("STOP", engine.proc.stdin.getvalue())
+        engine.proc.kill.assert_called_once()
+        self.assertFalse(engine.alive())
+
+    def test_zero_waits_as_before(self):
+        engine = self.bare(0)
+        self.later(engine, 0.5, "T 5", "DONE 1 1 1 1 length")
+        self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [5])
+
+    def test_config(self):
+        from serve.server import ENGINE_SILENCE_S, engine_silence_s
+        self.assertEqual(engine_silence_s({}), ENGINE_SILENCE_S)
+        self.assertEqual(engine_silence_s({"engine_silence_s": 0}), 0.0)
+        self.assertEqual(engine_silence_s({"engine_silence_s": 900}), 900.0)
+        for bad in (-1, "300", True):
+            with self.assertRaises(ValueError):
+                engine_silence_s({"engine_silence_s": bad})
+
+
+FAKE_LOST_STEP = '''import pathlib, sys, time
+mark = pathlib.Path(sys.argv[sys.argv.index("--mark") + 1])
+mode = sys.argv[sys.argv.index("--mode") + 1]
+print("READY 4096 stop", flush=True)
+for line in sys.stdin:
+    if line.startswith("QUIT"):
+        break
+    if line.startswith("GEN"):
+        if not mark.exists():                    # the first engine loses step (#481): it never says DONE
+            mark.touch()
+            print("T 104", flush=True)
+            if mode == "stop":
+                print("T 257", flush=True)       # <|im_end|>: the server STOPs and drains, and the engine is silent
+            time.sleep(3600)
+        print("T 111", flush=True)
+        print("T 107", flush=True)
+        print("DONE 2 5 1.0 1.0 length", flush=True)
+'''
+
+
+class LostStep(unittest.TestCase):
+    """#481 over HTTP, with a real process: the request with the silent engine ends with an error, and the next one
+    starts the engine again and is answered (the server used to wait forever, holding the request FIFO)."""
+
+    def run_mode(self, mode, stream):
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, mark = Path(d) / "fake_strata.py", Path(d) / "lost"
+            script.write_text(FAKE_LOST_STEP, encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
+                eng = StrataEngine("strata", ["--mark", str(mark), "--mode", mode])
+                eng.silence_s = 0.5
+                tok = ByteTokenizer()
+                svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                httpd = serve(svc, port=0)
+                base = f"http://127.0.0.1:{httpd.server_address[1]}"
+                body = {"model": "m", "max_tokens": 2, "reasoning_effort": "none", "stream": stream,
+                        "messages": [{"role": "user", "content": "hi"}]}
+                try:
+                    first = eng.proc
+                    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=60) as r:
+                            text = r.read().decode()
+                    except urllib.error.HTTPError as e:
+                        self.assertEqual(e.code, 503)
+                        text = e.read().decode()
+                    self.assertIn("the next request restarts it", text)
+                    self.assertIsNotNone(first.poll(), "the silent engine still runs")
+                    self.assertEqual(svc.history[-1]["finish"], "error")
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        text = r.read().decode()
+                    self.assertIsNot(eng.proc, first)
+                    if stream:
+                        answer = "".join(json.loads(x[6:])["choices"][0]["delta"].get("content") or ""
+                                         for x in text.splitlines() if x.startswith("data: {") and "choices" in x)
+                    else:
+                        answer = json.loads(text)["choices"][0]["message"]["content"]
+                    self.assertEqual(answer, "ok")
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    eng.unload()
+
+    def test_silent_mid_answer(self):
+        self.run_mode("silent", stream=False)
+
+    def test_silent_mid_stream(self):
+        self.run_mode("silent", stream=True)
+
+    def test_stop_never_acknowledged(self):
+        self.run_mode("stop", stream=False)
 
 
 if __name__ == "__main__":

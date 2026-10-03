@@ -98,12 +98,16 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
-    if (nt >= mt_min && iq512_supported(f.gu_type)) {
-        if (avx512) {
+    // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps ggml-cpu for
+    // it, as before (its rows would round differently).  Each kernel only for the formats it implements: falling
+    // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
+    static const bool cpu512 = cpu_avx512_ok();
+    if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
+        if (avx512 && iq512_supported(f.gu_type)) {
             iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
             return;
         }
-        if (avx2) {
+        if (avx2 && iq256_supported(f.gu_type)) {
             iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
             return;
         }

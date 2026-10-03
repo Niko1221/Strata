@@ -23,7 +23,7 @@ word, so 60 tokens per second is faster than you can read.
 
 | Size | Writes answers | Reads your prompt |
 | --- | ---: | ---: |
-| **Q2_0** | 93 tokens/s | 2,170 tokens/s |
+| **Q2_0** | 94 tokens/s | 2,650 tokens/s |
 | **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
 | **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
@@ -87,7 +87,8 @@ it left off) and starts it. Your browser opens the Strata app at `http://127.0.0
 > window. The window tells you what it is doing.
 
 **Next time**, run `START-HERE.bat` (or `./setup.sh`) again: it starts right away, nothing is downloaded twice. Close
-its window to stop the model. Updating, Docker, several cards, where the files go and every option:
+its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
+several cards, where the files go and every option:
 [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Which model should I pick?

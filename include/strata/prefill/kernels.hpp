@@ -43,8 +43,8 @@ void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate
 /// The 4-tap causal conv + SiLU over the chunk (history [C][3] in, updated to the chunk's last three inputs), then
 /// the L2 norm of the q and k heads of every token.  h: [T, C].
 void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream);
-/// The recurrence over the chunk, block per value head, state in registers; y[t] = rmsnorm(o) * gamma * sigmoid(z)
-/// (FP32 and FP16 bits: the out projection is quantized).
+/// The recurrence over the chunk, state in registers; y16[t] = rmsnorm(o) * gamma * sigmoid(z) in FP16 (what the
+/// out projection reads); y is FP32 scratch.
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
                     const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream);
 

@@ -20,10 +20,13 @@
 #define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
 #define cudaDevAttrComputeCapabilityMinor hipDeviceAttributeComputeCapabilityMinor
 #define cudaDeviceGetAttribute hipDeviceGetAttribute
+#define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
+#define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
 #define cudaDeviceProp hipDeviceProp_t
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDriverGetVersion hipDriverGetVersion
 #define cudaErrorNotReady hipErrorNotReady
+#define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
 #define cudaError_t hipError_t
 #define cudaEventCreate hipEventCreate
@@ -62,10 +65,22 @@
 #define cudaLaunchHostFunc hipLaunchHostFunc
 #define cudaMalloc hipMalloc
 #define cudaMallocHost(...) (::strata::hip_compat::malloc_host(__VA_ARGS__))
+#if defined(_WIN32)
+// Windows: hipMemGetInfo counts this process's own allocations only, so the desktop's and other programs' share of
+// the card is invisible to it, and VRAM sized by it overfills the card (WDDM then moves memory out to system RAM and
+// the GPU slows down).  Its free figure is lowered by what Windows' video memory budget for this process withholds
+// (src/core/device.cu; STRATA_WDDM_BUDGET=0: hipMemGetInfo as it is).
+namespace strata::hip_compat {
+hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
+}
+#define cudaMemGetInfo ::strata::hip_compat::mem_get_info
+#else
 #define cudaMemGetInfo hipMemGetInfo
+#endif
 #define cudaMemcpy hipMemcpy
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemcpyAsync hipMemcpyAsync
+#define cudaMemcpyPeerAsync hipMemcpyPeerAsync
 #define cudaMemcpyDefault hipMemcpyDefault
 #define cudaMemcpyDeviceToDevice hipMemcpyDeviceToDevice
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost

@@ -50,6 +50,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.error
 import urllib.request
@@ -69,14 +70,23 @@ HF_REVISIONS = {
 }
 
 
+HF_DEFAULT = "https://huggingface.co"
+
+
+def hf_endpoint() -> str:
+    """#495: the Hugging Face host - HF_ENDPOINT as huggingface_hub reads it (a mirror, e.g. https://hf-mirror.com),
+    else huggingface.co.  The pinned revisions and the SHA-256 checks are the same whichever host serves the files."""
+    return (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT
+
+
 def hf(repo: str) -> str:
     """The download folder of a Hugging Face repository at its pinned revision."""
-    return f"https://huggingface.co/{repo}/resolve/{HF_REVISIONS[repo]}/"
+    return f"{hf_endpoint()}/{repo}/resolve/{HF_REVISIONS[repo]}/"
 
 
 def hf_unpinned(url: str) -> str:
     """The same file at the repository's current revision (main)."""
-    return re.sub(r"(https://huggingface\.co/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
+    return re.sub(r"^(https?://[^/]+/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
 
 
 HF = hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
@@ -94,7 +104,7 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-MIN_ENGINE = (0, 1, 35)                # v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 38)                # v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 
@@ -598,6 +608,33 @@ def split_mmap(cfg: dict) -> bool:
     return True
 
 
+def unsloth_split_need_gb(model="UD-Q4_K_XL") -> float:
+    """#498: the RAM UD-Q4_K_XL needs on several GPUs, where it has no RAM budget (the engine refuses
+    --resident-budget-gib with a layer split): its GGUF files and UNSLOTH_RAM_LEFT_GB more (~135 GB).  Measured safe
+    at 165 GiB (2x RTX 3090: MemAvailable never under 68 GiB); the 0-free case of #384 was 47 GB with a 70 GB model."""
+    return MODELS[model]["download_gb"] + UNSLOTH_RAM_LEFT_GB
+
+
+def split_budget(cfg: dict) -> bool:
+    """#498: a UD-Q4_K_XL config (its RAM budget, --resident-budget-gib) started on several GPUs.  The engine refuses
+    the budget with a layer split (it exited with code 2), so the split runs without it - all the experts loaded into
+    RAM at start - where the RAM holds the GGUFs and 24 GB more; else setup stops, before the config is saved.  True
+    when the config changed."""
+    a = cfg.get("args", [])
+    if "--resident-budget-gib" not in a:
+        return False
+    need, ram = unsloth_split_need_gb(), ram_gb()
+    if ram < need:
+        fail(f"UD-Q4_K_XL cannot share its RAM budget across GPUs (the engine has no layer split with it), and without "
+             f"the budget it needs ~{need:.0f} GB of RAM (its GGUF files and {UNSLOTH_RAM_LEFT_GB} GB more); this PC "
+             f"has {ram:.0f} GB", "start it on one GPU: START-HERE.bat --gpu N (Linux: ./setup.sh --gpu N)")
+    i = a.index("--resident-budget-gib")
+    del a[i:i + 2]
+    ok("UD-Q4_K_XL on several GPUs: no RAM budget (the engine has none with a layer split) - all its experts are "
+       "loaded into RAM from the model files at start, and the files pass through the OS file cache (#498)")
+    return True
+
+
 def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """Starting a model set up for one card on a PC with two or more that can share it: asked once (the answer is
     saved in its config)."""
@@ -606,6 +643,10 @@ def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
     found = gpus()
     can = together_ok(found)
     if not can:
+        return cfg
+    # #498: UD-Q4_K_XL's RAM budget has no layer split; without it the RAM must hold the GGUFs and 24 GB more
+    budget = "--resident-budget-gib" in cfg.get("args", [])
+    if budget and ram_gb() < unsloth_split_need_gb():
         return cfg
     pair = can[:2]
     cfg["gpus_asked"] = True
@@ -618,6 +659,10 @@ def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
         say("  This model runs in the low-RAM mode with its experts kept in RAM, on one GPU (recommended: steady RAM")
         say("  use). On both, the experts the GPUs do not hold are read through the OS file cache instead: faster in")
         say("  two reports (#364, #384), but RAM can fill up to 0 free during long prompts.")
+    if budget:
+        say("  This model (UD-Q4_K_XL) runs on one GPU with a RAM budget of its experts (recommended: the tested")
+        say("  setup). On both it has no budget: all its experts are loaded into RAM at start, which this PC's RAM")
+        say("  holds - about twice as fast in #498 (2x RTX 3090: 31 -> 64-78 tokens/s).")
     short = split_short(pair)             # #448: one card recommended (asked "n" by default), as for --resident
     for g in short:
         say(f"  {split_short_note(g)}.")
@@ -626,10 +671,11 @@ def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
         say("  The installed engine has no code for " + ", ".join(g["name"] for g in missing) + ": to use them "
             "together, run START-HERE.bat --setup --gpus " + ",".join(str(g["index"]) for g in pair))
     elif ask("  Use both from now on? (you can change it later: START-HERE.bat --gpu N for one card)",
-             ["y", "n"], "n" if resident or short else "y", yes) == "y":
+             ["y", "n"], "n" if resident or short or budget else "y", yes) == "y":
         cfg["gpu"] = [g["index"] for g in pair]
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
         split_mmap(cfg)
+        split_budget(cfg)
         ok("from now on this model runs on " + " + ".join(gpu_name(g) for g in pair))
     else:
         ok("staying on one GPU (START-HERE.bat --gpus " + ",".join(str(g["index"]) for g in pair) + " switches)")
@@ -2068,6 +2114,43 @@ def low_ram_together(a, model, ram, gpu, chosen) -> bool:
     return False
 
 
+def unsloth_together(a, model, ram, gpu, chosen) -> bool:
+    """#498: UD-Q4_K_XL with several GPUs chosen.  Its RAM budget (--resident-budget-gib) has no layer split, so a
+    split runs without it: all its experts loaded into RAM from the GGUFs at start, as with the 2-3-bit models - only
+    where the RAM holds the GGUF files and 24 GB more (unsloth_split_need_gb; 165 GiB, 2x RTX 3090: 31 -> 64-78
+    tok/s).  An explicit --gpus is honoured there; otherwise asked, one GPU by default (--yes: one GPU, as before); an
+    explicit --resident-budget-gib keeps one GPU.  True: all of them."""
+    names = " + ".join(gpu_name(g) for g in chosen)
+    need = unsloth_split_need_gb(model)
+    if ram < need:
+        warn(f"{model} runs on one GPU here: on several it has no RAM budget and needs ~{need:.0f} GB of RAM (its GGUF "
+             f"files and {UNSLOTH_RAM_LEFT_GB} GB more), this PC has {ram:.0f} - using {gpu_name(gpu)} only")
+        return False
+    if a.resident_budget_gib is not None:
+        warn(f"--resident-budget-gib has no layer split: {model} runs on one GPU with it - using {gpu_name(gpu)} only "
+             f"(leave the budget out to use {names} together)")
+        return False
+    note = (f"no RAM budget - all of its experts (~{MODELS[model]['arena_gb']:.0f} GB) are loaded into RAM from the "
+            f"model files at start, and the files pass through the OS file cache (needs ~{need:.0f} GB of RAM, this "
+            f"PC has {ram:.0f})")
+    if a.gpus:
+        ok(f"{model} on {names}, as you chose (--gpus): {note}")
+        return True
+    if not a.yes:
+        say()
+        say(f"  {model} can run on one GPU with a RAM budget of its experts, or on {names} together without one:")
+        say(f"  1) {gpu_name(gpu)} only: the most-used experts kept in RAM, the rest read from the SSD   (recommended: "
+            "the tested setup)")
+        say(f"  2) {names} together: {note};")
+        say("     about twice as fast in #498 (2x RTX 3090: 31 -> 64-78 tokens/s)")
+        if ask(f"{model}: which GPUs?", ["1", "2"], "1", a.yes) == "2":
+            ok(f"{model} on {names}: {note}")
+            return True
+    warn(f"{model} runs on one GPU: using {gpu_name(gpu)} only (--gpus " + ",".join(str(g["index"]) for g in chosen) +
+         f" shares it across {names} without the RAM budget: this PC's RAM holds it)")
+    return False
+
+
 def confirm_risk(msg, explicit, yes, stop, hint=None, question="  Go on anyway?", default="n") -> None:
     """The owner's rule: setup recommends, it never forces.  A choice setup expects to fail or run badly is said
     plainly (msg), then asked (default n; `default` keeps an older question's own default), or with --yes taken as
@@ -2332,7 +2415,10 @@ def choices_from_config(cfg_path: Path) -> dict:
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
             "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
-            "layer_split": cfg.get("layer_split")}
+            "layer_split": cfg.get("layer_split"),
+            # #493: --vram-reserve-mib given at setup (images write the default 700 themselves)
+            "vram_reserve_mib": int(val("--vram-reserve-mib")) if (val("--vram-reserve-mib") or "").isdigit() and (
+                vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
 
 
 def find_in(roots: list, rel: str):
@@ -2344,8 +2430,25 @@ def find_in(roots: list, rel: str):
 
 
 # ------------------------------------------------------------------------------------------------ start
+def model_config(path: Path) -> bool:
+    """#549: a model's run config (a JSON object with "exe" and "args"). Any other strata-*.json in the folder (a
+    file of the user's own, a cut-off one) is skipped with a warning naming it instead of stopping setup."""
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(cfg, dict) and cfg.get("exe") and isinstance(cfg.get("args"), list):
+            return True
+        why = 'no "exe" or "args"'
+    except OSError as e:
+        why = e.strerror or str(e)
+    except ValueError:
+        why = "not valid JSON"
+    warn(f"skipped {path.name} ({why}): it is not a Strata model config")
+    return False
+
+
 def installed_configs():
-    return sorted(ROOT.glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p for p in sorted(ROOT.glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if model_config(p)]
 
 
 def source_version() -> str:
@@ -2454,14 +2557,76 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
     return cfg
 
 
+def update_install(have: list, a) -> int:
+    """#475: `setup.py --update` (UPDATE.bat / update.sh, after their git pull): what a plain START-HERE.bat does to
+    an install before it starts the model, without starting it - the Python packages, the ready-made engine when this
+    setup needs a newer one (MIN_ENGINE; a compiled engine when its source changed), each installed model's config
+    upgrades and its draft subset.  No question is asked and the model files are not touched; a model still running
+    keeps its engine (update_installed_engine says to close it and run this again)."""
+    have = [p for p in have if model_config(p)]        # #549: a strata-*.json that is no model config is skipped
+    if not have:
+        say("  No model is installed in this Strata folder yet: run START-HERE.bat (Linux: ./setup.sh) to set it up -")
+        say("  it finds an earlier install's model files next to it and reuses them.")
+        return 0
+    pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES,
+                "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
+    if not a.build:
+        update_installed_engine(a.prebuilt)
+    for cfg_path in have:
+        cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
+        if "--mtp" in cfg["args"][:-1]:
+            refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
+        if cfg.get("backend") == "hip" and WIN:
+            hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
+        ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
+    ver = engine_version(Path(json.loads(have[0].read_text(encoding="utf-8-sig"))["exe"]))
+    say()
+    ok("Strata is updated" + (f" (engine {'.'.join(map(str, ver))})" if any(ver) else "") +
+       ". Start the model with " + ("START-HERE.bat" if WIN else "./setup.sh") + " when you want it.")
+    return 0
+
+
+def settings_summary(cfg: dict, port=None) -> str:
+    """#564: the settings a start uses, in one line: the config's engine options (the model's file paths left out)
+    and the server's own fields, so a change made by hand to strata-<model>.json can be checked without the log."""
+    a, out, i = [str(x) for x in cfg.get("args") or []], [], 0
+    while i < len(a):
+        flag = a[i]
+        val = a[i + 1] if i + 1 < len(a) and not a[i + 1].startswith("--") else None
+        i += 1 if val is None else 2
+        if not flag.startswith("--"):
+            continue                                   # a positional: the model file
+        if val is not None and ("/" in val or "\\" in val or val.lower().endswith((".gguf", ".bin"))):
+            continue                                   # a path: --native, --mtp, --profile ...
+        out.append(flag if val is None else f"{flag} {val}")
+    srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
+    if cfg.get("api_key"):
+        srv.append("api key set")
+    for k in ("gpu", "layer_split", "draft_vocab", "fit_max_tokens", "reasoning_budget_tokens", "anthropic_thinking"):
+        if cfg.get(k) is not None:
+            v = cfg[k]
+            srv.append(f"{k} {','.join(map(str, v)) if isinstance(v, list) else str(v).lower() if isinstance(v, bool) else v}")
+    return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
+
+
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
-    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab)."""
+    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
+    --vram-reserve-mib)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
     keep = {k: v for k, v in (keep or {}).items() if v is not None}
+    reserve = keep.pop("vram_reserve_mib", None)       # #493: an engine argument, kept in the config's args
+    if reserve is not None:
+        args = cfg["args"]
+        if "--vram-reserve-mib" in args[:-1]:
+            args[args.index("--vram-reserve-mib") + 1] = str(reserve)
+        else:
+            args += ["--vram-reserve-mib", str(reserve)]
+        write_config(cfg_path, cfg)
+        ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
         write_config(cfg_path, cfg)
@@ -2485,6 +2650,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
                      "set it up for these cards: ./setup.sh --setup --backend hip --gpus " + ",".join(map(str, gpu)))
             cfg["gpu"], cfg["gpus_asked"] = gpu, True
             cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
+            split_budget(cfg)                          # #498: before it is saved (it stops when the RAM is short)
             write_config(cfg_path, cfg)
             gpu = None
         elif gpu is not None:
@@ -2508,6 +2674,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         check_gpus(gpu, found, yes=yes, named=True)
         cfg["gpu"], cfg["gpus_asked"] = gpu, True
         cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
+        split_budget(cfg)                              # #498: before it is saved (it stops when the RAM is short)
         write_config(cfg_path, cfg)
         gpu = None
     elif gpu is not None:                              # --gpu N: this start only, on that card
@@ -2516,7 +2683,8 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     else:
         cfg = offer_together(cfg_path, cfg, yes)
     use = gpu if gpu is not None else cfg.get("gpu")
-    if isinstance(use, list) and split_mmap(cfg):     # #364 #384: a resident low-RAM config on several GPUs
+    # #364 #384: a resident low-RAM config on several GPUs; #498: a UD-Q4_K_XL config with its RAM budget (by hand)
+    if isinstance(use, list) and (split_mmap(cfg) | split_budget(cfg)):
         write_config(cfg_path, cfg)
     if cfg.get("backend") == "hip":
         pass
@@ -2541,12 +2709,22 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             pass
     say()
     say("  " + "-" * 100)
-    say(f"  Starting {cfg.get('model_name', 'the model')}: it loads {f'about {gb:.0f} GB' if gb >= 1 else '34-55 GB'} "
-        "into RAM and locks part of it for the GPU.")
+    size = f'about {gb:.0f} GB' if gb >= 1 else '34-55 GB'
+    a_ = cfg["args"]
+    if "--mmap-experts" in a_ and "--resident-budget-gib" not in a_ and "--resident-experts" not in a_:
+        # #505: the mapped low-RAM mode loads nothing into RAM up front (the server's narrator says the same)
+        say(f"  Starting {cfg.get('model_name', 'the model')}: it maps {size} of experts from the model files (the OS "
+            "file cache reads them).")
+    else:
+        say(f"  Starting {cfg.get('model_name', 'the model')}: it loads {size} into RAM and locks part of it for the "
+            "GPU.")
     say("  While it does, YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES (longer the first time after a")
     say("  restart). That is normal: please wait and don't close this window - the browser opens when it is ready.")
     say("  Later, closing this window stops the model.")
     say("  " + "-" * 100)
+    for n, line in enumerate(textwrap.wrap(f"Settings ({cfg_path.name}): {settings_summary(cfg, port)}", 100,
+                                           break_on_hyphens=False)):   # #564: what this start uses
+        say(("  " if n == 0 else "    ") + line)
     if not WIN and os.environ.get("STRATA_EXECV"):
         # Replace this process instead of spawning a child. The Docker image sets STRATA_EXECV=1,
         # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
@@ -2570,6 +2748,66 @@ def saved_draft_vocab(cfg_path: Path) -> str | None:
     except (OSError, ValueError, AttributeError):
         return None
     return v if v in DRAFT_VOCABS else None
+
+
+DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "en": 133}   # the draft head's VRAM per subset (IQ3_S: the largest)
+SMALL_DRAFT_VRAM_GB = 14   # #474: below this the default subset's head can be what does not fit
+
+
+def draft_vocab_note(vram_gb: float, chosen: str | None) -> list[str]:
+    """#474: on a card under 14 GB, the default draft subset (cjk, ~348 MiB of VRAM) can be what does not fit at the
+    start ("the draft head does not fit"), and the engine's expert cache gets what a smaller one leaves.  Setup
+    RECOMMENDS a smaller one here and changes nothing (the owner's rule, #403 #406): a subset chosen with
+    --draft-vocab, or kept from an earlier install, gets no note.  [] for every other case."""
+    if chosen or not 0 < vram_gb < SMALL_DRAFT_VRAM_GB:
+        return []
+    start = "START-HERE.bat" if WIN else "./setup.sh"
+    return [f"Tip for a {vram_gb:.0f} GB card: the draft layer's default token subset (with Chinese, Japanese and "
+            f"Korean) needs up to ~{DRAFT_VOCAB_MIB['cjk']} MiB of VRAM.",
+            f"  For English and code answers, {start} --draft-vocab en needs up to ~{DRAFT_VOCAB_MIB['en']} MiB "
+            f"(cyrillic: ~{DRAFT_VOCAB_MIB['cyrillic']}) and leaves the rest to the expert cache - and it is the",
+            "  fix when the start stops with \"the draft head does not fit\". The model keeps the choice."]
+
+
+SMALL_CARD_GB = 7.5            # #496: a card under 8 GB gets a tip (an 8 GB card lists 7.99)
+
+
+def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
+    """#496: what frees VRAM on a card under 8 GB when the start stops with "no VRAM is left for the expert cache"
+    (the engine already lowers its own reserve on such a card) - a recommendation, setup changes none of it.  (The
+    draft layer stays: the server needs it.)"""
+    start = "START-HERE.bat --setup" if WIN else "./setup.sh"
+    tips = []
+    if ctx > 8192:
+        tips.append("an 8K context (a smaller KV cache)")
+    if draft_vocab != "en":
+        tips.append(f"--draft-vocab en (a draft head of ~{DRAFT_VOCAB_MIB['en']} MiB instead of "
+                    f"~{DRAFT_VOCAB_MIB[draft_vocab or 'cjk']})")
+    lines = ["If the start stops with \"no VRAM is left for the expert cache\" (the engine's log says how much is "
+             "short):"]
+    if tips:
+        lines.append(f"  run {start} again with " + " and ".join(tips) + ", or close other programs that use the GPU.")
+    else:
+        lines.append("  close other programs that use the GPU.")
+    return lines
+
+
+DESKTOP_RESERVE_MIB = 3072     # #560 #516: what kept a KDE/Wayland desktop alive beside a full expert cache
+
+
+def linux_desktop(env=None) -> bool:
+    """A graphical session on Linux (Wayland or X)."""
+    env = os.environ if env is None else env
+    return sys.platform.startswith("linux") and bool(env.get("WAYLAND_DISPLAY") or env.get("DISPLAY"))
+
+
+def desktop_reserve_note() -> list[str]:
+    """#560 #516: an AMD card that also drives a Linux desktop - with the default 700 MiB reserve the expert cache
+    fills it, and when the desktop needs more VRAM amdgpu moves the cache to system RAM, where the OOM killer then ends
+    the compositor.  A recommendation, setup changes nothing."""
+    return [f"If this AMD card also drives your desktop and the desktop or apps crash once the model is loaded, keep "
+            f"more VRAM free: ./setup.sh --vram-reserve-mib {DESKTOP_RESERVE_MIB}",
+            "  (remembered for this model; the expert cache gets ~2.3 GB less, a few % of speed)"]
 
 
 def mtp_corrupt(mtp: Path, env=None) -> bool:
@@ -2718,6 +2956,9 @@ def main() -> int:
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
+    ap.add_argument("--update", action="store_true",
+                    help="update the installed engine, Python packages and model settings as a start would, without "
+                         "starting the model (UPDATE.bat / update.sh run it after a git pull)")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
@@ -2736,6 +2977,9 @@ def main() -> int:
     ap.add_argument("--resident-budget-gib", type=float, metavar="N",
                     help="UD-Q4_K_XL: the GiB of its experts kept in RAM (default: the RAM less 24 GB, 40 on 64 GB; "
                          "more is kept as you choose, with a note)")
+    ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
+                    help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
+                         "default: 700); the expert cache takes that much less")
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
                          "experts fit on the GPU); auto: when the RAM has room for it")
@@ -2746,6 +2990,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
+    if a.vram_reserve_mib is not None and a.vram_reserve_mib < 0:
+        ap.error("--vram-reserve-mib takes a number of MiB, 0 or more, e.g. --vram-reserve-mib 2048")
     if a.gpu is not None:                             # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
         if "," in a.gpu:
             a.gpus, a.gpu = a.gpus or a.gpu, None
@@ -2761,6 +3007,8 @@ def main() -> int:
 
     # ---- 0. already installed: just start it
     have = installed_configs()
+    if a.update:                                       # #475: UPDATE.bat / update.sh - never starts the model
+        return update_install(have, a)
     explicit = a.setup or a.model or a.family or a.check or a.no_start
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
@@ -2775,6 +3023,8 @@ def main() -> int:
                 a.experimental_speed_projection = a.experimental_speed_projection or ch["esp"]
                 a.host, a.api_key = a.host or ch["host"], a.api_key or ch["api_key"]
                 a.port = a.port or ch["port"]
+                if a.vram_reserve_mib is None:          # #493: an explicit reserve set up before
+                    a.vram_reserve_mib = ch.get("vram_reserve_mib")
                 if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
                     a.gpus = a.gpus or ",".join(str(g) for g in ch["gpu"])
                     a.layer_split = a.layer_split or ch.get("layer_split")
@@ -2801,13 +3051,15 @@ def main() -> int:
             warn("this PC is NOT tuned: the tuning failed (the reason is above); the model "
                  + ("keeps" if a.no_start else "starts with") + " the default settings")
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
-                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
+                           "vram_reserve_mib": a.vram_reserve_mib})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
-                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
+                           "vram_reserve_mib": a.vram_reserve_mib})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
@@ -2815,7 +3067,8 @@ def main() -> int:
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
-                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab})
+                     keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
+                           "vram_reserve_mib": a.vram_reserve_mib})
 
     # ---- 1. the PC
     step(1, "checking your PC")
@@ -2967,10 +3220,11 @@ def main() -> int:
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
-    budget = None
+    budget, q4_split = None, False
     if MODELS[model].get("budget"):
         # Unsloth's UD-Q4_K_XL: a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM mode (no
-        # experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode has no layer split)
+        # experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode has no layer split) unless
+        # the RAM holds the GGUFs and 24 GB more: then several, without the budget, if asked for (#498)
         warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
              "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
         if hip:
@@ -2990,12 +3244,13 @@ def main() -> int:
                          "install it anyway", "  Install it anyway?")
             warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
         budget = budget_choice(model, ram, a.resident_budget_gib)
-        ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
+        if multi and not unsloth_together(a, model, ram, gpu, chosen):
+            multi, sel, chosen = [], [gpu["index"]], [gpu]
+        q4_split = bool(multi)                         # #498: on several GPUs without the RAM budget
+        if not q4_split:
+            ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
         if a.low_ram not in ("auto", "off"):
             warn(f"--low-ram {a.low_ram} does not apply to {model}: it always reads part of its experts from the files")
-        if multi:
-            warn(f"{model} runs on one GPU: using " + gpu_name(gpu) + " only")
-            multi, sel, chosen = [], [gpu["index"]], [gpu]
     elif a.resident_budget_gib is not None:
         warn(f"--resident-budget-gib is for UD-Q4_K_XL: {model} keeps all of its experts in RAM or in the low-RAM mode")
     low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
@@ -3202,6 +3457,13 @@ def main() -> int:
     # ---- 5. the model files
     step(5, f"downloading {fam['title']} {model}")
     if not a.gguf_dir:
+        missing = [s.name for s in shards if not (s.exists() and done(s))]
+        if missing:                                    # #495: files downloaded by hand go here, or --gguf-dir
+            say(f"  The model files go in {models_dir}")
+            say(f"  Files you already have: put them here with their original names ({', '.join(missing)}), or use "
+                "--gguf-dir <their folder>.")
+            if hf_endpoint() != HF_DEFAULT:
+                say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT)")
         for s in shards:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
@@ -3274,6 +3536,8 @@ def main() -> int:
     draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
     refresh_draft_vocab(rt, draft_vocab or "cjk")
     ok(f"MTP draft layer: {rt}")
+    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
+        say("  " + line)
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -3325,7 +3589,9 @@ def main() -> int:
             warn(f"KV streaming needs ~{kv_ram_gb:.1f} GB of RAM beside the ~{MODELS[model]['ram_gb']} GB {model} "
                  f"uses; this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
                  "under load")
-        if budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget
+        if q4_split:                                   # #498: no budget to take it out of
+            pass
+        elif budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget
             budget = resident_budget_gib(model, ram, kv_ram_gb)
             ok(f"RAM budget: {budget} GiB (less the KV cache's RAM)")
         elif budget is not None and budget > resident_budget_gib(model, ram, kv_ram_gb):
@@ -3333,10 +3599,29 @@ def main() -> int:
                  f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb)} GiB); kept as you chose")
     elif a.kv_streaming == "on":
         warn("--kv-streaming on: a context under 64K is not streamed (the attention's window holds all of it): off")
-    if budget is not None:     # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N GiB kept in RAM
-        args += ["--resident-budget-gib", f"{budget:g}"]
+    if budget is not None and not q4_split:   # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N
+        args += ["--resident-budget-gib", f"{budget:g}"]   # GiB kept in RAM (#498: a layer split has no budget)
     if vision != "none":
         args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
+    if a.vram_reserve_mib is not None:                 # #493: VRAM left free for other programs (only when given)
+        if "--vram-reserve-mib" in args:
+            i = args.index("--vram-reserve-mib") + 1
+            if vision == "gpu" and a.vram_reserve_mib < int(args[i]):
+                warn(f"--vram-reserve-mib {a.vram_reserve_mib}: the image encoder on the GPU needs ~{args[i]} MiB of "
+                     "it; kept as you chose (it may run out of VRAM when it reads a picture)")
+            args[i] = str(a.vram_reserve_mib)
+        else:
+            args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
+        ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
+           "that much less)")
+    if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
+        # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
+        # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
+        for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
+            say("  " + line)
+    elif hip and a.vram_reserve_mib is None and linux_desktop():
+        for line in desktop_reserve_note():              # #560 #516: a recommendation: nothing changes
+            say("  " + line)
     if esp is not None:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",

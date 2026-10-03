@@ -25,8 +25,16 @@ What setup does differently for this model:
 - It needs 48 GB of RAM or more (with less it asks, default no; `--model UD-Q4_K_XL --yes` installs it anyway) and
   engine 0.1.32 or newer (checked before anything is downloaded), and an NVIDIA
   GPU: it has not been run on AMD cards (its prompt kernels for the Q4_K / Q5_K experts are NVIDIA-only), so with
-  `--backend hip` setup says so and asks before the download (#429; `--model UD-Q4_K_XL --yes` tries it). One GPU only: with `--gpus` it uses the first one and says so. No images (the vision encoder is not wired to
-  this file yet) and no experimental speed projection (not tested with it).
+  `--backend hip` setup says so and asks before the download (#429; `--model UD-Q4_K_XL --yes` tries it). One GPU
+  by default: the RAM budget below has no layer split (the engine refuses `--resident-budget-gib` with one). No
+  images (the vision encoder is not wired to this file yet) and no experimental speed projection (not tested with it).
+- Several GPUs (#498): when the RAM holds the GGUF files and 24 GB more (~135 GB of RAM) and two or more cards can
+  share it, setup asks (one GPU stays the default; `--gpus 0,1` takes the split). The split runs **without** the RAM budget: all 77 GB of experts are loaded into RAM from the GGUFs at
+  start, the files pass through the OS file cache while they load, and the config gets `"gpu": [0, 1]` and
+  `"layer_split": "auto"`. Measured on 2x RTX 3090 with 165 GiB (#498): decode 31 tok/s on one card with the budget,
+  64-78 tok/s split (55 tok/s at a 128K prompt), with `MemAvailable` never under 68 GiB. With less RAM, `--gpus`
+  keeps one GPU and says so, and `START-HERE.bat --gpus 0,1` on an installed UD-Q4_K_XL stops with the reason
+  (it used to keep the budget, and the engine exited with code 2).
 - It downloads the four shards below from the pinned revision `38bb39e` (resumable, like the other models), then
   checks each one's size and SHA-256 against the table below; the check takes a few minutes once and is remembered
   in the file's finish mark. A file with the wrong hash is deleted, so the next run downloads it again.

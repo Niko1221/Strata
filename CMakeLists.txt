@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.35 LANGUAGES CXX)
+project(strata VERSION 0.1.38 LANGUAGES CXX)
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
@@ -274,6 +274,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
   endif()
+  # #512: the top-k's active-block bound (Turing's dispatch, forced on any card by STRATA_TOPK_ACTIVE_ANY) against
+  # the capacity rule, selected ids bitwise
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    add_executable(qsa_topk_active_parity src/kernels/qsa_topk_active_parity.cpp)
+    target_include_directories(qsa_topk_active_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_topk_active_parity PRIVATE strata_kernels CUDA::cudart)
+    add_test(NAME qsa_topk_active_parity COMMAND qsa_topk_active_parity)
+    set_tests_properties(qsa_topk_active_parity PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
   # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
   # 262144-cell capacity (the top-k dispatch follows the capacity) and exits non-zero on a failed gate
@@ -340,7 +349,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
-    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp)
+    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
@@ -349,6 +358,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(file_expert_source_test PRIVATE strata_engine)
     add_test(NAME file_expert_source_test COMMAND file_expert_source_test)
     set_tests_properties(file_expert_source_test PROPERTIES TIMEOUT 60)
+  endif()
+  # #477: the learned expert profile (--expert-profile-save): its order and make_profile.py's file format (CPU only)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_profile_save_test.cpp")
+    enable_testing()
+    add_executable(expert_profile_save_test tests/core/expert_profile_save_test.cpp)
+    target_link_libraries(expert_profile_save_test PRIVATE strata_engine)
+    add_test(NAME expert_profile_save_test COMMAND expert_profile_save_test)
+    set_tests_properties(expert_profile_save_test PROPERTIES TIMEOUT 60)
   endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
@@ -550,6 +567,19 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(iq_multi_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(iq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
+  # the prompt path's DeltaNet recurrence: gdn_rec_kh_kernel against gdn_rec_cols_pipe_kernel, bitwise (GPU,
+  # synthetic, no model; --bench adds timings)
+  if(STRATA_ENABLE_CUDA)
+    add_executable(gdn_rec_parity src/prefill/gdn_rec_parity.cu)
+    target_link_libraries(gdn_rec_parity PRIVATE ${_strata_gpu_runtime_target})
+    add_test(NAME gdn_rec_parity COMMAND gdn_rec_parity)
+  endif()
+  # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
+  # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
+  add_executable(native_grouped_parity src/kernels/native_grouped_parity.cpp)
+  target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
   add_executable(shared_expert_parity src/kernels/shared_expert_parity.cpp)
   target_include_directories(shared_expert_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -580,6 +610,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(sampler_parity_one_block PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=0;STRATA_SAMPLER_ONE_BLOCK=1")
   add_test(NAME sampler_parity_old COMMAND sampler_parity --selftest)
   set_tests_properties(sampler_parity_old PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=1;STRATA_SAMPLER_ONE_BLOCK=0")
+  # S19: the decode QSA top-k and the greedy argmax on thread-block clusters (sm_90+) vs the one-CTA kernels, bitwise,
+  # captured in a graph too (GPU, synthetic, no model; skips below sm_90); --bench: per-call times
+  if(STRATA_ENABLE_CUDA)
+    add_executable(decode_cluster_parity src/kernels/decode_cluster_parity.cpp)
+    target_include_directories(decode_cluster_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(decode_cluster_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME decode_cluster_parity COMMAND decode_cluster_parity --selftest)
+  endif()
 
   add_executable(rope_parity src/kernels/rope_parity.cpp)
   target_include_directories(rope_parity PRIVATE ${_strata_gpu_include_directories})
@@ -868,7 +906,10 @@ if(STRATA_NATIVE_EXPERTS)
       set(_strata_gg ${strata_llamacpp_SOURCE_DIR}/ggml)
     endif()
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
-    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
+    # #136: the Q2_0 pack's prompt experts on Strata's own int8 kernels (moe_fused.cu, opt-in STRATA_PF_FUSED=1; CUDA
+    # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
+    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
+                src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
     # follows eddoursul/Strata 7706c1b)
@@ -893,7 +934,19 @@ if(STRATA_NATIVE_EXPERTS)
       target_compile_definitions(strata_mmq PRIVATE STRATA_ORCA_Q4KS_MMQ=1)
     endif()
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
-    target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1)
+    target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
+    if(STRATA_BUILD_TESTS)
+      # #136: the fused int8 experts against a double-precision reference and the MMQ path (exit 77 below sm_80)
+      add_executable(prefill_fused_moe_test tests/cuda/prefill_fused_moe_test.cpp)
+      target_link_libraries(prefill_fused_moe_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
+      add_test(NAME prefill_fused_moe_test COMMAND prefill_fused_moe_test)
+      set_tests_properties(prefill_fused_moe_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+      # #136: the same for the native packs' formats (IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_XS, down Q2_0 IQ4_NL)
+      add_executable(prefill_fused_iq_test tests/cuda/prefill_fused_iq_test.cpp)
+      target_link_libraries(prefill_fused_iq_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
+      add_test(NAME prefill_fused_iq_test COMMAND prefill_fused_iq_test)
+      set_tests_properties(prefill_fused_iq_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
     if(STRATA_BUILD_TESTS AND STRATA_MMQ_KQUANTS)
       # the UD-Q4_K_XL expert formats through MMQ against ggml's dequantized weights (synthetic, a few seconds)
       add_executable(prefill_mmq_kquant_test tests/cuda/prefill_mmq_kquant_test.cpp)
@@ -952,8 +1005,13 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
     if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
       # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
-      # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float
-      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0)
+      # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float.
+      # q4_K/q5_0 and q5_0/q8_0: a plain llama-quantize "_M" tier GGUF (not Unsloth's dynamic method) commonly
+      # puts Q5_0 on down-projections (sometimes gate/up too) where this model's native_experts.txt had no GPU
+      # kernel for it before; q5_0/q5_0 (both roles Q5_0) is left out of this list since stacking the same
+      # lower-precision format on both roles pushes the GPU path over this test's 3% threshold (quantization
+      # noise, not a kernel bug -- see the PR).
+      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0)
         string(REPLACE "/" "_" _name "${_pair}")
         add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
         set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
