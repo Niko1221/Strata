@@ -1,301 +1,124 @@
-<h1 align="center">Strata-V100</h1>
+# Strata-V100
 
-> **Tesla V100 fork.** This fork keeps Strata compatible with NVIDIA Volta (`sm_70`) and is validated on a
-> Tesla V100-PCIE-16GB, Ryzen 5 3600, 48 GB DDR4-3200, and CUDA 12.8. The installed Qwen3.8-Flash-Next Q2_0
-> configuration provides the model's full **262,144-token context**, int8 KV cache, and MTP speculative decoding.
-> The bundled web chat and live performance monitor listen on port `8088`; open
-> `http://<host-or-lan-address>:8088/`. API access is protected by the key stored locally in `.strata-service.env`.
-> The single-card benchmark below uses physical GPU1 on its PCIe Gen3 x16 link.
+**A community-maintained V100-focused fork of [Strata](https://github.com/Niko1221/Strata).** This fork keeps NVIDIA Volta (`sm_70`) support working, develops and measures performance changes on Tesla V100 hardware, and periodically merges upstream improvements for features and fixes beyond V100.
 
-> | Target | Median prompt tokens | Prefill (tok/s) | Decode (tok/s) | Max GPU temp |
-> | ---: | ---: | ---: | ---: | ---: |
-> | 1K | 1,036 | 398.6 | 52.0 | 56 °C |
-> | 4K | 4,111 | 1,214.0 | 50.8 | 61 °C |
-> | 8K | 8,185 | 1,442.4 | 48.1 | 63 °C |
-> | 16K | 16,367 | 1,490.7 | 49.8 | 67 °C |
-> | 32K | 32,765 | 1,495.7 | 47.3 | 72 °C |
-> | 64K | 65,533 | 1,484.3 | 43.0 | 81 °C |
-> | 128K | 131,063 | 1,033.0 † | 40.9 | 84 °C |
-> | 256K | 256,080 | 617.8 † | 36.8 | 84 °C |
->
-> Medians of three fresh requests per target, measured 2026-10-02 on physical GPU1 only:
-> a single Tesla V100-PCIE-16GB on a PCIe Gen3 x16 link. Both the engine and vision encoder
-> used GPU1. GPU0 was not used for inference. Every request was uncached (`reused=0`, seed 20261002) and wrote exactly
-> 256 output tokens. The installed Qwen3.8-Flash-Next Q2_0 configuration runs the full
-> 262,144-token context with an int8 KV cache, `--prefill auto`, `--spec 8`, draft floor 0.70,
-> the paired expert variant, and a 700 MiB vision reserve. Timings come from the engine's
-> `/metrics`, not from client wall clocks.
->
-> Cooled protocol: before every measured request the card idled at least 120 s, until it was at
-> or below 55 °C without software thermal slowdown for 15 s. The gate checked every 3 s;
-> separate telemetry ran at 1 Hz. Actual start
-> temperatures were 51-55 °C; actual waits were 121.4-588.7 s (about 2-9.8 min). The passively
-> cooled card showed no software thermal slowdown through 64K (max 81 °C). The 128K and 256K
-> prompts heated it to 84 °C and it throttled during the prompt despite the cooled start; long
-> requests may throttle after a cooled start. All requests were kept; none were removed.
->
-> † Software thermal slowdown active during the prompt (84 °C).
->
-> Engine: the fork's version 0.1.31 (CMake project version), installed build commit `78417ea`
-> (SHA-256 `512b1f25d60479a2ddb66fcf1ddca5407963e45378a3c8a463413ad159edae17`). PR #12 merged
-> into `main` at `7fbe49a`. Raw rows and methodology:
-> [`summary.json`](bench/results/2026-10-02-v100-single-cooled/summary.json),
-> [`protocol.json`](bench/results/2026-10-02-v100-single-cooled/protocol.json),
-> [`matrix.json`](bench/results/2026-10-02-v100-single-cooled/matrix.json),
-> [`completed-requests.json`](bench/results/2026-10-02-v100-single-cooled/completed-requests.json),
-> and [`gpu.csv`](bench/results/2026-10-02-v100-single-cooled/gpu.csv) (1 Hz telemetry).
-> [Full methodology and timings](docs/DETAILS.md#tesla-v100-fork-benchmark).
->
-> This table replaces the September table, which used 64 output tokens, a pre-merge branch, and
-> a different protocol. The two runs are not a controlled A/B, so no gains are claimed against
-> that table. Use the recorded protocol to repeat the sweep. The benchmark harness does not
-> pause automatically; add the documented cooldown gate between measured requests.
+Strata is an open-source local runtime for [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next). It combines GPU, system memory, and storage to run this large model on a personal computer. This fork retains the broader Strata project: other supported NVIDIA and AMD hardware, the web interface, OpenAI-compatible API, tools, image input, and upstream features remain important too.
 
-<p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
-NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
+> **Huge credit to Niko ([@Niko1221](https://github.com/Niko1221)) and the original Strata contributors.** This project builds on their work: Strata's model runtime, architecture, features, and the work that made running this model locally possible all come from the upstream project. The V100 fork would not exist without that foundation. Thank you for making it possible, and for continuing to develop Strata.
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
-<sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
+[Upstream Strata](https://github.com/Niko1221/Strata) · [Issues](https://github.com/jmnargi/Strata-V100/issues) · [Pull requests](https://github.com/jmnargi/Strata-V100/pulls) · [Discussions](https://github.com/jmnargi/Strata-V100/discussions)
 
-Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** - a large, smart AI model that
-normally needs a server - on a normal PC. It chats, writes code, reads pictures and works with your apps and coding
-agents, and nothing leaves your PC.
+## What this fork focuses on
 
-## How fast is it?
+- **Tesla V100 / Volta support (`sm_70`)**: preserve normal V100 builds and runtime support. V100 builds use a CUDA 12.x toolkit; CUDA 13 does not compile `sm_70` code.
+- **Test machine:** two Tesla V100-PCIE-16GB cards; one uses PCIe Gen3 x4 and the other Gen3 x16. The benchmark below uses only the x16 card. A system with both cards on full Gen3 x16 links could perform better, especially for multi-GPU workloads, but that configuration has not been measured here.
+- **Upstream integration**: this is not a separate replacement for Strata. Upstream changes are merged periodically, with V100 compatibility checked and corrected where needed. New upstream features may have hardware requirements above `sm_70`; they do not automatically accelerate V100.
+- **The wider Strata community**: improvements, bug reports, testing, documentation, and contributions for other supported platforms are welcome.
 
-Measured on two ordinary gaming PCs. "Writes answers" is how fast the reply appears in a short chat; "reads your
-prompt" is how fast it takes in what you send (a 32K-token document, code or chat history). A token is about ¾ of a
-word, so 60 tokens per second is faster than you can read.
+Support for V100 does not imply that every upstream feature or every other GPU configuration has been tested on V100. Check the relevant code, release notes, and measurement reports before relying on a hardware-specific feature.
 
-<table>
-<tr><th>NVIDIA: RTX 5070 (12 GB), Ryzen 5 7600, 64 GB RAM</th><th>AMD: RX 9070 XT (16 GB), Ryzen 9 3900X, 47 GB RAM</th></tr>
-<tr><td>
+## V100 benchmark
 
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
-| **Q2_0** | 94 tokens/s | 2,650 tokens/s |
-| **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
-| **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
-| **Coder** | 55 tokens/s | 2,180 tokens/s |
+The table below records a single-card run on one Tesla V100-PCIE-16GB using PCIe Gen3 x16. The test machine also has a second V100 on PCIe Gen3 x4; it was not used for this run. Results from a two-card setup or from a machine with two full-width links may differ and could be better. It is a reproducible measurement, not a promise of speed on other systems.
 
-</td><td>
+| Target prompt | Median prompt tokens | Prefill (tokens/s) | Decode (tokens/s) | Maximum GPU temperature |
+| ---: | ---: | ---: | ---: | ---: |
+| 1K | 1,036 | 398.6 | 52.0 | 56 °C |
+| 4K | 4,111 | 1,214.0 | 50.8 | 61 °C |
+| 8K | 8,185 | 1,442.4 | 48.1 | 63 °C |
+| 16K | 16,367 | 1,490.7 | 49.8 | 67 °C |
+| 32K | 32,765 | 1,495.7 | 47.3 | 72 °C |
+| 64K | 65,533 | 1,484.3 | 43.0 | 81 °C |
+| 128K | 131,063 | 1,033.0 † | 40.9 | 84 °C |
+| 256K | 256,080 | 617.8 † | 36.8 | 84 °C |
 
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
-| **Q2_0** | 60 tokens/s | 1,160 tokens/s |
-| **IQ2_XS** | 52 tokens/s | 1,110 tokens/s |
-| **Coder** | 44 tokens/s | 1,420 tokens/s |
+**Test setup:** Qwen3.8-Flash-Next Q2_0; one V100 only (GPU1, PCIe Gen3 x16); Ryzen 5 3600; 48 GB DDR4-3200; CUDA 12.8; 262,144-token context; int8 KV cache; automatic prefill; MTP with `--spec 8` and draft floor 0.70; paired expert variant; 700 MiB vision reserve. Each value is the median of three fresh, uncached requests (`reused=0`) with exactly 256 output tokens. Timings are from the engine's `/metrics` endpoint.
 
-</td></tr>
-</table>
+Before each request, the passively cooled card idled for at least 120 seconds and reached 55 °C or below without software thermal slowdown for 15 seconds. The starting temperatures were 51–55 °C. All requests are included. The 128K and 256K prompts reached 84 °C and experienced software thermal slowdown during prompt processing, despite the cooled start; long runs can throttle. † indicates slowdown during the prompt.
 
-Measured Strata on your own PC? See [Community benchmark results](docs/COMMUNITY_BENCHMARKS.md)
-for a report template and how to share your results in a pull request.
+Measured 2026-10-02. Engine: fork version 0.1.31, build commit `78417ea` (SHA-256 `512b1f25d60479a2ddb66fcf1ddca5407963e45378a3c8a463413ad159edae17`). The benchmark was recorded before the later upstream v0.1.36 integration and V100 attention PRs; it is not a measurement of the current `main` build. The historical table is kept with its original provenance. Do not interpret it as a controlled comparison against earlier tables or current builds.
 
-**Two or three NVIDIA cards?** Just run `START-HERE.bat`: it lists your cards, says which ones Strata can use, and
-asks whether to share the model across them (recommended when two can). An install made on one card asks once at
-its next start. Or choose yourself: `START-HERE.bat --gpus 0,2` (both, remembered), `--gpus all`, or `--gpu 0` (one
-card, this start only). Each card keeps the experts of its own layers, and prompts flow through the cards in a
-pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 5080 alone, decoding on par.
-Every card must be an RTX 20 series or newer with 8 GB or more. See [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+Raw data: [`summary.json`](bench/results/2026-10-02-v100-single-cooled/summary.json), [`protocol.json`](bench/results/2026-10-02-v100-single-cooled/protocol.json), [`matrix.json`](bench/results/2026-10-02-v100-single-cooled/matrix.json), [`completed-requests.json`](bench/results/2026-10-02-v100-single-cooled/completed-requests.json), and [`GPU telemetry`](bench/results/2026-10-02-v100-single-cooled/gpu.csv). See the [full method and history](docs/DETAILS.md#tesla-v100-fork-benchmark), [benchmark instructions](benchmarks/README.md), and [V100 performance reports](benchmarks/).
 
-A card with more VRAM is faster: an RTX 3090 (24 GB) should write roughly 100-140 tokens per second. Long chats,
-other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [community results](docs/COMMUNITY_BENCHMARKS.md).
+Recent V100 pull requests include measured kernel-level changes and explicitly report when end-to-end gains are not established. For example, the prompt-attention port from upstream PR #600 reported 27.9% less int8 attention kernel time at its measured shape, while model prefill changes ranged from +1.3% to +3.0% in the reported runs; it did not establish a reliable decode gain. Read the [full report](benchmarks/v100-q2_0-pr600-2026-10-03.md) before comparing results.
 
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
-<sub>Strata is free. If it runs well on your PC, a coffee keeps the work on it going.</sub></p>
+## V100 performance work
 
-## What you need
+The V100 work spans the prompt path, decode path, memory use, storage reads, and multi-GPU execution. The changes below are in the fork's merged history; each link includes its own test method, hardware details, and limitations. Kernel timing improvements do not necessarily produce the same percentage gain in full-model throughput.
 
-| | |
-| --- | --- |
-| **Graphics card** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series - with **12 GB of VRAM or more** |
-| **RAM** | 32 GB or more - how much decides [which model](#which-model-should-i-pick) fits; 64 GB runs every size |
-| **Disk** | about 80 GB free, on an SSD if you can (the first start is much faster) |
-| **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD |
+### Prompt processing
 
-**You need:** an NVIDIA GPU with compute capability 7.0 or newer and 12 GB of VRAM or more, enough RAM for the size
-you pick (above), ~80 GB of free disk space (an SSD makes the first start much faster), and Windows 10/11 or Linux.
-RTX 30/40/50 cards use the ready-made engine; Volta cards such as the Tesla V100 are compiled locally with CUDA
-12.x. The only thing you install yourself is a current **NVIDIA driver**
-([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). Everything else is set up for you.
+- **BF16-to-FP16 tensor-core GEMMs on Volta:** Volta does not have native BF16 GEMM support. The fork converts BF16 weights exactly to FP16 and uses V100 tensor cores for prompt GEMMs instead of the scalar fallback. The associated FP16 prompt activation images use the right bit representation.
+- **Faster PLE table reads:** switch POSIX PLE reads to queued `io_uring` O_DIRECT operations, with a synchronous fallback. One measured fresh 8K PLE gather dropped from about 6.9 seconds to 7 milliseconds.
+- **Q2_0 MMQ prefill:** enable the existing llama.cpp Q2_0 matrix-matrix quantized path for Strata's internal expert type. A measured 14,486-token prompt improved 6.5% in prefill throughput (926.1 to 986.2–986.9 tokens/s).
+- **Score only live QSA blocks:** avoid scoring blocks beyond the current prompt's live range. On a measured 15,423-token prompt, QSA selection time fell 91.1%; end-to-end prefill throughput rose from 961.0 to 1,111.3–1,112.9 tokens/s in the reported tests.
+- **Tensor-core prompt attention for Volta:** use `mma.m8n8k4` on the V100 instead of the FP32 fallback. An earlier PR measured roughly 1.6–1.9× speed in the attention kernel and higher prompt throughput in its tests. The later upstream PR #600 port reduced int8 attention kernel time 27.9% at one measured shape; reported end-to-end prefill deltas were smaller (+1.3% to +3.0% in its 4K–32K tests).
 
-An **AMD Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT or Radeon AI PRO R9700 on Linux** works too (experimental; the
-RX 7800 XT / 7700 XT and RX 9060 XT were validated by their owners):
-`./setup.sh --backend hip`, chosen by itself on a PC with no NVIDIA card Strata can use. It installs ROCm without sudo
-and compiles the engine (no images yet; several cards with `--gpus`). Details: [AMD HIP](docs/AMD_HIP.md).
+### Decode and multi-GPU execution
 
-Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
-The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+- **Batched verification window:** run multiple speculative decode positions together, reducing per-token launch overhead. Paired historical tests reported faster output generation, but results vary by prompt and runtime conditions.
+- **Tiled QSA block scoring:** reuse selected key data across query tiles instead of repeatedly reading it. The measured 256-query / 65K-block kernel fell from 3.5 ms to 1.3 ms; its per-score arithmetic remained bit-identical.
+- **Fused Volta GR and batched KV append:** combine work across verification positions and append KV data in fewer launches. On the tested dual-V100 setup, decode increased 5.6–17.3% across 4K–32K prompts, while prefill was approximately unchanged.
+- **Asymmetric dual-V100 tuning:** improve host-row handling, device-plan dispatch, and memory ownership for a two-card configuration. One earlier installed configuration showed prefill gains of 13.3–18.7% at 4K–32K, but decode results were mixed and both GPUs thermally slowed during that run. These values do not isolate each code change.
+- **Reduce weight and dispatch overhead:** load only the layers owned by each card when using an explicit split, avoid unnecessary CPU activation quantization and empty dispatch barriers, and optionally run paired-row expert kernels. GPU0's measured native dense allocation fell from 1,376.20 MiB to 541.27 MiB. The paired-row mode is opt-in; the reported whole-model results did not establish a decode improvement.
 
-## Install
+### Attention kernels and memory traffic
 
-### Let your AI set it up
+- **Decode attention (upstream PR #540 port):** reduce score shuffles and shared-memory traffic while preserving accumulation order. The measured kernel time fell from 52.90 to 31.13 microseconds on GPU0 for M=1, and from 180.42 to 111.85 microseconds for M=8. The reported whole-model decode changes were small; prefill was effectively unchanged.
+- **Prompt attention (upstream PR #600 port):** use the Volta tensor-core implementation with four independent MMA computations. The PR reports correctness checks and kernel-level / model-level measurements; the 27.9% kernel reduction should not be read as a 27.9% increase in full-model speed.
+- **KV gather and GDN recurrence (upstream PR #627 ports):** use wider aligned int8 KV loads with a safe original-width fallback, and use multiple accumulators for the V100 prompt recurrence. Measured kernel times improved about 10% for a 32K KV gather and about 7% for a 4,096-token recurrence. Paired model prefill differed by less than 0.2%; no reliable end-to-end decode gain was established.
 
-Use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
+### Build support and evidence
 
-```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
-```
+The fork has also repaired CUDA configuration and linking for `sm_70`, maintained V100 device admission through upstream merges, and adapted upstream changes when their architecture requirements exclude Volta. These compatibility fixes keep the optimized paths buildable; they are not themselves performance claims.
 
-It checks your graphics card, RAM and disk, picks the model that fits, installs it, starts it and tells you how to
-connect your apps. AI tools can also install, start and stop Strata themselves through its
-[MCP server](docs/MCP_SERVER.md).
+For the full evidence and implementation scope, see [PR #1](https://github.com/jmnargi/Strata-V100/pull/1), [#2](https://github.com/jmnargi/Strata-V100/pull/2), [#5](https://github.com/jmnargi/Strata-V100/pull/5), [#6](https://github.com/jmnargi/Strata-V100/pull/6), [#11](https://github.com/jmnargi/Strata-V100/pull/11), [#12](https://github.com/jmnargi/Strata-V100/pull/12), [#15](https://github.com/jmnargi/Strata-V100/pull/15), [#16](https://github.com/jmnargi/Strata-V100/pull/16), and [#17](https://github.com/jmnargi/Strata-V100/pull/17). The results use different dates, builds, prompts, GPU placements, and protocols. They are historical measurements, not a single controlled before/after comparison or a guarantee of gains on every V100 system.
 
-### Or do it yourself
+## Get started
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
-**Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
+This fork tracks the upstream installation experience. For complete and current platform requirements, model choices, and options, see the [installation guide](docs/INSTALL.md), [model guide](docs/MODELS.md), and [upstream setup guide](docs/AI_SETUP.md).
 
-The same steps for NVIDIA and AMD: the installer finds your card and sets up the right engine for it. It asks which
-model, which size, how much context (how much text it keeps in mind) and whether it should read pictures - press
-Enter each time for the recommended answer. Then it downloads the model (~70 GB; you can stop and it continues where
-it left off) and starts it. Your browser opens the Strata app at `http://127.0.0.1:8080`.
+- **Windows:** download or clone this repository and run `START-HERE.bat`.
+- **Linux:** clone this repository and run `./setup.sh`.
+- Follow the prompts to select a model and context size. Setup downloads model data and starts the local service.
+- Open the address printed by setup (normally `http://127.0.0.1:8080`).
 
-> **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
-> loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
-> window. The window tells you what it is doing.
+For a Tesla V100, build with a CUDA 12.x toolkit and retain `sm_70` support. See the install guide for build details and known platform limits. If using Docker, follow the repository's [Docker instructions](docs/INSTALL.md) and build for the target GPU architecture; the default prebuilt engine architecture list does not include `sm_70`.
 
-**Next time**, run `START-HERE.bat` (or `./setup.sh`) again: it starts right away, nothing is downloaded twice. Close
-its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
-several cards, where the files go and every option:
-[docs/INSTALL.md](docs/INSTALL.md).
+## Use Strata
 
-## Which model should I pick?
+- **Web app:** use the local URL printed by setup for chat and the live monitor.
+- **OpenAI-compatible API:** set your app's base URL to `http://127.0.0.1:8080/v1`.
+- **Anthropic-compatible API:** use `http://127.0.0.1:8080/v1/messages`.
+- **Images, MCP, multi-GPU, and configuration:** see [details](docs/DETAILS.md), [MCP server](docs/MCP_SERVER.md), and [multi-GPU guide](docs/MULTI_GPU.md).
 
-The installer recommends one for your RAM. The same model comes in sizes that are compressed more or less: smaller
-is faster, larger is a bit smarter.
+The server normally listens on localhost. If you expose it to other machines, configure an API key and use a trusted network. Do not publish secrets or private configuration in issues, benchmark results, or pull requests.
 
-| Your RAM | Take | Why |
-| --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too) |
-| **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits; IQ3_S is the best, and the slowest |
-| **96 GB or more** | **IQ3_S**, or Unsloth's 4-bit (experimental) | room for the largest sizes with everything else open |
+## Contributing
 
-- **[Coder](docs/MODELS.md#coder)** - a coding version with half of the experts removed: 91% of the full model's
-  SWE-bench Verified score (by its authors), fits 32 GB of RAM. Weaker outside code, including Chinese and other
-  CJK text (#438): for those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
-- **[Swift 1.5](docs/MODELS.md#swift-15)** - a fine-tune that thinks much shorter before it answers, so you get the
-  answer sooner, at about the same quality.
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental) - the closest to the full
-  model, but most of it is read from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC.
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** - a manual setup, not in the
-  installer's menu.
+Contributions are welcome. You do not need a V100 to help: documentation, tests, setup, server behavior, API compatibility, and improvements for other supported devices are useful. V100-specific code and performance results benefit from validation on real Volta hardware.
 
-Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can add another model later with
-`SETUP.bat` (Linux: `./setup.sh --setup`).
+1. Check [open issues](https://github.com/jmnargi/Strata-V100/issues) and [pull requests](https://github.com/jmnargi/Strata-V100/pulls) to avoid duplicate work.
+2. For broad upstream features, check whether the change belongs in [Niko's upstream repository](https://github.com/Niko1221/Strata). This fork periodically integrates upstream changes; focused V100 fixes and measurements can be proposed here.
+3. Make a focused change, describe the hardware and exact steps used to test it, and include relevant tests.
+4. For performance claims, report the baseline and candidate, full runtime settings, workload, number of repetitions, and limits. Include raw data or a reproducible command when possible. Separate kernel timing from whole-model throughput and do not claim a gain that the measurements do not show.
+5. Open a pull request against this repository's `main` branch. Explain whether the change is V100-specific, an upstream integration, or a general Strata improvement. Keep credentials, personal configuration, and unrelated local files out of the change.
 
-## Using it
+See [`benchmarks/README.md`](benchmarks/README.md) and [`docs/DETAILS.md`](docs/DETAILS.md) for the current measurement approach. Contributions remain subject to the project license and the licenses of included components and model files.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
+## Project history
 
-- **In the browser:** `http://127.0.0.1:8080` - **Chat**, a live **Monitor** of the model and your GPU/CPU/RAM, and
-  **About** with the settings and addresses.
-- **Your apps and coding agents:** add an "OpenAI-compatible" provider with base URL **`http://127.0.0.1:8080/v1`**,
-  any API key and any model name. Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages` (Claude Code:
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
-- **Thinking:** choose **off, low, medium or high** in the chat menu or your app's "reasoning effort". Off is
-  fastest; high is best for hard questions.
-- **Pictures:** say yes to "Images?" in setup, then click **Picture** in the chat, or attach them in your app
-  (AMD cards: on Linux through the processor, not on Windows yet).
-- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>` - always with a key.
-- **Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute
-  per 30,000 tokens); follow-ups start in seconds.
+This fork develops V100 support and V100-specific work while retaining Strata's upstream development. Recent integration and performance pull requests illustrate that process:
 
-More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
+- [#14 — Merge upstream v0.1.36 while preserving V100 support](https://github.com/jmnargi/Strata-V100/pull/14)
+- [#15 — Port measured V100 KV gather and GDN recurrence changes from upstream PR #627](https://github.com/jmnargi/Strata-V100/pull/15)
+- [#16 — Reduce V100 decode-attention shuffles and shared-memory traffic](https://github.com/jmnargi/Strata-V100/pull/16)
+- [#17 — Port upstream PR #600's Volta prompt-attention kernel](https://github.com/jmnargi/Strata-V100/pull/17)
 
-### Where things are stored
-
-- **Your chats: only in your browser.** The Chat tab keeps the conversation, its settings and the API key you typed
-  in the browser's local storage (`strata.*` keys) - not on the server and not in the Strata folder. Pictures are not
-  kept, only their names. Another browser or a private window starts empty; clearing the site's data deletes them.
-- **How the model starts:** `strata-<model>.json` in the Strata folder (context, GPUs, host, API key, ...), written
-  by setup; next to it `run-<model>.bat` / `.sh`, the log `strata-<model>.log` and, when you use "Use for other
-  apps too", `strata-<model>.shared-settings.json`.
-- **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
-  wherever `--data-dir` put them.
-- **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
-  Linux ([details](docs/DETAILS.md)).
-
-## Something went wrong?
-
-- **My PC froze the first time Strata started.** Normal while it loads the model: wait, don't close the window.
-  Still frozen after 10 minutes? Restart the PC, close other programs and try again, or pick a smaller size.
-- **It stopped while downloading or installing.** Run `START-HERE.bat` (or `./setup.sh`) again: it continues where
-  it stopped.
-- **It's very slow and the disk light keeps blinking, or "the engine stopped unexpectedly".** Not enough free RAM:
-  close other programs (browsers use a lot), or pick a smaller size (Q2_0 or IQ2_XS).
-- **It says port 8080 is already in use.** Strata is already running - look for its window.
-
-More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
-
-## How does it work?
-
-Models like this one normally run on servers with hundreds of gigabytes of graphics memory. Your graphics card has
-12-24 GB. Strata makes it fit by **sharing the work across your whole PC** - like a kitchen, where the things you use
-all the time stay on the counter and the rest waits in the pantry.
-
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
-
-- **The model is a team of 24,576 small specialists ("experts"),** and each word needs only 10 of them.
-- **Your graphics card** keeps the few thousand experts that are asked most often; **your RAM** holds all of them,
-  and **your processor** works on the rest at the same time. **Your SSD** holds a big lookup table.
-
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
-
-- **Guess, then check:** a small helper guesses the next few words and the big model checks them all at once, so
-  you get the same answer, 1.6-1.8x sooner.
-- **Long texts are read in big pieces** (up to 8,192 tokens at a time): over 1,000 tokens per second.
-
-The longer explanation: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Every part and its numbers: [the
-details](docs/DETAILS.md#how-it-works) and the [paper](docs/paper/Strata-Paper.pdf).
-
-## Benchmarks and regression tests
-
-The V100 table above is reproduced end to end by [`bench/run_v100_bench.py`](bench/run_v100_bench.py):
-it builds every row at the exact published prompt size (unique-prefix repeated text, uncached,
-256 generated tokens, three fresh requests per size, seed 20261002), targets the running server,
-and reads the engine's own timings from `/metrics`. For the 2 October 2026 table, every request
-followed the cooldown gate (at least 120 s, at or below 55 °C for 15 s); the per-request waits
-are recorded in the raw rows. The API key is read from `.strata-service.env` / `$STRATA_API_KEY`,
-so the script contains no credentials and can be committed. Use it for all future benchmark runs:
-
-```sh
-.venv/bin/python bench/run_v100_bench.py --model-gguf models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
-.venv/bin/python bench/run_v100_bench.py --model-gguf <shard-1.gguf> --only '~8K,128K'   # a subset of rows
-```
-
-Contributor-facing summaries and cross-hardware comparisons live in [`benchmarks/`](benchmarks/README.md);
-raw rows and methodology notes for each measuring session live in `bench/results/`.
-
-Before shipping any engine change, run the live OpenAI-compatible tool-call regression checks
-against the running server (they exercise function calling and a Hermes-style agent loop, and
-write full request/response transcripts under the ignored `build/diagnostics/`):
-
-```sh
-.venv/bin/python tests/diagnose_openai.py
-.venv/bin/python tests/diagnose_hermes_flow.py
-```
-
-Both accept `--base-url` / `--api-key` / `--output`; without arguments they use
-`http://127.0.0.1:8088/v1` and the key from `.strata-service.env`.
-
+These reports describe specific tested changes; they are not a blanket claim of faster performance across models or GPUs. For more detail, browse the [complete pull request history](https://github.com/jmnargi/Strata-V100/pulls?q=is%3Apr+is%3Amerged) and [commit history](https://github.com/jmnargi/Strata-V100/commits/main).
 
 ## Credits and license
 
-The model is [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team, compressed by
-[ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI (Swift 1.5) and Unsloth;
-Strata is built with parts of [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). All credits:
-[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits). Strata is open source under the [MIT License](LICENSE); a few
-parts and every model carry their own licenses ([which ones](docs/HOW_IT_WORKS.md#license)).
+This repository is a fork of [Strata by Niko1221](https://github.com/Niko1221/Strata). **We are deeply grateful to Niko and all upstream contributors.** Their original work is the reason this fork, its V100 support, and this local model runtime are possible. We aim to credit and follow upstream work as we periodically bring in its changes.
 
-## Support Strata
-
-Strata is free and open source. If it is useful to you, you can support its development:
-
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+Strata incorporates [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) and other open-source components. The project is licensed under the [MIT License](LICENSE); components and model files may have separate terms. See the [credits and license notes](docs/HOW_IT_WORKS.md#credits).
