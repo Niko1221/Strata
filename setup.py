@@ -3315,7 +3315,10 @@ def main() -> int:
                 break
     for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
         if s.exists() and not done(s) and whole_shard(s):
-            mark(s, "whole (checked against its own tensor directory)")
+            try:
+                mark(s, "whole (checked against its own tensor directory)")
+            except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
+                warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count

@@ -150,6 +150,32 @@ class GgufDirUnsupported(unittest.TestCase):
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
 
+class ReadOnlyGgufDir(unittest.TestCase):
+    """--gguf-dir on a read-only folder (a share): whole shards without a finish mark still install, with a warning."""
+
+    def test_a_finish_mark_that_cannot_be_written_is_a_warning(self):
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["64GB-1x32GB"]
+        real_mark = setup.mark
+
+        def read_only_mark(path, text=""):
+            if "gguf_share" in str(path):
+                raise PermissionError(13, "Read-only file system")
+            real_mark(path, text)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "gguf_share"
+            d.mkdir()
+            for i in (1, 2):
+                (d / f"Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-{i:05d}-of-00002.gguf").write_bytes(b"")
+            code, out, cfg, _ = install(ram, found, ["--gguf-dir", str(d), "--family", "qwen", "--model", "Q2_0",
+                                                     "--no-start"],
+                                        extra=[mock.patch.object(setup, "whole_shard", lambda s: True),
+                                               mock.patch.object(setup, "mark", read_only_mark)])
+        self.assertEqual(code, 0, out)
+        self.assertIn("is whole but its finish mark cannot be written", out)
+
+
 class ExperimentalSm60(unittest.TestCase):
     """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
     and a CUDA 12.x toolkit; nothing changes without the variable."""
