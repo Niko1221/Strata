@@ -122,7 +122,5 @@ checked. A real chat at 128k context worked through the web interface.
 - **Not measured yet:** long-prompt prefill, token parity against llama.cpp, Gyro-M end to end.
 - **Benchmark mode only:** `strata --tokens-file ... --max-new N` decodes N tokens past the end of the answer;
   compare speeds only up to the answer's end.
-- **Agent harnesses:** one tool-calling agent client did not work with the Strata server while the web interface
-  did; not yet diagnosed. llama.cpp's server is the tested path for agents.
 - **AMD:** the trellis kernels pass parity on gfx1151 (ROCm 7.2.1); no end-to-end run on AMD yet.
 - **Gyro-M:** 29.9 GiB of experts do not all fit a 32 GB card next to the KV cache; `auto` streams the rest.
