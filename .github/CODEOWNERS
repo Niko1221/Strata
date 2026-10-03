@@ -1,0 +1,5 @@
+# CODEOWNERS — request review from these owners.
+# Docs: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/code-owners
+
+# Default owner for anything not matched below.
+*                       @Niko1221
