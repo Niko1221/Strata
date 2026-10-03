@@ -1955,6 +1955,13 @@ for line in sys.stdin:
         break
 '''
 
+FAKE_STRATA_FAIL_ONCE = '''import pathlib, sys, time
+fail = pathlib.Path(sys.argv[sys.argv.index("--fail") + 1])
+if fail.exists():                            # this start fails before READY (as one next to a dying engine did)
+    fail.unlink()
+    sys.exit(1)
+''' + FAKE_STRATA.split("\n", 1)[1]
+
 
 class RestartWindow(unittest.TestCase):
     """#344: while the engine restarts it is not alive (a request waits for the restart instead of reading
@@ -2005,6 +2012,54 @@ class RestartWindow(unittest.TestCase):
                 finally:
                     gate.touch()
                     eng.unload()
+
+    def test_restart_retries_a_start_that_fails(self):
+        """A dead engine's VRAM is freed only when its process is gone, so a new engine started at once can exit
+        before READY; restart() tries again (3 times) instead of leaving the server with max_context 0."""
+        from unittest import mock
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, gate, fail = Path(d) / "fake_strata.py", Path(d) / "ready", Path(d) / "fail_once"
+            script.write_text(FAKE_STRATA_FAIL_ONCE, encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                 mock.patch.object(StrataEngine, "RESTART_RETRY_S", 0.0):
+                gate.touch()
+                eng = StrataEngine("strata", ["--gate", str(gate), "--fail", str(fail)])
+                try:
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertEqual(eng.known_ctx, 4096)
+                    fail.touch()                          # the next start exits before READY, the one after works
+                    eng.proc.kill()
+                    eng.proc.wait(10)
+                    eng.restart()
+                    self.assertFalse(fail.exists(), "the failing start never ran")
+                    self.assertTrue(eng.alive())
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertFalse(eng.starting)
+                finally:
+                    gate.touch()
+                    eng.unload()
+
+    def test_failed_restart_keeps_the_known_context(self):
+        """After a restart that failed, max_context is 0 but the engine is not starting: a request is checked against
+        the last known context and reaches run() (which starts the engine again), not a 400 about context 0."""
+        tok = ByteTokenizer()
+        eng = MockEngine(tok, "</think>\n\nok", max_context=0)
+        eng.known_ctx, eng.starting = 4096, False
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            req = urllib.request.Request(base + "/v1/chat/completions",
+                                         data=json.dumps({"model": "m", "max_tokens": 16,
+                                                          "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                self.assertEqual(r.status, 200)
+        finally:
+            httpd.shutdown()
 
     def test_context_zero_is_503(self):
         tok = ByteTokenizer()
