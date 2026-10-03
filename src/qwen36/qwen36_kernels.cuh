@@ -38,6 +38,9 @@ void attn_decode(float* out, const float* q, const float* gate, const __half* kc
 // Batched variants for block prefill.  Layouts: activations [B][width] row-major (token-major).
 // Y[col*n_out + row] = dot(W[row,:], X[col*n_in : (col+1)*n_in]) for W in F32 / F16 / BF16.
 void gemv_float_cols(int ggml_type, const void* W, const float* X, float* Y, int n_in, int n_out, int ncols, void* stream);
+// F32 activations -> F16 bits, for the tensor-core GEMMs (strata::prefill::Gemm takes F16/BF16 inputs).  The
+// conversion is Strata's own round-to-nearest-even `f16_from_f32`, not `__float2half` (see f16_bits.hpp).
+void to_f16(const float* x, uint16_t* out, int n, void* stream);
 // Like router_topk for `rows` independent rows: logits [rows][n_expert], ids/wts [rows][k].
 void router_topk_rows(const float* logits, int rows, int n_expert, int k, int* ids, float* wts, void* stream);
 // Causal conv (k=4) + SiLU over B consecutive tokens, same history layout as Strata's native op (hist[c*3 + tap]).

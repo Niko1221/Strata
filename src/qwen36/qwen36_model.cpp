@@ -10,9 +10,12 @@
 #include "moe_group.hpp"
 #include "qwen36_kernels.cuh"
 #include "strata/artifact/dequant.hpp"
+#include "strata/kernels/dequant_bf16.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_gdn.hpp"
 #include "strata/kernels/native_gdn_preprocess.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/prefill/gemm.hpp"
 
 namespace K = strata::kernels;
 
@@ -28,6 +31,13 @@ namespace {
 
 inline bool is_float_type(int t) { return t == 0 || t == 1 || t == 30; }
 inline size_t float_bytes(int t) { return t == 0 ? 4 : 2; }
+
+// Can Gemm::native dequantize this type's blocks to F16?  Two kernels cover it: `dequant_bf16`'s own geometry
+// (Q4_0/Q5_0/Q5_1/Q8_0/Q3_K/Q4_K/Q5_K/Q6_K/IQ4_NL/IQ4_XS/Q2_0) and, for the narrow i-quants the UD quants use for
+// gate/up (IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S/IQ1_M), `iq_dequant_f16`, which dequant_f16 dispatches to.  The union
+// is exactly what native_mmvq reads, so every tensor that loads can also be GEMM'd.  The i-quants are 256-wide
+// blocks and `mat()` already requires n_in to be a multiple of the block, which is what iq_dequant_f16 checks.
+inline bool gemm_dequant_supported(int t) { return K::dequant_bf16_supported(t) || K::iq_supported(t); }
 
 // Any GGUF tensor type -> F32 on the host (small tensors and the embedding row).
 void dequant_buf(uint32_t type, const uint8_t* src, int64_t n, float* out) {
@@ -65,6 +75,15 @@ struct Model::Impl {
     const Config& c;
     size_t& vram;
     cudaStream_t st = nullptr;
+    // The batched projections of block prefill run as tensor-core GEMMs through Strata's own prefill::Gemm
+    // (cuBLAS on CUDA, hipBLAS/hipBLASLt on HIP): the GGUF blocks are dequantized to F16 into its scratch and
+    // multiplied on the tensor cores.  The token-at-a-time path keeps the native GEMV, which reads the blocks
+    // directly and never pays for that dequantization.
+    strata::prefill::Gemm gemm;
+    bool gemm_available = false;      // Gemm::init succeeded (cuBLAS is usable here)
+    bool gemm_on = false;             // this run actually uses it
+    int gemm_min = 0, gemm_min_expert = 0;
+    int64_t gemm_scratch_elems = 0;   // the largest weight the GEMM path dequantizes at once, from `mat()`
     std::vector<void*> allocs;
     std::vector<LayerWeights> L;
     Mat output;
@@ -93,12 +112,18 @@ struct Model::Impl {
         float *rlog, *wts, *sg, *xg, *G, *U, *H, *Dall, *Dsh, *Gs, *Us, *Hs;
         int *ids, *perm, *pos;
         void *q8b, *q8g, *q8h, *q8s;
+        // The same activations as F16 bits, for the tensor-core GEMMs (only filled when the GEMM path runs).
+        uint16_t *x16b, *x16g, *x16h, *x16s;
         float* h_emb = nullptr;
         int *h_ids = nullptr, *h_perm = nullptr, *h_pos = nullptr;
         std::vector<int> cnt, off, cur;
     } bb;
 
-    Impl(const std::string& path, const Config& cfg, size_t& vr, int mc) : gg(strata::GgufModel::open(path)), c(cfg), vram(vr), max_ctx(mc) {}
+    Impl(const std::string& path, const Config& cfg, size_t& vr, int mc, int gmin, int gmin_e)
+        : gg(strata::GgufModel::open(path)), c(cfg), vram(vr), gemm_min(gmin), gemm_min_expert(gmin_e),
+          max_ctx(mc) {
+        gemm_on = gemm_min > 0;
+    }
 
     void* dalloc(size_t bytes) {
         void* p = nullptr;
@@ -144,6 +169,13 @@ struct Model::Impl {
         void* d = dalloc(bytes);
         CK(cudaMemcpy(d, host_ptr(t, name), bytes, cudaMemcpyHostToDevice));
         m.d = d;
+        // The GEMM path dequantizes one tensor (or one expert of a 3-D tensor) into Gemm's scratch at a time;
+        // the largest one seen while loading sizes that scratch.  The two vocab-wide tensors are excluded: their
+        // logits come from the decode GEMV, which reads the blocks directly, and sizing the scratch for them
+        // would cost ~1 GiB of F16 for a path that never runs.
+        const int64_t elems = (int64_t) m.n_in * m.n_out;
+        const bool vocab_sized = name == "output.weight" || name == "token_embd.weight";
+        if (!vocab_sized && elems > gemm_scratch_elems) gemm_scratch_elems = elems;
         return m;
     }
 
@@ -217,6 +249,20 @@ struct Model::Impl {
     }
 
     void alloc_runtime() {
+        if (gemm_on && gemm_scratch_elems <= 0) {
+            std::fprintf(stderr, "[qwen36] no projection fits the GEMM scratch; block prefill stays on the GEMV\n");
+            gemm_on = false;
+        }
+        if (gemm_on) {
+            std::string err;
+            if (!gemm.init(st, gemm_scratch_elems, err)) {
+                std::fprintf(stderr, "[qwen36] %s; block prefill stays on the GEMV\n", err.c_str());
+                gemm_on = false;
+            } else {
+                gemm_available = true;
+                vram += gemm.scratch_elems() * 2 + (32u << 20);   // the scratch and cuBLAS's workspace
+            }
+        }
         const int n = c.n_embd;
         const int qkvw = std::max(c.ssm_qkv, 2 * c.n_head * c.head_dim);
         const int bw = std::max(c.ssm_inner, c.n_head * c.head_dim);
@@ -279,6 +325,13 @@ struct Model::Impl {
         bb.q8g = dalloc(K::native_q8_1_bytes(n * np, 1));
         bb.q8h = dalloc(K::native_q8_1_bytes(c.n_ff_exp * np, 1));
         bb.q8s = dalloc(K::native_q8_1_bytes(c.n_ff_shexp * MB, 1));
+        if (gemm_available) {   // the F16 copies of the activations the tensor-core GEMMs read
+            const int wide16 = std::max({c.ssm_inner, c.n_head * c.head_dim, c.n_ff_shexp});
+            bb.x16b = (uint16_t*) dalloc((size_t)MB * n * 2);
+            bb.x16s = (uint16_t*) dalloc((size_t)MB * wide16 * 2);
+            bb.x16g = (uint16_t*) dalloc((size_t)np * n * 2);
+            bb.x16h = (uint16_t*) dalloc((size_t)np * c.n_ff_exp * 2);
+        }
         CK(cudaMallocHost((void**)&bb.h_emb, (size_t)MB * n * 4));
         CK(cudaMallocHost((void**)&bb.h_ids, sizeof(int) * np));
         CK(cudaMallocHost((void**)&bb.h_perm, sizeof(int) * np));
@@ -302,35 +355,79 @@ struct Model::Impl {
         }
     }
 
+    // Y[col*n_out + row] = X[ncols][n_in] . W^T on the tensor cores.  `X16` is the F16 copy of X (null when the
+    // caller did not make one).  False when this tensor cannot go through cuBLAS, and the caller runs the GEMV.
+    bool gemm_mv(const Mat& m, int e, const uint16_t* X16, float* Y, int ncols) {
+        const char* w = static_cast<const char*>(m.d) + (size_t)e * m.expert_stride;
+        if (m.type == 1) {  // already F16 as stored
+            gemm.f16(X16, (const uint16_t*) w, Y, ncols, m.n_out, m.n_in);
+            return true;
+        }
+        // F32 weights (the tiny GGUFs the tests build, and this architecture's ssm_alpha/ssm_beta and router) are
+        // converted into the scratch.  The conversion is a few tens of thousands of elements, so it costs less than
+        // the launch it saves; the rounding it introduces is what the `GEMV vs GEMM` line of --selftest-batch
+        // measures on exactly those models.
+        if (m.type == 0) {
+            const int64_t nk = (int64_t) m.n_in * m.n_out;
+            if (nk > gemm.scratch_elems()) return false;
+            q36::to_f16((const float*) w, gemm.scratch(), (int) nk, st);
+            gemm.f16(X16, gemm.scratch(), Y, ncols, m.n_out, m.n_in);
+            return true;
+        }
+        // BF16 weights stay on the GEMV: the GEMM would need BF16 activations, and a second copy of every
+        // activation buffer is not worth it while the shipped quants are all block types.
+        if (m.type == 30) return false;
+        if (!gemm_dequant_supported(m.type)) return false;
+        gemm.native(X16, m.type, w, Y, ncols, m.n_out, m.n_in);   // dequantize the blocks to F16, then multiply
+        return true;
+    }
+
+    // The F16 copy of `X` when a projection of `ncols` columns is wide enough to beat the GEMV, else null.
+    uint16_t* f16_act(const float* X, uint16_t* buf, int width, int ncols, int min_cols) {
+        if (!gemm_on || ncols < min_cols) return nullptr;
+        q36::to_f16(X, buf, width * ncols, st);
+        return buf;
+    }
+
+    void proj(const Mat& m, int e, const float* X, const void* q8, const uint16_t* X16, float* Y, int ncols,
+              int min_cols) {
+        if (X16 && ncols >= min_cols && gemm_mv(m, e, X16, Y, ncols)) return;
+        mvc(m, e, X, q8, Y, ncols);
+    }
+
     void gdn_layer_b(int il, int B) {
         const LayerWeights& w = L[il];
         const int gi = layer_slot[il], hk = c.ssm_hk, hv = c.ssm_hv, S = c.ssm_S;
         quantc(bb.xn, c.n_embd, B, bb.q8b);
-        mvc(w.qkv, 0, bb.xn, bb.q8b, bb.a, B);
-        mvc(w.z, 0, bb.xn, bb.q8b, bb.b, B);
-        mvc(w.alpha, 0, bb.xn, bb.q8b, bb.alpha, B);
-        mvc(w.beta, 0, bb.xn, bb.q8b, bb.beta, B);
+        uint16_t* x16 = f16_act(bb.xn, bb.x16b, c.n_embd, B, gemm_min);
+        proj(w.qkv, 0, bb.xn, bb.q8b, x16, bb.a, B, gemm_min);
+        proj(w.z, 0, bb.xn, bb.q8b, x16, bb.b, B, gemm_min);
+        proj(w.alpha, 0, bb.xn, bb.q8b, x16, bb.alpha, B, gemm_min);
+        proj(w.beta, 0, bb.xn, bb.q8b, x16, bb.beta, B, gemm_min);
         q36::gdn_conv_silu_b(conv_hist[gi], bb.a, w.conv, bb.cs, c.ssm_qkv, B, st);
         q36::gdn_l2norm_qk_b(bb.cs, c.ssm_qkv, 2 * hk, S, B, 1e-6f, st);
         q36::gdn_gate_beta_b(bb.alpha, w.dt, w.ssm_a, bb.gate, bb.beta, hv, B, st);
         q36::gdn_step_b(gdn_state[gi], bb.cs, bb.gate, bb.beta, bb.o, hk, hv, c.ssm_qkv, B, st);
         q36::gdn_out_norm_silu(bb.on, bb.o, bb.b, w.ssm_norm, B * hv, S, c.eps, st);
         quantc(bb.on, c.ssm_inner, B, bb.q8b);
-        mvc(w.ssm_out, 0, bb.on, bb.q8b, bb.tmp, B);
+        uint16_t* on16 = f16_act(bb.on, bb.x16s, c.ssm_inner, B, gemm_min);
+        proj(w.ssm_out, 0, bb.on, bb.q8b, on16, bb.tmp, B, gemm_min);
     }
 
     void attn_layer_b(int il, int pos0, int B) {
         const LayerWeights& w = L[il];
         const int ai = layer_slot[il], nh = c.n_head, nkv = c.n_head_kv, hd = c.head_dim;
         quantc(bb.xn, c.n_embd, B, bb.q8b);
-        mvc(w.q, 0, bb.xn, bb.q8b, bb.a, B);
-        mvc(w.k, 0, bb.xn, bb.q8b, bb.k, B);
-        mvc(w.v, 0, bb.xn, bb.q8b, bb.v, B);
+        uint16_t* x16 = f16_act(bb.xn, bb.x16b, c.n_embd, B, gemm_min);
+        proj(w.q, 0, bb.xn, bb.q8b, x16, bb.a, B, gemm_min);
+        proj(w.k, 0, bb.xn, bb.q8b, x16, bb.k, B, gemm_min);
+        proj(w.v, 0, bb.xn, bb.q8b, x16, bb.v, B, gemm_min);
         q36::attn_prep_q_b(bb.qr, bb.gt, bb.a, w.qn, nh, hd, c.rot_dim, c.rope_theta, pos0, B, c.eps, st);
         q36::attn_prep_kv_b(kc[ai], vc[ai], bb.k, bb.v, w.kn, nkv, hd, c.rot_dim, c.rope_theta, pos0, B, max_ctx, c.eps, st);
         q36::attn_decode_b(bb.ao, bb.qr, bb.gt, kc[ai], vc[ai], nh, nkv, hd, pos0, B, max_ctx, st);
         quantc(bb.ao, nh * hd, B, bb.q8b);
-        mvc(w.o, 0, bb.ao, bb.q8b, bb.tmp, B);
+        uint16_t* ao16 = f16_act(bb.ao, bb.x16s, nh * hd, B, gemm_min);
+        proj(w.o, 0, bb.ao, bb.q8b, ao16, bb.tmp, B, gemm_min);
     }
 
     // x += MoE(xn) for B tokens.  Pairs (token, slot) are sorted by expert so each active expert runs once (in chunks of 8
@@ -339,6 +436,11 @@ struct Model::Impl {
         const LayerWeights& w = L[il];
         const int n = c.n_embd, ku = c.n_used, fe = c.n_ff_exp, fs = c.n_ff_shexp, ne = c.n_expert, np = B * ku;
         quantc(bb.xn, n, B, bb.q8b);
+        uint16_t* x16 = f16_act(bb.xn, bb.x16b, n, B, gemm_min);
+        // The router never goes through the GEMM: rounding its logits to F16 arithmetic can move one across the
+        // top-8 boundary, which changes the experts and so the whole answer, for a projection of 256 x 2048 that
+        // costs a fraction of a millisecond either way.  Strata's own prefill keeps the router at ~16 mantissa bits
+        // for the same reason (a mixed BF16 pair of GEMMs).
         mvc(w.gate_inp, 0, bb.xn, bb.q8b, bb.rlog, B);
         q36::router_topk_rows(bb.rlog, B, ne, ku, bb.ids, bb.wts, st);
         CK(cudaMemcpyAsync(bb.h_ids, bb.ids, sizeof(int) * np, cudaMemcpyDeviceToHost, st));
@@ -348,27 +450,37 @@ struct Model::Impl {
         CK(cudaMemcpyAsync(bb.pos, bb.h_pos, sizeof(int) * np, cudaMemcpyHostToDevice, st));
         q36::gather_rows(bb.xg, bb.xn, bb.perm, np, n, st);
         quantc(bb.xg, n, np, bb.q8g);
+        // A routed expert sees `cnt[e]` columns.  A GEMM for one expert only pays once that group is wide enough
+        // to cover dequantizing the expert's blocks, so its threshold is higher than the dense one.  The F16 copy
+        // of the gathered activations is only worth making when at least one group clears that threshold.
+        const bool wide_experts = gemm_on &&
+            std::any_of(bb.cnt.begin(), bb.cnt.end(), [&](int m) { return m >= gemm_min_expert; });
+        if (wide_experts) q36::to_f16(bb.xg, bb.x16g, np * n, st);
         const size_t q8n = K::native_q8_1_bytes(n, 1), q8f = K::native_q8_1_bytes(fe, 1);
         for (int e = 0; e < ne; ++e) {
             const int o = bb.off[e], m = bb.cnt[e];
             if (!m) continue;
             const void* qg = static_cast<const char*>(bb.q8g) + (size_t)o * q8n;
-            mvc(w.gate_exps, e, bb.xg + (size_t)o * n, qg, bb.G + (size_t)o * fe, m);
-            mvc(w.up_exps, e, bb.xg + (size_t)o * n, qg, bb.U + (size_t)o * fe, m);
+            const uint16_t* xg16 = (wide_experts && m >= gemm_min_expert) ? bb.x16g + (size_t)o * n : nullptr;
+            proj(w.gate_exps, e, bb.xg + (size_t)o * n, qg, xg16, bb.G + (size_t)o * fe, m, gemm_min_expert);
+            proj(w.up_exps, e, bb.xg + (size_t)o * n, qg, xg16, bb.U + (size_t)o * fe, m, gemm_min_expert);
         }
         q36::silu_mul(bb.H, bb.G, bb.U, np * fe, st);
         quantc(bb.H, fe, np, bb.q8h);
+        if (wide_experts) q36::to_f16(bb.H, bb.x16h, np * fe, st);
         for (int e = 0; e < ne; ++e) {
             const int o = bb.off[e], m = bb.cnt[e];
             if (!m) continue;
-            mvc(w.down_exps, e, bb.H + (size_t)o * fe, static_cast<const char*>(bb.q8h) + (size_t)o * q8f,
-                bb.Dall + (size_t)o * n, m);
+            const uint16_t* h16 = (wide_experts && m >= gemm_min_expert) ? bb.x16h + (size_t)o * fe : nullptr;
+            proj(w.down_exps, e, bb.H + (size_t)o * fe, static_cast<const char*>(bb.q8h) + (size_t)o * q8f,
+                 h16, bb.Dall + (size_t)o * n, m, gemm_min_expert);
         }
-        mvc(w.sh_gate, 0, bb.xn, bb.q8b, bb.Gs, B);
-        mvc(w.sh_up, 0, bb.xn, bb.q8b, bb.Us, B);
+        proj(w.sh_gate, 0, bb.xn, bb.q8b, x16, bb.Gs, B, gemm_min);
+        proj(w.sh_up, 0, bb.xn, bb.q8b, x16, bb.Us, B, gemm_min);
         q36::silu_mul(bb.Hs, bb.Gs, bb.Us, B * fs, st);
         quantc(bb.Hs, fs, B, bb.q8s);
-        mvc(w.sh_down, 0, bb.Hs, bb.q8s, bb.Dsh, B);
+        uint16_t* hs16 = f16_act(bb.Hs, bb.x16s, fs, B, gemm_min);
+        proj(w.sh_down, 0, bb.Hs, bb.q8s, hs16, bb.Dsh, B, gemm_min);
         q36::dot_rows(bb.sg, w.sh_gate_inp, bb.xn, B, n, st);
         q36::moe_combine_b(bb.x, bb.Dall, bb.wts, bb.pos, bb.Dsh, bb.sg, B, ku, n, st);
     }
@@ -444,12 +556,13 @@ struct Model::Impl {
     }
 };
 
-Model::Model(const std::string& path, int max_ctx) : max_ctx_(max_ctx) {
+Model::Model(const std::string& path, int max_ctx, int gemm_min, int gemm_min_expert)
+    : max_ctx_(max_ctx), gemm_min_(gemm_min), gemm_min_expert_(gemm_min_expert) {
     if (max_ctx < 1) throw std::runtime_error("max_ctx must be >= 1");
     int ndev = 0;
     CK(cudaGetDeviceCount(&ndev));
     if (!ndev) throw std::runtime_error("no CUDA device");
-    p_.reset(new Impl(path, cfg_, vram_, max_ctx));
+    p_.reset(new Impl(path, cfg_, vram_, max_ctx, gemm_min, gemm_min_expert));
     cfg_ = load_config(p_->gg);
     std::fprintf(stderr, "[qwen36] %s\n", cfg_.describe().c_str());
     CK(cudaStreamCreate(&p_->st));
@@ -458,6 +571,15 @@ Model::Model(const std::string& path, int max_ctx) : max_ctx_(max_ctx) {
     h_logits_.assign(cfg_.n_vocab, 0.f);
     reset();
     std::fprintf(stderr, "[qwen36] ready: %.2f GiB on GPU, context %d\n", (double)vram_ / (1024.0 * 1024.0 * 1024.0), max_ctx_);
+}
+
+bool Model::gemm_enabled() const { return p_ && p_->gemm_on; }
+
+bool Model::gemm_available() const { return p_ && p_->gemm_available; }
+
+void Model::set_gemm(bool on) {
+    if (!p_ || !p_->gemm_available) return;   // no cuBLAS here: the GEMV is the only path
+    p_->gemm_on = on;
 }
 
 Model::~Model() {

@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "strata/kernels/f16_bits.hpp"
+
 namespace q36 {
 namespace {
 
@@ -575,6 +577,17 @@ void gemv_float_cols(int type, const void* W, const float* X, float* Y, int n_in
     else if (type == 1) k_gemv_cols<1><<<grid, 256, 0, S(st)>>>(W, X, Y, n_in, n_out);
     else if (type == 30) k_gemv_cols<30><<<grid, 256, 0, S(st)>>>(W, X, Y, n_in, n_out);
     else { std::fprintf(stderr, "gemv_float_cols: unsupported type %d\n", type); std::abort(); }
+}
+
+// F32 -> F16 bits for the tensor-core GEMMs.  Strata's own converter (f16_bits.hpp), not `__float2half`,
+// whose wrong bits are documented there.
+__global__ void k_to_f16(const float* x, uint16_t* out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = strata::kernels::f16_from_f32(x[i]);
+}
+
+void to_f16(const float* x, uint16_t* out, int n, void* st) {
+    if (n > 0) k_to_f16<<<(n + 255) / 256, 256, 0, S(st)>>>(x, out, n);
 }
 
 void gdn_conv_silu_b(float* hist, const float* X, const float* w, float* out, int C, int B, void* st) {

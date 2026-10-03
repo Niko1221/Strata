@@ -88,3 +88,59 @@ Layout token-major `[B][larghezza]`.
   che rilegge i risultati per posizione ordinata e aggiunge lo shared expert con il suo gate.
 - **Verifica**: `--selftest-batch N` confronta prefill a blocchi e token per token sullo stesso modello (logit dopo il
   prefill, dopo 6 passi di decode, sequenza greedy) e stampa la velocità di entrambi.
+
+## 9. GEMM tensor-core nelle proiezioni del prefill a blocchi (Fase 3)
+
+Le proiezioni del percorso batch non girano più solo sulla GEMV: passano dai **tensor core** attraverso il
+`strata::prefill::Gemm` di Strata ([`src/prefill/gemm.cu`](../src/prefill/gemm.cu)), lo stesso oggetto che usa il motore
+di Qwen3.8 (cuBLAS su CUDA, hipBLAS/hipBLASLt su HIP). `gemm.cu` è compilato dentro `strata-qwen36`; non si linka
+`strata_prefill`, che porterebbe dentro tutto il motore qwen3.8.
+
+Cosa fa il percorso, per proiezione:
+
+- pesi in blocchi GGUF a blocchi larghi (Q4_0, Q5_0, Q5_1, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, Q2_0) →
+  `Gemm::native` li dequantizza in **F16** nello scratch e chiama `cublasGemmEx` (`dequant_bf16.cu`, trascritto da
+  `ggml-quants.c`);
+- i-quant stretti (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, **IQ3_S**, IQ1_M), che sono quelli con cui `UD-IQ4_NL` quantizza
+  `ffn_gate_exps` e `ffn_up_exps`: li dequantizza `iq_dequant_f16` (`iq_kernels.cu`), lo stesso ramo a cui
+  `dequant_f16` rimanda quando `dequant_bf16` non ha la geometria. Il gate del motore è l'unione dei due insiemi, che
+  è esattamente l'insieme che la GEMV nativa sa leggere: tutto ciò che si carica può anche passare dal GEMM;
+- pesi già F16 nel file → `Gemm::f16` diretto, senza dequantizzazione;
+- pesi F32 (i modelli minuscoli dei test) → conversione F32→F16 nello scratch, solo se il tensore ci sta;
+- pesi **BF16 → restano sulla GEMV**: il GEMM vorrebbe anche le attivazioni in BF16, e una seconda copia di ogni
+  buffer di attivazione non vale la pena finché le quantizzazioni in uso sono tutte a blocchi.
+
+Le attivazioni F32 vengono copiate in F16 con `q36::to_f16`, che usa `strata::kernels::f16_from_f32`
+([`include/strata/kernels/f16_bits.hpp`](../include/strata/kernels/f16_bits.hpp)) e **non** `__float2half`, il cui
+comportamento con bit sbagliati è documentato lì.
+
+Soglie (`--gemm-min`, `--gemm-min-expert`):
+
+| | default | perché |
+|---|---|---|
+| proiezioni dense (qkv, q/k/v/o, shared expert, `ssm_out`) | 16 colonne | sotto, il GEMM perde: la GEMV legge i blocchi senza dequantizzare |
+| un singolo esperto instradato | 32 colonne | qui il GEMM paga anche la dequantizzazione dei blocchi di **quell'esperto** |
+
+Il **router `ffn_gate_inp` non passa mai dal GEMM**, nemmeno quando è abbastanza largo: è F32 nel file, e arrotondare
+pesi e logits a F16 può spostare un logit oltre il confine del top-8, cambiando gli esperti scelti e quindi tutta la
+risposta, per una proiezione da 256 × 2048 che costa una frazione di millisecondo in entrambi i modi. Strata fa la
+stessa cosa nel suo prefill, dove il router gira su una coppia di GEMM in BF16 con la parte bassa (≈16 bit di
+mantissa, [`src/prefill/prefill.cpp`](../src/prefill/prefill.cpp)).
+
+`--no-gemm` spegne tutto e riporta ogni proiezione sulla GEMV nativa. Se `Gemm::init` fallisce (cuBLAS assente o
+VRAM finita) il motore stampa il motivo e continua sulla GEMV: non è un errore fatale. Lo scratch è grande quanto il
+peso più grande che il percorso dequantizza in un colpo solo; `token_embd.weight` e `output.weight` sono esclusi,
+perché i loro logit li produce la GEMV del decode e dimensionare lo scratch su di loro costerebbe ~1 GiB per un
+percorso che non gira mai.
+
+Su Qwen3.6-35B-A3B lo scratch resta piccolo, perché un tensore MoE non viene mai dequantizzato intero: `mat()`
+dimensiona su un singolo esperto (`ffn_*_exps` è 2048 × 512 per esperto = 2 MB in F16) e il tensore più grande in
+assoluto è `attn_qkv` (2048 × 8192 = 33,5 MB). Con i 32 MB di workspace di cuBLAS, il percorso GEMM costa ~66 MB di
+VRAM su un modello da 18,5 GB.
+
+Il **decode token-per-token non usa il GEMM**: una GEMV che legge i blocchi GGUF è più veloce di una moltiplicazione
+tensor-core che prima deve dequantizzare. Il GEMM cambia solo come viene processato un prompt.
+
+Verifica: `--selftest-batch N` stampa anche la riga `GEMV vs GEMM (stessi blocchi)` con coseno, KL, overlap top-20,
+`maxrel`, argmax, i token greedy in comune e i millisecondi dei due percorsi a parità di chunking. Il confronto a
+parità di blocchi isola l'effetto del percorso tensor-core dal rumore del chunking.

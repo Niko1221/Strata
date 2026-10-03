@@ -32,6 +32,9 @@ struct Args {
     std::string model, selftest;
     int batch_test = 0;
     int max_ctx = 32768;
+    // Block prefill runs its projections on the tensor cores (Strata's prefill::Gemm) once a projection has at
+    // least this many columns; --no-gemm turns the path off and every projection stays on the native GEMV.
+    int gemm_min = 16, gemm_min_expert = 32;
     std::vector<int> eos;
     bool serve = false;
 };
@@ -59,6 +62,9 @@ Args parse_args(int argc, char** argv) {
         else if (k == "--eos-ids") a.eos = parse_ids(val());
         else if (k == "--selftest") a.selftest = val();
         else if (k == "--selftest-batch") a.batch_test = std::atoi(val().c_str());
+        else if (k == "--no-gemm") { a.gemm_min = 0; a.gemm_min_expert = 0; }
+        else if (k == "--gemm-min") a.gemm_min = std::atoi(val().c_str());
+        else if (k == "--gemm-min-expert") a.gemm_min_expert = std::atoi(val().c_str());
         // anything else is a Strata flag this engine does not need: ignored
     }
     return a;
@@ -193,8 +199,11 @@ struct Engine {
 int serve(q36::Model& model, const Args& a) {
     Engine eng{model, std::set<int>(a.eos.begin(), a.eos.end()), {}};
     char info[256];
-    std::snprintf(info, sizeof info, "INFO engine=qwen36 version=0.1 ctx=%d vram_mib=%zu layers=%d experts=%d",
-                  model.max_ctx(), model.vram_bytes() >> 20, model.cfg().n_layer, model.cfg().n_expert);
+    std::snprintf(info, sizeof info,
+                  "INFO engine=qwen36 version=0.2 ctx=%d vram_mib=%zu layers=%d experts=%d gemm=%s/%d/%d",
+                  model.max_ctx(), model.vram_bytes() >> 20, model.cfg().n_layer, model.cfg().n_expert,
+                  model.gemm_enabled() ? "on" : (model.gemm_available() ? "off" : "unavailable"),
+                  model.gemm_min(), model.gemm_min_expert());
     emit(info);
     emit("READY " + std::to_string(model.max_ctx()) + " stop");
     Commands cmds;
@@ -359,9 +368,11 @@ int selftest_batch(q36::Model& model, int N) {
     auto argmax = [](const std::vector<float>& l) { return (int)(std::max_element(l.begin(), l.end()) - l.begin()); };
 
     struct Run { std::vector<float> after_prefill, after_decode; std::vector<int> greedy; double ms; };
-    // chunks: elenco ciclico di dimensioni di blocco; vuoto = token per token
-    auto run = [&](const std::vector<int>& chunks) {
+    // chunks: elenco ciclico di dimensioni di blocco; vuoto = token per token.  `use_gemm` sceglie tra le
+    // proiezioni tensor-core (prefill::Gemm) e la GEMV nativa, a parità di chunking.
+    auto run = [&](const std::vector<int>& chunks, bool use_gemm) {
         Run r;
+        model.set_gemm(use_gemm);
         model.reset();
         const double t0 = now_ms();
         for (int i = 0, ci = 0; i < N;) {
@@ -378,10 +389,23 @@ int selftest_batch(q36::Model& model, int N) {
         return r;
     };
 
-    const Run seq = run({});
-    const Run bA  = run({1, 7, 128, 33, 128});   // blocchi irregolari
-    const Run bB  = run({16});                   // blocchi regolari da 16
-    const Run bC  = run({128});                  // blocchi massimi
+    const bool has_gemm = model.gemm_available();
+    const Run seq = run({}, false);
+    const Run bA  = run({1, 7, 128, 33, 128}, has_gemm);   // blocchi irregolari
+    const Run bB  = run({16}, has_gemm);                   // blocchi regolari da 16
+    const Run bC  = run({128}, has_gemm);                  // blocchi massimi
+    // A parità di chunking, GEMM contro GEMV: è il confronto che isola l'effetto del percorso tensor-core.
+    if (has_gemm) {
+        const Run gN = run({1, 7, 128, 33, 128}, false);
+        const Cmp g = compare_logits(gN.after_prefill, bA.after_prefill);
+        std::printf("GEMV vs GEMM (stessi blocchi): cos %.6f  KL %.3e  top20 %2d/20  maxrel %.3e  argmax %s\n",
+                    g.cos, g.kl, g.top20, g.maxrel, g.same_arg ? "same" : "DIFFERENT");
+        std::printf("                               GEMV %.0f ms (%.1f tok/s)  GEMM %.0f ms (%.1f tok/s)  %.2fx\n",
+                    gN.ms, 1000.0 * N / gN.ms, bA.ms, 1000.0 * N / bA.ms, gN.ms / std::max(1.0, bA.ms));
+        const int agree_g = (int)std::inner_product(gN.greedy.begin(), gN.greedy.end(), bA.greedy.begin(), 0,
+                                                    std::plus<>(), [](int x, int y) { return x == y; });
+        std::printf("                               token greedy uguali: %d/32\n", agree_g);
+    }
 
     auto show = [&](const char* name, const Cmp& c) {
         std::printf("  %-26s cos %.6f  KL %.3e  top20 %2d/20  maxrel %.3e  argmax %s\n", name, c.cos, c.kl, c.top20, c.maxrel,
@@ -426,7 +450,10 @@ int main(int argc, char** argv) {
     if (a.model.empty() || (!a.serve && a.selftest.empty() && a.batch_test == 0)) {
         std::fprintf(stderr, "usage: %s --serve --native model.gguf [--max-context N] [--eos-ids a,b]\n"
                              "       %s --native model.gguf --selftest expected.txt\n"
-                             "       %s --native model.gguf --selftest-batch 300\n", argv[0], argv[0], argv[0]);
+                             "       %s --native model.gguf --selftest-batch 300\n"
+                             "       block prefill: --gemm-min N (default 16), --gemm-min-expert N (default 32),\n"
+                             "       --no-gemm to keep every projection on the native GEMV\n",
+                     argv[0], argv[0], argv[0]);
         return 2;
     }
     try {
@@ -435,7 +462,7 @@ int main(int argc, char** argv) {
             if (const strata::MetaValue* v = g.meta().get("tokenizer.ggml.eos_token_id")) a.eos.push_back((int)v->u);
             if (a.eos.empty()) std::fprintf(stderr, "[qwen36] no EOS id known (pass --eos-ids): generation stops only on length or STOP\n");
         }
-        q36::Model model(a.model, a.max_ctx);
+        q36::Model model(a.model, a.max_ctx, a.gemm_min, a.gemm_min_expert);
         if (a.batch_test > 0) return selftest_batch(model, a.batch_test);
         return a.selftest.empty() ? serve(model, a) : selftest(model, a.selftest);
     } catch (const std::exception& e) {
