@@ -563,8 +563,9 @@ print(r.choices[0].message.content)
   (`chrome-extension://`, `moz-extension://`, `app://`: no web site can send those), and only with a JSON body; any
   other page, and `Origin: null`, gets **403**. Clients that send no `Origin` (curl, the OpenAI and Anthropic SDKs,
   other servers) are not affected. With
-  an API key, the key decides. `POST /unload`, `POST /load` and `POST /slots/0?action=save|restore` take
-  `Content-Type: application/json` from Strata's own page (or no `Origin`), like `/settings`.
+  an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
+  own page (or no `Origin`), like `/settings`. `POST /slots/0?action=save|restore` keeps the Host and API-key checks
+  and also takes only JSON from no `Origin`, Strata's own page or a trusted origin - also when an API key is set.
 
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
@@ -616,9 +617,11 @@ sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disa
 retention for diagnostic comparisons. Parked snapshots are not
 persisted across restarts; the session files below are.
 
-**Session files (disk).** A conversation the engine holds can be saved to a file and restored later, also after a
-restart, so a long prompt is not read again. The server exposes this as llama-server's slot API when started with
-`--slot-save-path DIR` (also `"slot_save_path"` in the config); NAME must be a plain file name inside DIR:
+**Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
+restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
+requests of llama-server's slot API, for its single slot 0, when started with `--slot-save-path DIR` (also
+`"slot_save_path"` in the config); NAME must be a plain file name inside DIR. There is no erase action and the file
+format is Strata's own, not llama.cpp's:
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/slots/0?action=save"    -H "Content-Type: application/json" -d '{"filename": "chat1.bin"}'
@@ -627,29 +630,71 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 # {"id_slot": 0, "filename": "chat1.bin", "n_restored": 63025, "n_read": 1198691396, "timings": {"restore_ms": 898.2}}
 ```
 
-The request must be `Content-Type: application/json` (else `415`) and come from no browser page or Strata's own
-(another site's `Origin` gets `403`), like `/load` and `/unload`; the Host check applies as everywhere.
-Errors: `501` without `--slot-save-path`, `400` for a slot other than 0, an unknown action, a file name with a path
-in it, or a file the engine refuses (the reason is in `error.message`), `404` for a restore of a missing file, `503`
-while the model is not loaded. The next request whose messages continue the restored conversation reads only the new
-tokens. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
-`SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>` or `ERR <reason>`.
+DIR becomes one absolute path at start (`--slot-save-path` relative to the server's working directory, the config's
+`slot_save_path` relative to the config's `"cwd"`), created with mode 0700 when missing. It should be private to the
+user that runs Strata: the files hold the conversation's token IDs and state, are created with mode 0600 on Linux
+(on Windows they inherit the folder's permissions), and nothing deletes them - about 1.2 GB per 63K-token
+conversation; a save refuses to leave less than `--session-min-free-mib` (default 4096) free on that disk. NAME may
+not contain a path, a drive, a stream (`:`), a Windows device name (`NUL`, `CON.bin`, `COM1`...), a control character,
+a leading dot or a trailing dot or space.
 
-One file holds the running state, the deepest checkpoint (the next turn's resume point), every QSA layer's K/V up to
-the conversation's length and the draft layer's K/V. Format v1: 64-byte header (magic, version, model fingerprint,
-config fingerprint, payload length, header hash), the payload, then a payload hash and an end marker; written to
-`<path>.tmp` and renamed over `path` (`MoveFileExW` on Windows). The model fingerprint samples the weight files (name,
-size, first and last MiB of each pack / GGUF / MTP file); the config fingerprint covers the engine version, `--kv`,
-`STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window` and the control vectors. A restore checks the file
-size, header, both fingerprints, every count against the bytes left, the payload hash and then the usual snapshot
-validation, all before any device write: a refused file leaves the current session untouched. A restore does not
-park the outgoing session. Not supported with `--layer-split` or `--prompt-cache 0`. On Linux the file is read and
-written with `O_DIRECT` in 16 MiB blocks when the filesystem allows it (buffered otherwise, or with
-`STRATA_SESSION_BUFFERED=1`); on Windows with ordinary buffered I/O.
+The request must be `Content-Type: application/json` (else `415`) and come from no browser page, Strata's own or a
+trusted origin (another site's `Origin` gets `403`, also with an API key); the Host and API-key checks apply as
+everywhere. Errors: `501` without `--slot-save-path`; `400` for a slot other than 0, an unknown action, a refused
+file name, or a file the engine refuses (the reason is in `error.message`; the session is as it was); `404` for a
+restore of a missing file; `503` while the model is not loaded or when the RAM to read the file is not there; `507`
+when the disk has no room; `500` when the engine ended (a restore transfer failure, below, or an engine that said
+nothing for `engine_silence_s`) - the next request starts it again. A save or restore waits for the running request
+(the same queue), shows in `/status` and counts as activity for the idle unload. A later request whose messages
+continue the restored conversation reuses the restored state or its checkpoint; a short tail may be read again (35
+tokens in the measurement below). Only the deepest checkpoint is saved, so an edit further back reads more again.
+Clients still send their messages (and images): the file holds engine state and token/image identity, not a chat
+export. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
+`SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>`, `ERR <reason>` (refused, nothing changed) or
+`FATAL <reason>` (then exits); `SESSION <done> <total>` lines report a large file as it moves (every 256 MiB).
+
+One file holds the running state, the deepest checkpoint, every QSA layer's K/V up to the conversation's length and
+the draft layer's K/V. Format v1, little-endian, fixed-width integers, IEEE-754 floats (a big-endian build does not
+compile): a 64-byte header (magic `STRSESS\x01`, version u32, header size u32, model fingerprint u64, config
+fingerprint u64, payload length u64, two reserved u64 that must be 0, a hash of the first 56 bytes), the payload
+(geometry, layer range, cvec flag, the live state, the checkpoints, the K/V layers; every array preceded by its u64
+count), the payload hash and the end marker `STRSEND\x01`. The hash is a 64-bit function with xxHash64-style rounds,
+not the standard XXH64 stream; it detects accidental corruption and does not authenticate a file: restore only files
+this engine wrote. An unknown version is refused; a new format gets a new version number.
+
+A file is bound to the model inputs and to the settings that change what the saved bytes mean. The model fingerprint
+samples (size, first and last MiB) every file the engine loads, by its role: the GGUF shards (also
+`--native-dense-gguf`, the head shards and `--embd-gguf`), the PLE shard, the pack's index/dense/embedding/expert files
+and the MTP's files - not other files in those folders, and not the path, so a moved model folder still matches. A
+change in the middle of a file that keeps its size is not seen: do not change model files while their sessions are
+kept. The config fingerprint covers the engine version (an update makes older files unrestorable), CUDA or HIP,
+`--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the resolved rope configuration (type,
+base, factor, freq scale, original context, the YaRN knobs - the cached K is post-RoPE), the loaded control vector (a
+digest of the tables uploaded: every file's content times its exact scale, the mode, the layer range and the
+direction) and the arithmetic switches (`--native-*`, `--no-ple`, the A/B arms). Sampling, seeds, draft tuning and
+the expert tier are not in it: they change what comes next, not what the saved cells hold.
+
+A save writes a temporary file with a new hidden name beside `path` (created exclusively, never an existing file or
+link), flushes it to the disk, renames it over `path` (`MoveFileExW` on Windows, which promises no transaction on
+every filesystem) and flushes the folder; a failed save keeps the old file at `path` and removes only its own
+temporary file. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
+anything but a regular file with one name; it checks the size, the header, both fingerprints (before the payload is
+read), that the parsed image fits in RAM above the parking floor (`--conversation-cache-min-free-mib`), every count
+against the bytes left and this engine's limits (context, checkpoints, layers) before allocating it, the payload hash
+and then the usual snapshot validation - all before any device write, and a refusal leaves the current session as it
+was. A transfer failure after the device writes began ends the engine (`FATAL`) rather than decode from a partial
+state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with
+`--layer-split`, `--peer-device` or `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
+moves with `O_DIRECT` in 16 MiB blocks when the filesystem takes it (buffered I/O otherwise, or with
+`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. Linux/CUDA only has been run; the Windows build, HIP and
+AMD cards were not.
 
 Measured on an RTX 4070 Ti (12 GB), Ryzen 9 5900X, 64 GB RAM, NVMe, IQ3_XXS, a 63,025-token conversation: file
-1.20 GB, save 0.72 s (0.62-0.66 s for the next ten), restore 0.89 s, then the next 32-token turn in 1.15 s (first
-token after 0.55 s) with the same 32 output tokens as without saving; the cold first turn takes 25.5 s.
+1.20 GB, save 0.70 s including the flushes to disk (0.64-0.67 s over 10 more saves, 5 replacing one file and 5 new),
+restore 0.86 s in a new engine process, then the next 32-token turn in 1.12 s with the same 32 output tokens as the
+same turn without a restart; the cold first turn takes 25.5 s. In the same run a symbolic link, a second hard link,
+a file with one flipped payload byte and a file restored by an engine with another `--rope-freq-base` were refused
+with the session untouched.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
