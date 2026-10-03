@@ -378,6 +378,11 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        # Reasoning text from the first <tool_call> opener while the thinking span is still open, kept so
+        # finish() can rescue a call stranded by a template that never emits </think> (see
+        # _rescue_unclosed_call).  Cleared the moment the span closes: a call inside a CLOSED span was a
+        # mention, however valid, and must never be acted on.
+        self.reasoning_tail: str | None = None
         self._reset_scan()
 
     def _reset_scan(self):
@@ -500,6 +505,45 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def _track_reasoning(self, text: str) -> None:
+        """Keep the reasoning tail used by _rescue_unclosed_call: everything emitted as reasoning from the
+        first <tool_call> opener, while the thinking span is still open."""
+        if self.reasoning_tail is not None:
+            self.reasoning_tail += text
+        else:
+            c = text.find(CALL_START)
+            if c >= 0:
+                self.reasoning_tail = text[c:]
+
+    def _rescue_unclosed_call(self) -> list[Event]:
+        """End of generation inside a thinking span that never closed.  A complete <tool_call> in such a
+        span was the model ACTING, not quoting - a template that renders a call after the reasoning block
+        never emits </think> before it, so without this the whole call streams out as reasoning and a
+        client that runs tools from the content channel ends its turn with nothing to execute.  Only a
+        tail made of complete, well-formed calls is rescued; anything else stays what it already streamed
+        as.  A </think> after the opener clears the tail (a mention inside genuine reasoning), so a valid
+        quoted example is never acted on."""
+        tail, self.reasoning_tail = self.reasoning_tail, None
+        if not tail:
+            return []
+        calls = []
+        rest = tail
+        while True:
+            a = rest.find(CALL_START)
+            if a < 0:
+                break
+            b = rest.find(CALL_END, a)
+            if b < 0:
+                break                      # an unfinished call stays reasoning
+            body, rest = rest[a + len(CALL_START):b], rest[b + len(CALL_END):]
+            name = body.strip()[len("<function="):].split(">", 1)[0]
+            try:
+                call = parse_tool_call(body, self.schemas.get(name))
+            except ValueError:
+                return []                  # not a well-formed act; leave every block as reasoning
+            calls.append(call)
+        return [Event("tool_call", call=call) for call in calls]
+
     def feed(self, delta: str) -> list[Event]:
         self.buf += delta
         out: list[Event] = []
@@ -507,15 +551,19 @@ class OutputParser:
             if self.state == "reasoning":
                 i = self.buf.find(THINK_END)
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END,))
+                    # Hold a partial </think> or <tool_call> (the tail tracker must see a whole opener).
+                    keep = self._hold(self.buf, (THINK_END, CALL_START))
                     if len(self.buf) > keep:
-                        out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
+                        text = self.buf[:len(self.buf) - keep]
+                        out.append(Event("reasoning", text))
+                        self._track_reasoning(text)
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
                 if i:
                     out.append(Event("reasoning", self.buf[:i]))
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead = "content", True
+                self.reasoning_tail = None   # the span closed: a <tool_call> inside it was a mention
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -575,5 +623,7 @@ class OutputParser:
             kind = {"reasoning": "reasoning", "content": "content"}.get(self.state, "content")
             text = self.buf if self.state != "call" else CALL_START + self.buf
             out.append(Event(kind, text))
+            if self.state == "reasoning":
+                self._track_reasoning(text)
             self.buf = ""
-        return out
+        return out + self._rescue_unclosed_call()

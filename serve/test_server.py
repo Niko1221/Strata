@@ -2329,5 +2329,119 @@ class LostStep(unittest.TestCase):
         self.run_mode("stop", stream=False)
 
 
+class ReasoningToolCall(unittest.TestCase):
+    """A tool call stranded in a thinking span that NEVER closes is rescued at end of stream.  Seen live
+    as agents stopping silently: a template that renders a call after the reasoning block never emits
+    </think> before it, so the call streamed out as reasoning_content and the client's turn ended with
+    nothing to run.  A <tool_call> inside a span that DOES close is a mention, however well-formed, and
+    is never acted on."""
+
+    SCHEMA = [{"name": "Read", "parameters": {"properties": {"file_path": {"type": "string"},
+                                                             "offset": {"type": "integer"}}}}]
+
+    def run_parser(self, text, stream_tools, step):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        return evs
+
+    def test_call_stranded_in_unclosed_thinking_is_rescued(self):
+        text = ("I need to inspect the kernel source first.\n<tool_call>\n<function=Read>\n"
+                "<parameter=file_path>\n/src/moe_mul1.cpp\n</parameter>\n<parameter=offset>\n30\n"
+                "</parameter>\n</function>\n</tool_call>")
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    evs = self.run_parser(text, stream_tools, step)
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(calls[0].name, "Read")
+                    self.assertEqual(calls[0].arguments, {"file_path": "/src/moe_mul1.cpp", "offset": 30})
+                    thought = "".join(e.text for e in evs if e.kind == "reasoning")
+                    self.assertIn("inspect the kernel source", thought)
+                    self.assertFalse([e for e in evs if e.kind == "content" and e.text.strip()])
+
+    def test_valid_example_in_closed_thinking_is_not_a_call(self):
+        # A valid, quoted call example closed by a real </think> stays reasoning.  The first version of
+        # this fix diverted at the opener and fired the example as a real call (and leaked a literal
+        # </think> into the content channel) - the review's false positive.
+        text = ("This is a documentation example, not an action:\n```xml\n<tool_call>\n<function=Read>\n"
+                "<parameter=file_path>\n/example.txt\n</parameter>\n</function>\n</tool_call>\n```\n"
+                "I should explain it without calling any tool.\n</think>Here is the explanation.")
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    evs = self.run_parser(text, stream_tools, step)
+                    self.assertFalse([e for e in evs if e.kind == "tool_call"])
+                    thought = "".join(e.text for e in evs if e.kind == "reasoning")
+                    self.assertIn("/example.txt", thought)
+                    self.assertIn("I should explain it", thought)
+                    content = "".join(e.text for e in evs if e.kind == "content")
+                    self.assertEqual(content, "Here is the explanation.")
+
+    def test_stranded_call_with_trailing_thought_is_still_rescued(self):
+        # The model mused after the call; the unclosed span leaves that in reasoning too.
+        text = ("planning<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+                "</function>\n</tool_call>\nlet me see what comes back.")
+        evs = self.run_parser(text, False, 7)
+        calls = [e.call for e in evs if e.kind == "tool_call"]
+        self.assertEqual([(c.name, c.arguments) for c in calls], [("Read", {"file_path": "/a"})])
+        thought = "".join(e.text for e in evs if e.kind == "reasoning")
+        self.assertIn("let me see what comes back", thought)
+
+    def test_two_stranded_calls_are_both_rescued(self):
+        text = ("a<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
+                "</tool_call>b<tool_call>\n<function=Read>\n<parameter=file_path>\n/b\n</parameter>\n"
+                "</function>\n</tool_call>")
+        evs = self.run_parser(text, False, 7)
+        calls = [e.call for e in evs if e.kind == "tool_call"]
+        self.assertEqual([c.arguments for c in calls], [{"file_path": "/a"}, {"file_path": "/b"}])
+
+    def test_malformed_mention_in_unclosed_thinking_stays_reasoning(self):
+        text = "the format is<tool_call>\nnot a call body at all\n</tool_call>"
+        for step in (1, 7, 10_000):
+            with self.subTest(step=step):
+                evs = self.run_parser(text, False, step)
+                self.assertFalse([e for e in evs if e.kind == "tool_call"])
+                self.assertIn("not a call body at all",
+                              "".join(e.text for e in evs if e.kind == "reasoning"))
+
+    def test_think_end_still_wins_when_it_comes_first(self):
+        text = ("brief thought</think>prose<tool_call>\n<function=Read>\n"
+                "<parameter=file_path>\n/a\n</parameter>\n</function>\n</tool_call>")
+        for stream_tools in (False, True):
+            with self.subTest(stream_tools=stream_tools):
+                evs = self.run_parser(text, stream_tools, 7)
+                thought = "".join(e.text for e in evs if e.kind == "reasoning")
+                self.assertEqual(thought, "brief thought")
+                contents = "".join(e.text for e in evs if e.kind == "content")
+                self.assertEqual(contents.strip(), "prose")
+                self.assertEqual(len([e for e in evs if e.kind == "tool_call"]), 1)
+
+    def test_unfinished_stranded_call_is_not_rescued(self):
+        # An output cut by max tokens mid-call stays reasoning (the #530 log names the cause).
+        text = "planning<tool_call>\n<function=Read>\n<parameter=file_path>\n/sr"
+        evs = self.run_parser(text, False, 7)
+        self.assertFalse([e for e in evs if e.kind == "tool_call"])
+
+    def test_call_after_think_end_uses_the_content_channel(self):
+        # No thinking at all in the reply: the call is ordinary content-channel parsing, untouched.
+        text = ("prose<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+                "</function>\n</tool_call>")
+        for thinking in (True, False):
+            with self.subTest(thinking=thinking):
+                from serve.frontend import OutputParser
+                p = OutputParser(thinking=thinking, tools=self.SCHEMA, stream_tools=False)
+                evs = p.feed(text) + p.finish()
+                if thinking:
+                    evs = p.feed("x</think>") + evs  # close the span first
+                calls = [e.call for e in evs if e.kind == "tool_call"]
+                self.assertEqual([(c.name, c.arguments) for c in calls], [("Read", {"file_path": "/a"})])
+
+
+
 if __name__ == "__main__":
     unittest.main()
