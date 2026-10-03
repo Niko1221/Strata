@@ -110,6 +110,21 @@
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
           <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+          <div id="conv-cache" hidden>
+            <div class="bar-row"><span class="card-title">Conversation cache</span></div>
+            <div class="bar-row" title="Share of the prompt tokens of the last requests that were not read again: continuations and restored conversations">
+              <span id="cc-reused-label">Prompt reused</span><span class="muted" id="cc-reused-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-reused-bar" style="width:0%"></div></div>
+            <div class="bar-row" title="Requests that switched to another conversation and were restored from a parked snapshot. A switch is a request that reuses at most the system prompt of the conversation held; the next turn of the same chat is usually a continuation and does not count. A new conversation, or a change of the steering mode or thinking level, counts as a switch and is a miss when no parked snapshot matches">
+              <span id="cc-hits-label">Hits on switches</span><span class="muted" id="cc-hits-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-hits-bar" style="width:0%"></div></div>
+            <div class="bar-row" title="Conversations held in RAM, against --conversation-cache-slots">
+              <span>Parked conversations</span><span class="muted" id="cc-slots-text">&ndash;</span></div>
+            <div class="st-progress" id="cc-slots-progress"><div class="st-progress__bar" id="cc-slots-bar" style="width:0%"></div></div>
+            <div class="bar-row" title="Parked snapshots plus the kept K/V of the active conversation, against --conversation-cache-mib; evictions count since the engine started">
+              <span>Cache RAM</span><span class="muted" id="cc-ram-text">&ndash;</span></div>
+            <div class="st-progress" id="cc-ram-progress"><div class="st-progress__bar" id="cc-ram-bar" style="width:0%"></div></div>
+          </div>
         </div>
         <div class="st-card req-card">
           <div class="req-head"><span class="card-title">Recent requests</span>

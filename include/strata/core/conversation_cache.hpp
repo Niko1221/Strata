@@ -25,6 +25,7 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
+    bool root = false; // the end of the system prompt (root_at), which every chat of a client shares
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;
@@ -100,6 +101,7 @@ public:
         size_t index = 0;
         int64_t tokens = 0;
         bool live = false;
+        bool root = false;   // the match is only that conversation's root (system-prompt) checkpoint
     };
 
     ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
@@ -136,7 +138,7 @@ public:
             if (e.cvec != cvec) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live};
+                if (n > best.tokens) best = {i, n, live, c.root};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
@@ -213,5 +215,13 @@ private:
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;
 };
+
+// The Monitor's "switch" (the DONE line's switched field): the request did not continue the conversation the
+// engine held.  It restored a parked snapshot, read its prompt from token 0, or reused only the root checkpoint -
+// the system prompt, which every chat of a client shares.  A mount from a later checkpoint continues the same chat:
+// that is how its next request usually comes back, since a client renders this reply's thinking differently.
+inline bool conversation_switched(bool incoming, int64_t resume, bool mounted_root) {
+    return incoming || resume == 0 || mounted_root;
+}
 
 } // namespace strata::core

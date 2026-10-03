@@ -11,12 +11,15 @@ from tools.conversation_cache_parity import STATE_KEYS, engine_args, pressure_bu
 
 def fixture():
     state = {k: '1234' for k in STATE_KEYS}
-    def record(name):
-        return {'name': name, 'ids': [123], 'finish': 'length', 'state': dict(state), 'reused': 100}
+    def record(name, restored=0):
+        return {'name': name, 'ids': [123], 'finish': 'length', 'state': dict(state), 'reused': 100,
+                'switched': 1, 'restored': restored, 'parked': 1, 'parked_bytes': 100, 'evictions': 0}
     info = {'expert_slots': 100, 'kv': 'int8', 'kv_resident': 32768, 'context': 65536,
             'spec': 1, 'mtp_max': 0, 'lookup': 0, 'cvec': '0'}
-    return {'baseline': [record('A'), record('A+')],
-            'candidate': [record(n) for n in ('A', 'B', 'A+', 'B-again', 'A+-checkpoint')],
+    continuation = {**record('A+'), 'switched': 0}        # cache off: A+ continues the A the engine holds
+    return {'baseline': [record('A'), continuation],
+            'candidate': [record('A'), record('B'), record('A+', 1), record('B-again', 1),
+                          record('A+-checkpoint', 1)],
             'engine_info': {'baseline': dict(info), 'candidate': dict(info)}}
 
 
@@ -48,6 +51,16 @@ class ParityGate(unittest.TestCase):
             'different residency': lambda d: d['engine_info']['candidate'].update(expert_slots=99),
             'cancellation': lambda d: d['candidate'][2].update(finish='cancel'),
             'initial output differs': lambda d: d['candidate'][0].update(ids=[789]),
+            'restore not reported': lambda d: d['candidate'][2].update(restored=0),
+            'checkpoint restore not reported': lambda d: d['candidate'][4].update(restored=0),
+            'B-again restore not reported': lambda d: d['candidate'][3].update(restored=0),
+            'switch not reported': lambda d: d['candidate'][2].update(switched=0),
+            'baseline reports a restore': lambda d: d['baseline'][1].update(restored=1),
+            'first A reports a restore': lambda d: d['candidate'][0].update(restored=1),
+            'engine without the fields': lambda d: d['candidate'][2].pop('restored'),
+            'negative parked bytes': lambda d: d['candidate'][3].update(parked_bytes=-1),
+            'continuation reported as a switch': lambda d: d['baseline'][1].update(switched=1),
+            'new conversation not reported as a switch': lambda d: d['candidate'][0].update(switched=0),
         }
         for name, mutate in cases.items():
             with self.subTest(name=name):
@@ -123,6 +136,17 @@ class PressureGate(unittest.TestCase):
 
     def test_incoming_exchange_evidence(self):
         data = fixture()
+        # one snapshot fits, two do not: A+ takes A, B is never parked (skip 1), so B-again restores nothing and
+        # parks A+ (park 2), which A+-checkpoint takes - two parks, two skips, B-again restored 0
+        data['candidate'][3]['restored'] = 0
+        impossible = copy.deepcopy(data)
+        impossible['candidate'][3]['restored'] = 1
+        impossible['engine_info']['candidate']['conversation_cache_mib'] = 400
+        impossible['pressure'] = {'skips': 2, 'parks': [
+            {'parked': 1, 'bytes': 266000000, 'evictions': 0},
+            {'parked': 1, 'bytes': 384000000, 'evictions': 0}]}
+        with self.assertRaises(AssertionError):           # a restored B-again needs a third park line
+            verify_exchange(impossible, 100, 1, 400)
         data['engine_info']['candidate']['conversation_cache_mib'] = 400
         data['pressure'] = {'skips': 2, 'parks': [
             {'parked': 1, 'bytes': 266000000, 'evictions': 0},

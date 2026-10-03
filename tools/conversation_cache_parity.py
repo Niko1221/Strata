@@ -11,7 +11,7 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from serve.server import StrataEngine, child_env
+from serve.server import CACHE_FIELDS, StrataEngine, child_env
 from serve.frontend import ChatTemplate
 import strata_tokenizer as ST
 
@@ -104,7 +104,7 @@ def verify_pressure(results, budget_mib, oversized=False):
                 pressure_budget_hint(results, budget_mib))
 
 
-def verify_results(results, prompt_tokens, spec):
+def verify_results(results, prompt_tokens, spec, b_parked=True):
     """Fail closed on incomplete evidence, even under python -O."""
     baseline, candidate = results['baseline'], results['candidate']
     require([r['name'] for r in baseline] == ['A', 'A+'], 'incomplete baseline')
@@ -125,10 +125,27 @@ def verify_results(results, prompt_tokens, spec):
         require(record['ids'] == baseline[1]['ids'], 'restored continuation output differs')
         if spec == 1:
             require(record['state'] == baseline[1]['state'], 'restored main-model state differs')
+    # the conversation cache's DONE fields: the gate's own A/B/A sequence pins them
+    for record in baseline + candidate:
+        require(all(k in record for k in CACHE_FIELDS),
+                'engine reports no conversation cache fields')
+        require(record['parked'] >= 0 and record['parked_bytes'] >= 0 and record['evictions'] >= 0,
+                'negative conversation cache field')
+    require(all(r['restored'] == 0 for r in baseline), 'cache-off baseline reports a restore')
+    require(baseline[1]['switched'] == 0, 'the cache-off continuation A+ reported as a switch')
+    require(candidate[0]['switched'] == 1, 'the first A (a new conversation) not reported as a switch')
+    require(candidate[0]['restored'] == 0 and candidate[1]['restored'] == 0, 'A or B reports a restore before parking')
+    for record in candidate[2:]:
+        require(record['switched'] == 1, f"{record['name']} not reported as a switch")
+    for record in (candidate[2], candidate[4]):        # A+ and A+-checkpoint come back from a parked A
+        require(record['restored'] == 1, f"{record['name']} not reported as restored")
+    # B-again comes back from a parked B - unless B never parked (the exchange scenario's budget)
+    require(candidate[3]['restored'] == (1 if b_parked else 0),
+            'B-again ' + ('not reported as restored' if b_parked else 'restored although B never parked'))
 
 
 def verify_exchange(results, prompt_tokens, spec, budget_mib):
-    verify_results(results, prompt_tokens, spec)
+    verify_results(results, prompt_tokens, spec, b_parked=False)
     require(results['engine_info']['candidate']['conversation_cache_mib'] == budget_mib,
             'exchange cache budget differs')
     evidence = results['pressure']
