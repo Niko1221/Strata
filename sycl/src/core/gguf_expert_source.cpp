@@ -96,8 +96,7 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
         slot = ring_next_;
         ring_next_ = (ring_next_ + 1) % ring_.size();
         if (ring_key_[slot] >= 0) where_.erase(ring_key_[slot]);
-        ring_key_[slot] = key;
-        where_[key] = slot;
+        ring_key_[slot] = key;   // reserved; published in where_ only once the read below is complete
     }
     std::vector<uint8_t>& buf = ring_[slot];
     for (int r = 0; r < 3; ++r) {
@@ -110,7 +109,14 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
             done += (uint64_t) n;
         }
     }
-    ++reads_;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        ++reads_;
+        // another caller for the same expert that arrived while this read was in flight read it into a slot of its own
+        // rather than being handed this half-filled buffer (the slot was in where_ before the read, and the pool's
+        // workers, or the two tokens of one window, do ask for the same expert at once)
+        if (ring_key_[slot] == key) where_[key] = slot;
+    }
     return buf.data();
 }
 
