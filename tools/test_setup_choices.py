@@ -460,5 +460,136 @@ class VisionDevice(unittest.TestCase):
             self.assertEqual(quiet(setup.vision_device_auto, "none", self.CHOSEN)[0], ("none", None))
 
 
+VULKANINFO_SUMMARY = """
+Devices:
+========
+
+        GPU0:\t
+                deviceName        = NVIDIA GeForce GTX 1080 Ti
+                deviceType        = DISCRETE_GPU
+
+        GPU1:\t
+                deviceName        = Intel(R) Iris(R) Xe Graphics
+                deviceType        = INTEGRATED_GPU
+"""
+
+SYCL_LS = """
+[0] level_zero:gpu:0.0 Intel(R) Arc(TM) A770 Graphics (0x56a0)
+[1] level_zero:gpu:1.0 Intel(R) UHD Graphics (0x46d1)
+[2] cuda:0.0 CUDA 12.2 (NVIDIA GeForce GTX 1080 Ti)
+[3] opencl:cpu:0.0 Intel(R) Core(TM) i7
+"""
+
+
+class VisionBackend(unittest.TestCase):
+    """--vision-backend vulkan|sycl (the non-CUDA image encoders): the encoder is built for another ggml GPU backend
+    and its device number is that backend's own list's (vulkaninfo / sycl-ls), not nvidia-smi's."""
+
+    VK = [{"index": 0, "name": "NVIDIA GeForce GTX 1080 Ti", "integrated": False},
+          {"index": 1, "name": "Intel(R) Iris(R) Xe Graphics", "integrated": True}]
+    CHOSEN = [{"index": 0}, {"index": 1}]
+
+    def backend_role(self, vision, text, backend, devices):
+        with mock.patch.object(setup, "vk_devices", lambda: devices), \
+                mock.patch.object(setup, "sycl_devices", lambda: devices):
+            return quiet(setup.vision_device_role, vision, text, self.CHOSEN, False, backend)
+
+    def test_a_backend_number_is_its_own_lists_number(self):
+        (vision, card), out = self.backend_role("gpu", "1", "vulkan", self.VK)
+        self.assertEqual((vision, card), ("gpu", 1))
+        self.assertIn("its own GPU: Intel(R) Iris(R) Xe Graphics (GPU 1)", out)     # the CUDA list's "1" is "A"
+        (_, card), _ = self.backend_role("gpu", "cuda:1", "vulkan", self.VK)
+        self.assertEqual(card, 1)                                       # the prefix does not turn it into CUDA's
+        (_, card), _ = self.backend_role("gpu", " 0 ", "sycl", self.VK)
+        self.assertEqual(card, 0)
+
+    def test_a_backend_number_outside_its_list_stops(self):
+        with self.assertRaises(SystemExit):
+            self.backend_role("gpu", "2", "vulkan", self.VK)            # the Vulkan list ends at 1
+        with self.assertRaises(SystemExit):
+            self.backend_role("gpu", "1", "sycl", [{"index": 0, "name": "Arc"}])
+
+    def test_auto_with_a_backend_stops(self):
+        with mock.patch.object(setup, "vk_devices", lambda: self.VK):
+            with self.assertRaises(SystemExit):
+                quiet(setup.vision_device_auto, "gpu", self.CHOSEN, False, "vulkan")
+
+    def test_vk_devices_reads_vulkaninfo(self):
+        with mock.patch.object(setup, "out", lambda cmd: VULKANINFO_SUMMARY):
+            found = setup.vk_devices()
+        self.assertEqual(found, [{"index": 0, "driver": "vulkan", "name": "NVIDIA GeForce GTX 1080 Ti",
+                                  "integrated": False},
+                                 {"index": 1, "driver": "vulkan", "name": "Intel(R) Iris(R) Xe Graphics",
+                                  "integrated": True}])
+        with mock.patch.object(setup, "out", lambda cmd: ""):
+            with self.assertRaises(SystemExit):
+                setup.vk_devices()
+
+    def test_sycl_devices_reads_sycl_ls_and_keeps_only_level_zero(self):
+        with mock.patch.object(setup, "out", lambda cmd: SYCL_LS):
+            found = setup.sycl_devices()
+        self.assertEqual(found, [{"index": 0, "name": "Intel(R) Arc(TM) A770 Graphics (0x56a0)", "driver": "sycl"},
+                                 {"index": 1, "name": "Intel(R) UHD Graphics (0x46d1)", "driver": "sycl"}])
+        with mock.patch.object(setup, "out", lambda cmd: "sycl-ls: no device found"):
+            with self.assertRaises(SystemExit):
+                setup.sycl_devices()
+
+    def build(self, meta, vision="gpu", backend="", vexe=False):
+        """build_engine in a fresh dir, with an engine already there (only the encoder can be missing)."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / setup.EXE).write_bytes(b"engine")
+            if vexe:
+                (eng / setup.VEXE).write_bytes(b"vision")
+            src, vsrc = "S", "V"
+            (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": src, **meta}))
+            built = []
+
+            def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+                built.append((target, defs))
+                (bdir / "bin").mkdir(parents=True)
+                (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "install_build_tools", lambda gpu_, yes: (str(root / "cuda" / "nvcc"), None)), \
+                    mock.patch.object(setup, "source_hash", lambda paths: vsrc if paths == setup.VISION_SOURCES else src), \
+                    mock.patch.object(setup, "source_version", lambda: "0.0.0"):
+                quiet(setup.build_engine, {"arch": "86", "vram_gb": 24.0}, vision, False, "llama", backend)
+            return built, json.loads((eng / "BUILD.json").read_text())
+
+    def test_the_vulkan_encoder_def(self):
+        built, meta = self.build({}, backend="vulkan")
+        self.assertEqual([t for t, _ in built], ["strata-vision"])
+        self.assertIn("-DSTRATA_VISION_VULKAN=ON", built[0][1])
+        self.assertEqual((meta["vision_backend"], meta["vision"]), ("vulkan", "gpu"))
+        for no in ("-DSTRATA_VISION_CUDA=ON", "-DSTRATA_VISION_CUDA=OFF", "-DCMAKE_CUDA_ARCHITECTURES=86"):
+            self.assertNotIn(no, built[0][1])                  # a Vulkan build takes no CUDA arch either
+
+    def test_a_backend_change_rebuilds_the_encoder(self):
+        built, meta = self.build({"vision": "gpu", "vision_src": "V", "vision_backend": "cuda"}, backend="vulkan")
+        self.assertEqual([t for t, _ in built], ["strata-vision"])     # the CUDA encoder in place is not Vulkan's
+        self.assertEqual(meta["vision_backend"], "vulkan")
+
+    def test_the_same_backend_keeps_the_encoder(self):
+        built, meta = self.build({"vision": "gpu", "vision_src": "V", "vision_backend": "vulkan"},
+                                 backend="vulkan", vexe=True)
+        self.assertEqual(built, [])                                    # the Vulkan encoder in place is this build's
+        self.assertEqual(meta["vision_backend"], "vulkan")
+
+    def test_dropping_the_backend_rebuilds_the_cuda_encoder(self):
+        built, meta = self.build({"vision": "gpu", "vision_src": "V", "vision_backend": "vulkan"})
+        self.assertIn("-DSTRATA_VISION_CUDA=ON", built[0][1])          # back to CUDA, with its arch line back too
+        self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=86", built[0][1])
+        self.assertIsNone(meta["vision_backend"])
+
+    def test_the_flag_without_images_builds_nothing_backendish(self):
+        built, meta = self.build({}, vision="cpu", backend="vulkan")
+        self.assertEqual([t for t, _ in built], ["strata-vision"])     # the CPU encoder, as ever
+        self.assertIn("-DSTRATA_VISION_CUDA=OFF", built[0][1])         # no backend line in its defs
+        self.assertIsNone(meta.get("vision_backend"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,12 @@ engine as an embeddings file through the disk, so no card-to-card path is needed
 the split's cards; the server says where it runs at start. (Costs, and the way to change an existing install:
 DETAILS.md's "Images"; the saved config keeps it as `"cuda_device"` in `"vision"`, #408.)
 
+The reader can also be built for another GPU backend than CUDA (`--vision-backend vulkan|sycl`): a Vulkan encoder
+runs on any Vulkan GPU through `GGML_VK_VISIBLE_DEVICES` - an Intel or AMD iGPU included, beside an NVIDIA engine -
+and a SYCL one on Intel GPUs through `ONEAPI_DEVICE_SELECTOR="level_zero:N"`. These backends number their devices by
+their own lists (`vulkaninfo --summary` / `sycl-ls`), not nvidia-smi's, so `--vision-device` names the card by that
+list then. See DETAILS.md's "Images".
+
 **Not supported** (setup says so and names the cards that can be used instead):
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its

@@ -603,6 +603,33 @@ class GpuChoice(unittest.TestCase):
         plain = {"gpu": [0, 1], "vision": {"exe": "v"}}
         self.assertIs(vision_env(plain, env), env)          # no cuda_device: the engine's environment, unchanged
 
+    def test_vision_env_backend(self):
+        # --vision-backend vulkan/sycl: the encoder's device is named in its backend's own variable, and CUDA's
+        # (Vulkan and SYCL would ignore it) stays as child_env set it for the engine
+        from serve.server import child_env, vision_env
+        vk = vision_env({"gpu": [0], "vision": {"exe": "v", "cuda_device": 1, "backend": "vulkan"}}, child_env({}))
+        self.assertEqual(vk["GGML_VK_VISIBLE_DEVICES"], "1")
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", vk)
+        self.assertNotIn("ONEAPI_DEVICE_SELECTOR", vk)
+        sycl = vision_env({"gpu": [0], "vision": {"exe": "v", "cuda_device": 0, "backend": "sycl"}}, child_env({}))
+        self.assertEqual(sycl["ONEAPI_DEVICE_SELECTOR"], "level_zero:0")
+        self.assertNotIn("GGML_VK_VISIBLE_DEVICES", sycl)
+        hip = vision_env({"gpu": [0], "vision": {"exe": "v", "cuda_device": 1, "backend": "hip"}}, child_env({}))
+        self.assertEqual(hip["HIP_VISIBLE_DEVICES"], "1")
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", hip)
+        cfg_backend = vision_env({"gpu": [0], "backend": "vulkan",
+                                  "vision": {"exe": "v", "cuda_device": 1}}, child_env({}))
+        self.assertEqual(cfg_backend["GGML_VK_VISIBLE_DEVICES"], "1")       # the engine's backend serves as default
+        cuda = vision_env({"gpu": [0, 1], "vision": {"exe": "v", "cuda_device": 2}}, child_env({}))
+        self.assertEqual(cuda["CUDA_VISIBLE_DEVICES"], "2")                 # no backend key: CUDA, as ever
+
+    def test_vision_role_backend(self):
+        from serve.server import vision_role
+        self.assertEqual(vision_role({"gpu": [0], "vision": {"gpu": True, "cuda_device": 1, "backend": "vulkan"}}),
+                         "GPU 1 (its own vulkan device)")
+        self.assertEqual(vision_role({"gpu": [0], "vision": {"gpu": True, "cuda_device": 0, "backend": "sycl"}}),
+                         "GPU 0 (its own sycl device)")
+
     def test_vision_role(self):
         """--vision-device: the start-up line says where the encoder runs (the CPU, a spare card, or shared)."""
         from serve.server import vision_role

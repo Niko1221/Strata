@@ -1639,12 +1639,67 @@ def hip_vision(asked) -> str:
     return "cpu" if asked == "cpu" else "none"
 
 
-def vision_device_role(vision: str, text: str, chosen: list, hip: bool = False) -> tuple:
+def vk_devices():
+    """Every Vulkan GPU, numbered as `vulkaninfo --summary` numbers them - an encoder built for Vulkan takes its
+    device index from this list (`GGML_VK_VISIBLE_DEVICES`), not from nvidia-smi's."""
+    s = out(["vulkaninfo", "--summary"])
+    if not s.strip():
+        fail("no Vulkan devices found: `vulkaninfo` printed nothing (install vulkan-tools, or build the encoder "
+             "without --vision-backend)")
+    found, idx = [], None
+    for line in s.splitlines():
+        gpu_line = re.search(r"GPU(\d+):", line)
+        if gpu_line:
+            idx = int(gpu_line.group(1))
+            found.append({"index": idx, "driver": "vulkan"})
+        elif idx is not None:
+            name = re.search(r"deviceName\s+=\s+(.+)", line)
+            if name:
+                found[-1]["name"] = name.group(1).strip()
+            dev_type = re.search(r"deviceType\s+=\s+(.+)", line)
+            if dev_type:
+                found[-1]["integrated"] = "INTEGRATED" in dev_type.group(1).upper()
+    if not found:
+        fail("`vulkaninfo` is there but printed no GPU (is the Vulkan ICD of your driver installed?)")
+    return found
+
+
+def sycl_devices():
+    """Every Level-Zero GPU the oneAPI runtime sees, numbered as `sycl-ls` numbers them (dGPUs first, iGPUs at the
+    end).  A SYCL encoder takes its device index from this list (`ONEAPI_DEVICE_SELECTOR`), not nvidia-smi's."""
+    s = out(["sycl-ls"])
+    if not s.strip():
+        fail("no oneAPI SYCL runtime found: `sycl-ls` printed nothing (install Intel oneAPI Base Toolkit, or build "
+             "the encoder without --vision-backend)")
+    found = []
+    for line in s.splitlines():
+        m = re.search(r"\[(\d+)\]\s+level_zero:gpu:\S+\s+(.*)", line)
+        if m:
+            found.append({"index": int(m.group(1)), "name": m.group(2).strip(), "driver": "sycl"})
+    if not found:
+        fail("`sycl-ls` is there but printed no level_zero GPU (is your GPU's Intel Compute Runtime installed, and "
+             "is ONEAPI_DEVICE_SELECTOR left unset?)")
+    return found
+
+
+def vision_devices(backend: str, hip: bool = False) -> list:
+    """The list the image-encoder backend numbers its devices by: nvidia-smi's order for CUDA (the sysfs' for HIP),
+    otherwise the backend's own enumeration - the numbers do not carry between the lists."""
+    if backend == "vulkan":
+        return vk_devices()
+    if backend == "sycl":
+        return sycl_devices()
+    return amd_gpus() if hip else gpus()
+
+
+def vision_device_role(vision: str, text: str, chosen: list, hip: bool = False, backend: str = "") -> tuple:
     """--vision-device: the picture encoder's device as its own role next to the engine's GPUs (its "cuda_device"
     placement is #408's; the CPU side #304's).  "auto" gives it a spare card when one exists (the one with the most
     VRAM), "cpu" reads the pictures on the CPU, a card ("1" / "cuda:1", as nvidia-smi numbers them) pins it there.
-    The encoder is a process of its own: nothing of its VRAM or RAM lands on the engine's cards but the embeddings
-    it writes through the disk.  None changed when `text` is empty.  Returns (vision, the card or None)."""
+    With `--vision-backend vulkan|sycl` the number is that backend's own device numbering (`vulkaninfo` / `sycl-ls`),
+    not nvidia-smi's, so the encoder device is never told apart from the engine's cards by it.  The encoder is a
+    process of its own: nothing of its VRAM or RAM lands on the engine's cards but the embeddings it writes through
+    the disk.  Nothing changed when `text` is empty.  Returns (vision, the card or None)."""
     device = (text or "").strip().lower()
     card = None
     if not device:
@@ -1664,10 +1719,12 @@ def vision_device_role(vision: str, text: str, chosen: list, hip: bool = False) 
         card = int(device[5:] if device.startswith("cuda:") else device)
     except ValueError:
         fail(f"--vision-device takes \"auto\", \"cpu\" or a GPU (\"1\" or \"cuda:1\"), not {text!r}")
-    present = {g["index"]: g for g in (amd_gpus() if hip else gpus())}
+    present = {g["index"]: g for g in vision_devices(backend, hip)}
     if card not in present:
-        fail(f"GPU {card} does not exist (found: {', '.join(str(i) for i in sorted(present))})")
-    if card in {x["index"] for x in chosen}:
+        lister = {"vulkan": "vulkaninfo --summary", "sycl": "sycl-ls"}.get(backend)
+        fail(f"GPU {card} does not exist (found: {', '.join(str(i) for i in sorted(present))})"
+             + ("" if not lister else f" - with the {backend} backend the number is {lister}'s, not nvidia-smi's"))
+    if card in {x["index"] for x in chosen} and not backend:
         warn(f"the image encoder shares GPU {card} with the engine: the expert cache there is sized after the "
              "encoder's VRAM (text a few % slower); a spare card can hold it instead")
     else:
@@ -1675,11 +1732,15 @@ def vision_device_role(vision: str, text: str, chosen: list, hip: bool = False) 
     return vision, card
 
 
-def vision_device_auto(vision: str, chosen: list, hip: bool = False) -> tuple:
+def vision_device_auto(vision: str, chosen: list, hip: bool = False, backend: str = "") -> tuple:
     """--vision-device auto: a spare card (not one the engine uses), the one with the most VRAM; else the engine's
-    main card, as before the flag existed.  Returns (vision, the card or None)."""
+    main card, as before the flag existed.  With a non-CUDA backend the engine's cards are a different numbering, so
+    only a device the user names can be trusted.  Returns (vision, the card or None)."""
     if vision != "gpu":
         return vision, None
+    if backend:
+        fail(f"--vision-device auto does not know the {backend} device list: name the device yourself "
+             f"({'vulkaninfo --summary' if backend == 'vulkan' else 'sycl-ls'} shows them)")
     spare = [g for g in (amd_gpus() if hip else gpus()) if g["index"] not in {x["index"] for x in chosen}]
     if not spare:
         ok("no spare GPU: the image encoder shares the engine's main card "
@@ -1865,7 +1926,7 @@ def update_installed_engine(url_base) -> None:
             if gpu is None:
                 raise RuntimeError("no NVIDIA GPU found")
             gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *(int(x) for x in meta.get("archs", []))})}
-            build_engine(gpu, vision, False, get_llama_cpp())
+            build_engine(gpu, vision, False, get_llama_cpp(), meta.get("vision_backend") or "")
         except (Exception, SystemExit) as e:
             warn(f"could not compile the updated engine{'' if isinstance(e, SystemExit) else f' ({e})'}: starting the installed one")
         return
@@ -2013,9 +2074,10 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
-def build_engine(gpu, vision, yes, llama) -> Path:
+def build_engine(gpu, vision, yes, llama, backend: str = "") -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
-    engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes."""
+    engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
+    `backend` ("vulkan"/"sycl") builds the image encoder for another GPU backend instead of CUDA."""
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
@@ -2029,7 +2091,8 @@ def build_engine(gpu, vision, yes, llama) -> Path:
     # same; the compile keeps the generations it was built for
     new_arch = local and not set(archs) <= built
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch
-    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
+    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc)
+                                    and (meta.get("vision_backend") or "") == (backend or ""))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
@@ -2049,15 +2112,19 @@ def build_engine(gpu, vision, yes, llama) -> Path:
         shutil.copy2(ROOT / "build" / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
-        defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
-        if vision == "gpu":
-            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
+        if vision == "gpu" and backend:            # another GPU backend entirely: no CUDA def, no CUDA arch
+            defs = [f"-DLLAMA_DIR={llama}",
+                    {"vulkan": "-DSTRATA_VISION_VULKAN=ON", "sycl": "-DSTRATA_VISION_SYCL=ON"}[backend]]
+        else:
+            defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
+            if vision == "gpu":
+                defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision", "strata-vision", defs, vcvars, "build-vision.bat")
         shutil.copy2(ROOT / "build-vision" / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
-                                 "vision": vision,
+                                 "vision": vision, "vision_backend": backend if vision == "gpu" and backend else None,
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
     return eng
@@ -2908,7 +2975,7 @@ def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     main = gpu_info(cards[0]["index"])
     archs = sorted({int(x) for x in meta.get("archs", [])} | {int(g["arch"]) for g in cards})
     vision = meta.get("vision") or ("gpu" if (ROOT / "engine" / VEXE).exists() else "none")
-    build_engine({**main, "archs": archs}, vision, yes, get_llama_cpp())
+    build_engine({**main, "archs": archs}, vision, yes, get_llama_cpp(), meta.get("vision_backend") or "")
     dirs = json.loads(info.read_text()).get("cuda_dirs") or []
     cfg["lib_dirs"] = dirs + [d for d in cfg.get("lib_dirs") or [] if d not in dirs]
     write_config(cfg_path, cfg)
@@ -2991,6 +3058,11 @@ def main() -> int:
                          "or \"cuda:1\", as nvidia-smi numbers them) pins it there.  The encoder is a process of its "
                          "own: its weights and work buffers land on that one card alone, the engine just reads the "
                          "embeddings it wrote.  Default: the engine's card, as before")
+    ap.add_argument("--vision-backend", choices=["vulkan", "sycl"],
+                    help="build the encoder for another GPU backend than CUDA: \"vulkan\" runs it on any Vulkan GPU "
+                         "(an Intel/AMD iGPU included, with GGML_VK_VISIBLE_DEVICES), \"sycl\" on Intel GPUs through "
+                         "oneAPI (ONEAPI_DEVICE_SELECTOR).  The device number of --vision-device is then the "
+                         "backend's own list (`vulkaninfo --summary` / `sycl-ls`), not nvidia-smi's.  Default: CUDA")
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
                     help="EXPERIMENTAL, off by default: the control vector in data/experimental-speed-projection "
                          "(or another GGUF) as a projection on layers 4-44; see docs/DETAILS.md")
@@ -3394,9 +3466,13 @@ def main() -> int:
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     # --vision-device: the image encoder's own device, a role of its own next to the engine's cards; nothing changes
     # when the flag is absent
-    vision, vision_card = vision_device_role(vision, a.vision_device or "", chosen, hip)
+    backend = (a.vision_backend or "").strip().lower()
+    vision, vision_card = vision_device_role(vision, a.vision_device or "", chosen, hip, backend)
     if (a.vision_device or "").strip().lower() == "auto" and vision != "none":
-        vision, vision_card = vision_device_auto(vision, chosen, hip)
+        vision, vision_card = vision_device_auto(vision, chosen, hip, backend)
+    if backend and vision != "gpu":
+        warn(f"--vision-backend {backend} is for the GPU image encoder: images on/off as usual, no other backend "
+             "built")
     # The low-RAM mode's two variants.  resident: the experts the GPU's cache does not hold (and, as far as RAM allows,
     # the ones the prompt path borrows cache room from) are copied from the pack's experts.bin into RAM once, so
     # nothing is read from the SSD while it answers (engine 0.1.30, --resident-experts; the engine falls back to mmap
@@ -3504,7 +3580,7 @@ def main() -> int:
         else:
             vision = prebuilt_vision(json.loads((eng / "BUILD.json").read_text()), gpu, vision)
     if eng is None:
-        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama)
+        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, backend)
     meta = json.loads((eng / "BUILD.json").read_text())
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
@@ -3717,6 +3793,8 @@ def main() -> int:
     if vision != "none":
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
                          "gpu": vision == "gpu", "max_tokens": VISION[vision]["max_tokens"]}
+        if backend and vision == "gpu":
+            cfg["vision"]["backend"] = backend          # the encoder reads its device list by this backend
         if vision_card is not None:
             cfg["vision"]["cuda_device"] = vision_card         # #408: the encoder on its own card alone
         if vision == "cpu":

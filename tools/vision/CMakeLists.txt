@@ -2,13 +2,21 @@
 # the vision encoder is chosen).  Uses llama.cpp's mtmd library at the same pinned commit as the engine's ggml.
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
-#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native]
+#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native]      NVIDIA (set CUDA_VISIBLE_DEVICES)
+#         | [-DSTRATA_VISION_VULKAN=ON]                                    any Vulkan GPU (GGML_VK_VISIBLE_DEVICES)
+#         | [-DSTRATA_VISION_SYCL=ON]                                      Intel (ONEAPI_DEVICE_SELECTOR)
 #   cmake --build build-vision --target strata-vision
+# At most one of the three GPU backends may be built at once.
 cmake_minimum_required(VERSION 3.21)
 project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
-option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_CUDA "run the vision encoder on the GPU via CUDA (builds ggml-cuda)" OFF)
+option(STRATA_VISION_VULKAN "run the vision encoder through any Vulkan GPU (builds ggml-vulkan)" OFF)
+option(STRATA_VISION_SYCL "run the vision encoder on Intel GPUs via oneAPI (builds ggml-sycl)" OFF)
+if(STRATA_VISION_CUDA AND STRATA_VISION_VULKAN OR STRATA_VISION_CUDA AND STRATA_VISION_SYCL OR STRATA_VISION_VULKAN AND STRATA_VISION_SYCL)
+  message(FATAL_ERROR "strata-vision builds one GPU backend at a time: choose CUDA or Vulkan or SYCL")
+endif()
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" OFF)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -35,6 +43,8 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_VULKAN ${STRATA_VISION_VULKAN} CACHE BOOL "" FORCE)
+set(GGML_SYCL ${STRATA_VISION_SYCL} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 

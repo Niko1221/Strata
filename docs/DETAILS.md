@@ -769,6 +769,24 @@ land on the engine's GPUs: with a layer split, or the model and the draft layer 
 as an embeddings file through the disk — no direct card-to-card path is involved, so this works on any mix of cards.
 The server prints where the encoder runs at start (`[strata] the image encoder runs on GPU ...`).
 
+**The encoder on another GPU backend (0.1.38, `--vision-backend vulkan|sycl`):** the ready-made encoder is CUDA, but
+`strata-vision` is its own process handing embeddings over the disk, so it can run on a card whose backend the engine
+doesn't speak. `--vision-backend vulkan` builds it for Vulkan — any Vulkan GPU works this way, **an Intel or AMD
+integrated GPU included** — and `--vision-backend sycl` for Intel GPUs through oneAPI. The engine itself still needs
+NVIDIA (or AMD). The saved config keeps it as `"backend"` in `"vision"`.
+
+| `--vision-backend` | the encoder's device variable | where the device numbers of `--vision-device` come from |
+| --- | --- | --- |
+| *(default, CUDA)* | `CUDA_VISIBLE_DEVICES` | `nvidia-smi` |
+| `vulkan` | `GGML_VK_VISIBLE_DEVICES` | `vulkaninfo --summary` |
+| `sycl` | `ONEAPI_DEVICE_SELECTOR="level_zero:N"` | `sycl-ls` (its discrete cards first, iGPUs at the end) |
+
+Vulkan, SYCL (and HIP) ignore `CUDA_VISIBLE_DEVICES`, so their card is named by their variable — which is why the
+numbering changes with the backend, and `--vision-device auto` (which reads nvidia-smi) is refused there: name the
+device yourself. A Vulkan or SYCL encoder is built from source just like the CUDA one is when no ready-made one fits,
+so on a machine behind it all it needs is the standard build tools (for SYCL, Intel's oneAPI Base Toolkit gives the
+compiler). Only images move to that GPU: the engine stays put.
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
