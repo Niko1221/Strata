@@ -7,6 +7,7 @@ The useful result is narrow: on this machine, adding a third, lower-power RTX 40
 ## Hardware and software
 
 - Dell PowerEdge R7515.
+- CPU: AMD EPYC 7313P 16-Core Processor.
 - 125.4 GiB usable system RAM.
 - NVIDIA driver 580.178.04; CUDA 13.0 reported by `nvidia-smi`.
 - GPU 0: NVIDIA RTX 4000 SFF Ada Generation, 20,475 MiB, 70 W power limit.
@@ -74,7 +75,7 @@ This should not be generalized to all three-GPU systems. A third card may still 
 ## Limitations
 
 - One host, one model, one quantization, one Strata engine build, and one small synthetic workload.
-- CPU model and DRAM bandwidth were not recorded in the attached benchmark artifact.
+- DRAM bandwidth was not measured during the benchmark.
 - Exact auto-selected per-GPU layer boundaries were not retained; the detailed 3-GPU startup log was accidentally overwritten after the experiment.
 - The runs were single-shot rather than repeated medians at each prompt length.
 - GPU clocks were not fixed.
