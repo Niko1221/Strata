@@ -622,6 +622,59 @@ class RecordingPrompt(MockEngine):
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
 
+class IncrementalPrompts(unittest.TestCase):
+    """The prompt encoder: every request's ids are those of a full encode, and a turn reuses the previous one's."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = RecordingPrompt(tok, "Thinking.\n</think>\n\nThe answer.", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    post = ClientShapes.post
+
+    def test_turns(self):
+        self.assertIsNotNone(self.svc.prompts)
+        msgs = [{"role": "system", "content": "Be brief."}]
+        for turn in range(6):
+            msgs.append({"role": "user", "content": f"question {turn} <|im_end|> é你 " * (turn + 1)})
+            status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 64, "messages": msgs})
+            self.assertEqual(status, 200, b)
+            prompt = self.svc.template.render(msgs)
+            self.assertEqual(self.engine.last_ids, self.svc.tok.encode(prompt, parse_special=True))
+            if turn:
+                self.assertGreater(self.svc.prompts.last_reused, len(prompt) // 3)
+            msgs.append({"role": "assistant", "content": b["choices"][0]["message"]["content"]})
+
+    def test_same_ids_as_a_full_encode_on_varied_conversations(self):
+        import random
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_strata_tokenizer import conversation_prompts, load_tokenizer
+        toks = [("byte", ByteTokenizer())]
+        if load_tokenizer() is not None:
+            toks.append(("qwen35", load_tokenizer()))
+        for name, tok in toks:
+            svc = Service(self.engine, tok, self.svc.template)
+            for seed in range(3):
+                for what, prompt in conversation_prompts(self.svc.template, random.Random(seed)):
+                    with self.subTest(tokenizer=name, seed=seed, what=what):
+                        self.assertEqual(svc.encode_prompt(prompt), tok.encode(prompt, parse_special=True))
+
+    def test_a_tokenizer_without_resume_points_encodes_in_full(self):
+        class Plain:
+            encode = ByteTokenizer().encode
+        svc = Service(self.engine, Plain(), self.svc.template)
+        self.assertIsNone(svc.prompts)
+        self.assertEqual(svc.encode_prompt("<|im_start|>hi"), ByteTokenizer().encode("<|im_start|>hi", True))
+
+
 class DyingEngine(MockEngine):
     """Issue #27: an engine that dies after a few tokens of its first answer, and comes back when restarted."""
 

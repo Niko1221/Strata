@@ -893,18 +893,25 @@ class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
     SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
 
+    max_special_len = max(len(s) for s in SPECIALS)
+
     def encode(self, text, parse_special=False):
-        out, i = [], 0
+        return self.encode_marked(text, parse_special)[0]
+
+    def encode_marked(self, text, parse_special=False):
+        """encode() and its resume points (after each special), as strata_tokenizer's for PromptEncoder."""
+        out, marks, i = [], [], 0
         while i < len(text):
             for k, s in enumerate(self.SPECIALS):
                 if parse_special and text.startswith(s, i):
                     out.append(256 + k)
                     i += len(s)
+                    marks.append((i, len(out)))
                     break
             else:
                 out.extend(text[i].encode("utf-8"))
                 i += 1
-        return out
+        return out, marks
 
     def decode(self, ids, errors="replace"):
         raw = bytearray()
@@ -992,6 +999,17 @@ class Service:
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
+        # A prompt re-encodes only what follows the last special token it shares with a recent prompt (the same ids
+        # as a full encode: tools/strata_tokenizer.py PromptEncoder).  Tokenizers without resume points encode in full.
+        self.prompts = None
+        if hasattr(tokenizer, "encode_marked"):
+            from strata_tokenizer import PromptEncoder
+            self.prompts = PromptEncoder(tokenizer)
+
+    def encode_prompt(self, prompt: str) -> list[int]:
+        if self.prompts is None:
+            return self.tok.encode(prompt, parse_special=True)
+        return self.prompts.encode(prompt)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -1338,7 +1356,7 @@ class Service:
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
         prompt = self.template.render(messages, tools=tools, **kwargs)
-        ids = self.tok.encode(prompt, parse_special=True)
+        ids = self.encode_prompt(prompt)
         self.embeddings.path = None
         images = images_of(messages)
         if images:
@@ -2472,7 +2490,7 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             prompt = svc.template.render(messages, tools=tools, **kw)
-            self._json(200, {"input_tokens": len(svc.tok.encode(prompt, parse_special=True))})
+            self._json(200, {"input_tokens": len(svc.encode_prompt(prompt))})
 
         def _anthropic(self, req):
             svc.load()
