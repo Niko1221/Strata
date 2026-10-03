@@ -1301,7 +1301,7 @@ struct PeTimer {
 };
 }  // namespace
 
-bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     err.clear();
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
@@ -1309,11 +1309,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
-    // the next stage reads chunk c on a thread while this one reads chunk c + 1 (declared first: an early return
-    // waits for it before anything it reads goes away)
-    std::string next_err;
-    std::future<bool> next_run;
-    int hand_buf = 0;
+    // The direct successor's future lives on the Prefill object. Intermediate
+    // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
@@ -2598,21 +2595,23 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {
-            // the rows to the host buffer the next stage read two chunks ago (it has finished: waited below)
-            float* h = m.hand[hand_buf];
+            // The current hand-off slot was used two chunks ago.
+            float* h = m.hand[hand_buf_];
             if (cudaMemcpyAsync(h, m.R, (size_t) T * D * 4, cudaMemcpyDeviceToHost, m.cs) != cudaSuccess ||
                 cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: the layer split's hand-off: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
-            // this stage's state is at the chunk's end now (synced) and moves on with the next chunk below
+            // Wait only for the DIRECT successor's previous chunk. That successor
+            // may already have forwarded its older chunk to later GPUs.
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
-            if (next_run.valid() && !next_run.get()) { err = next_err; return false; }
+            if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
+            next_err_.clear();
             next_->hand_in_ = h;
-            next_run = std::async(std::launch::async, [this, tokens, c0, T, p0, &next_err] {
-                return next_->run(tokens + c0, T, p0, next_err);
+            next_run_ = std::async(std::launch::async, [this, tokens, c0, T, p0] {
+                return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
-            hand_buf ^= 1;
+            hand_buf_ ^= 1;
             continue;   // the last stage reports the chunk (on_chunk)
         }
         if (const char* dump = std::getenv("STRATA_PREFILL_DUMP_R")) {   // debug: the final residuals, every 64th
@@ -2641,7 +2640,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             host_chunk_ms += ms_since(toc2);
         }
     }
-    if (next_run.valid() && !next_run.get()) { err = next_err; return false; }
+    // Do not drain the successor here. This is the overlap: an intermediate
+    // stage can return while later GPUs are still processing the previous chunk.
     ss.ple_prev[0] = prev[0];
     ss.ple_prev[1] = prev[1];
     if (std::getenv("STRATA_DBG_NAN") != nullptr) {   // debug: the state the prompt leaves for the token path
@@ -2717,6 +2717,41 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             line += h;
         }
         std::fprintf(stderr, "strata prefill: GDN_HASH %s\n", line.c_str());
+    }
+    return true;
+}
+
+bool Prefill::drain_pipeline(std::string& err) {
+    bool ok = true;
+
+    if (next_run_.valid()) {
+        if (!next_run_.get()) {
+            err = next_err_;
+            ok = false;
+        }
+    }
+
+    if (next_ != nullptr) {
+        std::string tail_err;
+        if (!next_->drain_pipeline(tail_err)) {
+            if (ok) err = tail_err;
+            ok = false;
+        }
+    }
+
+    return ok;
+}
+
+bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    const bool body_ok = run_impl(tokens, n, pos0, err);
+
+    std::string drain_err;
+    const bool drain_ok = drain_pipeline(drain_err);
+
+    if (!body_ok) return false;
+    if (!drain_ok) {
+        err = drain_err;
+        return false;
     }
     return true;
 }
