@@ -5319,6 +5319,24 @@ int main(int argc, char** argv) {
             }
             // Disk parking: another conversation (or none) holds the session, or it is in between after a failed request.
             const bool switching = disk.enabled() && (req_conv != live_conv || !live_ok);
+            // The conversation that holds the session came back without continuing its live end: without this line
+            // the request reads from a checkpoint (or from 0) and nothing says why - the switch below logs its own
+            if (!switching && !req_conv.empty() && !from_live && !live.empty() && o.prompt_cache > 0 &&
+                want_cvec == cvec_cached) {
+                size_t at = 0;
+                const size_t m = std::min(live.size(), ids.size());
+                while (at < m && live[at] == (int32_t) ids[at]) ++at;
+                std::string was, now;
+                for (size_t i = at >= 8 ? at - 8 : 0; i < std::min(live.size(), at + 24); ++i)
+                    was += (i == at ? "|" : i ? "," : "") + std::to_string((long long) live[i]);
+                for (size_t i = at >= 8 ? at - 8 : 0; i < std::min(ids.size(), at + 24); ++i)
+                    now += (i == at ? "|" : i ? "," : "") + std::to_string((long long) ids[i]);
+                std::fprintf(stderr, "strata serve: conversation cache: %s does not continue its live end: diverges "
+                                     "at %zu of %zu (prompt %zu)%s, resuming at %lld; live=%s prompt=%s\n",
+                             req_conv.c_str(), at, live.size(), ids.size(),
+                             at == m ? (m == ids.size() ? " (the prompt is shorter)" : " (pictures differ)") : "",
+                             (long long) resume, was.c_str(), now.c_str());
+            }
             strata::core::ConversationDisk::Match on_disk;
             std::optional<strata::core::SavedConversation> from_disk;
             if (switching && !req_conv.empty() && want_cvec == cvec_cached) {
