@@ -5325,10 +5325,21 @@ int main(int argc, char** argv) {
             int nkeep[strata::kernels::kVerifyMaxT];
             for (int b = 0; b < S; ++b) {   // each slot's accepted prefix (an idle slot keeps its one pad row)
                 int a = 0;
-                if (bs[(size_t) b].active)
+                static const bool sb_keep1 = std::getenv("STRATA_SB_KEEP1") != nullptr;   // debug: never keep a draft
+                if (bs[(size_t) b].active && !sb_keep1)
                     while (a < TB - 1 && tok[b * TB + a + 1] == outb[b * TB + a]) ++a;
                 nkeep[b] = a + 1;
             }
+            static const bool sb_trace = std::getenv("STRATA_BATCH_SPEC_TRACE") != nullptr;
+            if (sb_trace)
+                for (int b = 0; b < S; ++b) {
+                    if (!bs[(size_t) b].active) continue;
+                    std::fprintf(stderr, "SBT slot %d p %lld TB %d in", b, (long long) bs[(size_t) b].p, TB);
+                    for (int k = 0; k < TB; ++k) std::fprintf(stderr, " %d", tok[b * TB + k]);
+                    std::fprintf(stderr, " out");
+                    for (int k = 0; k < TB; ++k) std::fprintf(stderr, " %d", outb[b * TB + k]);
+                    std::fprintf(stderr, " keep %d\n", nkeep[b]);
+                }
             if (!ver.commit_slots(err, TB > 1 ? nkeep : nullptr)) {
                 std::printf("ERR %s\n", err.c_str());
                 return false;
@@ -5367,7 +5378,8 @@ int main(int argc, char** argv) {
                 const int64_t p_old = sl.p;
                 sl.x = outb[b * TB + a];
                 sl.p += a + 1;
-                if (o.batch_spec > 1 && b < (int) bdraft.size()) {
+                static const bool sb_nodraft = std::getenv("STRATA_SB_NODRAFT") != nullptr;   // debug: rows without drafts
+                if (o.batch_spec > 1 && b < (int) bdraft.size() && !sb_nodraft) {
                     // the slot drafter catches up over this window's rows of the slot, then drafts from row a
                     strata::core::MtpDrafter& d = *bdraft[(size_t) b];
                     const int TD = TB;   // the rows this window held for the slot
@@ -6529,7 +6541,7 @@ int main(int argc, char** argv) {
                     sl.produced = 1;
                     sl.max_new = admit_max_new;
                     sl.t0 = Clock::now();
-                    if (o.batch_spec > 1 && admit_slot < (int) bdraft.size()) {
+                    if (o.batch_spec > 1 && admit_slot < (int) bdraft.size() && std::getenv("STRATA_SB_NODRAFT") == nullptr) {
                         // the request's draft K/V up to the first window's cell, then that window's row: drafts
                         strata::core::MtpDrafter& d = *bdraft[(size_t) admit_slot];
                         const size_t hcn = (size_t) g.hc * (size_t) g.n_embd;

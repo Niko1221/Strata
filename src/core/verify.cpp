@@ -1603,7 +1603,11 @@ bool Verifier::stage_batch(int base, int S, const int32_t* tokens, const int64_t
         for (int t = 0; t < S; ++t) {
             const SessionState& sx = *slots_[(size_t) (base + t)];
             int32_t prev[2] = {sx.ple_prev[0], sx.ple_prev[1]};
-            ngram_rows(&tokens[t * BR], prev, BR, ss_->ple.consts, rows + (size_t) t * BR * PLE_N_HEADS);
+            for (int k = 0; k < BR; ++k) {   // token by token: ngram_rows reads n_prev predecessors PER token
+                ngram_rows(&tokens[t * BR + k], prev, 1, ss_->ple.consts, rows + (size_t) (t * BR + k) * PLE_N_HEADS);
+                prev[0] = prev[1];
+                prev[1] = tokens[t * BR + k];
+            }
         }
         if (!ss_->ple.table->gather_batch(rows, (size_t) R, h_ple_, err)) return false;
     }
