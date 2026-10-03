@@ -21,6 +21,9 @@ endif()
 # instead of this machine's (Strata's own AVX-512 kernels are per-file and chosen at run time either way), and
 # the MSVC runtime linked in, so no Visual C++ redistributable is needed.
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" OFF)
+if(STRATA_PORTABLE)
+  add_compile_definitions(STRATA_PORTABLE_BUILD)
+endif()
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
