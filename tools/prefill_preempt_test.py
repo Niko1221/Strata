@@ -219,7 +219,10 @@ def main() -> int:
     if not args.quick:
         scenarios += [
             # park and resume with NOTHING in between: the restore itself, no interim interference
+            # (early AND late boundaries - the late ones exercise a different snapshot size)
             ("park-only", dict(trigger=2048, preempts=[], cancel=False)),
+            ("park-only-late", dict(trigger=8192, preempts=[], cancel=False)),
+            ("park-only-last", dict(trigger=10240, preempts=[], cancel=False)),
             ("streaming-kv", dict(trigger=4096, preempts=[2], cancel=False, max_context=65536, kv_resident=8192,
                                   own_refs=True)),
             ("repeat-3", dict(trigger=2048, preempts=[2, 3, 4], cancel=False)),
@@ -259,25 +262,24 @@ def main() -> int:
               f"cancel={sc['cancel']}, ctx={sc.get('max_context')}, kv_resident={sc.get('kv_resident')}", flush=True)
         t0 = time.time()
         try:
-            sc_refs = (ref_a, ref_b, ref_hash)
-            if sc.get("own_refs"):
-                # this scenario's engine args change the arithmetic (KV streaming rounds differently): the
-                # references must come from a control engine started with THOSE args
-                sc_ctrl = start_engine(f"control-{name}", args.engine,
-                                       engine_args(cfg, prefill=chunk, preempt=False,
-                                                   max_context=sc.get("max_context"),
-                                                   kv_resident=sc.get("kv_resident"),
-                                                   expert_slots=expert_slots), workdir)
-                try:
-                    sc_ctrl.gen(None, warm_ids, 8)
-                    sc_ctrl.collect(None)
-                    sc_ctrl.gen(None, b_ids, args.max_new)
-                    sc_b = sc_ctrl.collect(None)
-                    sc_ctrl.gen(None, a_ids, args.max_new)
-                    sc_a = sc_ctrl.collect(None)
-                    sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
-                finally:
-                    sc_ctrl.close()
+            # every scenario carries a PAIRED control: this machine's arithmetic mode drifts over minutes
+            # (plain engines land in discrete hash modes), so a control from the run's start is not a reference
+            # for a scenario that runs minutes later - same args, started right before, every time
+            sc_ctrl = start_engine(f"control-{name}", args.engine,
+                                   engine_args(cfg, prefill=chunk, preempt=False,
+                                               max_context=sc.get("max_context"),
+                                               kv_resident=sc.get("kv_resident"),
+                                               expert_slots=expert_slots), workdir)
+            try:
+                sc_ctrl.gen(None, warm_ids, 8)
+                sc_ctrl.collect(None)
+                sc_ctrl.gen(None, b_ids, args.max_new)
+                sc_b = sc_ctrl.collect(None)
+                sc_ctrl.gen(None, a_ids, args.max_new)
+                sc_a = sc_ctrl.collect(None)
+                sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
+            finally:
+                sc_ctrl.close()
             fails = []
             for attempt in (0, 1):
                 e = start_engine(f"preempt-{name}", args.engine,
