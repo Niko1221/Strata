@@ -485,6 +485,9 @@ public:
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
     /// GPU cache's fill from the profile) - one batch of reads instead of one blob at a time.  At most 64 pairs.
     void prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n);
+    /// Mapped reads: asks the OS for these pairs' blobs ahead (platform::advise_willneed).  False when unbuffered,
+    /// when read-ahead is off, or before `open`.
+    bool advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const;
 
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     bool pinned(int64_t layer, int64_t expert) const override;
