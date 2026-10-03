@@ -874,19 +874,45 @@ def child_env(cfg: dict) -> dict:
 
 
 def vision_env(cfg: dict, env: dict) -> dict:
-    """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
-    (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
-    keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
-    dev = (cfg.get("vision") or {}).get("cuda_device")
+    """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device" -
+    then the encoder runs on that device alone, so a spare GPU can hold it while the engine keeps all of its own
+    cards' VRAM (#408, Efs-O; non-CUDA encoder builds pin through their own backend).  The pin's env follows the
+    encoder's backend ("backend" in the vis section, written by --vision-backend; else the engine's): a Vulkan
+    encoder reads GGML_VK_VISIBLE_DEVICES, a SYCL one ONEAPI_DEVICE_SELECTOR ("level_zero:N"), the CUDA/HIP ones
+    their visible-devices (numbered like nvidia-smi).  Without "cuda_device", nothing changes."""
+    v = cfg.get("vision") or {}
+    dev = v.get("cuda_device")
     if dev is None:
-        return env
+        return env                      # same object, no copy (asserted by test_server.py:604)
     env = dict(env)
-    if cfg.get("backend") == "hip":
+    backend = v.get("backend") or cfg.get("backend")
+    if backend == "vulkan":
+        env["GGML_VK_VISIBLE_DEVICES"] = str(dev)
+    elif backend == "sycl":
+        env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:" + str(dev)
+    elif backend == "hip":
         env["HIP_VISIBLE_DEVICES"] = str(dev)
     else:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         env["CUDA_VISIBLE_DEVICES"] = str(dev)
     return env
+
+
+def vision_role(cfg: dict) -> str:
+    """The image encoder's placement, for the start-up line: the CPU, its own card, or an engine card it shares
+    ("vision-device" in setup; the same card numbering the engine's device report and nvidia-smi use - a non-CUDA
+    encoder's numbering is its own backend's list's, for those only "its own device" can be said)."""
+    v = cfg.get("vision") or {}
+    if not v.get("gpu"):
+        return "the CPU"
+    dev = v.get("cuda_device")
+    backend = v.get("backend") or cfg.get("backend")
+    cards = gpu_list(cfg)
+    if dev is None:
+        return f"GPU {cards[0] if cards else 0} (the engine's card)"
+    if backend == "vulkan" or backend == "sycl":
+        return f"GPU {dev} (its own {backend} device)"
+    return f"GPU {dev} (its own card)" if dev not in cards else f"GPU {dev} (shares the engine's card)"
 
 
 class ByteTokenizer:
@@ -2904,6 +2930,7 @@ def main() -> int:
         if lazy and cfg.get("vision"):
             ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
+            print(f"[strata] the image encoder runs on {vision_role(cfg)}", flush=True)
             print("loading the vision encoder ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))

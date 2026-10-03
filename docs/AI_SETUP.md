@@ -44,7 +44,8 @@ Requirements (details: [INSTALL.md](INSTALL.md#what-you-need)):
 
 - **GPU:** NVIDIA RTX 20, 30, 40 or 50 series, or AMD Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT,
   RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series; 12 GB of VRAM or more (an NVIDIA card with 8 GB runs,
-  slowly). GTX 10 series and older, and integrated GPUs, are not supported.
+  slowly). GTX 10 series and older, and integrated GPUs, are not supported. (The picture reader is the exception:
+  `--vision-backend vulkan|sycl` runs it on an Intel or AMD integrated GPU - see [Multi-GPU](MULTI_GPU.md).)
 - **Driver:** NVIDIA 580 or newer. AMD on Linux: the kernel's amdgpu driver; on Windows: a current AMD Adrenalin
   driver. If the driver is missing or too old, tell the user to update it (NVIDIA App / nvidia.com/drivers, or AMD
   Software) and restart; do not install drivers yourself unless they ask.
@@ -95,6 +96,8 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-Q4_K_XL) |
 | `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
 | `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
+| `--vision-device auto\|cpu\|N` | which device reads the pictures: `auto` = a spare GPU when one exists, `cpu`, or a card numbered like nvidia-smi (`2` or `cuda:2`). Default: the engine's first card |
+| `--vision-backend vulkan\|sycl` | build the picture reader for another GPU backend than CUDA: `vulkan` (any Vulkan GPU - an Intel or AMD iGPU included) or `sycl` (Intel GPUs through oneAPI). Its device number is then that backend's own list (`vulkaninfo --summary` / `sycl-ls`), not nvidia-smi's, and `auto` no longer applies. Default: CUDA. The engine itself still needs NVIDIA or AMD |
 | `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
 | `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
 | `--data-dir PATH` | where the 70-120 GB of model files go |
