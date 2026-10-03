@@ -4708,6 +4708,17 @@ int main(int argc, char **argv) try {
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+        // An adaptive swap evicts a resident expert into the "missing" set. An evicted expert that is not mirrored cannot be
+        // reached by the GPU on its own, the device plan then waits for the host to compute it, and on the A770 the
+        // device-to-host handshake does not hold: the GPU's bounded wait gives up and the window carries on with garbage
+        // that the recurrent state keeps for good. So when swaps are on, mirror the resident experts too, after the
+        // misses and within the same cap (STRATA_MIRROR_ALL=1 forces it; STRATA_MIRROR_ALL=0 leaves it off).
+        const size_t n_miss = miss.size();
+        const char* mirror_all = std::getenv("STRATA_MIRROR_ALL");
+        if (mirror_all != nullptr ? mirror_all[0] != '0' : (o.adapt_every > 0 && o.adapt_swaps > 0)) {
+            for (const auto& pr : profile)
+                if (xcache.slot_of(pr.first, pr.second) != strata::core::kNotResident) miss.push_back({pr.first, pr.second});
+        }
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -4732,6 +4743,7 @@ int main(int argc, char **argv) try {
                 dpct::get_in_order_queue().memcpy(mirror_table_d, tab.data(), tab.size() * sizeof(unsigned long long)).wait();
             }
         }
+        miss.resize(n_miss);   // the tally below is of the experts that really are missing from VRAM
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
         if (unmirrored_misses > 0 && [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }()) {
