@@ -801,6 +801,41 @@ class DraftCounts(unittest.TestCase):
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
 
 
+class ConversationDiskArguments(unittest.TestCase):
+    def test_disk_cache_config(self):
+        cfg = {
+            "args": ["--native", "model.gguf"],
+            "gpu": [0, 1],
+            "layer_split": "20",
+            "conversation_cache_disk": "/mnt/cache",
+            "conversation_cache_disk_gib": 25,
+            "conversation_cache_disk_slots": 6,
+            "conversation_cache_disk_min_free_mib": 1024,
+        }
+        self.assertEqual(engine_args(cfg), [
+            "--native", "model.gguf", "--layer-split", "20",
+            "--conversation-cache-disk", "/mnt/cache",
+            "--conversation-cache-disk-gib", "25",
+            "--conversation-cache-disk-slots", "6",
+            "--conversation-cache-disk-min-free-mib", "1024",
+        ])
+
+    def test_existing_flags_are_not_duplicated(self):
+        args = ["--conversation-cache-disk", "from-args", "--conversation-cache-disk-gib", "8"]
+        cfg = {"args": args, "conversation_cache_disk": "/mnt/cache", "conversation_cache_disk_gib": 25}
+        self.assertEqual(engine_args(cfg), args)
+
+    def test_disk_cache_pair_is_required(self):
+        for cfg in (
+            {"args": [], "conversation_cache_disk": "/mnt/cache"},
+            {"args": [], "conversation_cache_disk_gib": 25},
+            {"args": [], "conversation_cache_disk": "", "conversation_cache_disk_gib": 25},
+            {"args": [], "conversation_cache_disk": "/mnt/cache", "conversation_cache_disk_gib": 0},
+        ):
+            with self.subTest(cfg=cfg), self.assertRaises(ValueError):
+                engine_args(cfg)
+
+
 class LearnedProfile(unittest.TestCase):
     """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start
     begins from it when it is a profile of the same model; without the key the arguments are unchanged."""

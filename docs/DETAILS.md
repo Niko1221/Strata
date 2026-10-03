@@ -787,8 +787,83 @@ rather than permission to continue with partial state. Indexer spare keys and th
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
-retention for diagnostic comparisons. Snapshots are not
-persisted across restarts.
+retention for diagnostic comparisons. RAM-tier snapshots are not persisted across restarts.
+
+**Conversation cache on disk (opt-in, L3).** The conversation state has three tiers. Tier 1
+(L1) is the live session in GPU memory; it always exists. Tier 2 (L2) is the optional
+host-RAM cache above (`--conversation-cache-mib`). Tier 3 (L3) is the optional disk store
+below. The tiers are independent; each one is optional except L1.
+
+Add `--conversation-cache-disk strata-conversations --conversation-cache-disk-gib 25` to the
+engine arguments. The engine then keeps parked conversations as files in the
+`strata-conversations` directory, and a restarted server can resume them. The path and a
+positive GiB budget are required together. The store is off by default, it needs `--serve`,
+and it works with `--conversation-cache-mib 0`. It accepts `--layer-split`; the RAM cache
+rejects that flag. The engine creates the directory when it is absent. A store that cannot be
+created stops startup with an error.
+
+Two optional flags tune the store. `--conversation-cache-disk-slots N` caps the number of
+records (default 0 = no cap). `--conversation-cache-disk-min-free-mib N` keeps that many MiB
+free on the store's filesystem (default 0 = no floor). Both need the path and the GiB budget.
+
+A request reuses a record only when its prompt starts with exactly the record's tokens and
+images, and its control-vector mode matches. The store keeps the longest matching prefix; a
+tie prefers the most recently used record. No client session ID is needed.
+
+One record holds one conversation and one image per `--layer-split` stage. A two-card run
+parks and resumes as one unit, and every stage must hold the same token and image chain. A
+record carries a compatibility key that covers the engine version, the model and MTP sources,
+the geometry, the KV format and rotation, the context, the rope configuration, the per-stage
+layer carve and devices, and the control-vector mode. A store is reused only by a run with the
+same key.
+
+The files are checksummed and versioned. Each file has a fixed header with a format version, a
+metadata checksum, and a payload checksum. The engine writes a record to a temporary file and
+renames it over the target file (an atomic replacement). On startup the engine scans the directory, rebuilds the
+index, and removes files that fail validation, including files from another version or another
+compatibility key. It also removes leftover temporary files. The startup line reports the
+recovered record count and the byte total.
+
+The store is bounded. It evicts the least recently used record when the byte budget or the
+record cap is exceeded, and when the filesystem free space would fall below the free-space
+floor. A record larger than the whole budget is refused.
+
+The engine validates the whole record before a restore. It first checks that all stages agree
+on the token and image chain, then validates every stage against the current geometry. It
+makes no CUDA write before this validation passes. A corrupt, incompatible, or invalid record
+is removed, and the request falls back to normal prompt processing. After validation, a
+transfer or synchronization failure is fatal; the engine never decodes from a partially
+restored session.
+
+GPU capture and restore are synchronous. The engine captures or restores one stage at a time,
+and it synchronizes each stage's device. After capture, the file write runs asynchronously
+while the next request uses the GPUs. A disk lookup or a later park waits for that write before
+it accesses the store index. During a save or a load the record is staged in host RAM, so the
+operation needs temporary host memory about the size of the record. The engine releases that
+memory after the file operation. Restore stays on the serving thread.
+
+The disk tier preserves parked conversations across alternation and across restarts. It does
+not add concurrent execution: the engine still serves one request at a time.
+
+**Disk endurance and sizing.** Each park writes a full record to the storage device. A record
+holds the session state, the checkpoints, the used K/V pages, and the draft-layer K/V of one
+conversation. Its size grows with the context, the KV format, the number of checkpoints, the
+draft layer, and the number of split stages, so it is larger than one RAM checkpoint. Frequent
+conversation switching and frequent restarts write many records. On a flash device this
+consumes write endurance. Use a directory on a device that you can write to, and stop the
+server before you delete the directory to clear the cache; the engine rebuilds an empty index
+at the next start.
+
+A record name comes from the deepest parked token prefix. A re-park at the same prefix
+replaces that file; a park at a longer prefix adds a record. Records that no request uses stay
+until eviction.
+
+Size the budget for the conversations that you want to keep across restarts, not for one
+record. A 25 GiB budget is an example: it holds a few large conversations at a long context,
+or many smaller ones. Set `--conversation-cache-disk-min-free-mib` to protect the free space
+of the filesystem, and `--conversation-cache-disk-slots` when you want a hard record count.
+The engine log reports each park and restore with its byte size and its time, and the hit,
+miss, eviction, and corruption counts. Read it to size the budget for your workload.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /

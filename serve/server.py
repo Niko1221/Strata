@@ -662,6 +662,25 @@ def engine_args(cfg: dict) -> list[str]:
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
     if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
         args.append("--split-skip-if-fits")
+    disk_path = cfg.get("conversation_cache_disk")
+    disk_gib = cfg.get("conversation_cache_disk_gib")
+    if disk_path is not None or disk_gib is not None:
+        if not isinstance(disk_path, str) or not disk_path.strip():
+            raise ValueError("conversation_cache_disk must be a non-empty path")
+        if not isinstance(disk_gib, int) or isinstance(disk_gib, bool) or disk_gib <= 0:
+            raise ValueError("conversation_cache_disk_gib must be a positive integer")
+        if "--conversation-cache-disk" not in args:
+            args += ["--conversation-cache-disk", disk_path]
+        if "--conversation-cache-disk-gib" not in args:
+            args += ["--conversation-cache-disk-gib", str(disk_gib)]
+        for key, flag in (("conversation_cache_disk_slots", "--conversation-cache-disk-slots"),
+                          ("conversation_cache_disk_min_free_mib", "--conversation-cache-disk-min-free-mib")):
+            value = cfg.get(key)
+            if value is None or flag in args:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{key} must be a nonnegative integer")
+            args += [flag, str(value)]
     return learned_profile_args(cfg, args)
 
 

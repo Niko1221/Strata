@@ -302,4 +302,77 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
         !conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
+
+bool conversation_stage_bytes(const ConversationView& view, const SessionState& ss,
+                              const ModelGeometry& g, size_t& bytes, std::string& error) {
+    bytes = 0;
+    if (!view_validate(view, ss, g, error)) return false;
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    size_t ids = 0, images = 0, checkpoints = 0, layers = 0, tails = 0, dead = 0, positions = 0;
+    const auto qsa = (uint64_t) owned_qsa(ss);
+    if (!product(ids, {view.ids.size(), sizeof(int32_t)}) ||
+        !product(images, {view.images.size(), sizeof(ConversationImageKey)}) ||
+        !product(checkpoints, {view.checkpoints.size(), sizeof(ConversationCheckpoint)}) ||
+        !product(layers, {qsa, sizeof(ConversationKv)}) ||
+        !product(tails, {qsa, z.tail}) || !product(dead, {qsa, z.dead}) ||
+        !product(positions, {qsa, z.block_pos})) return fail(error, "snapshot metadata byte count overflow");
+    for (size_t n : {ids, images, checkpoints, layers, tails, dead, positions, z.gdn, ss.ple_hist ? z.ple : 0})
+        if (!add(bytes, n)) return fail(error, "snapshot byte count overflow");
+    for (const auto& c : view.checkpoints)
+        if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
+    const int64_t upto = (int64_t) view.ids.size();
+    for (uint64_t i = 0; i < qsa; ++i) {
+        const size_t n = conversation_kv_bytes(owned(ss, (size_t) i), g, upto, true);
+        if (!n || !add(bytes, n)) return fail(error, "invalid or overflowing K/V byte estimate");
+    }
+    return true;
+}
+
+bool conversation_stage_save(SavedConversation& image, const ConversationView& view,
+                             const SessionState& ss, const ModelGeometry& g, std::string& error) {
+    size_t estimate = 0;
+    if (!conversation_stage_bytes(view, ss, g, estimate, error) || !sync(error)) return false;
+    SavedConversation captured;
+    captured.geometry = geometry_key(g);
+    captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
+    captured.live.ids = view.ids; captured.live.imgs = view.images;
+    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    const size_t layers = owned_qsa(ss);
+    captured.kv.resize(layers);
+    if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
+    const int64_t upto = (int64_t) view.ids.size();
+    for (size_t j = 0; j < layers; ++j)
+        if (!conversation_kv_save(captured.kv[j], owned(ss, j), g, upto, true, error)) return false;
+    image = std::move(captured);
+    return true;
+}
+
+bool conversation_stage_validate(const SavedConversation& image, const SessionState& ss,
+                                 const ModelGeometry& g, std::string& error) {
+    if (!image.live.stage_parts.empty()) return fail(error, "layer-split parking is not supported");
+    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
+        return fail(error, "snapshot from another session layer range");
+    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (image.kv.size() != layers) return fail(error, "invalid K/V layer count");
+    const int64_t upto = (int64_t) image.live.ids.size();
+    for (size_t j = 0; j < layers; ++j)
+        if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
+    return true;
+}
+
+ConversationRestore conversation_stage_restore(const SavedConversation& image, SessionState& ss,
+                                               const ModelGeometry& g, std::string& error) {
+    if (!conversation_stage_validate(image, ss, g, error)) return ConversationRestore::invalid;
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    const int64_t upto = (int64_t) image.live.ids.size();
+    for (size_t j = 0; j < owned_qsa(ss); ++j)
+        if (!conversation_kv_restore(image.kv[j], owned(ss, j), g, upto, true, error))
+            return ConversationRestore::transfer_failed;
+    if (!conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
+    return ConversationRestore::restored;
+}
 } // namespace strata::core
