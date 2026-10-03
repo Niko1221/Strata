@@ -49,7 +49,8 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
 /// build below sm_90, or a capacity whose keys do not fit one cluster's shared memory. Capturable.
 bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                             const QsaShapes& s, int32_t* ids, void* stream);
-/// The original kernel (keys read from memory on every radix pass), for tests: the same ids.
+/// The original kernel (256 threads, one shared histogram, keys read from memory on every radix pass), for tests and
+/// STRATA_TOPK_OLD=1: the same ids.
 void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                         const QsaShapes& s, int32_t* ids, void* stream);
 
