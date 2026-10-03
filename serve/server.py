@@ -696,15 +696,27 @@ class Vision:
 
     @staticmethod
     def load(source: str) -> bytes:
+        # Everything in here raises ValueError, never OSError: the request dispatcher maps only ValueError to a
+        # status, so an OSError from a 404, a refused connection or an unknown host closed the client's
+        # connection with no reply at all (curl: "(52) Empty reply from server") instead of a 400.
         if source.startswith("data:"):
-            return base64.b64decode(source.split(",", 1)[1])
+            try:
+                return base64.b64decode(source.split(",", 1)[1])
+            except (IndexError, ValueError) as e:                # no comma, or not base64
+                raise ValueError(f"the image's data: URL could not be read ({e})") from None
         if source.startswith(("http://", "https://")):
             req = urllib.request.Request(source, headers={"User-Agent": "strata"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return r.read()
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.read()
+            except OSError as e:                                 # HTTPError and URLError are both OSError
+                raise ValueError(f"the image could not be fetched from {source} ({e})") from None
         path = source[7:] if source.startswith("file://") else source
         if path and os.path.isfile(path):
-            return Path(path).read_bytes()
+            try:
+                return Path(path).read_bytes()
+            except OSError as e:
+                raise ValueError(f"the image could not be read from {path} ({e})") from None
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
