@@ -4656,6 +4656,16 @@ int main(int argc, char** argv) {
                     d->set_max_drafts(o.batch_spec - 1);
                     bdraft.push_back(std::move(d));
                 }
+                // every graph a slot drafter will launch, now: a capture mid-run that does not fit ends the engine
+                for (size_t b = 0; b < bdraft.size(); ++b)
+                    if (!bdraft[b]->warm(std::min(o.batch_spec, std::max(o.spec, 1)), err)) {
+                        std::fprintf(stderr, "strata serve: --batch-spec: slot %zu's drafter graphs do not fit (%s); "
+                                             "the batch runs without drafts (more --vram-reserve-mib helps)\n", b, err.c_str());
+                        bdraft.clear();
+                        o.batch_spec = 1;
+                        cudaGetLastError();
+                        break;
+                    }
                 std::fprintf(stderr, "strata serve: --batch-spec %d: a drafter per slot (%d), up to %d rows per slot\n",
                              o.batch_spec, o.batch, o.batch_spec);
             }
@@ -5447,6 +5457,7 @@ int main(int argc, char** argv) {
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
             int rows = 1;                   ///< --batch-spec: rows per slot of its window (chosen at its start)
+            int S = 0;                      ///< slots in its window: up to its last active one (idle ones cost rows)
         };
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
@@ -5479,18 +5490,18 @@ int main(int argc, char** argv) {
                 const int32_t* outb = vk.batch_out();
                 const int TR = G.rows;   // this window's rows per slot
                 int nk[strata::kernels::kVerifyMaxT];
-                for (int t = 0; t < GS; ++t) {
+                for (int t = 0; t < G.S; ++t) {
                     int a = 0;
                     if (bs[(size_t) (gi * GS + t)].active)
                         while (a < TR - 1 && G.tok[t * TR + a + 1] == outb[t * TR + a]) ++a;
                     nk[t] = a + 1;
                 }
-                if (TR > 1 && !ver.batch_commit(gi * GS, GS, nk, G.tok, G.pos, TR, err)) {   // every stage, queued (1 row: batch_launch did)
+                if (TR > 1 && !ver.batch_commit(gi * GS, G.S, nk, G.tok, G.pos, TR, err)) {   // every stage, queued (1 row: batch_launch did)
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }
                 const size_t hcn = (size_t) g.hc * (size_t) g.n_embd;
-                for (int t = 0; t < GS; ++t) {
+                for (int t = 0; t < G.S; ++t) {
                     BSlot& sl = bs[(size_t) (gi * GS + t)];
                     if (!sl.active) continue;
                     const int a = nk[t] - 1;
@@ -5559,7 +5570,9 @@ int main(int argc, char** argv) {
                     int n_active = 0;
                     for (const BSlot& x : bs) n_active += x.active ? 1 : 0;
                     G.rows = (TBP > 1 && n_active <= o.batch_spec_max_active) ? TBP : 1;
-                    for (int t = 0; t < GS; ++t) {
+                    G.S = 0;
+                    for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) G.S = t + 1;
+                    for (int t = 0; t < G.S; ++t) {
                         const BSlot& sl = bs[(size_t) (pick * GS + t)];
                         G.pos[t] = sl.active ? sl.p : 0;
                         for (int k = 0; k < G.rows; ++k)
@@ -5573,7 +5586,7 @@ int main(int argc, char** argv) {
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
                 stage_verifier(k).set_stage_rows(G.rows);
-                if (!stage_verifier(k).batch_launch(pick * GS, GS, G.tok, G.pos, err)) {
+                if (!stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }

@@ -346,6 +346,15 @@ bool MtpDrafter::clone_from(const MtpDrafter& base, std::string& err) {
     return true;
 }
 
+bool MtpDrafter::warm(int max_T, std::string& err) {
+    const OnDevice on_device(device_);
+    for (int T = 1; T <= std::min(max_T, max_t_); ++T)
+        if (!capture_round(T, false, err)) return false;
+    for (int j = 1; j < std::min(max_t_ - 1, max_drafts_); ++j)
+        if (!capture_step(j, false, err)) return false;
+    return cudaDeviceSynchronize() == cudaSuccess;
+}
+
 bool MtpDrafter::copy_kv_from(const MtpDrafter& from, int64_t upto, std::string& err) {
     const OnDevice on_device(device_);
     if (upto <= 0) return true;

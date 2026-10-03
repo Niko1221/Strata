@@ -65,6 +65,9 @@ public:
     /// its own buffer (own_window_R, max_t rows): the caller copies the slot's rows there before draft().
     bool clone_from(const MtpDrafter& base, std::string& err);
     float* own_window_R() { return own_R_; }
+    /// Capture the round graphs for 1..max_T rows and the chain steps up front (argmax drafts), so a request never
+    /// waits for - or fails - a capture.  False with `err` when they do not fit.
+    bool warm(int max_T, std::string& err);
     /// Copy `upto` cells of `from`'s K/V into this drafter's (a slot taking over a request's prompt).
     bool copy_kv_from(const MtpDrafter& from, int64_t upto, std::string& err);
 
