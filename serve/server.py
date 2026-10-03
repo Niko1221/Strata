@@ -789,14 +789,20 @@ def engine_silence_s(cfg: dict) -> float:
     return float(v)
 
 
+def layer_split_of(cfg: dict) -> bool:
+    """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
+    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split."""
+    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
     args = list(cfg["args"])
-    if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
+    if layer_split_of(cfg) and "--layer-split" not in args:
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
-    if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
+    if layer_split_of(cfg) and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
         args.append("--split-skip-if-fits")
     return learned_profile_args(cfg, args)
 
@@ -2913,8 +2919,11 @@ def main() -> int:
                             env=vision_env(cfg, env))
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
-        if len(gpu_list(cfg)) > 1:
+        if layer_split_of(cfg):
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({cfg.get('layer_split') or 'auto'})", flush=True)
+        elif len(gpu_list(cfg)) > 1:
+            print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
+                  flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
