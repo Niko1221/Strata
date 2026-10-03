@@ -52,6 +52,7 @@
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
+#include "strata/program/window_logits_dump.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -4778,7 +4779,11 @@ int main(int argc, char** argv) {
             if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
-            else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
+            else if (cudaEventQuery(adapt_ev) != cudaSuccess) {
+                static const bool tp = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+                if (tp) std::fprintf(stderr, "strata: SERVE PENDING not landed, %zu stay out\n", pending.size());
+                return;
+            }
             for (auto& st : stages)
                 if (st->adapt_live) {
                     if (wait) cudaEventSynchronize(st->adapt_ev);
@@ -4792,7 +4797,15 @@ int main(int argc, char** argv) {
         };
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
-            if (!pending.empty()) return true;   // the previous swaps are still in flight
+            static const bool trace_adapt_s = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+            if (trace_adapt_s)
+                std::fprintf(stderr, "strata: SERVE ADAPT entered, %zu swaps in flight\n", pending.size());
+            if (!pending.empty()) {
+                if (trace_adapt_s)
+                    std::fprintf(stderr, "strata: SERVE ADAPT SKIPPED, %zu swaps still in flight\n",
+                                 pending.size());
+                                 return true;   // the previous swaps are still in flight
+            }
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
@@ -4836,6 +4849,8 @@ int main(int argc, char** argv) {
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
+            static const bool ts = std::getenv("STRATA_TRACE_RES") != nullptr;
+            if (ts) std::fprintf(stderr, "strata: SERVE adapt swapped %zu experts this round\n", swaps.size());
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             (void) main_live;
             for (auto& st : stages)
@@ -5753,7 +5768,11 @@ int main(int argc, char** argv) {
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
-                if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
+                static const bool tr_ad = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+                static const bool tr_ev = std::getenv("STRATA_TRACE_ADAPT_EVERY") != nullptr;
+                if (tr_ad) std::fprintf(stderr, "strata: SERVE trigger rounds=%lld mod=%d usage=%zu every=%d\n",
+                    (long long) rounds, o.adapt_every, drive.d.usage.size(), o.adapt_every);
+                if (tr_ev || !drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
@@ -5959,7 +5978,23 @@ int main(int argc, char** argv) {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n);
             std::fflush(stdout);
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
-            // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
+            {   // STRATA_TRACE_RES: what a request LEAVES behind for the next one.  The residency table is
+                // a process-level vector, so if this differs between identical requests then request N+1
+                // runs a different SET of experts on the GPU than request N did - which is the same class of
+                // difference as a resident vs CPU-computed expert, and it is not a rounding wobble.
+                static const bool trace_res = std::getenv("STRATA_TRACE_RES") != nullptr;
+                if (trace_res && !host_res.empty()) {
+                    uint64_t h = 1469598103934665603ull;
+                    int32_t resident = 0;
+                    for (int32_t v : host_res) {
+                        h = (h ^ (uint64_t) (uint32_t) v) * 1099511628211ull;
+                        if (v >= 0) ++resident;
+                    }
+                    std::fprintf(stderr, "strata: RES digest=%016llx resident=%d of %zu\n",
+                                 (unsigned long long) h, resident, host_res.size());
+                }
+            }
+
             char read_txt[64];
             if (cancelled)
                 std::snprintf(read_txt, sizeof(read_txt), "%lld of %lld", (long long) read_n, (long long) fresh);
@@ -6521,6 +6556,7 @@ int main(int argc, char** argv) {
             ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
             return true;
         };
+        std::FILE* window_logits_file = nullptr;   // STRATA_DUMP_WINDOW_LOGITS: one record per window
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
         std::vector<int32_t> drafts((size_t) o.spec, 0);
@@ -6600,6 +6636,26 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            // PER-WINDOW LOGITS (diagnostic, default off).  Read once, opened on the first window, and it
+            // streams records rather than promising a row count it has not written - the reason this is not
+            // `--dump-logits`, which a native pack reaches never (see the header of window_logits_dump.hpp).
+            // Row 0 is the row that chose the next token, so a reader can find the first window whose
+            // prediction stopped reproducing without storing every window's rows.
+            static const char* wl_path = std::getenv("STRATA_DUMP_WINDOW_LOGITS");
+            if (wl_path != nullptr && wl_path[0] != '\0') {
+                if (window_logits_file == nullptr) {
+                    window_logits_file = strata::program::window_logits::open_file(wl_path, (std::uint32_t) ver.vocab());
+                    if (window_logits_file != nullptr)
+                        std::fprintf(stderr, "strata generate: per-window logits -> %s (vocab %lld)\n", wl_path,
+                                     (long long) ver.vocab());
+                }
+                if (window_logits_file != nullptr) {
+                    std::vector<float> wrow((std::size_t) ver.vocab());
+                    if (ver.copy_logits(0, wrow.data()))
+                        strata::program::window_logits::write_record(window_logits_file, p, T, a, 1,
+                                                                    (std::uint32_t) ver.vocab(), wrow.data());
+                }
+            }
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();

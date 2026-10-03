@@ -803,6 +803,13 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conv_cache_test src/program/conv_cache_test.cpp)
   target_include_directories(conv_cache_test PRIVATE include)
   add_test(NAME conv_cache_test COMMAND conv_cache_test)
+
+  # The per-window logits probe's file format.  CPU only: it must be checkable without a GPU, because the
+  # property it guards - a reader never sees more records than were written - is exactly the property
+  # --dump-logits breaks for a native pack.
+  add_executable(window_logits_dump_test src/program/window_logits_dump_test.cpp)
+  target_include_directories(window_logits_dump_test PRIVATE include)
+  add_test(NAME window_logits_dump_test COMMAND window_logits_dump_test)
   # coupled draft sampling's counter and penalty-ring arithmetic (header-only, CPU)
   add_executable(coupled_draft_test src/core/coupled_draft_test.cpp)
   target_include_directories(coupled_draft_test PRIVATE include)
