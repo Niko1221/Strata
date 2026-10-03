@@ -2,6 +2,8 @@
 #include "strata/core/gguf_expert_source.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
@@ -19,8 +21,9 @@ constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a 
 GgufExpertSource::~GgufExpertSource() { close(); }
 
 void GgufExpertSource::close() {
-    if (mirror_) { sycl::free(mirror_, dpct::get_in_order_queue()); mirror_ = nullptr; }
-    mirror_bytes_ = 0; mirror_off_.clear(); layer_first_.clear();
+    for (uint8_t* chunk : mirror_chunks_) sycl::free(chunk, dpct::get_in_order_queue());
+    mirror_chunks_.clear();
+    mirror_bytes_ = 0; mirror_ptr_.clear(); layer_first_.clear();
     for (int fd : fds_) if (fd >= 0) ::close(fd);
     fds_.clear(); names_.clear(); layer_fd_.clear(); ring_.clear(); ring_key_.clear(); where_.clear();
     ring_next_ = 0;
@@ -75,9 +78,8 @@ int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
 
 const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || ring_.empty()) return nullptr;
-    if (mirror_ != nullptr) {
-        const int64_t o = mirror_off_[(size_t) (layer * n_expert_ + expert)];
-        if (o >= 0) return mirror_ + o;
+    if (!mirror_ptr_.empty()) {
+        if (const uint8_t* p = mirror_ptr_[(size_t) (layer * n_expert_ + expert)]) return p;
     }
     const auto& lay = strata::kernels::cpu::expert_layout();
     const auto& fm = lay.fmt[(size_t) layer];
@@ -114,28 +116,45 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
 
 int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>& pairs, uint64_t cap, int threads,
                                  std::string& err) {
+    // Level Zero caps one host allocation (about 4 GiB on Arc A-series even with relaxed allocation limits), so the
+    // mirror is a list of chunks of whole blobs.
+    constexpr uint64_t kMaxChunk = 3ull << 30;
     const auto& lay = strata::kernels::cpu::expert_layout();
-    std::vector<std::pair<int64_t, int64_t>> take;
-    std::vector<uint64_t> offs;
+    struct Item { int64_t layer, expert; size_t chunk; uint64_t off; };
+    std::vector<Item> take;
+    std::vector<uint64_t> chunk_bytes;
     uint64_t total = 0;
     for (const auto& [l, e] : pairs) {
         if (l < 0 || l >= n_layers_ || e < 0 || e >= n_expert_) continue;
         const uint64_t b = (lay.bytes[(size_t) l] + 255) / 256 * 256;
         if (total + b > cap) break;
-        take.push_back({l, e});
-        offs.push_back(total);
+        if (chunk_bytes.empty() || chunk_bytes.back() + b > kMaxChunk) chunk_bytes.push_back(0);
+        take.push_back({l, e, chunk_bytes.size() - 1, chunk_bytes.back()});
+        chunk_bytes.back() += b;
         total += b;
     }
     if (take.empty()) return 0;
-    uint8_t* base = nullptr;
-    try {
-        base = (uint8_t*) sycl::malloc_host(total, dpct::get_in_order_queue());
-    } catch (const sycl::exception& ex) {
-        err = std::string("mirror: ") + ex.what();
+    std::vector<uint8_t*> chunks;
+    for (size_t c = 0; c < chunk_bytes.size(); ++c) {
+        uint8_t* base = nullptr;
+        try {
+            base = (uint8_t*) sycl::malloc_host(chunk_bytes[c], dpct::get_in_order_queue());
+        } catch (const sycl::exception& ex) {
+            err = std::string("mirror: ") + ex.what();
+        }
+        if (base == nullptr) {
+            if (err.empty()) err = "mirror: no pinned host memory for " + std::to_string(chunk_bytes[c] >> 20) + " MiB";
+            break;
+        }
+        chunks.push_back(base);
     }
-    if (base == nullptr) {
-        if (err.empty()) err = "mirror: no pinned host memory for " + std::to_string(total >> 20) + " MiB";
-        return -1;
+    if (chunks.empty()) return -1;
+    if (chunks.size() < chunk_bytes.size()) {   // a later chunk did not fit: mirror what did, the rest stays on the SSD
+        std::fprintf(stderr, "strata generate: %s; mirroring %zu of %zu chunks\n", err.c_str(), chunks.size(), chunk_bytes.size());
+        err.clear();
+        take.erase(std::remove_if(take.begin(), take.end(), [&](const Item& it) { return it.chunk >= chunks.size(); }), take.end());
+        total = 0;
+        for (size_t c = 0; c < chunks.size(); ++c) total += chunk_bytes[c];
     }
     std::atomic<size_t> next{0};
     std::atomic<bool> bad{false};
@@ -143,42 +162,40 @@ int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>&
     for (int i = 0; i < std::max(1, threads); ++i)
         ts.emplace_back([&] {
             for (size_t j; (j = next.fetch_add(1)) < take.size() && !bad.load();) {
-                const auto [l, e] = take[j];
-                if (!read_into(l, e, base + offs[j], (size_t) lay.bytes[(size_t) l])) bad.store(true);
+                const Item& it = take[j];
+                if (!read_into(it.layer, it.expert, chunks[it.chunk] + it.off, (size_t) lay.bytes[(size_t) it.layer])) bad.store(true);
             }
         });
     for (auto& th : ts) th.join();
     if (bad.load()) {
-        sycl::free(base, dpct::get_in_order_queue());
+        for (uint8_t* chunk : chunks) sycl::free(chunk, dpct::get_in_order_queue());
         err = "mirror: reading an expert from the GGUF failed";
         return -1;
     }
-    if (mirror_) sycl::free(mirror_, dpct::get_in_order_queue());
-    mirror_ = base;
+    for (uint8_t* chunk : mirror_chunks_) sycl::free(chunk, dpct::get_in_order_queue());
+    mirror_chunks_ = std::move(chunks);
     mirror_bytes_ = total;
-    mirror_off_.assign((size_t) (n_layers_ * n_expert_), -1);
-    layer_first_.assign((size_t) n_layers_, -1);
-    for (size_t j = 0; j < take.size(); ++j) {
-        const auto [l, e] = take[j];
-        mirror_off_[(size_t) (l * n_expert_ + e)] = (int64_t) offs[j];
-        if (layer_first_[(size_t) l] < 0) layer_first_[(size_t) l] = (int64_t) offs[j];
+    mirror_ptr_.assign((size_t) (n_layers_ * n_expert_), nullptr);
+    layer_first_.assign((size_t) n_layers_, nullptr);
+    for (const Item& it : take) {
+        const uint8_t* p = mirror_chunks_[it.chunk] + it.off;
+        mirror_ptr_[(size_t) (it.layer * n_expert_ + it.expert)] = p;
+        if (layer_first_[(size_t) it.layer] == nullptr) layer_first_[(size_t) it.layer] = p;
     }
     return (int64_t) take.size();
 }
 
 bool GgufExpertSource::pinned(int64_t layer, int64_t expert) const {
-    if (mirror_ == nullptr || layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return false;
-    return mirror_off_[(size_t) (layer * n_expert_ + expert)] >= 0;
+    if (mirror_ptr_.empty() || layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return false;
+    return mirror_ptr_[(size_t) (layer * n_expert_ + expert)] != nullptr;
 }
 
 const uint8_t* GgufExpertSource::device_alias(int64_t layer, int64_t expert) const {
-    if (mirror_ == nullptr || layer < 0 || layer >= n_layers_) return nullptr;
+    if (mirror_ptr_.empty() || layer < 0 || layer >= n_layers_) return nullptr;
     if (expert >= 0 && expert < n_expert_) {
-        const int64_t o = mirror_off_[(size_t) (layer * n_expert_ + expert)];
-        if (o >= 0) return mirror_ + o;
+        if (const uint8_t* p = mirror_ptr_[(size_t) (layer * n_expert_ + expert)]) return p;
     }
-    const int64_t f = layer_first_[(size_t) layer];
-    return f >= 0 ? mirror_ + f : nullptr;
+    return layer_first_[(size_t) layer];
 }
 
 bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, size_t bytes) const {
