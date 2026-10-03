@@ -65,13 +65,15 @@ const Api& api() {
 bool vmm_available() { return api().ok; }
 uint64_t vmm_granularity() { return api().ok ? api().gran : 0; }
 
-VmmChunk vmm_chunk_new() {
+VmmChunk vmm_chunk_new(int dev) {
     const Api& a = api();
     if (!a.ok) return 0;
     CUmemAllocationProp prop{};
     prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    prop.location.id = a.dev;
+    // per range: a peer card's cache creates its chunks on the peer, not on the
+    // device that happened to be current at the (once-only) api() init
+    prop.location.id = dev >= 0 ? dev : a.dev;
     CUmemGenericAllocationHandle h = 0;
     if (a.create(&h, (size_t) a.gran, &prop, 0) != CUDA_SUCCESS) return 0;
     return (VmmChunk) h;
@@ -85,6 +87,12 @@ bool VmmRange::reserve(uint64_t bytes) {
     release();
     const Api& a = api();
     if (!a.ok || bytes == 0) return false;
+    // the device this range's chunks live on: the peer cache opens with the peer
+    // current, the K/V pools with device 0 — a.dev alone would pin every range to
+    // whichever device was current first (observed: the peer tier's 19-22 GiB
+    // mapping "failed: out of memory" on a card with 23 GiB free, its chunks
+    // landing on the full device 0)
+    if (cudaGetDevice(&dev_) != cudaSuccess) dev_ = a.dev;
     const uint64_t n = (bytes + a.gran - 1) / a.gran;
     CUdeviceptr p = 0;
     if (a.reserve(&p, (size_t) (n * a.gran), 0, 0, 0) != CUDA_SUCCESS) return false;
@@ -120,12 +128,29 @@ bool VmmRange::map_one(int64_t i, VmmChunk h) {
 bool VmmRange::set_access(int64_t lo, int64_t hi) {
     if (hi <= lo) return true;
     const Api& a = api();
-    CUmemAccessDesc d{};
-    d.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    d.location.id = a.dev;
-    d.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    return a.access((CUdeviceptr) (base_ + (uint64_t) lo * a.gran), (size_t) ((uint64_t) (hi - lo) * a.gran), &d, 1) ==
-           CUDA_SUCCESS;
+    const int owner = dev_ >= 0 ? dev_ : a.dev;
+    CUmemAccessDesc d[2]{};
+    d[0].location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    d[0].location.id = owner;   // the owning device reads and writes its chunks
+    d[0].flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    int n = 1;
+    if (owner != 0) {   // a P2P path lets device 0 touch a peer range directly; without one the
+        int ok01 = 0;   // driver refuses the extra location, so try it and fall back to owner-only
+        if (cudaDeviceCanAccessPeer(&ok01, 0, owner) == cudaSuccess && ok01) {
+            d[1].location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            d[1].location.id = 0;
+            d[1].flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            n = 2;
+        }
+    }
+    const CUdeviceptr at = (CUdeviceptr) (base_ + (uint64_t) lo * a.gran);
+    const size_t bytes = (size_t) ((uint64_t) (hi - lo) * a.gran);
+    if (a.access(at, bytes, d, n) == CUDA_SUCCESS) return true;
+    if (n == 2) {
+        cudaGetLastError();
+        return a.access(at, bytes, d, 1) == CUDA_SUCCESS;
+    }
+    return false;
 }
 
 bool VmmRange::commit_run(int64_t lo, int64_t hi) {
