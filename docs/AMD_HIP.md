@@ -100,14 +100,6 @@ libraries on the PATH, `strata-device` lists the card and a hipBLAS BF16 GEMM ma
 52 of 56, the 4 failures the same as on the RX 9070 XT (`hip_handoff`, and three tests that need a pack fixture).
 The ready-made zip itself has not run a model on a discrete card yet - please report.
 
-**Windows gfx1030 worker-count measurement (2026-10-03):** on one Threadripper 3990X + RX 6900 XT, a measured
-31-worker run decoded Coder IQ1_M at 45.3-48.0 tok/s across short, 4K and 32K fresh prompts, compared with
-6.1-12.5 tok/s at the engine's 63-worker default. This is one machine and model; it does not establish a general
-optimum for gfx1030 or other Threadrippers. The measured numbers and limits are in the
-[benchmark report](benchmarks/windows-zen2-gfx1030-workers.md). The automatic 31-worker policy for this exact
-Windows HIP hardware match is a default-selection rule based on that result; the policy itself has not yet been
-measured as an automatic choice. Positive `--pool-workers` values continue to take precedence.
-
 **Reporting a Windows AMD run** (an issue, or on #325): your card and driver version (AMD Software > System), then
 
 ```bat
