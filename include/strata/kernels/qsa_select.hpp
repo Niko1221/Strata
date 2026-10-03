@@ -12,7 +12,9 @@
 //   qsa_block_topk   : one block per query; a 4-pass radix select over the query's n_bid + 1 blocks, each
 //                      weighted by its cell count, then the cells emitted in ascending order with ties to the
 //                      lowest index - the same selection as topk_kernel, over a quarter of the elements.  On sm_90+
-//                      a call of up to 16 queries runs it on a cluster of 8 CTAs per query: the same ids.
+//                      a call of up to 16 queries runs it on a cluster of 8 CTAs per query: the same ids.  Past the
+//                      register kernel's block capacity the prompt path splits the range over two register calls
+//                      and merges - also the same ids.
 //
 // Queries carry their own step record (pos, n_kv, n_bid, width) as everywhere else in QSA.
 #pragma once

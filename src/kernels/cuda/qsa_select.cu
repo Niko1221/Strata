@@ -484,6 +484,8 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
         if (lane >= o) x += y;
     }
     if (lane == 31) s_warp[warp] = x;
+    if (threadIdx.x < 32 && (int) threadIdx.x >= ((int) blockDim.x >> 5))
+        s_warp[threadIdx.x] = 0;            // a CTA of fewer than 32 warps: the scan below reads those slots anyway
     __syncthreads();
     if (warp == 0) {
         int w = s_warp[lane];
@@ -503,10 +505,14 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     return r;
 }
 
+// r0/r1 restrict the selection to blocks [r0, r1) of each query's row: the split path below runs this kernel on
+// the two halves of a range too big for the registers. A call covering the query's every block keeps the identity
+// shortcut; a partial call selects within its half only (the merge kernel rebuilds the whole-range answer).
 template <int PER>
 __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __restrict__ scores,
                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
-                                                              int64_t cap, int32_t* __restrict__ ids) {
+                                                              int64_t cap, int32_t* __restrict__ ids, int64_t r0,
+                                                              int64_t r1) {
     __shared__ int hist[TK_T / 32][256];
     __shared__ int s_warp[33];
     __shared__ int s_digit, s_above;
@@ -515,14 +521,15 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
     int32_t* out = ids + qi * cap;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
-    if (n_kv <= width) {
+    if (n_kv <= width && r0 <= 0 && r1 > n_bid) {
         for (int64_t j = t; j < n_kv; j += TK_T) out[j] = (int32_t) j;
         return;
     }
     const float* sc = scores + qi * max_blocks;
-    const int64_t nb = n_bid + 1;
-    const int64_t per = (nb + TK_T - 1) / TK_T;       // <= PER (the caller checks)
-    const int64_t b0 = (int64_t) t * per, b1 = (b0 + per < nb) ? b0 + per : nb;
+    const int64_t hi = n_bid + 1 < r1 ? n_bid + 1 : r1;   // this query's blocks within [r0, r1)
+    const int64_t span = hi > r0 ? hi - r0 : 0;
+    const int64_t per = (span + TK_T - 1) / TK_T;       // <= PER (the caller checks)
+    const int64_t b0 = r0 + (int64_t) t * per, b1 = (b0 + per < hi) ? b0 + per : hi;
     uint32_t key[PER];
 #pragma unroll
     for (int j = 0; j < PER; ++j) key[j] = (b0 + j < b1) ? order_key(sc[b0 + j]) : 0u;
@@ -596,6 +603,172 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     }
 }
 
+// ---- the split path's merge: rebuild the whole-range selection from the two halves' candidates. Each half emitted
+// min(width, its cells), and the union holds every cell the whole-range radix would select, so the same weighted
+// rule applied over the candidates - threshold, ties to the lowest index, cells ascending - reproduces
+// block_topk_kernel's array exactly. A cell's key is its block's score key, so cells count one each here where
+// the whole-range kernel counted blocks by their weight.
+constexpr int TM_T = 512;
+constexpr int TM_MAXW = 2051;   // qsa_selection_width(kTopkMaxCells): the selection's cell bound, == the prompt
+                                // path's cap (the launcher checks)
+__global__ void __launch_bounds__(TM_T) block_topk_merge_kernel(const float* __restrict__ scores,
+                                                                const int32_t* __restrict__ steps,
+                                                                const int32_t* __restrict__ ids_a,
+                                                                const int32_t* __restrict__ ids_b,
+                                                                int64_t max_blocks, int64_t cap, int64_t mid,
+                                                                int32_t* __restrict__ ids) {
+    __shared__ int32_t cid[2 * TM_MAXW];      // the halves' candidate cells, A then B - the keys derive from
+                                              // them on demand (a cached key array would go stale when the
+                                              // partitions below move the cells)
+    __shared__ int32_t tmp[TM_MAXW];          // the partition's scratch
+    __shared__ int hist[256];
+    __shared__ int s_warp[33];
+    __shared__ int s_digit, s_above;
+    const int64_t qi = blockIdx.x;
+    const int32_t* st = steps + qi * kStepCount;
+    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    int32_t* out = ids + qi * cap;
+    const int t = threadIdx.x;
+    if (n_kv <= width) {                               // everything is selected: the identity, ascending
+        for (int64_t j = t; j < n_kv; j += TM_T) out[j] = (int32_t) j;
+        return;
+    }
+    const float* sc = scores + qi * max_blocks;
+    // each half emitted min(width, its cells): a half whose block range holds fewer than width cells selects all
+    // of them (its radix's budget cannot fill), and the counts must follow - the tail entries of the halves'
+    // buffers hold garbage. The low half covers block 0 and n_kv > width here, so it is never short
+    const int64_t nb = n_bid + 1;
+    const int64_t cells_a = nb <= mid ? n_kv : mid * R;
+    const int64_t cells_b = nb > mid ? n_kv - mid * R : 0;
+    const int64_t na = cells_a < width ? cells_a : width;
+    const int64_t n_b = cells_b < width ? cells_b : width;
+    const int64_t n_c = na + n_b;
+    for (int64_t i = t; i < n_c; i += TM_T)
+        cid[i] = i < na ? ids_a[qi * cap + i] : ids_b[qi * cap + (i - na)];
+    __syncthreads();
+    auto key_of = [&](int64_t i) { return order_key(sc[cid[i] / R]); };
+    // the whole-range threshold over the candidates: the same four radix passes with unit weights
+    uint32_t prefix = 0;
+    int above = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        for (int i = t; i < 256; i += TM_T) hist[i] = 0;
+        __syncthreads();
+        const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+        for (int64_t i = t; i < n_c; i += TM_T) {
+            const uint32_t k = key_of(i);
+            if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[(k >> shift) & 255], 1);
+        }
+        __syncthreads();
+        if (t == 0) {
+            int cum = above, d = 255;
+            for (; d > 0; --d) {
+                if (cum + hist[d] >= width) break;
+                cum += hist[d];
+            }
+            s_digit = d;
+            s_above = cum;
+        }
+        __syncthreads();
+        prefix |= (uint32_t) s_digit << shift;
+        above = s_above;
+        __syncthreads();
+    }
+    const uint32_t thr = prefix;
+    const int64_t eq_budget = width - above;
+    // each half's emission is ascending by cell id; stable-partition both halves twice - above the threshold, then
+    // at it - so the parts sit sorted by id: [gt | tie | the rest]. The rest are a half's spare candidates (its own
+    // radix kept width cells), which the global selection may drop; they take no place below
+    auto part = [&](int64_t s0, int64_t n, bool at_thr) -> int {
+        const int64_t per = (n + TM_T - 1) / TM_T;
+        const int64_t lo = s0 + (int64_t) t * per;
+        const int64_t hi2 = lo + per < s0 + n ? lo + per : s0 + n;
+        const auto cls = [&](int64_t i) { return at_thr ? key_of(i) == thr : key_of(i) > thr; };
+        int mine = 0;
+        for (int64_t i = lo; i < hi2; ++i) mine += cls(i) ? 1 : 0;
+        int tot = 0;
+        const int base = block_excl_scan(mine, s_warp, tot);
+        int run = 0;
+        for (int64_t i = lo; i < hi2; ++i) {
+            const bool g = cls(i);
+            const int before = base + run;             // this segment's picked cells before i
+            tmp[g ? before : tot + (int) (i - s0) - before] = cid[i];
+            run += g ? 1 : 0;
+        }
+        __syncthreads();
+        for (int64_t i = lo; i < hi2; ++i) cid[i] = tmp[i - s0];
+        __syncthreads();
+        return tot;
+    };
+    const int agt = part(0, na, false), bgt = part(na, n_b, false);
+    const int aeq = part(agt, (int) (na - agt), true), beq = part(na + bgt, (int) (n_b - bgt), true);
+    // the selected tie cells are the first eq_budget of the ties by id across both halves: a prefix, so one id
+    // bounds them. A tie cell's rank among the ties is its own half's ties before it plus the other half's below it
+    __shared__ int s_limit;
+    if (t == 0) s_limit = -1;
+    __syncthreads();
+    const int32_t* aeqp = cid + agt;
+    const int32_t* beqp = cid + na + bgt;
+    auto mark_ties = [&](const int32_t* a, int an, const int32_t* b, int bn) {
+        for (int k = t; k < an; k += TM_T) {
+            const int32_t x = a[k];
+            int lo = 0, hi2 = bn;
+            while (lo < hi2) { const int m = (lo + hi2) >> 1; if (b[m] < x) lo = m + 1; else hi2 = m; }
+            if (k + lo < (int) eq_budget && x > s_limit) atomicMax(&s_limit, x);
+        }
+    };
+    mark_ties(aeqp, aeq, beqp, beq);
+    mark_ties(beqp, beq, aeqp, aeq);
+    __syncthreads();
+    // the whole-range kernels emit the selected set in ascending cell order - the tie cells interleave with the
+    // above-threshold ones by block. Place each selected cell at its rank by id: the selected cells below it in the
+    // two gt parts (all of them), and in the two tie parts (those at or under the limit)
+    auto cnt = [](const int32_t* a, int an, int32_t x) {
+        int lo = 0, hi2 = an;
+        while (lo < hi2) { const int m = (lo + hi2) >> 1; if (a[m] < x) lo = m + 1; else hi2 = m; }
+        return lo;
+    };
+    auto place = [&](const int32_t* x, int xn, bool ties) {
+        for (int k = t; k < xn; k += TM_T) {
+            const int32_t v = x[k];
+            if (ties && v > s_limit) continue;        // a tie cell past the budget's prefix
+            const int32_t cut = ties ? v : (v < s_limit + 1 ? v : s_limit + 1);
+            out[cnt(cid, agt, v) + cnt(cid + na, bgt, v) + cnt(aeqp, aeq, cut) + cnt(beqp, beq, cut)] = v;
+        }
+    };
+    place(cid, agt, false);
+    place(cid + na, bgt, false);
+    place(aeqp, aeq, true);
+    place(beqp, beq, true);
+}
+
+#if !defined(__HIPCC__)
+// The register kernel's range split in two when the context passes its fit: each half's keys are read once (the ref
+// kernel would re-read the scores six times), and the merge rebuilds the whole-range selection - the same ids.
+// Prompt path only: nq <= the 256 sel_batch, cap == the selection width. Returns false to take the ref kernel.
+static bool qsa_block_topk_split(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks,
+                                 int64_t cap, const QsaShapes& s, int32_t* ids, void* stream) {
+    if (s.idx_block != R || cap > TM_MAXW || nq > 256) return false;
+    // stream-ordered, one buffer per call: nothing is shared between concurrent selects (a layer split runs
+    // them on several devices at once) and nothing is held past the merge
+    const cudaStream_t st = (cudaStream_t) stream;
+    int32_t* a = nullptr;
+    if (cudaMallocAsync(&a, (size_t) 2 * nq * cap * sizeof(int32_t), st) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    const int64_t mid = (int64_t) TK_T * TK_PER;
+    int32_t* b = a + nq * cap;
+    block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, st>>>(scores, steps, max_blocks, cap, a, 0, mid);
+    block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, st>>>(scores, steps, max_blocks, cap, b, mid, max_blocks);
+    block_topk_merge_kernel<<<(unsigned) nq, TM_T, 0, st>>>(scores, steps, a, b, max_blocks, cap, mid, ids);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk split: %s\n", cudaGetErrorString(e)); std::exit(1); }
+    if (cudaFreeAsync(a, st) != cudaSuccess)     // logged and cleared: a sticky error here would surface in an
+        std::fprintf(stderr, "qsa_block_topk split: free: %s\n",   // unrelated caller's check and stop the server
+                     cudaGetErrorString(cudaGetLastError()));
+    return true;
+}
+#endif
 
 // Block scores with every key block read ONCE for all of a call's queries (block_scores_kernel's grid is
 // (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer at a decode window, each key re-read per query).  A fixed
@@ -1093,6 +1266,14 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     const bool too_small = false;
 #endif
     if (old || too_small || reach > fit) {
+#if !defined(__HIPCC__)
+        // the prompt path only - its caller passes an active count, decode's captured windows none - past the
+        // register kernel's fit but within two of them: the split keeps the one-read selection where the ref kernel
+        // would re-read the scores six times (the 204,800 context's 51,202 blocks land here)
+        if (active_blocks > 0 && !old && !too_small && reach <= 2 * fit &&
+            qsa_block_topk_split(scores, steps, nq, max_blocks, cap, s, ids, stream))
+            return;
+#endif
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
@@ -1101,9 +1282,11 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::exit(1);
     }
     if (reach <= (int64_t) TK_T * TK_PER)
-        block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks,
+                                                                                          cap, ids, 0, max_blocks);
     else
-        block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks,
+                                                                                              cap, ids, 0, max_blocks);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
