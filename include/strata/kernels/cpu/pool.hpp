@@ -28,6 +28,7 @@
 #pragma once
 
 #include "strata/kernels/cpu/expert.hpp"
+#include "strata/kernels/cpu/cpu_topology.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
 #include <atomic>
@@ -62,25 +63,6 @@ struct ExpertJobMulti {
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
 };
-
-/// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
-/// always used and the default; the hybrid-aware ones are opt-in (--pool-affinity auto|p-cores).
-enum class PoolAffinity {
-    Auto,      ///< Hybrid: prioritize physical P-cores, then SMT, then E-cores (defaults to P-core count)
-    PCores,    ///< Restrict workers strictly to Performance cores and their SMT siblings
-    All,       ///< The default: one worker per physical core in the OS's order, without hybrid distinction
-};
-
-struct CpuTopology {
-    bool is_hybrid = false;
-    int p_cores = 0;                ///< Physical performance cores
-    int p_threads = 0;              ///< Total logical threads on performance cores
-    int e_cores = 0;                ///< Efficient cores
-    std::vector<int> worker_cores;  ///< Ordered logical core IDs for workers (excluding host if skip_first)
-    int host_core = -1;             ///< Logical core reserved for host thread
-};
-
-CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
 
 /// One logical processor per PHYSICAL core, so a worker is never scheduled onto an SMT sibling of another
 /// worker.  On the 6-core/12-thread machine this project measures on, `hardware_concurrency()/2` workers on
@@ -138,6 +120,8 @@ public:
     int p_threads() const { return topo_.p_threads; }
     int e_cores() const { return topo_.e_cores; }
     PoolAffinity affinity() const { return affinity_; }
+    /// The CPU reserved when this pool selected its worker layout.
+    int host_core() const { return topo_.host_core; }
 
     /// Publish `n` jobs, then block until every one has been claimed AND every worker has parked.
     /// `jobs` must outlive the call (it does, and the workers never touch it afterwards).

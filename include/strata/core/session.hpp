@@ -373,7 +373,8 @@ struct SessionLoopScratch {
     bool pinned = false;
 
     /// Allocates the buffers and pins the host thread.  Call ONCE, at session setup.
-    bool init(size_t parts_bytes_in, std::string& err);
+    /// Pass ExpertPool::host_core() to honor the pool layout; -1 keeps the default layout.
+    bool init(size_t parts_bytes_in, std::string& err, int host_core = -1);
     /// Frees everything and restores the affinity.  Safe to call twice, or on a default-constructed object.
     void free();
 };
