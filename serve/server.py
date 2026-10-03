@@ -21,6 +21,7 @@ talks to it over stdin/stdout; `MockEngine` is a scripted stand-in that makes ev
 from __future__ import annotations
 
 import argparse
+import contextlib
 import collections
 import base64
 import hashlib
@@ -292,6 +293,17 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
             print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
 
 
+_BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
+
+
+def btrace(*a):
+    if _BTRACE:
+        print("[batch-trace]", threading.get_ident() % 10000, *a, file=sys.stderr, flush=True)
+
+
+EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default --eos-ids
+
+
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -368,16 +380,38 @@ class StrataEngine:
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
+        # --batch: concurrent requests in the engine's batch slots (see generate_batched)
+        self.batch = int(args[args.index("--batch") + 1]) if "--batch" in args else 0
+        groups = int(args[args.index("--batch-groups") + 1]) if "--batch-groups" in args else 1
+        groups = groups if self.batch and groups > 0 and self.batch % groups == 0 else 1
+        gs = self.batch // groups if self.batch else 0
+        # slots in the order that spreads requests over the pipeline's groups first: 0, gs, 2gs, .., 1, gs+1, ..
+        self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
+        self.slot_q = [queue.Queue() for _ in range(self.batch)]
+        self.slot_busy = [False] * self.batch
+        self.slot_cv = threading.Condition()
+        self.waiting = 0                                # requests waiting for the control lines (ctl)
+        self.ctl = threading.Lock()                     # one admission or solo request on the control lines at a time
+        self.wlock = threading.Lock()                   # stdin writes from several request threads
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
 
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
+        slot_q = self.slot_q
         for line in proc.stdout:
+            if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
+                try:
+                    slot_q[int(line.split()[1])].put(line)
+                    continue
+                except (IndexError, ValueError):
+                    pass
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
         lines.put(None)
+        for q in slot_q:
+            q.put(None)
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -498,10 +532,234 @@ class StrataEngine:
         on = sampling.get("experimental_speed_projection")
         return f" cvec={int(on)}" if isinstance(on, bool) else ""
 
+    def _send(self, text: str):
+        btrace("send>", text[:60])
+        try:
+            with self.wlock:
+                self.proc.stdin.write(text + "\n")
+                self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+
+    def _control(self, cancel, on_token, stop_when=None):
+        """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
+        for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
+        true sends STOP once (the request is then read to its DONE)."""
+        stopped = False
+        while True:
+            try:
+                line = self.lines.get(timeout=10.0)
+            except queue.Empty:
+                if cancel.is_set() and not stopped:
+                    self._send("STOP")
+                    stopped = True
+                yield None
+                continue
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith(("PP ", "INFO")):
+                btrace("ctl<", self._ctl_mode, line.strip()[:60])
+            if line.startswith("T "):
+                on_token(int(line[2:]))
+                if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
+                    self._send("STOP")
+                    stopped = True
+                yield False                              # a token is pending (not a heartbeat)
+            elif line.startswith("PP "):
+                f = line.split()
+                if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+                    self.progress = (int(f[1]), int(f[2]))
+                    self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                yield None
+            elif line.startswith("DONE"):
+                self._parse_done(line)
+                self._last_done = line
+            elif line.startswith("BADM "):
+                f = line.split()
+                self._ctl_result = ("badm", len(f) >= 3 and f[2] == "1")
+                return
+            elif line.startswith("ERR"):
+                raise ValueError(line[4:].strip())
+            if line.startswith("DONE") and self._ctl_mode == "solo":
+                self._ctl_result = ("done", None)
+                return
+
+    def _drain_control(self, until: str, timeout: float = 300.0):
+        """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
+        request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try:
+                line = self.lines.get(timeout=max(0.1, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                return None
+            if line.startswith("DONE"):
+                self._parse_done(line)
+            if line.startswith(until) or line.startswith("ERR"):
+                return line
+        return None
+
+    def _release_slot_when_done(self, slot: int):
+        """A slot whose consumer left: BSTOP it and free it once the engine says BDONE (in the background)."""
+        try:
+            self._send(f"BSTOP {slot}")
+        except EngineDied:
+            pass
+        def wait():
+            end = time.monotonic() + 600.0
+            while time.monotonic() < end:
+                try:
+                    line = self.slot_q[slot].get(timeout=5.0)
+                except queue.Empty:
+                    continue
+                if line is None or line.startswith("BDONE "):
+                    break
+            with self.slot_cv:
+                self.slot_busy[slot] = False
+                self.slot_cv.notify_all()
+        threading.Thread(target=wait, daemon=True).start()
+
+    def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
+        """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
+        - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
+        its prompt + what it generated: the engine reuses that prefix).  Otherwise: BGEN into a free slot, then the
+        slot's own BT lines until BDONE.  Several requests run at once; the control lines (prompt reading, admission)
+        are taken one request at a time.  A consumer that stops early leaves the engine in step: the solo request is
+        STOPped and read to its DONE, an admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
+        self.progress = None
+        keys = self.sampling_keys(sampling or {})
+        out: list[int] = []
+        pending: list[int] = []
+        with self.slot_cv:
+            self.waiting += 1
+        try:
+            while not self.ctl.acquire(timeout=10.0):
+                if cancel.is_set():
+                    return
+                yield None
+        finally:
+            with self.slot_cv:
+                self.waiting -= 1
+        holding = True
+        btrace("ctl acquired")
+        slot = None
+        phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
+        stop_sent = False
+        try:
+            with self.slot_cv:
+                alone = not any(self.slot_busy) and self.waiting == 0
+            prompt, left = list(ids), int(max_new)
+            if alone and left > 1:
+                head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
+                self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+                phase = "solo"
+                self._ctl_mode, self._ctl_result = "solo", None
+                def others():
+                    with self.slot_cv:
+                        return self.waiting > 0
+                for x in self._control(cancel, pending.append, stop_when=others):
+                    while pending:
+                        t = pending.pop(0)
+                        out.append(t)
+                        yield t
+                    if x is None:                       # a heartbeat (False: a token, flushed above)
+                        yield None
+                phase = "none"                          # its DONE is read
+                while pending:
+                    t = pending.pop(0)
+                    out.append(t)
+                    yield t
+                finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
+                left = int(max_new) - len(out)
+                if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
+                    return
+                prompt = list(ids) + out                # promoted: it continues in a batch slot from here
+            # a free slot (they free themselves at BDONE, which needs no control lines)
+            with self.slot_cv:
+                while True:
+                    slot = next((b for b in self.slot_order if not self.slot_busy[b]), None)
+                    if slot is not None:
+                        self.slot_busy[slot] = True
+                        break
+                    self.slot_cv.wait(timeout=10.0)
+                    if cancel.is_set():
+                        return
+            while not self.slot_q[slot].empty():
+                self.slot_q[slot].get_nowait()
+            head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
+            self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+            phase = "admit"
+            self._ctl_mode, self._ctl_result = "batch", None
+            for x in self._control(cancel, pending.append):
+                while pending:
+                    yield pending.pop(0)
+                if x is None:
+                    yield None
+            cont = bool(self._ctl_result and self._ctl_result[1])
+            phase = "slot" if cont else "none"
+            while pending:
+                yield pending.pop(0)
+            self.ctl.release()
+            holding = False
+            if not cont:
+                return
+            while True:
+                try:
+                    line = self.slot_q[slot].get(timeout=10.0)
+                except queue.Empty:
+                    if cancel.is_set() and not stop_sent:
+                        self._send(f"BSTOP {slot}")
+                        stop_sent = True
+                    yield None
+                    continue
+                if line is None:
+                    phase = "none"
+                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                if line.startswith("BT "):
+                    if cancel.is_set():
+                        if not stop_sent:
+                            self._send(f"BSTOP {slot}")
+                            stop_sent = True
+                        continue
+                    yield int(line.split()[2])
+                elif line.startswith("BDONE "):
+                    phase = "none"
+                    f = line.split()
+                    if len(f) >= 5 and isinstance(self.last, dict):
+                        self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4])}
+                    return
+        finally:
+            # a consumer that left early (or an error): keep the engine and this server in step
+            btrace("finally phase", phase, "slot", slot, "holding", holding)
+            try:
+                if phase == "solo":
+                    self._send("STOP")
+                    self._drain_control("DONE")
+                elif phase == "admit":
+                    line = self._drain_control("BADM")
+                    if line and line.startswith("BADM ") and line.split()[2:3] == ["1"]:
+                        phase = "slot"
+            except EngineDied:
+                pass
+            if holding:
+                self.ctl.release()
+            if slot is not None:
+                if phase == "slot":
+                    self._release_slot_when_done(slot)    # freed at its BDONE
+                else:
+                    with self.slot_cv:
+                        self.slot_busy[slot] = False
+                        self.slot_cv.notify_all()
+
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
+        if getattr(self, "batch", 0):
+            yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
+            return
         self.progress = None
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
@@ -1447,7 +1705,8 @@ class Service:
         with self.status_lock:
             self.status["queued"] += 1
         try:
-            with self.fifo:
+            # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
+            with (contextlib.nullcontext() if getattr(self.engine, "batch", 0) else self.fifo):
                 try:
                     with self.status_lock:
                         if trace is not None:

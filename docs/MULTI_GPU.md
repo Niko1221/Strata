@@ -140,3 +140,8 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
+
+## Several conversations at once
+
+With a layer split, `--batch N --batch-groups G --trim-stage-weights` decodes several conversations together and
+pipelines them through the cards: see [BATCHING.md](BATCHING.md).

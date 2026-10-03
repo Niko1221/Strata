@@ -31,6 +31,8 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <chrono>
+#include <map>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -119,6 +121,46 @@ public:
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
+
+    // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
+    //
+    // A batch window holds S INDEPENDENT sequences, one token each: row s is slot s, at slot s's own position,
+    // reading and writing slot s's own state (GDN recurrence and conv history, QSA K/V and indexer, PLE history),
+    // which lives in `slots[s]` - a session carved like this verifier's own (same layer range, same max_cells).
+    // Everything that is per row already (hyper-connections, dense projections, router, shared expert, the
+    // routed experts on the GPU and the CPU, the head) runs once over the S rows, so the weights are read once
+    // per window for all the sequences.  Row s's arithmetic is the single-token window's, so a slot's greedy
+    // tokens are its solo greedy tokens (modulo the multi-token CPU kernel choice: STRATA_IQ_MT_MIN=1).
+    //
+    // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
+    // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
+    bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
+    int n_slots() const { return (int) slots_.size(); }
+    /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
+    bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
+                   std::string& err);
+    /// Keep every row of the last batch window: each slot's state advances by its one token.
+    bool commit_slots(std::string& err);
+
+    // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
+    // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window
+    // keeps every row, so the commit needs no host decision), and the host serves the rings of every stage that has
+    // a window in flight from one thread (batch_poll does not block).  Stage k can then run group g while stage k+1
+    // runs group g-1.  Rows of group `base` use hand-off rows [base, base + S), so groups never share a hand-off row.
+    bool batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
+    /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
+    /// -1 = an error (err).  Serves every layer that has rung so far.
+    int batch_poll(PoolMultiFn pool, void* user, std::string& err);
+    bool batch_busy() const { return b_running_; }
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
+    /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
+    /// default.  Set on the first stage, it reaches the last.
+    void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
+        if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
+        if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    const int32_t* batch_out() const { return b_out_; }
+    bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
     /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
     /// the same stream and the drafter reads nothing it writes, so it overlaps the draft. Whoever reads or writes
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
@@ -162,6 +204,29 @@ public:
 
 private:
     bool capture(int T, std::string& err);
+    // batch windows (see init_slots)
+    std::vector<SessionState*> slots_;
+    bool batch_rec_ = false;               ///< record_window is capturing a batch window
+    int row_base_ = 0;                     ///< ... over slots [row_base_, row_base_ + T)
+    bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
+    std::map<int, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< key base * 16 + S
+    int last_base_ = 0;
+    // batch_launch / batch_poll
+    bool b_running_ = false;
+    int64_t b_k_ = 0, b_steps_ = 0;
+    std::chrono::steady_clock::time_point b_last_;
+    int32_t b_out_[8] = {};
+    std::vector<strata::kernels::SamplerParams> slot_sp_;
+    bool sample_rows(int base, int S, std::string& err);   ///< the sampled slots' rows of the last batch window
+    int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
+    int32_t* commitb_ = nullptr;
+    float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
+    void* arena_b_ = nullptr;
+    int64_t last_pos_b_[8] = {};
+    bool capture_batch(int base, int S, std::string& err);
+    void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
+    bool capture_commit_batch(int base, int S, std::string& err);
+    bool stage_batch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
