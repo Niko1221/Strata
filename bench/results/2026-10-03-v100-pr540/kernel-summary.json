@@ -1,0 +1,23 @@
+{
+  "baseline_revision": "1026dff",
+  "upstream_revision": "d9cfcb1ab13e8a468bc4b30b6cf3c6f5bf50a7a5",
+  "baseline_engine_sha256": "91928b850888662b487b647ea9d5ec94243036bbca7f2f3787320bc16d0a9ee6",
+  "candidate_engine_sha256": "cdde2cc4d981affd5ca74bedcc24bfd2ea3f02457b16bdaef14d794ec862935d",
+  "gpu0": {
+    "decode_step_m1_us": {"baseline": 52.90, "candidate": 31.13},
+    "attention_batch_m1_us": {"baseline": 52.93, "candidate": 31.15},
+    "attention_batch_m8_us": {"baseline": 180.42, "candidate": 111.85},
+    "bitwise_cases_passed": 13
+  },
+  "gpu1": {
+    "decode_step_m1_us": {"baseline": 58.15, "candidate": 33.41},
+    "attention_batch_m1_us": {"baseline": 58.14, "candidate": 33.42},
+    "attention_batch_m8_us": {"baseline": 196.28, "candidate": 119.22},
+    "bitwise_cases_passed": 13
+  },
+  "validation": {
+    "stream_and_hybrid_parity": "passed on both GPUs",
+    "needle_recall": "6/6 passed at 1K and 32K, depths 10/50/90",
+    "openai_conversation_and_tools": "5/5 passed"
+  }
+}
