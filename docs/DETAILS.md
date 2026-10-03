@@ -887,6 +887,23 @@ reads quantized weights, the file is half the size, and on the CPU it can encode
 the BF16 file, and a setup run again keeps a file of your own that still exists. We have not measured its accuracy
 against BF16 yet; numbers are welcome in #625.
 
+**Flash attention on the CPU (#660):** ggml's fast CPU kernel for flash attention needs the encoder's head size (72)
+to be a multiple of the vector width: 8 floats with AVX2, which the release builds use, but 16 with AVX-512, which a
+build from source gets on a CPU that has it (Zen 4 and newer, some Intel). There ggml falls back to a kernel that is
+several times slower and accumulates in FP16, so `strata-vision` turns flash attention off on the CPU when its ggml has
+AVX-512 and leaves it at `auto` (on) otherwise; `--flash-attn on|off|auto` overrides that. A 1024x1024 picture
+(1,024 image tokens) on a Ryzen 7 7700X, 8 threads, an F16 mmproj, one encode per fresh process:
+
+| Build | Flash attention | Encode | Peak RSS | Output vs FP32 attention |
+| --- | --- | --- | --- | --- |
+| AVX2 (as released) | on (default) | 8.3 / 9.9 s | 1,152 MiB | 1.2% |
+| AVX2 | off | 15.2 / 14.0 s | 2,194 MiB | 1.1% |
+| AVX-512 (from source) | on | 43.5 s | 1,152 MiB | 26% |
+| AVX-512 (from source) | off (default) | 13.3 s | 2,195 MiB | - |
+
+The last column is the relative L2 distance of the embeddings from the AVX-512 run without flash attention; two builds
+differ by about 1% anyway.
+
 **A spare GPU for the encoder (0.1.33, #408):** with a card the engine doesn't use, add `"cuda_device": 2` (numbered
 like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encoder then runs on that card alone. Lower
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
