@@ -1984,6 +1984,31 @@ int main(int argc, char** argv) {
         }
         if (native_pack) skip.insert("token_embd.weight");
     }
+    // Layer split with explicit split points: every GPU holds only the dense weights of ITS layers (the PLE tensors
+    // stay everywhere).  Without this each card keeps a full copy (~3.4 GB for the Coder) that its stage never
+    // reads - VRAM the expert cache wants.  STRATA_STAGE_TRIM=0 keeps the full copies.
+    const std::set<std::string> skip_base = skip;
+    const bool stage_trim = multi_gpu && !split_auto && !split_at.empty() &&
+                            !(std::getenv("STRATA_STAGE_TRIM") && std::string(std::getenv("STRATA_STAGE_TRIM")) == "0");
+    auto add_foreign = [&](int64_t lb, int64_t le, std::set<std::string>& out) {
+        std::FILE* f = std::fopen((o.pack + "/index.txt").c_str(), "rb");
+        if (!f) return;
+        char line[1024], name[256];
+        while (std::fgets(line, sizeof line, f)) {
+            if (line[0] == '#' || std::sscanf(line, "%255s", name) != 1) continue;
+            const std::string n = name;
+            if (n.rfind("blk.", 0) != 0 || n.find("ple") != std::string::npos) continue;
+            const int64_t l = std::atoll(name + 4);
+            if (l < lb || l >= le) out.insert(n);
+        }
+        std::fclose(f);
+    };
+    if (stage_trim) {
+        add_foreign(0, split_at[0], skip);
+        strata::core::NativeDense::set_layer_range(0, (int) split_at[0]);
+        std::fprintf(stderr, "strata generate: layer split: CUDA0 loads the dense weights of layers 0-%lld only\n",
+                     (long long) split_at[0] - 1);
+    }
     uint64_t pool_bytes = 0;
     if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -2303,16 +2328,31 @@ int main(int argc, char** argv) {
             return 1;
         }
         const strata::core::OnDevice on(st.dev);
+        std::set<std::string> skip_s = skip_base;
+        uint64_t pool_s = pool_bytes;
+        if (stage_trim) {
+            const int64_t lb = split_at[i], le = i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers;
+            add_foreign(lb, le, skip_s);
+            strata::core::NativeDense::set_layer_range((int) lb, (int) le);
+            if (!strata::core::WeightTable::pool_bytes(o.pack, pool_s, err, &skip_s)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: layer split: CUDA%d loads the dense weights of layers %lld-%lld only\n",
+                         st.dev, (long long) lb, (long long) le - 1);
+        } else {
+            skip_s = skip;
+        }
         void* arena_s = nullptr;
-        if (cudaMalloc(&arena_s, pool_bytes) != cudaSuccess ||
-            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+        if (cudaMalloc(&arena_s, pool_s) != cudaSuccess ||
+            !st.wt.load(o.pack, arena_s, pool_s, err, skip_s.empty() ? nullptr : &skip_s)) {
             cudaGetLastError();
             size_t free_b = 0, total_b = 0;   // #486: what that card had free
             cudaMemGetInfo(&free_b, &total_b);
             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s (%llu MiB needed, %llu MiB of %llu "
                                  "MiB free on that card)\n", st.dev,
                          err.empty() ? "the weight arena does not fit" : err.c_str(),
-                         (unsigned long long) (pool_bytes >> 20), (unsigned long long) (free_b >> 20),
+                         (unsigned long long) (pool_s >> 20), (unsigned long long) (free_b >> 20),
                          (unsigned long long) (total_b >> 20));
             return 1;
         }
@@ -3124,6 +3164,12 @@ int main(int argc, char** argv) {
         // to hold back is the windows - and `free_b` has already lost the drafter.
         const int64_t room = stage_room(st.dev, true, false);
         const strata::core::OnDevice on(st.dev);
+        {
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d: %.2f GiB free of %.2f, room for experts %.2f GiB\n",
+                         st.dev, (double) fb / 1073741824.0, (double) tb / 1073741824.0, (double) room / 1073741824.0);
+        }
         std::vector<int64_t> sized;
         int64_t used = 0;
         for (const auto& pr : st.profile) {
