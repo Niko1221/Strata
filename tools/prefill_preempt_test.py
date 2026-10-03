@@ -61,6 +61,7 @@ class Engine:
         self.proc = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         self.lines: queue.Queue[str | None] = queue.Queue()
+        self.info: dict[str, object] = {}
         threading.Thread(target=self._pump, daemon=True).start()
         ready = self._next_line(lambda l: l.startswith("READY"), timeout=1800)
         if ready is None:
@@ -87,7 +88,11 @@ class Engine:
                 continue
             if line is None:
                 raise RuntimeError("the engine ended (see the scenario log)")
-            if line.startswith("ERR") and not pred(line):
+            if line.startswith("INFO "):
+                for kv in line.split()[1:]:
+                    k, _, v = kv.partition("=")
+                    self.info[k] = v
+            elif line.startswith("ERR") and not pred(line):
                 raise RuntimeError("engine ERR: " + line)
             if pred(line):
                 return line
@@ -144,9 +149,9 @@ class Engine:
 
 
 def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
-                kv_resident: int | None = None) -> list[str]:
+                kv_resident: int | None = None, expert_slots: int | None = None) -> list[str]:
     drop = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--pcie-frac", "--prompt-cache",
-            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max"}
+            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max", "--expert-cache"}
     out, skip = [], False
     for a in cfg["args"]:
         if skip:
@@ -165,6 +170,11 @@ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | No
         out += ["--kv-resident", str(kv_resident)]
     if preempt:
         out += ["--prefill-preempt", "--prefill-preempt-min-tokens", "0"]
+    if expert_slots:
+        # pin the VRAM expert tier: auto sizing depends on how much VRAM happens to be free, and a different
+        # resident set rounds differently (GPU-resident experts vs CPU misses) - every engine of one comparison
+        # must run the SAME geometry or the state hashes are not comparable
+        out += ["--expert-cache", str(expert_slots)]
     return out
 
 
@@ -213,9 +223,16 @@ def main() -> int:
         scenarios = [s for s in scenarios if args.only in s[0]]
 
     print(f"[harness] engine {args.engine}", flush=True)
+    # pin the expert-cache geometry for EVERY engine of this run: start one probe engine with the config's own
+    # auto sizing and read the slot count it settled on
+    probe = start_engine("probe", args.engine, engine_args(cfg, prefill=chunk, preempt=False), workdir)
+    expert_slots = int(probe.info.get("expert_slots", 0) or 0)
+    probe.close()
+    print(f"[harness] expert-cache pinned to {expert_slots} slots for every engine of this run", flush=True)
     print(f"[harness] control engine (references): A={len(a_ids)} tokens, B={len(b_ids)} tokens", flush=True)
     t0 = time.time()
-    control = start_engine("control", args.engine, engine_args(cfg, prefill=chunk, preempt=False), workdir)
+    control = start_engine("control", args.engine,
+                           engine_args(cfg, prefill=chunk, preempt=False, expert_slots=expert_slots), workdir)
     try:
         control.gen(None, warm_ids, 8)                    # the virgin engine's first request decodes differently
         control.collect(None)
@@ -242,7 +259,8 @@ def main() -> int:
                 sc_ctrl = start_engine(f"control-{name}", args.engine,
                                        engine_args(cfg, prefill=chunk, preempt=False,
                                                    max_context=sc.get("max_context"),
-                                                   kv_resident=sc.get("kv_resident")), workdir)
+                                                   kv_resident=sc.get("kv_resident"),
+                                                   expert_slots=expert_slots), workdir)
                 try:
                     sc_ctrl.gen(None, warm_ids, 8)
                     sc_ctrl.collect(None)
@@ -255,7 +273,7 @@ def main() -> int:
                     sc_ctrl.close()
             e = start_engine(f"preempt-{name}", args.engine,
                              engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
-                                         kv_resident=sc.get("kv_resident")), workdir)
+                                         kv_resident=sc.get("kv_resident"), expert_slots=expert_slots), workdir)
             try:
                 e.gen(None, warm_ids, 8)
                 e.collect(None)

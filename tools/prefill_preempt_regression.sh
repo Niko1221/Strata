@@ -14,6 +14,9 @@ overall=0
 
 for i in $(seq 1 "$N"); do
     echo "================ RUN $i of $N ================"
+    # no leftover engine may compete for VRAM: the auto expert-cache sizing (and with it the arithmetic)
+    # depends on what happens to be free
+    pkill -x strata 2>/dev/null && sleep 5
     echo "--- ctest ($BUILD)"
     (cd "$BUILD" && ctest --output-on-failure 2>&1 | tail -4) || overall=1
     echo "--- python suites"
