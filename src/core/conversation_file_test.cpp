@@ -87,6 +87,10 @@ SavedConversation sample() {
     return s;
 }
 
+// format v1 golden: the file the fixed sample() gives (size and session_hash64 of all bytes, seed 0)
+constexpr size_t kGoldenSize = 17878535;
+constexpr uint64_t kGoldenHash = 0x70f812b350360d09ull;
+
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
     return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
            a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used && b.stage_parts.empty();
@@ -153,6 +157,24 @@ int main() {
     std::string error;
     check(session_file_write(good.string(), original, id, written, error), "write succeeds");
     check(error.empty(), "write leaves no error");
+
+    // golden: format v1 is frozen. The fixed sample must give these exact bytes (little-endian header fields at
+    // fixed offsets, and a fixed hash of the whole file); a format change must bump the version and this test.
+    {
+        const std::vector<char> g = slurp(good);
+        auto u32 = [&](size_t o) { uint32_t v = 0; for (int i = 3; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
+        auto u64 = [&](size_t o) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
+        check(g.size() >= 80 && std::memcmp(g.data(), "STRSESS\x01", 8) == 0, "golden: magic");
+        check(u32(8) == 1 && u32(12) == 64, "golden: version 1, header 64 bytes (little-endian)");
+        check(u64(16) == id.model && u64(24) == id.config, "golden: fingerprints at offsets 16 and 24");
+        check(u64(32) == g.size() - 64 - 16, "golden: payload length at offset 32");
+        check(u64(40) == 0 && u64(48) == 0, "golden: reserved fields are zero");
+        check(std::memcmp(g.data() + g.size() - 8, "STRSEND\x01", 8) == 0, "golden: end marker");
+        const uint64_t h = session_hash64(g.data(), g.size(), 0);
+        const char* golden = std::getenv("STRATA_SESSION_GOLDEN_PRINT");
+        if (golden) std::printf("golden size %zu hash %016llx\n", g.size(), (unsigned long long)h);
+        check(g.size() == kGoldenSize && h == kGoldenHash, "golden: the fixed sample's file bytes are unchanged");
+    }
     check(written == fs::file_size(good), "write reports the file size");
     check(no_temp(dir), "no temporary left behind");
     {
