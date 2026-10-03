@@ -28,6 +28,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
+option(STRATA_SYCL_LARGE_BUFFERS "Compile device code for buffers over 4 GiB (Arc A-series addresses buffers with 32-bit offsets otherwise; needs UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1 at run time)" OFF)
+set(_big_buffers "")
+if(STRATA_SYCL_LARGE_BUFFERS)
+  set(_big_buffers " -ze-opt-greater-than-4GB-buffer-required")
+endif()
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
@@ -45,7 +50,7 @@ if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)
   # the divide/sqrt rounding option (below) must reach ocloc here: an AOT build has no spir64 backend to take it
   set(_sycl_link -fsycl -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen
-      "-device ${STRATA_SYCL_AOT} -options -cl-fp32-correctly-rounded-divide-sqrt")
+      "-device ${STRATA_SYCL_AOT} -options \"-cl-fp32-correctly-rounded-divide-sqrt${_big_buffers}\"")
 else()
   set(_sycl_link -fsycl)
 endif()
