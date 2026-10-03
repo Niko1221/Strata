@@ -1118,6 +1118,97 @@ class Service:
                         trace["load_s"] += round(time.perf_counter() - loading, 3)
                         trace["state"] = "queued"
 
+    # ---- updating the engine from the web app ----------------------------------------------------
+    # The engine is a ready-made build that setup.py downloads from the project's releases, and the
+    # project ships a release most days, so "update" has meant downloading a 124 MB zip by hand.  The
+    # updater in serve/update.py does it instead, and the order of ITS steps is what makes it safe:
+    # nothing on disk changes until the download, the archive, the version and the STAGED binary have
+    # all been checked, and from the apply step onward there is a backup to restore from.
+    #
+    # What is deliberately not here: any handling of the Python checkout, the pinned packages, the
+    # model or the packs.  Rewriting the code this server is running from, in-process, is a different
+    # and much larger thing than replacing a binary next to it, and `git pull` already does it well.
+
+    def _updater(self):
+        """The Updater for this install, created on first use.
+
+        The engine path comes from `engine.spawn[0]`, which is the same string the process was started
+        with, so the updater replaces the files the engine actually runs from rather than a guess.
+        """
+        if getattr(self, "_updater_obj", None) is None:
+            import serve.update as updater_mod
+            exe = Path(self.engine.spawn[0]) if getattr(self.engine, "spawn", None) else None
+            if not exe:
+                return None
+            # No progress callback: the web app POLLS /api/update/state, and state_dict() is built on
+            # demand from the Updater's own fields, so there is nothing to push and no second copy of
+            # the state that could disagree with the real one.
+            self._updater_obj = updater_mod.Updater(
+                engine_exe=exe,
+                backend="hip" if getattr(self, "backend", None) == "hip" else "cuda",
+                # The card's compute capability, so a release with no code for it is refused before a
+                # 124 MB download rather than after it.  None when it is not known, which the updater
+                # treats as "cannot tell" and carries on with.
+                gpu_cc=getattr(self, "gpu_cc", None) or updater_mod.gpu_compute_capability(),
+                )
+        return self._updater_obj
+
+    def update_state(self) -> dict:
+        """What the update is doing, for the web app to poll.  Never raises: the UI must still work
+        when there is no updater (an engine started some other way)."""
+        up = self._updater()
+        return up.state_dict() if up else {"state": "unavailable", "detail": {}, "steps": [],
+                                           "done": 0, "total": 0, "percent": None, "active": None,
+                                           "backup": None}
+
+    def update_check(self) -> tuple[int, dict]:
+        up = self._updater()
+        if up is None:
+            return 409, {"error": {"message": "this server was not started from an engine file, "
+                                              "so there is nothing to update"}}
+        try:
+            return 200, up.check()
+        except Exception as e:
+            return 502, {"error": {"message": str(e)}}
+
+    def update_apply(self, allow_downgrade: bool = False) -> tuple[int, dict]:
+        """Start the update on a background thread and return immediately; the UI polls the state.
+
+        Refused while the model is loaded or busy.  Replacing the engine's files underneath a running
+        process is the one thing this must never do, and `unload()` is the project's own way to stop
+        it - it also refuses with "busy" when a request is running or queued, which is exactly the
+        condition to not update under.
+        """
+        up = self._updater()
+        if up is None:
+            return 409, {"error": {"message": "nothing to update"}}
+        if up.state == "running":
+            return 409, {"error": {"message": "an update is already running"}}
+        if not self.update_state().get("detail", {}).get("latest"):
+            return 409, {"error": {"message": "check for updates first"}}
+        # Draining first is the safety interlock: unload() returns "busy" rather than stopping a model
+        # that is mid-request, so a click during generation cannot half-replace an engine.
+        drained = self.unload()
+        if drained in ("busy", "unsupported"):
+            return 409, {"error": {"message": ("a request is running or queued; try again when it "
+                                                "finishes") if drained == "busy"
+                                    else "the engine cannot be stopped safely here, so it is not "
+                                         "updated while it is running"}}
+
+        def go():
+            try:
+                up.run(allow_downgrade=allow_downgrade)
+            finally:
+                # Bring the model back.  A failed update leaves the OLD engine in place, so loading
+                # here is loading the known-good one; the failure is reported in the update state.
+                try:
+                    self.load()
+                except Exception:
+                    pass
+
+        threading.Thread(target=go, name="strata-update", daemon=True).start()
+        return 202, up.state_dict()
+
     def unload(self, idle_for: float | None = None) -> str:
         """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
         with idle_for: one ran more recently than that) or "unsupported"."""
@@ -2144,6 +2235,10 @@ def make_handler(svc: Service):
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
+            if path == "/api/update/state":
+                # the web app polls this while an update runs; read-only, so no _own_page guard
+                self._json(200, svc.update_state())
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -2228,6 +2323,20 @@ def make_handler(svc: Service):
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
+                return
+            if path in ("/api/update/check", "/api/update/apply") \
+                    and not self._own_page("the engine can be updated"):
+                return
+            if path == "/api/update/check":
+                self._json(*svc.update_check())
+                return
+            if path == "/api/update/apply":
+                try:
+                    req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                except ValueError:
+                    self._json(400, {"error": {"message": "send a JSON object"}})
+                    return
+                self._json(*svc.update_apply(bool(req.get("allow_downgrade"))))
                 return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
