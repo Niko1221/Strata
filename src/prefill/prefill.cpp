@@ -1303,6 +1303,7 @@ struct PeTimer {
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     err.clear();
+    suspended_ = false;
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
@@ -2639,6 +2640,15 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
+        }
+        // the park point: the chunk's state is committed (the syncs above ran), the issuer thread is joined, and
+        // the next chunk - with its PLE read-ahead and expert issue - has not started.  Breaking runs the tail
+        // below, which commits `ss.ple_prev` for this boundary and drains the compute and copy streams; the
+        // read-ahead future's destructor blocks until its gather is done (it is discarded - the resume gathers
+        // again).  A split's stages are never offered the yield (only the last stage would be at a boundary).
+        if (c0 + T < n && next_ == nullptr && hand_in_ == nullptr && should_suspend && should_suspend()) {
+            suspended_ = true;
+            break;
         }
     }
     if (next_run.valid() && !next_run.get()) { err = next_err; return false; }

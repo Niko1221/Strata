@@ -107,6 +107,16 @@ public:
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
 
+    /// Cooperative prefill preemption: checked once per COMPLETED chunk (streams synchronized, every byte of the
+    /// state through that position landed) when more chunks remain and the run is single-GPU - a layer split's
+    /// stages are chunks apart and never at one boundary together.  True suspends the run there: `run` returns
+    /// true with `suspended()` set, the session holds exactly the state of the tokens read so far (run's tail has
+    /// committed `ple_prev` for the boundary), and the caller continues later with another `run` call at the
+    /// position reached.  The next chunk never starts, so no read-ahead outlives the request that is parking.
+    std::function<bool()> should_suspend;
+    /// Whether the last `run` ended at a suspension point (rather than reading everything or failing).
+    bool suspended() const { return suspended_; }
+
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;
@@ -126,6 +136,7 @@ private:
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
+    bool suspended_ = false;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PrefillStats stats_;
