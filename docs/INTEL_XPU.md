@@ -12,9 +12,17 @@ correct subgroup / scalar implementations, not XMX kernels yet.
 
 Measured on one Intel Arc Pro B60 (device 0xe211, 23.3 GB), Qwen3.8-Flash-Next Q2_0, expert
 cache auto (14,570 slots, 18.8 GiB), context 1024, `--spec 2 --kv int8`: prefill 127 tokens at
-**73.9 tok/s** (time to first token 2.1 s); greedy decode with the speculative verify window at
-**9.4 tok/s** (64 tokens). Correctness gates in-run: slot 0 verified bit for bit, the verify
+**77.8 tok/s** (time to first token 2.1 s); greedy decode with the speculative verify window at
+**10.2 tok/s** (64 tokens). Correctness gates in-run: slot 0 verified bit for bit, the verify
 window's per-layer doorbells all ring, exit 0.
+
+Where the remaining time goes (STRATA_XPU_PROFILE, per-kernel GPU time): ~53% is the quantized
+expert GEMV family (`native_mmvq_multi`, `native_gu_multi`, `native_down_multi`, `gr_*`) — all
+scalar `__dp4a` emulations, the XMX/`joint_matrix` rewrite is the next lever; ~27% is doorbell
+parked time (the CPU serving between rings); submission overhead is gone since graph launch is
+one `ext_oneapi_graph` call (~1.2 µs/op amortised vs ~31 µs/op for the eager loop). This host's
+PCIe link measures 3.6 GB/s pinned (the 3090 bench box: 23-26 GB/s, x16), so the engine keeps
+its PCIe tier small and streams experts from the files instead.
 
 The Intel-specific part that cost the most time: the doorbell handshake. The verify-window graph
 contains spin kernels that poll host-mapped flags the CPU raises between layers. On this stack a

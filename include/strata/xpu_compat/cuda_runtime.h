@@ -3,21 +3,25 @@
 // when STRATA_ENABLE_XPU=ON. Kernel source is rewritten (tools/xpu/rewrite_cuda.py)
 // so `foo<<<grid, block, smem, stream>>>(args)` becomes strata::xpu::launch(...).
 //
-// Graphs are eager: capture records the launches and replays them. That is slower
-// on the host than a CUDA graph, and it is the same kernels on the GPU.
+// Graphs: capture records the launches; instantiate additionally replays them into a native
+// ext_oneapi_graph so launch is ONE submission (the eager per-op loop remains as the fallback,
+// STRATA_XPU_EAGER_GRAPHS=1). The GPU runs the same kernels either way.
 #ifndef __CUDA_RUNTIME_H__
 #define __CUDA_RUNTIME_H__
 
 #include <sycl/sycl.hpp>
 #include <sycl/ext/oneapi/kernel_properties/properties.hpp>
+#include <sycl/ext/oneapi/experimental/graph.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -176,6 +180,14 @@ inline bool trace_enabled() {
 struct Graph {
     std::vector<std::function<void(sycl::queue&)>> ops;
     std::vector<std::string> names;
+    // Native replay: the op list recorded into an ext_oneapi_graph at instantiate time.
+    // Replaying it is ~1.2 us/op amortised vs ~31 us/op for the eager loop (measured on b60-dgpu:
+    // a 2000-kernel graph replays in 2.3 ms vs 62 ms). Empty when recording fails or is disabled
+    // (STRATA_XPU_EAGER_GRAPHS=1); launch then falls back to the eager loop.
+    std::optional<sycl::ext::oneapi::experimental::command_graph<
+        sycl::ext::oneapi::experimental::graph_state::executable>>
+        native;
+    sycl::queue* record_q = nullptr;   // the capture stream's queue: recording stays off shared queues
     void push(std::function<void(sycl::queue&)>&& op, const char* name) {
         ops.push_back(std::move(op));
         names.push_back(name ? name : "?");
@@ -760,6 +772,7 @@ inline cudaError_t cudaStreamBeginCapture(cudaStream_t stream, cudaStreamCapture
     auto* s = strata::xpu::as_stream(stream);
     if (s->capture) return cudaErrorStreamCaptureUnsupported;
     s->capture = new strata::xpu::Graph();
+    s->capture->record_q = &s->q;
     return cudaSuccess;
 }
 inline cudaError_t cudaStreamEndCapture(cudaStream_t stream, cudaGraph_t* graph) {
@@ -775,7 +788,68 @@ inline cudaError_t cudaStreamIsCapturing(cudaStream_t stream, cudaStreamCaptureS
     return cudaSuccess;
 }
 inline cudaError_t cudaGraphDestroy(cudaGraph_t graph) { delete graph; return cudaSuccess; }
-inline cudaError_t cudaGraphExecDestroy(cudaGraphExec_t graph) { delete graph; return cudaSuccess; }
+inline bool graph_profile_mode();
+inline void profile_print();
+inline cudaError_t cudaGraphExecDestroy(cudaGraphExec_t graph) {
+    if (graph && !graph->native.has_value() && graph_profile_mode()) {
+        static bool printed = false;   // one summary per process, at the first teardown
+        if (!printed) { printed = true; profile_print(); }
+    }
+    delete graph; return cudaSuccess;
+}
+inline bool native_graphs_disabled() {
+    static const bool off = std::getenv("STRATA_XPU_EAGER_GRAPHS") != nullptr;
+    return off;
+}
+inline bool graph_profile_mode() {
+    static const bool on = std::getenv("STRATA_XPU_PROFILE") != nullptr;
+    return on;
+}
+// STRATA_XPU_PROFILE: replay eagerly and bracket each op with barrier events (non-blocking;
+// per-op waits would deadlock on the doorbell spin kernels). The deltas are read at teardown,
+// when every event has long completed, and the top offenders print.
+inline std::mutex& profile_mu() { static std::mutex m; return m; }
+inline std::map<std::string, std::pair<double, int>>& profile_acc() {
+    static std::map<std::string, std::pair<double, int>> m;
+    return m;
+}
+struct ProfileSpan {
+    std::string name;
+    sycl::event before, after;
+};
+inline std::vector<ProfileSpan>& profile_spans() {
+    static std::vector<ProfileSpan> v;
+    return v;
+}
+inline void profile_collect() {
+    // Called at the START of a launch: by then the previous window's replay has fully completed
+    // (the engine serves every layer before the next launch), so every event is queryable while
+    // its queue is alive. Never called from teardown - events may outlive their queue there.
+    std::lock_guard<std::mutex> lock(profile_mu());
+    for (auto& s : profile_spans()) {
+        try {
+            const uint64_t t0 = s.before.get_profiling_info<sycl::info::event_profiling::command_end>();
+            const uint64_t t1 = s.after.get_profiling_info<sycl::info::event_profiling::command_end>();
+            auto& acc = profile_acc()[s.name];
+            acc.first += double(t1 - t0) / 1.0e6;   // ns -> ms
+            acc.second += 1;
+        } catch (...) { /* an incomplete span: skip it */ }
+    }
+    profile_spans().clear();
+}
+inline void profile_print() {
+    std::vector<std::pair<double, std::pair<std::string, int>>> rows;
+    double total = 0;
+    for (auto& [name, v] : profile_acc()) {
+        rows.push_back({v.first, {name, v.second}});
+        total += v.first;
+    }
+    std::sort(rows.begin(), rows.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::fprintf(stderr, "xpu profile: %zu kernels, %.1f ms total; top 25 by GPU time\n", rows.size(), total);
+    for (size_t i = 0; i < rows.size() && i < 25; ++i)
+        std::fprintf(stderr, "  %8.2f ms  %5d x  %s\n", rows[i].first, rows[i].second.second,
+                     rows[i].second.first.c_str());
+}
 inline cudaError_t cudaGraphInstantiate(cudaGraphExec_t* exec, cudaGraph_t graph, unsigned long long) {
     if (!graph || !exec) return cudaErrorInvalidValue;
     // CUDA semantics: the exec is independent of the graph. The engine destroys the graph right
@@ -784,6 +858,27 @@ inline cudaError_t cudaGraphInstantiate(cudaGraphExec_t* exec, cudaGraph_t graph
     auto* e = new strata::xpu::Graph();
     e->ops = graph->ops;   // std::function copies; captured buffer pointers are shared, as in CUDA
     e->names = graph->names;
+    e->record_q = graph->record_q;
+    // Record the op list into a native ext_oneapi_graph: one replay submission instead of one
+    // host call per op. Recorded on the capture stream's own queue so nothing else is captured.
+    if (!native_graphs_disabled() && !graph_profile_mode() && graph->record_q != nullptr) {
+        namespace exp = sycl::ext::oneapi::experimental;
+        try {
+            sycl::queue& rq = *graph->record_q;
+            exp::command_graph g{rq.get_context(), rq.get_device()};
+            g.begin_recording(rq);
+            try {
+                for (auto& op : e->ops) op(rq);
+            } catch (...) {
+                g.end_recording();   // leave the queue usable whatever happened mid-recording
+                throw;
+            }
+            g.end_recording();
+            e->native = g.finalize();
+        } catch (...) {
+            e->native.reset();   // fall back to the eager loop
+        }
+    }
     *exec = e;
     return cudaSuccess;
 }
@@ -794,10 +889,26 @@ inline cudaError_t cudaGraphLaunch(cudaGraphExec_t exec, cudaStream_t stream) {
     if (!exec) return cudaErrorInvalidValue;
     try {
         auto& q = strata::xpu::as_stream(stream)->q;
+        if (graph_profile_mode()) profile_collect();   // drain the previous replay's spans first
+        if (exec->native.has_value()) {
+            q.ext_oneapi_graph(*exec->native);   // one submission for the whole graph
+            return cudaSuccess;
+        }
+        const bool prof = graph_profile_mode();
         for (size_t i = 0; i < exec->ops.size(); ++i) {
             if (strata::xpu::trace_enabled()) {
                 std::fprintf(stderr, "xpu trace: replay[%zu/%zu] %s\n", i, exec->ops.size(), exec->names[i].c_str());
                 std::fflush(stderr);
+            }
+            if (prof) {
+                ProfileSpan span;
+                span.name = exec->names[i];
+                span.before = q.ext_oneapi_submit_barrier();
+                exec->ops[i](q);
+                span.after = q.ext_oneapi_submit_barrier();
+                std::lock_guard<std::mutex> lock(profile_mu());
+                if (profile_spans().size() < 40000) profile_spans().push_back(std::move(span));
+                continue;
             }
             exec->ops[i](q);
             if (strata::xpu::trace_enabled()) {
