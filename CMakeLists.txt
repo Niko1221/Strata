@@ -573,6 +573,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(gdn_rec_parity src/prefill/gdn_rec_parity.cu)
     target_link_libraries(gdn_rec_parity PRIVATE ${_strata_gpu_runtime_target})
     add_test(NAME gdn_rec_parity COMMAND gdn_rec_parity)
+    # the prompt path's BF16 products against cuBLAS's own BF16 GEMM, within fp32 rounding (sm_7x runs them on the
+    # FP16 tensor cores; GPU, synthetic, no model; --bench adds timings)
+    add_executable(gemm_bf16_parity src/prefill/gemm_bf16_parity.cu)
+    target_link_libraries(gemm_bf16_parity PRIVATE strata_prefill )
+    add_test(NAME gemm_bf16_parity COMMAND gemm_bf16_parity)
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)

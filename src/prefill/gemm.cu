@@ -3,7 +3,10 @@
 #include "strata/kernels/dequant_bf16.hpp"
 
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
+
+#include <algorithm>
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 // The HIP compatibility shim maps CUDA shuffle spellings to Strata helpers.
@@ -298,6 +301,8 @@ Gemm::~Gemm() {
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
+    if (tc_w_) cudaFree(tc_w_);
+    if (tc_x_) cudaFree(tc_x_);
     if (!external_) {
         if (scratch_) cudaFree(scratch_);
         if (workspace_) cudaFree(workspace_);
@@ -372,6 +377,44 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     return true;
 }
 
+// ---- sm_7x: BF16 GEMMs through the FP16 tensor cores ---------------------------------------------------------------
+// Turing and Volta have no BF16 tensor cores: cublasGemmEx on CUDA_R_16BF inputs falls back to a SIMT fp32 kernel
+// (magma_sgemmEx), a fifth of a 4K prompt on an RTX 2080 Ti.  BF16 -> FP16 is exact for every value inside
+// FP16's range (the 7-bit mantissa fits in 10 bits); weights and normalized activations sit there.  With
+// STRATA_BF16_TC (default on for compute capability 7.x), the weight is converted once per call and the activations in row slices,
+// into the instance's own scratch, and the product runs as the FP16 GEMM (fp32 accumulate) on the tensor cores.
+namespace {
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, __half* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __float2half_rn(__uint_as_float((uint32_t) in[i] << 16));
+}
+void bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t st) {
+    if (n <= 0) return;
+    bf16_to_f16_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, st>>>(in, reinterpret_cast<__half*>(out), n);
+}
+int bf16_tc_mode() {
+    static int mode = [] {
+        const char* v = std::getenv("STRATA_BF16_TC");
+        if (v != nullptr && v[0] != '\0') return std::atoi(v) != 0 ? 1 : 0;
+        int dev = 0, maj = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev);
+        return maj == 7 ? 1 : 0;   // Volta (sm_70, sm_72) and Turing (sm_75)
+    }();
+    return mode;
+}
+bool grow(uint16_t*& p, int64_t& have, int64_t want) {
+    if (have >= want) return true;
+    if (p) cudaFree(p);
+    p = nullptr;
+    have = 0;
+    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }
+    have = want;
+    return true;
+}
+constexpr int64_t kXSliceElems = 16ll << 20;   // 32 MiB of FP16 activations per slice
+}  // namespace
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta) {
     if (T <= 0 || N <= 0) return;
@@ -382,6 +425,20 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                       beta, stream_)) {
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
+    }
+#endif
+#if !defined(__HIPCC__)
+    if (bf16_tc_mode() && N > 1) {   // a single output row stays cuBLAS's GEMV, faster than the conversions
+        const int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
+        if (grow(tc_w_, tc_w_elems_, N * K) && grow(tc_x_, tc_x_elems_, x_rows * K)) {
+            bf16_to_f16(W, tc_w_, N * K, (cudaStream_t) stream_);
+            for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
+                const int64_t n = std::min<int64_t>(x_rows, T - t0);
+                bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
+                f16(tc_x_, tc_w_, Y + t0 * ldy, n, N, K, ldy, beta);
+            }
+            return;
+        }
     }
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
