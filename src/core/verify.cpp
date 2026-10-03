@@ -418,7 +418,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // a batch window: row t is slot t, whose state lives in its own session
     // (with rows per slot: rows [j * bT_, (j + 1) * bT_) are slot row_base_ + j's)
     auto slot_ss = [&](int t) -> SessionState& { return batch_rec_ ? *slots_[(size_t) (row_base_ + t / bT_)] : ss; };
-    const int hrow0 = batch_rec_ ? row_base_ * bT_ : 0;   // a slot group's own hand-off rows
+    const int hrow0 = batch_rec_ ? row_base_ * row_stride_ : 0;   // a slot group's own rows (hand-off, commit inputs)
     const int BR = batch_rec_ ? bT_ : 1;                  // rows per slot
 
     // ---- the window's inputs, from mapped staging
@@ -1525,7 +1525,7 @@ bool Verifier::capture_commit_batch(int base, int S, std::string& err) {
                     const int32_t* keep = commitb_ + (size_t) (base + t) * CB;
                     float* state = sx.gdn_state + (size_t) (gdn_index - sx.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                    const size_t r0 = (size_t) (base + t) * BR;   // the slot's rows (a group's own offset)
+                    const size_t r0 = (size_t) base * row_stride_ + (size_t) t * BR;   // the slot's rows (its group's offset)
                     gdn_conv_commit(conv, qkv_L_ + (size_t) gdn_index * MT * C + r0 * C, (int) C, keep, cs_);
                     gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C + r0 * C, (int) C,
                                         gate_L_ + (size_t) gdn_index * MT * HV + r0 * HV,
@@ -1542,7 +1542,7 @@ bool Verifier::capture_commit_batch(int base, int S, std::string& err) {
                     copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) (base + t) * nQ + qsa_index) * TS, TS, cs_);
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                     for (int k = 0; k < BR; ++k)   // the kept rows' keys (a position of -1: not kept)
-                        native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + (base + t) * BR + k) * ID,
+                        native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + base * row_stride_ + t * BR + k) * ID,
                                                   commitb_ + (size_t) (base + t) * CB + 2 + k, 0, (const float*) wikn->data,
                                                   EPS, ib, s, st.max_cells, rope_scaling(), cs_);
                 }
@@ -1551,7 +1551,7 @@ bool Verifier::capture_commit_batch(int base, int S, std::string& err) {
         }
         if (ok && ss_->ple.ready() && ple_stage())
             for (int t = 0; t < S; ++t)
-                copy_indexed(slots_[(size_t) (base + t)]->ple_hist, hist_snap_ + (size_t) (base + t) * BR * HS, HS,
+                copy_indexed(slots_[(size_t) (base + t)]->ple_hist, hist_snap_ + (size_t) (base * row_stride_ + t * BR) * HS, HS,
                              commitb_ + (size_t) (base + t) * CB + 1, HS, cs_);
     } catch (const std::exception& e) {
         err = std::string("verify batch commit: ") + e.what();
@@ -1577,7 +1577,7 @@ bool Verifier::stage_batch(int base, int S, const int32_t* tokens, const int64_t
     if (S < 1 || base < 0 || base + S > (int) slots_.size()) { err = "verify: batch rows out of range (init_slots)"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const int BR = bT_, R = S * BR;   // `tokens` holds R rows: slot base + j's at j * BR
-    if ((base + S) * BR > max_t_ || R > kVerifyMaxT) { err = "verify: " + std::to_string(S) + " slots x " + std::to_string(BR) +
+    if (base * row_stride_ + S * BR > max_t_ || R > kVerifyMaxT) { err = "verify: " + std::to_string(S) + " slots x " + std::to_string(BR) +
                                                 " rows exceed the window (max_t " + std::to_string(max_t_) + ")"; return false; }
     const ModelGeometry& g = *g_;
     for (int t = 0; t < S; ++t)
@@ -1743,10 +1743,10 @@ bool Verifier::commit_slots(std::string& err, const int* n_keep) {
     return next_ == nullptr || next_->commit_slots(err, n_keep);
 }
 
-bool Verifier::batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos,
+bool Verifier::batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos, int rows,
                             std::string& err) {
     const OnDevice on_device(device_);
-    const int BR = bT_;
+    const int BR = rows;   // the group window's rows (this stage may already run another group's, with other rows)
     const int64_t CB = 2 + max_t_;
     for (int t = 0; t < S; ++t) {
         const int k = n_keep[t];
@@ -1768,7 +1768,7 @@ bool Verifier::batch_commit(int base, int S, const int* n_keep, const int32_t* t
                 sx.ple_prev[1] = tokens[t * BR + k];
             }
         }
-    return next_ == nullptr || next_->batch_commit(base, S, n_keep, tokens, pos, err);
+    return next_ == nullptr || next_->batch_commit(base, S, n_keep, tokens, pos, rows, err);
 }
 
 bool Verifier::sample_rows(int base, int S, std::string& err) {

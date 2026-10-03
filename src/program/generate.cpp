@@ -377,6 +377,8 @@ struct Options {
     /// drafter of its own (MTP) - so a slot can advance several tokens per window.  1 = off (one token per slot).
     /// Rows are bounded by the window: slots x rows <= 8.  Needs --mtp and --batch-groups 1.
     int batch_spec = 1;
+    /// --batch-spec: windows carry drafts while at most this many slots are active (more: one row per slot)
+    int batch_spec_max_active = 2;
     std::string spec_oracle;
     int spec_corrupt = 0;
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
@@ -1232,6 +1234,7 @@ int main(int argc, char** argv) {
         else if (a == "--trim-stage-weights") o.trim_stage_weights = true;
         else if (a == "--batch-groups") o.batch_groups = std::atoi(next("--batch-groups"));
         else if (a == "--batch-spec") o.batch_spec = std::max(1, std::atoi(next("--batch-spec")));
+        else if (a == "--batch-spec-max-active") o.batch_spec_max_active = std::max(1, std::atoi(next("--batch-spec-max-active")));
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--mtp") o.mtp = next("--mtp");
@@ -5295,8 +5298,12 @@ int main(int argc, char** argv) {
             int TB = 1;
             if (o.batch_spec > 1 && !bdraft.empty()) {
                 TB = std::min({o.batch_spec, strata::kernels::kVerifyMaxT / S, std::max(o.spec, 1)});   // the drafters' rows
-                for (int b = 0; b < S; ++b)
+                int n_active = 0;
+                for (int b = 0; b < S; ++b) {
+                    n_active += bs[(size_t) b].active ? 1 : 0;
                     if (bs[(size_t) b].active && bs[(size_t) b].p + TB + 1 > o.max_context) TB = 1;
+                }
+                if (n_active > o.batch_spec_max_active) TB = 1;   // a full batch: one row per slot pays more
             }
             for (int b = 0; b < S; ++b) {
                 const BSlot& sl = bs[(size_t) b];
@@ -5436,6 +5443,7 @@ int main(int argc, char** argv) {
             int32_t tok[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
+            int rows = 1;                   ///< --batch-spec: rows per slot of its window (chosen at its start)
         };
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
@@ -5466,14 +5474,15 @@ int main(int argc, char** argv) {
                 if (k + 1 < n_pipe) { G.stage = k + 1; G.since = pipe_tick; continue; }
                 // the last stage: the group's picks (TBP rows per slot)
                 const int32_t* outb = vk.batch_out();
+                const int TR = G.rows;   // this window's rows per slot
                 int nk[strata::kernels::kVerifyMaxT];
                 for (int t = 0; t < GS; ++t) {
                     int a = 0;
                     if (bs[(size_t) (gi * GS + t)].active)
-                        while (a < TBP - 1 && G.tok[t * TBP + a + 1] == outb[t * TBP + a]) ++a;
+                        while (a < TR - 1 && G.tok[t * TR + a + 1] == outb[t * TR + a]) ++a;
                     nk[t] = a + 1;
                 }
-                if (TBP > 1 && !ver.batch_commit(gi * GS, GS, nk, G.tok, G.pos, err)) {   // every stage, queued
+                if (TR > 1 && !ver.batch_commit(gi * GS, GS, nk, G.tok, G.pos, TR, err)) {   // every stage, queued (1 row: batch_launch did)
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }
@@ -5484,7 +5493,7 @@ int main(int argc, char** argv) {
                     const int a = nk[t] - 1;
                     const char* fin = nullptr;
                     for (int i = 0; i <= a && fin == nullptr; ++i) {
-                        const int32_t y = outb[t * TBP + i];
+                        const int32_t y = outb[t * TR + i];
                         std::printf("BT %d %d\n", gi * GS + t, (int) y);
                         ++sl.produced;
                         ++bt_rows;
@@ -5492,7 +5501,7 @@ int main(int argc, char** argv) {
                         fin = eos ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
                             : sl.p + i + TBP + 1 > o.max_context ? "length" : nullptr;
                     }
-                    if (TBP > 1) { sl.offered += TBP - 1; sl.accepted += a; }
+                    if (TR > 1) { sl.offered += TR - 1; sl.accepted += a; }
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
                         std::printf("BDONE %d %lld %s %.1f\n", gi * GS + t, (long long) sl.produced, fin, ms);
@@ -5503,16 +5512,16 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const int64_t p_old = sl.p;
-                    sl.x = outb[t * TBP + a];
+                    sl.x = outb[t * TR + a];
                     sl.p += a + 1;
                     const int b = gi * GS + t;
                     if (TBP > 1 && b < (int) bdraft.size()) {
                         // before the last stage runs another window: the slot's rows of this one, then its drafts
                         strata::core::MtpDrafter& d = *bdraft[(size_t) b];
-                        bool dok = cudaMemcpy(d.own_window_R(), ver.final_R_all() + (size_t) t * TBP * hcn,
-                                              (size_t) TBP * hcn * sizeof(float), cudaMemcpyDeviceToDevice) == cudaSuccess;
+                        bool dok = cudaMemcpy(d.own_window_R(), ver.final_R_all() + (size_t) t * TR * hcn,
+                                              (size_t) TR * hcn * sizeof(float), cudaMemcpyDeviceToDevice) == cudaSuccess;
                         std::string de;
-                        dok = dok && d.draft(TBP, &outb[t * TBP], p_old, a, sl.drafts, de, sl.dprob, (float) o.spec_min_p);
+                        dok = dok && d.draft(TR, &outb[t * TR], p_old, a, sl.drafts, de, sl.dprob, (float) o.spec_min_p);
                         if (!dok && sl.have_drafts) std::fprintf(stderr, "strata batch: slot %d drafting failed (%s)\n", b, de.c_str());
                         sl.have_drafts = dok;
                     }
@@ -5540,11 +5549,15 @@ int main(int argc, char** argv) {
                     if (pick < 0) continue;
                     rr = pick + 1;
                     PGroup& G = pg[(size_t) pick];
+                    // --batch-spec: drafts while few slots run (they pay off), one row each once the batch is full
+                    int n_active = 0;
+                    for (const BSlot& x : bs) n_active += x.active ? 1 : 0;
+                    G.rows = (TBP > 1 && n_active <= o.batch_spec_max_active) ? TBP : 1;
                     for (int t = 0; t < GS; ++t) {
                         const BSlot& sl = bs[(size_t) (pick * GS + t)];
                         G.pos[t] = sl.active ? sl.p : 0;
-                        for (int k = 0; k < TBP; ++k)
-                            G.tok[t * TBP + k] = !sl.active ? 0 : k == 0 ? sl.x : sl.have_drafts ? sl.drafts[k - 1] : sl.x;
+                        for (int k = 0; k < G.rows; ++k)
+                            G.tok[t * G.rows + k] = !sl.active ? 0 : k == 0 ? sl.x : sl.have_drafts ? sl.drafts[k - 1] : sl.x;
                     }
                     G.inflight = true;
                     G.stage = 0;
@@ -5553,6 +5566,7 @@ int main(int argc, char** argv) {
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
+                stage_verifier(k).set_stage_rows(G.rows);
                 if (!stage_verifier(k).batch_launch(pick * GS, GS, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;

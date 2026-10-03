@@ -145,7 +145,15 @@ public:
     /// SPECULATIVE BATCH: every slot of the next batch windows holds `rows` rows - its token and rows-1 drafts at
     /// consecutive positions - and `out` gets the head's pick after each row (slot s's rows at s * rows).  1 = one
     /// token per slot, the plain batch window.  S * rows <= max_t.  Continues into the next stage.
-    void set_batch_rows(int rows) { bT_ = rows < 1 ? 1 : rows; if (next_) next_->set_batch_rows(rows); }
+    void set_batch_rows(int rows) {
+        bT_ = rows < 1 ? 1 : rows;
+        if (bT_ > row_stride_) row_stride_ = bT_;
+        if (next_) next_->set_batch_rows(rows);
+    }
+    /// Pipelined groups: the rows per slot of the window this stage launches next (this stage only - another stage
+    /// may be running a window with other rows).  A group's commit inputs sit at base * row_stride (the most rows
+    /// per slot set_batch_rows has seen), so groups never share them whatever rows each window has.
+    void set_stage_rows(int rows) { bT_ = rows < 1 ? 1 : rows; }
     int batch_rows() const { return bT_; }
 
     // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
@@ -161,7 +169,8 @@ public:
     /// picks are known the caller launches the group's commit on every stage with this (asynchronously, on the
     /// stage's stream, behind whatever runs there): slot base + t keeps n_keep[t] of its rows, whose tokens are
     /// tokens[t * rows ..] at positions pos[t] ...  Continues into the next stage.
-    bool batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos, std::string& err);
+    bool batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos, int rows,
+                      std::string& err);
     bool batch_busy() const { return b_running_; }
     /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
@@ -218,6 +227,7 @@ private:
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     int bT_ = 1;                           ///< rows per slot in a batch window (set_batch_rows)
+    int row_stride_ = 1;                   ///< a group's row offset per slot (the most rows per slot)
     int64_t last_pos_r_[8] = {};           ///< the last batch window's position of every row
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
     int row_base_ = 0;                     ///< ... over slots [row_base_, row_base_ + T)
