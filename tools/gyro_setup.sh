@@ -24,6 +24,7 @@ export PATH="$PWD/.venv/bin:$PATH"
 step "agentionai llama.cpp fork (GGML with the trellis types) -> $LLAMA"
 [ -d "$LLAMA/ggml" ] || git clone --depth 1 https://github.com/agentionai/llama.cpp "$LLAMA"
 LLAMA=$(cd "$LLAMA" && pwd)
+export STRATA_GGUF_PY="$LLAMA/gguf-py"   # iq_pack.py and mtp_pack.py read GGUF through it
 
 step "build Strata ($BACKEND)"
 if [ "$BACKEND" = cuda ]; then
@@ -47,7 +48,7 @@ else HF_HUB_ENABLE_HF_TRANSFER=1 .venv/bin/hf download agentionai/Qwen3.8-Flash-
 G=$(cd "$MODELS" && pwd)/$F
 
 step "pack -> packs/$P"
-STRATA_GGUF_PY="$LLAMA/gguf-py" .venv/bin/python tools/iq_pack.py --gguf "$G" --out "packs/$P" --compat-bf16
+.venv/bin/python tools/iq_pack.py --gguf "$G" --out "packs/$P" --compat-bf16
 LC=$(build/native_expert_parity --load-check "packs/$P" "$G" 2>&1) || true; echo "$LC"
 echo "$LC" | grep -q " 0 failures" || { echo "load check failed: see above"; exit 1; }
 
