@@ -54,6 +54,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.workspace import Workspace  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -653,7 +654,7 @@ class Vision:
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
-    def __init__(self, cfg: dict, log=None, env: dict | None = None):
+    def __init__(self, cfg: dict, log=None, env: dict | None = None, lazy: bool = False):
         args = [cfg["exe"], "--mmproj", cfg["mmproj"], "--model", cfg["model"]]
         if cfg.get("gpu"):
             args.append("--gpu")
@@ -663,8 +664,9 @@ class Vision:
             args += ["--max-tokens", str(cfg["max_tokens"])]
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
         self.spawn = (args, log, env)                   # to start it again after an unload
-        self.stopped = False
-        self._start()
+        self.stopped, self.proc = True, None
+        if not lazy:                                    # lazy (--engine-background): started with the engine
+            self._start()
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
 
@@ -679,7 +681,7 @@ class Vision:
         self.stopped = False
 
     def alive(self) -> bool:
-        return not self.stopped and self.proc.poll() is None
+        return not self.stopped and self.proc is not None and self.proc.poll() is None
 
     def unload(self):
         """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
@@ -689,7 +691,8 @@ class Vision:
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
         try:
-            self.proc.kill()
+            if self.proc is not None:
+                self.proc.kill()
         except OSError:
             pass
         self._start()
@@ -760,6 +763,8 @@ class Vision:
             return self.cache[key]
 
     def close(self):
+        if self.proc is None:
+            return
         try:
             self.proc.stdin.write("QUIT\n")
             self.proc.stdin.flush()
@@ -961,6 +966,7 @@ class Service:
         # #321: origins that count as Strata's own page for /settings and MCP tools, e.g. the web app reached through a
         # reverse proxy or tunnel whose Host differs ("https://strata.example.com"); never a wildcard
         self.trusted_origins: list[str] = []
+        self.workspace = None                           # the web app's projects, saved chats, files (workspace.py)
         # DNS rebinding: extra Host names this server answers to (the config's allowed_hosts, $STRATA_ALLOWED_HOSTS;
         # "*" = any), and every name it answers to, which serve() works out from the address it listens on
         self.allowed_hosts: list[str] = []
@@ -1059,6 +1065,8 @@ class Service:
         the free-VRAM check.  The caller holds self.fifo."""
         if self.loaded() and not self._vision_down():
             return
+        if getattr(self, "engine_hold", False):         # stopped in the web app (serve/engine_control.py)
+            raise GpuBusy("the engine is stopped: start it in the Strata web app (Start engine), or POST /engine/start")
         if self.before_load:
             cmd = self.before_load
             print(f"[strata] before loading: {cmd if isinstance(cmd, str) else ' '.join(map(str, cmd))}", flush=True)
@@ -2169,6 +2177,11 @@ def make_handler(svc: Service):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/engine":                         # the engine's state and a start's progress
+                if self._authorized():
+                    ctl = getattr(svc, "engine_control", None)
+                    self._json(200, ctl.status() if ctl is not None else
+                               {"state": "running" if svc.loaded() else "stopped", "can": False})
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
@@ -2225,6 +2238,17 @@ def make_handler(svc: Service):
                 return
             if path == "/settings":
                 self._settings()
+                return
+            if path.startswith("/workspace/"):
+                self._workspace(path[len("/workspace/"):])
+                return
+            if path in ("/engine/start", "/engine/stop") and getattr(svc, "engine_control", None) is not None:
+                self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+                if not self._own_page("the engine can be started or stopped"):   # the header's button
+                    return
+                ctl = svc.engine_control
+                r = ctl.start() if path == "/engine/start" else ctl.stop()
+                self._json(409 if r.get("result") == "busy" else 200, r)
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
@@ -2351,6 +2375,25 @@ def make_handler(svc: Service):
                                                       f"config's trusted_origins)"}})
                 return False
             return True
+
+        def _workspace(self, op):
+            # the web app's workspace (serve/workspace.py): projects, chats kept here, a read-only file explorer. It reads
+            # files and keeps conversations, so like /settings: the API key (do_POST), JSON, and only our own page
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if svc.workspace is None:
+                self._json(404, {"error": {"message": "the workspace is off on this server"}})
+                return
+            if not self._own_page("the workspace (projects, chats, files)"):
+                return
+            try:
+                req = json.loads(body or b"{}")
+                if not isinstance(req, dict):
+                    raise ValueError("send a JSON object")
+            except ValueError as e:
+                self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
+            code, obj = svc.workspace.handle(op, req)
+            self._json(code, obj)
 
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
@@ -2853,6 +2896,16 @@ def main() -> int:
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
     ap.add_argument("--lazy", action="store_true", help="start the text-only API unloaded; load on first request")
+    ap.add_argument("--engine-background", action="store_true",
+                    help="the web server answers at once and the model loads on a thread; the web "
+                         "app starts and stops it (a stop is kept, also across restarts). Images included")
+    ap.add_argument("--workspace-dir", help="where the web app's projects and chats are kept "
+                                            "(default: Strata-data/workspace next to the Strata folder; also "
+                                            "\"workspace_dir\" in the config)")
+    ap.add_argument("--workspace-root", action="append", default=[],
+                    help="a folder the web app's file explorer may read (repeat it for more; also "
+                         "\"workspace_roots\" in the config, or STRATA_WORKSPACE_ROOTS separated by the OS's path "
+                         "separator). None = the explorer is off")
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
@@ -2900,18 +2953,20 @@ def main() -> int:
         if sampling_defaults:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
-        lazy = a.lazy or cfg.get("lazy_load") is True
-        if lazy and cfg.get("vision"):
+        lazy = a.lazy or cfg.get("lazy_load") is True or a.engine_background
+        if lazy and cfg.get("vision") and not a.engine_background:
             ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
-            print("loading the vision encoder ...", flush=True)
+            if not a.engine_background:
+                print("loading the vision encoder ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env))
-        print("model unloaded; the first request loads it ..." if lazy else
+                            env=vision_env(cfg, env), lazy=a.engine_background)
+        print("the web server starts now, the model on a thread (--engine-background) ..." if a.engine_background else
+              "model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({cfg.get('layer_split') or 'auto'})", flush=True)
@@ -2932,6 +2987,9 @@ def main() -> int:
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
+        if os.environ.get("STRATA_MOCK_START_S"):        # tests: a mock that starts and stops like the engine
+            from serve.engine_control import MockStartable
+            engine = MockStartable(engine, float(os.environ["STRATA_MOCK_START_S"]))
     # the model's own chat template (exported with its tokenizer), else the original model's
     tpl = tpath / "chat_template.jinja"
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
@@ -2953,6 +3011,23 @@ def main() -> int:
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
     svc.trusted_origins = origins_of(cfg.get("trusted_origins"), "trusted_origins", wildcard=False)
+    # the web app's workspace (serve/workspace.py): projects and chats kept on this server, a read-only file explorer
+    ws_dir = a.workspace_dir or cfg.get("workspace_dir") or str(ROOT.parent / "Strata-data" / "workspace")
+    ws_roots = a.workspace_root or cfg.get("workspace_roots") or \
+        [r for r in os.environ.get("STRATA_WORKSPACE_ROOTS", "").split(os.pathsep) if r.strip()]   # ";" on Windows
+    if isinstance(ws_roots, str):
+        ws_roots = [ws_roots]
+    open_net = not svc.api_key and a.host not in ("127.0.0.1", "localhost", "::1")
+    if open_net:
+        print("[strata] workspace: the file explorer stays OFF - other devices can reach this server and there is no "
+              "API key", flush=True)
+        ws_roots = []
+    try:
+        svc.workspace = Workspace(ws_dir, ws_roots, editable=not open_net)
+        print(f"[strata] workspace: projects and chats in {ws_dir}; file explorer: "
+              + (", ".join(map(str, svc.workspace.roots)) or "off (no shared folders)"), flush=True)
+    except OSError as e:
+        print(f"[strata] workspace off: {e}", flush=True)
     try:
         svc.allowed_hosts = allowed_hosts_of(cfg.get("allowed_hosts"), os.environ.get("STRATA_ALLOWED_HOSTS", ""))
     except ValueError as e:
@@ -3005,7 +3080,12 @@ def main() -> int:
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
+    if a.engine_background or os.environ.get("STRATA_MOCK_START_S"):   # start/stop from the web app
+        from serve.engine_control import EngineControl
+        svc.engine_control = EngineControl(svc, ws_dir, getattr(svc.engine, "log_path", None))
     httpd = serve(svc, host=a.host, port=a.port)
+    if getattr(svc, "engine_control", None) is not None:
+        svc.engine_control.boot()                       # after the port is open: the page shows the start
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "

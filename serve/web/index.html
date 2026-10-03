@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
+<!-- the tab icon, in the page itself: no /favicon.ico request (that path was a 404) -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"%3E%3Crect width="32" height="32" rx="8" fill="#10b981"/%3E%3Cpath d="M16 7 26 12 16 17 6 12Z" fill="#fff"/%3E%3Cpath d="M6 16.5 16 21.5 26 16.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/%3E%3Cpath d="M6 20.5 16 25.5 26 20.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/%3E%3C/svg%3E">
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
@@ -17,17 +19,62 @@
 </script>
 </head>
 <body>
+<!-- icons used only by this page, in the sprite's style (web/sprite.svg carries a signed manifest, so it is left as is) -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-rename" viewBox="0 0 24 24" fill="none">
+    <path opacity="0.12" d="M4 20H8L18.5 9.5C19.6 8.4 19.6 6.6 18.5 5.5C17.4 4.4 15.6 4.4 14.5 5.5L4 16V20Z" fill="currentColor"></path>
+    <path d="M4 20H8L18.5 9.5C19.6 8.4 19.6 6.6 18.5 5.5C17.4 4.4 15.6 4.4 14.5 5.5L4 16V20Z" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    <path d="M13 7L17 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+  </symbol>
+  <symbol id="i-wrap" viewBox="0 0 24 24" fill="none">
+    <path d="M4 6H20M4 12H17C18.7 12 20 13.3 20 15C20 16.7 18.7 18 17 18H12M12 18L14 16M12 18L14 20M4 18H8" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none">
+    <path opacity="0.12" d="M3 7.5C3 6.4 3.9 5.5 5 5.5H9.2L11.2 7.5H19C20.1 7.5 21 8.4 21 9.5V17.5C21 18.6 20.1 19.5 19 19.5H5C3.9 19.5 3 18.6 3 17.5V7.5Z" fill="currentColor"></path>
+    <path d="M3 7.5C3 6.4 3.9 5.5 5 5.5H9.2L11.2 7.5H19C20.1 7.5 21 8.4 21 9.5V17.5C21 18.6 20.1 19.5 19 19.5H5C3.9 19.5 3 18.6 3 17.5V7.5Z"
+          stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"></path>
+  </symbol>
+</svg>
 <header class="st-header">
   <span class="st-header__brand">Strata</span>
   <nav class="st-tabs" role="tablist" aria-label="Views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
+    <button class="st-tab" role="tab" id="tab-btn-files" aria-controls="view-files" aria-selected="false" data-tab="files">
+      <svg class="st-icon st-icon--sm"><use href="#i-folder"/></svg>Files</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-settings" aria-controls="view-settings" aria-selected="false" data-tab="settings">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>Settings</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
   <span class="st-header__spacer"></span>
+  <!-- --engine-background (serve/engine_control.py): the web server runs without the model; start and stop it here -->
+  <div class="engine" id="engine" hidden>
+    <button type="button" class="st-btn st-btn--secondary engine-btn" id="engine-btn" data-state="stopped"
+            aria-controls="engine-card" aria-expanded="false">
+      <span class="engine-btn__dot"></span><span class="engine-btn__label" id="engine-label">Start engine</span>
+      <span class="engine-btn__bar"><span id="engine-btn-bar"></span></span>
+    </button>
+    <div class="st-card engine-card state-card" id="engine-card" role="dialog" aria-label="Engine" hidden>
+      <div class="state-card__head">
+        <span class="card-title">Engine</span>
+        <span class="st-badge" id="engine-badge">Stopped</span>
+        <span class="engine-pct" id="engine-pct"></span>
+      </div>
+      <div class="engine-msg" id="engine-msg">The model is not loaded.</div>
+      <div class="st-progress" id="engine-progress" data-tone="info"><div class="st-progress__bar" id="engine-bar" style="width:0%"></div></div>
+      <dl class="engine-stats" id="engine-stats"></dl>
+      <div class="engine-line" id="engine-line"></div>
+      <div class="engine-card__actions">
+        <button type="button" class="st-btn st-btn--secondary" id="engine-close">Close</button>
+        <button type="button" class="st-btn st-btn--primary" id="engine-act">Start engine</button>
+      </div>
+    </div>
+  </div>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
@@ -37,36 +84,117 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
-    <div class="chat-scroll" id="chat-scroll">
-      <div class="chat" id="chat">
-        <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+    <!-- projects and chats: kept on this server (serve/workspace.py) -->
+    <aside class="chat-side" id="chat-side" data-open="false" aria-label="Your projects and chats">
+      <div class="chat-side__head">
+        <span class="card-title">Workspace</span>
+        <button type="button" class="st-btn st-btn--icon" id="side-new" title="New chat" aria-label="New chat">
+          <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+        <button type="button" class="st-btn st-btn--icon" id="side-close" title="Hide the list" aria-label="Hide the list">
+          <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+      </div>
+      <div class="side-search"><input class="st-input" id="chat-search" type="search" placeholder="Search chats&hellip;" aria-label="Search chats"></div>
+      <div class="side-scroll">
+        <div class="side-section"><span>Projects</span>
+          <button type="button" class="st-btn st-btn--icon" id="proj-new" title="New project" aria-label="New project">
+            <svg class="st-icon st-icon--sm"><use href="#i-folder"/></svg></button></div>
+        <ul class="chat-list" id="project-list"></ul>
+        <div class="side-section"><span id="chats-heading">Chats</span></div>
+        <ul class="chat-list" id="chat-list"></ul>
+      </div>
+      <div class="chat-side__foot muted small">Kept on this Strata server, for every device that opens it.</div>
+    </aside>
+    <div class="scrim" id="side-scrim" hidden></div>
+    <div class="chat-main">
+      <button type="button" class="st-btn st-btn--icon side-open" id="chats-btn" title="Show your chats" aria-label="Show your chats"
+              aria-controls="chat-side" aria-expanded="false">
+        <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+      <div class="project-bar" id="project-bar" hidden>
+        <svg class="st-icon st-icon--sm"><use href="#i-folder"/></svg><strong id="project-bar-name"></strong>
+        <span class="muted small project-bar__folder" id="project-bar-folder"></span>
+        <select class="st-select project-mode" id="project-mode" aria-label="Permission mode" hidden>
+          <option value="read" title="The model can look, not change">Read only</option>
+          <option value="ask" title="You approve every change and command">Ask first</option>
+          <option value="edit" title="Edits run right away; commands wait for you">Auto-edit</option>
+          <option value="auto" title="Changes and commands run without asking">Full auto</option>
+        </select>
+        <button type="button" class="st-btn st-btn--secondary" id="changes-btn" hidden title="What this chat changed in the folder">
+          Changes <span class="changes-count" id="changes-count"></span></button>
+        <button type="button" class="st-btn st-btn--secondary" id="project-bar-edit">Instructions &amp; files</button>
+      </div>
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat" id="chat">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty__title">Ask anything</div>
+            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          </div>
         </div>
       </div>
+      <div class="composer-wrap">
+        <form class="st-composer" id="composer">
+          <div class="attachments" id="attachments" hidden></div>
+          <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
+          <div class="st-composer__bar">
+            <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
+              <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
+            <input type="file" id="file" multiple hidden>
+            <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="compact-btn" title="Compact this chat: the model continues from a summary" aria-label="Compact this chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-layers"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+              <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+            <span class="spacer"></span>
+            <span class="composer-hint" id="composer-hint"></span>
+            <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
+            <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
+              <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+          </div>
+        </form>
+      </div>
     </div>
-    <div class="composer-wrap">
-      <form class="st-composer" id="composer">
-        <div class="attachments" id="attachments" hidden></div>
-        <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
-        <div class="st-composer__bar">
-          <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
-            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
-          <input type="file" id="file" multiple hidden>
-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
-          <span class="spacer"></span>
-          <span class="composer-hint" id="composer-hint"></span>
-          <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
-          <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
-            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+  </section>
+
+  <!-- ============================ Files (serve/workspace.py) ============================ -->
+  <section class="view view--files" id="view-files" role="tabpanel" aria-labelledby="tab-btn-files" hidden>
+    <div class="files">
+      <div class="st-card files-browser">
+        <div class="files-head">
+          <button type="button" class="st-btn st-btn--icon" id="fs-up" title="Up" aria-label="Up one folder">
+            <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+          <span class="files-where" id="fs-where">Shared folders</span>
+          <button type="button" class="st-btn st-btn--secondary files-as-project" id="fs-as-project" hidden>Open as project</button>
         </div>
-      </form>
+        <ul class="chat-list" id="fs-list"></ul>
+      </div>
+      <div class="st-card files-preview">
+        <div class="files-head">
+          <div class="files-head__title">
+            <span class="card-title" id="fs-name">No file open</span>
+            <span class="muted small" id="fs-meta">Pick a file on the left. The folders are read only.</span>
+          </div>
+          <span class="st-badge files-lang" id="fs-lang" hidden></span>
+          <div class="files-modes" id="fs-modes" role="group" aria-label="Show as" hidden>
+            <button type="button" class="files-mode" data-view="preview" aria-pressed="true">Preview</button>
+            <button type="button" class="files-mode" data-view="source" aria-pressed="false">Source</button>
+          </div>
+          <button type="button" class="st-btn st-btn--icon" id="fs-wrap" title="Wrap long lines" aria-label="Wrap long lines" aria-pressed="false" hidden>
+            <svg class="st-icon"><use href="#i-wrap"/></svg></button>
+          <button type="button" class="st-btn st-btn--icon" id="fs-copy" title="Copy the text" aria-label="Copy the text" hidden>
+            <svg class="st-icon"><use href="web/sprite.svg#i-copy"/></svg></button>
+        </div>
+        <div class="files-actions" id="fs-actions" hidden>
+          <button type="button" class="st-btn st-btn--primary" id="fs-attach">Attach to chat</button>
+          <div class="files-to-project">
+            <select class="st-select" id="fs-project" aria-label="Project"></select>
+            <button type="button" class="st-btn st-btn--secondary" id="fs-add-project">Add to project</button>
+          </div>
+        </div>
+        <div class="files-text" id="fs-text"></div>
+      </div>
     </div>
   </section>
 
@@ -150,16 +278,37 @@
         <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
       </div>
+      <p class="muted small"><a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+    </div>
+  </section>
+
+  <!-- ============================ Settings ============================ -->
+  <section class="view view--settings" id="view-settings" role="tabpanel" aria-labelledby="tab-btn-settings" hidden>
+    <div class="about settings">
       <div class="st-card">
-        <span class="card-title">Settings</span>
+        <span class="card-title">This browser</span>
         <div class="st-field">
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
         </div>
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
-        <p class="muted small">Chats, settings and the key are kept in this browser only.
-          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+        <p class="muted small">The key, the theme and the sampling settings are kept in this browser. Projects, chats and
+          the shared folders are kept on this server, for every device that opens it.</p>
+      </div>
+      <div class="st-card">
+        <span class="card-title">Shared folders</span>
+        <p class="muted small">The Files tab shows these folders (read only), and projects can work only inside them: the
+          coding agent reads, changes and runs commands in a project's folder as its mode allows. Removing a folder here
+          also stops the agent in projects inside it.</p>
+        <ul class="roots" id="roots-list"></ul>
+        <form class="roots-add" id="roots-form">
+          <input class="st-input" id="roots-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="/home/you/projects or ~/projects" aria-label="Folder to share">
+          <button type="submit" class="st-btn st-btn--primary" id="roots-add">Share</button>
+        </form>
+        <p class="muted small" id="roots-note">Not shared, to keep keys out of the page and the agent: the whole disk, your
+          home folder itself, and folders holding .ssh, .gnupg, .aws, .kube, .password-store or credentials.</p>
       </div>
     </div>
   </section>
@@ -172,8 +321,8 @@
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
     <div class="st-field">
-      <label class="st-label" for="s-thinking">Thinking <output id="o-thinking"></output></label>
-      <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking">
+      <span class="st-label" id="s-thinking-label">Thinking <output id="o-thinking"></output></span>
+      <div class="seg" id="s-thinking" role="radiogroup" aria-labelledby="s-thinking-label">
         <button type="button" role="radio" data-v="none">Off</button><button type="button" role="radio" data-v="low">Low</button>
         <button type="button" role="radio" data-v="medium">Medium</button><button type="button" role="radio" data-v="high">High</button>
       </div>
@@ -217,6 +366,76 @@
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>
+<div class="scrim" id="proj-scrim" hidden></div>
+<div class="scrim" id="changes-scrim" hidden></div>
+<aside class="st-drawer changes-drawer" id="changes-drawer" data-open="false" aria-hidden="true" aria-label="Changes">
+  <div class="st-drawer__head changes-head">
+    <div class="changes-head__title"><span class="card-title">Changes in this chat</span><span class="muted small" id="changes-sum"></span></div>
+    <button type="button" class="st-btn st-btn--secondary" id="changes-undo-file" title="Put the open file back as it was before this chat">Undo file</button>
+    <button type="button" class="st-btn st-btn--danger" id="changes-undo-all">Undo all</button>
+    <button class="st-btn st-btn--icon" id="changes-close" aria-label="Close"><svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+  </div>
+  <div class="changes-tabs" id="changes-tabs" role="tablist" aria-label="Changed files"></div>
+  <div class="changes-view" id="changes-view" role="tabpanel"></div>
+  <div class="changes-foot muted small">Files the model wrote or edited, against how they were before this chat. Changes made
+    by commands (a formatter, git, a build) are not here: check <code>git diff</code> for those.</div>
+</aside>
+<aside class="st-drawer proj-drawer" id="proj-drawer" data-open="false" aria-hidden="true" aria-label="Project">
+  <div class="st-drawer__head pd-head">
+    <div class="pd-head__title"><span class="card-title">Instructions &amp; files</span><span class="muted small" id="pd-head-name"></span></div>
+    <button class="st-btn st-btn--icon" id="pd-close" aria-label="Close"><svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
+  <div class="st-drawer__body pd-body">
+    <section class="pd-section">
+      <div class="pd-field">
+        <label class="pd-label" for="pd-name">Name</label>
+        <input class="st-input" id="pd-name" maxlength="120">
+      </div>
+      <div class="pd-field">
+        <label class="pd-label" for="pd-folder">Folder</label>
+        <input class="st-input pd-mono" id="pd-folder" placeholder="/home/you/projects/app" spellcheck="false">
+        <span class="pd-hint">The coding tools work here · empty = a chat project without tools</span>
+      </div>
+    </section>
+    <section class="pd-section">
+      <h3 class="pd-title">Long agent runs</h3>
+      <div class="pd-num">
+        <label class="pd-num__text" for="pd-rounds"><span class="pd-label">Tool rounds per answer</span>
+          <span class="pd-hint">Pauses with Continue · 0 = no limit</span></label>
+        <input class="st-input" id="pd-rounds" type="number" min="0" step="10" value="200">
+      </div>
+      <div class="pd-num">
+        <label class="pd-num__text" for="pd-compact"><span class="pd-label">Compact at (tokens)</span>
+          <span class="pd-hint">Older steps become a summary · 0 = never</span></label>
+        <input class="st-input" id="pd-compact" type="number" min="0" step="10000" value="100000">
+      </div>
+    </section>
+    <section class="pd-section">
+      <h3 class="pd-title"><label for="pd-instructions">Instructions</label></h3>
+      <textarea class="st-input pd-instructions" id="pd-instructions" rows="8" placeholder="e.g. Answer in German. The code is TypeScript and runs on Node 22."></textarea>
+      <span class="pd-hint">Sent first in every chat of this project.</span>
+    </section>
+    <section class="pd-section">
+      <div class="pd-title-row"><h3 class="pd-title">Files</h3>
+        <button type="button" class="st-btn st-btn--secondary" id="pd-upload">Upload</button></div>
+      <input type="file" id="pd-file" multiple hidden>
+      <span class="pd-hint" id="pd-files-sum"></span>
+      <ul class="pd-list" id="pd-files"></ul>
+    </section>
+    <section class="pd-section">
+      <h3 class="pd-title">Commands that run without asking</h3>
+      <span class="pd-hint">A command that starts with one of these runs right away in "Ask first" and "Auto-edit", unless it
+        chains, pipes or redirects (<code>;</code> <code>&amp;&amp;</code> <code>|</code> <code>&gt;</code> <code>&lt;</code>
+        <code>`</code> <code>$(</code>): then it always asks.</span>
+      <ul class="pd-list" id="pd-allow"></ul>
+      <div class="pd-allow-add"><input class="st-input pd-mono" id="pd-allow-new" placeholder="e.g. cargo test" spellcheck="false" aria-label="New rule">
+        <button type="button" class="st-btn st-btn--secondary" id="pd-allow-add">Add</button></div>
+    </section>
+  </div>
+  <div class="pd-foot">
+    <button type="button" class="st-btn st-btn--danger" id="pd-delete">Delete project</button>
+    <button type="button" class="st-btn st-btn--primary" id="pd-save">Save</button>
+  </div>
+</aside>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/app.js"></script>
 </body>

@@ -936,6 +936,13 @@ Unloading and shutdown close the native engine's stdin after sending `QUIT`, all
 stdin reader to see EOF. Cleanup waits for process exit before releasing handles; if forced shutdown still
 times out, the server keeps ownership and reports an error rather than claiming the model was unloaded.
 
+### Projects, saved chats and a coding agent in the web app
+
+The page keeps chats on the server in a sidebar, groups them into projects, shows shared folders read only, and
+works in a project's folder as a coding agent with permission modes, a plan, changes with undo and compaction. With
+`--engine-background` the page also starts and stops the engine and shows how far a start has got.
+See [docs/WORKSPACE.md](WORKSPACE.md).
+
 ### JSON response formats
 
 `POST /v1/chat/completions` accepts `response_format: {"type":"json_object"}` or
