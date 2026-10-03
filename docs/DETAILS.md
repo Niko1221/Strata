@@ -753,6 +753,22 @@ like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encod
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
 encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
+**Picking the encoder's card from the command line (0.1.38, `--vision-device`):** the picture reader is a process of
+its own next to the engine — a third device role beside the engine's own ("main-card"/draft) placements. Say so at
+setup:
+
+```
+START-HERE.bat --vision yes --vision-device auto     a spare GPU, when one exists, else the engine's card
+START-HERE.bat --vision yes --vision-device 2        (or cuda:2) that one card, numbered like nvidia-smi
+START-HERE.bat --vision-device cpu                   the pictures read on the CPU (the same as --vision cpu)
+```
+
+The encoder is a separate process with the card to itself (`CUDA_VISIBLE_DEVICES`), so its weights and buffers never
+land on the engine's GPUs: with a layer split, or the model and the draft layer on their own cards
+([#490](https://github.com/Niko1221/Strata/issues/490)), a spare card keeps them whole. The results reach the engine
+as an embeddings file through the disk — no direct card-to-card path is involved, so this works on any mix of cards.
+The server prints where the encoder runs at start (`[strata] the image encoder runs on GPU ...`).
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.

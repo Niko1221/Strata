@@ -603,6 +603,17 @@ class GpuChoice(unittest.TestCase):
         plain = {"gpu": [0, 1], "vision": {"exe": "v"}}
         self.assertIs(vision_env(plain, env), env)          # no cuda_device: the engine's environment, unchanged
 
+    def test_vision_role(self):
+        """--vision-device: the start-up line says where the encoder runs (the CPU, a spare card, or shared)."""
+        from serve.server import vision_role
+        self.assertEqual(vision_role({"gpu": [0, 1], "vision": {"gpu": True}}), "GPU 0 (the engine's card)")
+        self.assertEqual(vision_role({"gpu": [0, 1], "vision": {"gpu": True, "cuda_device": 2}}),
+                         "GPU 2 (its own card)")
+        self.assertEqual(vision_role({"gpu": [0, 1], "vision": {"gpu": True, "cuda_device": 1}}),
+                         "GPU 1 (shares the engine's card)")
+        self.assertEqual(vision_role({"gpu": [0, 1], "vision": {"gpu": False, "threads": 8}}), "the CPU")
+        self.assertEqual(vision_role({"gpu": [], "vision": {"gpu": True}}), "GPU 0 (the engine's card)")
+
     def test_hip_ordinal(self):
         """#325: on Windows the HIP ordinal setup resolved wins over the config's "gpu" (an iGPU takes HIP's 0)."""
         from serve.server import child_env

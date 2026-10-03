@@ -1639,6 +1639,57 @@ def hip_vision(asked) -> str:
     return "cpu" if asked == "cpu" else "none"
 
 
+def vision_device_role(vision: str, text: str, chosen: list, hip: bool = False) -> tuple:
+    """--vision-device: the picture encoder's device as its own role next to the engine's GPUs (its "cuda_device"
+    placement is #408's; the CPU side #304's).  "auto" gives it a spare card when one exists (the one with the most
+    VRAM), "cpu" reads the pictures on the CPU, a card ("1" / "cuda:1", as nvidia-smi numbers them) pins it there.
+    The encoder is a process of its own: nothing of its VRAM or RAM lands on the engine's cards but the embeddings
+    it writes through the disk.  None changed when `text` is empty.  Returns (vision, the card or None)."""
+    device = (text or "").strip().lower()
+    card = None
+    if not device:
+        return vision, None
+    if vision == "none":
+        fail(f"--vision-device {device} needs the pictures on: use --vision yes")
+    if device == "auto":                        # setup.vision_device_auto picks a spare card (main calls it next)
+        return vision, None
+    if device == "cpu":
+        if vision == "gpu":
+            ok("--vision-device cpu: the pictures are read on the CPU")
+            vision = "cpu"
+        return vision, None
+    if vision == "cpu":
+        fail(f"--vision-device {text} cannot pin a CPU encoder to a card (use --vision yes)")
+    try:
+        card = int(device[5:] if device.startswith("cuda:") else device)
+    except ValueError:
+        fail(f"--vision-device takes \"auto\", \"cpu\" or a GPU (\"1\" or \"cuda:1\"), not {text!r}")
+    present = {g["index"]: g for g in (amd_gpus() if hip else gpus())}
+    if card not in present:
+        fail(f"GPU {card} does not exist (found: {', '.join(str(i) for i in sorted(present))})")
+    if card in {x["index"] for x in chosen}:
+        warn(f"the image encoder shares GPU {card} with the engine: the expert cache there is sized after the "
+             "encoder's VRAM (text a few % slower); a spare card can hold it instead")
+    else:
+        ok(f"the image encoder gets its own GPU: {present[card]['name']} (GPU {card})")
+    return vision, card
+
+
+def vision_device_auto(vision: str, chosen: list, hip: bool = False) -> tuple:
+    """--vision-device auto: a spare card (not one the engine uses), the one with the most VRAM; else the engine's
+    main card, as before the flag existed.  Returns (vision, the card or None)."""
+    if vision != "gpu":
+        return vision, None
+    spare = [g for g in (amd_gpus() if hip else gpus()) if g["index"] not in {x["index"] for x in chosen}]
+    if not spare:
+        ok("no spare GPU: the image encoder shares the engine's main card "
+           f"(GPU {chosen[0]['index']}); its expert cache is sized after the encoder's VRAM")
+        return vision, None
+    spare.sort(key=lambda g: -g["vram_gb"])
+    ok(f"the image encoder gets its own GPU: {spare[0]['name']} (GPU {spare[0]['index']})")
+    return vision, spare[0]["index"]
+
+
 def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
     """#304: the CPU image encoder beside the HIP engine (tools/vision without CUDA), recorded in its BUILD.json."""
     if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc):
@@ -2933,7 +2984,13 @@ def main() -> int:
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
-                    help="let the model read images (yes = the encoder on the GPU)")
+                    help="let the model read images (yes = the encoder on the engine's first card)")
+    ap.add_argument("--vision-device", metavar="AUTO|CPU|N|CUDA:N",
+                    help="where the image encoder runs, as its own role next to the engine's GPUs: \"auto\" picks a "
+                         "spare card when one exists, \"cpu\" reads the pictures on the CPU, and a card number (\"1\" "
+                         "or \"cuda:1\", as nvidia-smi numbers them) pins it there.  The encoder is a process of its "
+                         "own: its weights and work buffers land on that one card alone, the engine just reads the "
+                         "embeddings it wrote.  Default: the engine's card, as before")
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
                     help="EXPERIMENTAL, off by default: the control vector in data/experimental-speed-projection "
                          "(or another GGUF) as a projection on layers 4-44; see docs/DETAILS.md")
@@ -3335,6 +3392,11 @@ def main() -> int:
         say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
+    # --vision-device: the image encoder's own device, a role of its own next to the engine's cards; nothing changes
+    # when the flag is absent
+    vision, vision_card = vision_device_role(vision, a.vision_device or "", chosen, hip)
+    if (a.vision_device or "").strip().lower() == "auto" and vision != "none":
+        vision, vision_card = vision_device_auto(vision, chosen, hip)
     # The low-RAM mode's two variants.  resident: the experts the GPU's cache does not hold (and, as far as RAM allows,
     # the ones the prompt path borrows cache room from) are copied from the pack's experts.bin into RAM once, so
     # nothing is read from the SSD while it answers (engine 0.1.30, --resident-experts; the engine falls back to mmap
@@ -3655,6 +3717,8 @@ def main() -> int:
     if vision != "none":
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
                          "gpu": vision == "gpu", "max_tokens": VISION[vision]["max_tokens"]}
+        if vision_card is not None:
+            cfg["vision"]["cuda_device"] = vision_card         # #408: the encoder on its own card alone
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     cfg_path = ROOT / f"strata-{tag.lower()}.json"

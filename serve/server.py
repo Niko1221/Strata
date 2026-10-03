@@ -889,6 +889,19 @@ def vision_env(cfg: dict, env: dict) -> dict:
     return env
 
 
+def vision_role(cfg: dict) -> str:
+    """The image encoder's placement, for the start-up line: the CPU, its own card, or an engine card it shares
+    ("vision-device" in setup; the same card numbering the engine's device report and nvidia-smi use)."""
+    v = cfg.get("vision") or {}
+    if not v.get("gpu"):
+        return "the CPU"
+    dev = v.get("cuda_device")
+    cards = gpu_list(cfg)
+    if dev is None:
+        return f"GPU {cards[0] if cards else 0} (the engine's card)"
+    return f"GPU {dev} (its own card)" if dev not in cards else f"GPU {dev} (shares the engine's card)"
+
+
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
     SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
@@ -2904,6 +2917,7 @@ def main() -> int:
         if lazy and cfg.get("vision"):
             ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
+            print(f"[strata] the image encoder runs on {vision_role(cfg)}", flush=True)
             print("loading the vision encoder ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))

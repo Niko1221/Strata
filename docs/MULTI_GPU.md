@@ -41,6 +41,14 @@ now on; the answer is kept.
 --layer-split auto         (default) or the first layer of each later card, e.g. 18 or 16,32
 ```
 
+**The picture reader gets its own card** (`--vision-device`, 0.1.38): the image encoder (`strata-vision`) is a
+process of its own next to the engine, so beside the split it is a third placement of its own. `--vision-device
+auto` gives it a spare card when one exists, `--vision-device cpu` reads the pictures on the CPU, and
+`--vision-device 1` (or `cuda:1`) pins it to that card (numbered like nvidia-smi). It hands the results to the
+engine as an embeddings file through the disk, so no card-to-card path is needed and its VRAM never lands on any of
+the split's cards; the server says where it runs at start. (Costs, and the way to change an existing install:
+DETAILS.md's "Images"; the saved config keeps it as `"cuda_device"` in `"vision"`, #408.)
+
 **Not supported** (setup says so and names the cards that can be used instead):
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its

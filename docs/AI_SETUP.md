@@ -95,6 +95,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-Q4_K_XL) |
 | `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
 | `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
+| `--vision-device auto\|cpu\|N` | which device reads the pictures: `auto` = a spare GPU when one exists, `cpu`, or a card numbered like nvidia-smi (`2` or `cuda:2`). Default: the engine's first card |
 | `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
 | `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
 | `--data-dir PATH` | where the 70-120 GB of model files go |

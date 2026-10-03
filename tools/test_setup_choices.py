@@ -386,5 +386,79 @@ class DesktopReserveTip(unittest.TestCase):
         self.assertIn("desktop", tip)
 
 
+class VisionDevice(unittest.TestCase):
+    """--vision-device: the image encoder's device as its own role next to the engine's cards (its card form is
+    #408's "cuda_device" in the config's vision section, the CPU side #304's encoder)."""
+
+    CARDS = [{"index": 0, "name": "A", "vram_gb": 11.0, "arch": "86"},
+             {"index": 1, "name": "B", "vram_gb": 11.0, "arch": "86"},
+             {"index": 2, "name": "spare", "vram_gb": 16.0, "arch": "89"}]   # GPU 2: the spare one
+    CHOSEN = [{"index": 0}, {"index": 1}]                                     # the engine's layer-split cards
+
+    def role(self, vision, text, hip=False):
+        with mock.patch.object(setup, "gpus", lambda: self.CARDS), \
+                mock.patch.object(setup, "amd_gpus", lambda: self.CARDS):
+            return quiet(setup.vision_device_role, vision, text, self.CHOSEN, hip)
+
+    def test_the_flag_absent_changes_nothing(self):
+        self.assertEqual(quiet(setup.vision_device_role, "gpu", "", self.CHOSEN), (("gpu", None), ""))
+        self.assertEqual(quiet(setup.vision_device_role, "none", "", self.CHOSEN), (("none", None), ""))
+
+    def test_a_card_number_pins_the_spare(self):
+        for text in ("2", "cuda:2", " CUDA:2 "):
+            (vision, card), out = self.role("gpu", text)
+            self.assertEqual((vision, card), ("gpu", 2))
+            self.assertIn("its own GPU: spare (GPU 2)", out)               # the most VRAM is not the rule here
+        (vision, card), _ = self.role("gpu", "cuda:2", hip=True)          # AMD: the same numbers as setup lists them
+        self.assertEqual((vision, card), ("gpu", 2))
+
+    def test_the_engine_card_warns(self):
+        (_, card), out = self.role("gpu", "1")
+        self.assertEqual(card, 1)
+        self.assertIn("shares GPU 1 with the engine", out)
+
+    def test_a_missing_card_stops(self):
+        with self.assertRaises(SystemExit):
+            self.role("gpu", "3")
+
+    def test_cpu_reads_on_the_cpu(self):
+        (vision, card), out = self.role("gpu", "cpu")
+        self.assertEqual((vision, card), ("cpu", None))
+        self.assertIn("read on the CPU", out)
+        self.assertEqual(self.role("cpu", "cpu")[0], ("cpu", None))       # already the CPU encoder: nothing changes
+
+    def test_cpu_needs_the_pictures_on(self):
+        with self.assertRaises(SystemExit):
+            self.role("none", "cpu")
+
+    def test_auto_needs_the_pictures_on(self):
+        with self.assertRaises(SystemExit):
+            self.role("none", "auto")
+
+    def test_a_card_with_the_cpu_encoder_stops(self):
+        with self.assertRaises(SystemExit):
+            self.role("cpu", "1")
+
+    def test_garbage_stops(self):
+        with self.assertRaises(SystemExit):
+            self.role("gpu", "two")
+
+    def test_auto_takes_the_best_spare(self):
+        with mock.patch.object(setup, "gpus", lambda: self.CARDS), \
+                mock.patch.object(setup, "amd_gpus", lambda: self.CARDS):
+            (_, card), out = quiet(setup.vision_device_auto, "gpu", self.CHOSEN)
+            self.assertEqual(card, 2)
+            self.assertIn("its own GPU: spare", out)
+            (_, card), out = quiet(setup.vision_device_auto, "gpu", [{"index": 0}, {"index": 2}])
+            self.assertEqual(card, 1)                                              # the card left over is the spare
+            self.assertIn("its own GPU:", out)
+            (_, card), out = quiet(setup.vision_device_auto, "gpu",
+                                   [{"index": 0}, {"index": 1}, {"index": 2}])     # no spare left
+            self.assertEqual((card, "own GPU" in out), (None, False))
+            self.assertIn("no spare GPU", out)
+            self.assertEqual(quiet(setup.vision_device_auto, "cpu", self.CHOSEN)[0], ("cpu", None))
+            self.assertEqual(quiet(setup.vision_device_auto, "none", self.CHOSEN)[0], ("none", None))
+
+
 if __name__ == "__main__":
     unittest.main()
