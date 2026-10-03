@@ -189,7 +189,7 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, m.vision || {});
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -202,7 +202,82 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+// One card per GPU, so a split model is legible without reading the cramped sub-lines on the metric cards.
+// The engine reports its own allocation in seven parallel CSV fields on the INFO line - gpu_dev, gpu_layers,
+// gpu_kv_mib, gpu_buf_mib, gpu_experts, gpu_expert_mib, gpu_draft_mib - and NVML supplies each card's VRAM.
+// Both lists are in ascending device order, so entry m pairs with hardware.gpus[m]; a config that asks for its
+// GPUs out of order would mismatch the name and the VRAM figures, while the engine's own rows stay correct.
+// `vis` is the server's view of the image encoder, which is a process of its own and of which the engine knows
+// nothing: it goes on the card whose NVML index matches, not on the engine's device number - `gpu_dev` holds
+// CUDA ordinals, which only equal the physical numbers when the config lists its GPUs in order.
+function renderGpuPanel(hw, st, eng, vis) {
+  const grid = $("gpu-grid");
+  const csv = (v) => (v == null ? [] : String(v).split(","));
+  const devs = csv(eng.gpu_dev);
+  if (!devs.length) {                       // an engine older than these fields: no panel, the metric sub-lines stand in
+    grid.hidden = true;
+    grid.dataset.count = "0";
+    grid.innerHTML = "";
+    return;
+  }
+  const mib = (v) => (v == null || v === "" || Number.isNaN(+v) ? null : `${gb(+v * 1048576)} GB`);
+  // A small allocation reads better in MiB than as "0.8 GB", so switch units at 1024. `approx` marks the vision
+  // figure, which is measured rather than reported (see `vis` below).
+  const sz = (v, approx) => (v == null || v === "" || Number.isNaN(+v) ? null :
+    `${approx ? "~" : ""}${+v >= 1024 ? `${gb(+v * 1048576)} GB` : `${fmt(+v)} MiB`}`);
+  const num = (v) => (v == null || v === "" || Number.isNaN(+v) ? null : fmt(+v));
+  const row = (label, value, title) => (value == null ? "" :
+    `<div class="bar-row"${title ? ` title="${esc(title)}"` : ""}><span>${esc(label)}</span>` +
+    `<span class="muted">${value}</span></div>`);
+  const cards = hw.gpus || [];
+  const lay = csv(eng.gpu_layers), kv = csv(eng.gpu_kv_mib), buf = csv(eng.gpu_buf_mib),
+        ex = csv(eng.gpu_experts), exm = csv(eng.gpu_expert_mib), dr = csv(eng.gpu_draft_mib);
+  grid.dataset.count = String(devs.length);
+  grid.innerHTML = devs.map((dev, i) => {
+    // a single device has no hardware.gpus[] (telemetry only splits it out when several are in use), so fall
+    // back to the flat gpu_* readings, which are that one card's own.
+    const g = cards[i] || (devs.length === 1
+      ? {name: st.gpu_name, util: hw.gpu_util, mem_used: hw.gpu_mem_used, mem_free: hw.gpu_mem_free,
+         mem_total: hw.gpu_mem_total, temp: hw.gpu_temp, power: hw.gpu_power}
+      : {});
+    // a remote expert tier (--expert-cache-deviceN) caches experts for other cards and runs no layers of its
+    // own: no KV cache, no prompt buffer. The engine writes "-" for its layer span.
+    const helper = lay[i] === "-";
+    const span = helper || !lay[i] ? null : `L${esc(lay[i]).replace("-", "–")}`;
+    // The encoder is a process of its own, started before the engine, and it is on the card whose NVML index
+    // matches its `device` - not on the engine's device number, which is a CUDA ordinal. Only the one-card case
+    // has no hardware.gpus[] to read an index from, and there the two numbers are the same card.
+    const gidx = g.index != null ? +g.index : (devs.length === 1 ? +dev : null);
+    const visHere = vis && vis.mib != null && gidx != null && gidx === +vis.device;
+    const used = g.mem_used, total = g.mem_total;
+    const pct = total ? Math.min(100, (100 * used) / total) : 0;
+    const tone = pct >= 95 ? "danger" : pct >= 88 ? "warn" : null;
+    const feet = [g.util == null ? null : `${fmt(g.util)}% load`, g.temp == null ? null : `${fmt(g.temp)} °C`,
+                  g.power == null ? null : `${fmt(g.power)} W`].filter(Boolean).join(" · ");
+    return `<div class="st-card gpu-card">
+      <div class="gpu-card__head"><span class="card-title">GPU ${esc(dev)}</span>
+        ${helper ? `<span class="st-badge" title="Runs no layers: it only caches experts for the other cards">Helper</span>` : ""}
+        <span class="gpu-card__name muted small">${esc(g.name || "")}${total == null ? "" : `${g.name ? " · " : ""}${gb(total, 0)} GB`}</span></div>
+      ${helper ? "" : row("Layers", span)}
+      ${helper ? "" : row("KV cache", mib(kv[i]))}
+      ${helper ? "" : row("Compute buffer", mib(buf[i]))}
+      ${row("Draft head", sz(dr[i]), "The speculative-decoding head (MTP). The engine loads it with the model and " +
+        "it lives on the last stage's card, so it is not part of the expert total below.")}
+      ${row("Experts", num(ex[i]) == null ? null : `${num(ex[i])} · ${mib(exm[i]) || "–"}`)}
+      ${total ? `<div class="bar-row"><span>VRAM</span><span class="muted">${gb(used)} / ${gb(total, 0)} GB${
+        g.mem_free == null ? "" : ` · ${gb(g.mem_free)} GB free`}</span></div>
+        <div class="st-progress"${tone ? ` data-tone="${tone}"` : ""}><div class="st-progress__bar" style="width:${pct}%"></div></div>` : ""}
+      ${visHere ? row("Vision encoder", sz(vis.mib, true),
+        "The image encoder (strata-vision) is a process of its own that the server starts before the engine. It " +
+        "reports no memory figure, so this is measured: what this card's free VRAM lost while it started. " +
+        "Anything else that allocated on the card in that second is counted too.") : ""}
+      ${feet ? `<div class="gpu-card__foot muted small">${feet}</div>` : ""}
+    </div>`;
+  }).join("");
+  grid.hidden = false;
+}
+
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, vis) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
@@ -240,9 +315,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
             live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
-  // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
+  // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's
+  // own. Once the per-GPU panel below is available it says all of this better, so the sub-lines go away - they are
+  // kept only for an engine too old to report the split.
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  const multi = (hw.gpus || []).length > 1;
+  const multi = !eng.gpu_dev && (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || "");
   spark("sp-gpu", h.gpu_util, 100);
@@ -271,6 +348,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
+  // what each card is actually holding
+  renderGpuPanel(hw, st, eng, vis);
+
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;
   let used = 0;
@@ -282,7 +362,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
   $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  // "23.0 / 40 GB": the bar below is a share of the total VRAM, so the total belongs on the row - on its own
+  // the figure reads as if it were all the VRAM, and the bar has no denominator to make sense of.
+  $("slots-text").textContent = eng.expert_slots
+    ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)}${hw.gpu_mem_total ? ` / ${gb(hw.gpu_mem_total, 0)}` : ""} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
