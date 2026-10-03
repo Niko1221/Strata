@@ -36,7 +36,12 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
     if (len == 0) {
-        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) topo.worker_cores.push_back((int) i);
+        // Preserve group identity even when detailed core topology is unavailable.
+        const WORD groups = GetActiveProcessorGroupCount();
+        for (WORD group = 0; group < groups; ++group) {
+            const DWORD count = GetActiveProcessorCount(group);
+            for (DWORD i = 0; i < count; ++i) topo.worker_cores.push_back((int) group * 64 + (int) i);
+        }
         if (skip_first && !topo.worker_cores.empty()) {
             topo.host_core = topo.worker_cores.front();
             topo.worker_cores.erase(topo.worker_cores.begin());
@@ -60,10 +65,12 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
                 CoreDesc cd;
                 cd.efficiency = e->Processor.EfficiencyClass;
                 cd.has_smt = (e->Processor.Flags & LTP_PC_SMT) != 0;
-                const GROUP_AFFINITY& g = e->Processor.GroupMask[0];
-                for (int bit = 0; bit < 64; ++bit) {
-                    if (g.Mask & (1ull << bit)) {
-                        cd.lps.push_back((int) (g.Group * 64 + bit));
+                for (WORD group = 0; group < e->Processor.GroupCount; ++group) {
+                    const GROUP_AFFINITY& g = e->Processor.GroupMask[group];
+                    for (int bit = 0; bit < 64; ++bit) {
+                        if (g.Mask & (KAFFINITY(1) << bit)) {
+                            cd.lps.push_back((int) (g.Group * 64 + bit));
+                        }
                     }
                 }
                 if (!cd.lps.empty()) {
@@ -264,43 +271,63 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity) {
 
 namespace {
 
-void pin_this_thread(int core) {
-    if (core < 0) return;
+bool pin_this_thread(int core, int worker = -1) {
+    if (core < 0) return false;
 #if defined(_WIN32)
-    SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << (core & 63));
+    GROUP_AFFINITY target{};
+    target.Group = (WORD) (core / 64);
+    target.Mask = (KAFFINITY(1) << (core & 63));
+    const bool ok = SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr) != 0;
+    if (!ok) {
+        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for %s%d (group %u, mask 0x%llx) failed: %lu; thread remains unpinned\n",
+                     worker >= 0 ? "worker " : "host ", worker >= 0 ? worker : 0, (unsigned) target.Group,
+                     (unsigned long long) target.Mask, (unsigned long) GetLastError());
+    }
+    return ok;
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(core, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+    return pthread_setaffinity_np(pthread_self(), sizeof set, &set) == 0;
 #endif
 }
 
 }  // namespace
 
-long long pin_current_thread(int core) {
-    if (core < 0) return -1;
+ThreadAffinity pin_current_thread(int core) {
+    if (core < 0) return {};
 #if defined(_WIN32)
-    // `SetThreadAffinityMask` RETURNS the previous mask, or 0 on failure - so 0 doubles as the error, which is
-    // why the caller must not treat it as a restorable value.
-    const DWORD_PTR prev = SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << (core & 63));
-    return prev == 0 ? -1 : (long long) prev;
+    GROUP_AFFINITY target{};
+    target.Group = (WORD) (core / 64);
+    target.Mask = (KAFFINITY(1) << (core & 63));
+    GROUP_AFFINITY previous{};
+    if (!SetThreadGroupAffinity(GetCurrentThread(), &target, &previous)) {
+        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for host (group %u, mask 0x%llx) failed: %lu\n",
+                     (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
+        return {};
+    }
+    return {(uint64_t) previous.Mask, previous.Group, true};
 #else
     cpu_set_t prev;
     CPU_ZERO(&prev);
-    if (pthread_getaffinity_np(pthread_self(), sizeof prev, &prev) != 0) return -1;
+    if (pthread_getaffinity_np(pthread_self(), sizeof prev, &prev) != 0) return {};
     unsigned long mask = 0;
     for (int i = 0; i < CPU_SETSIZE && i < 64; ++i)
         if (CPU_ISSET(i, &prev)) mask |= 1ul << i;
-    pin_this_thread(core);
-    return (long long) mask;
+    if (!pin_this_thread(core)) return {};
+    return {mask, 0, true};
 #endif
 }
 
-void restore_thread_affinity(long long previous) {
-    if (previous <= 0) return;
+void restore_thread_affinity(ThreadAffinity previous) {
+    if (!previous.valid || previous.mask == 0) return;
 #if defined(_WIN32)
-    SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) previous);
+    GROUP_AFFINITY target{};
+    target.Group = previous.group;
+    target.Mask = (KAFFINITY) previous.mask;
+    if (!SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr))
+        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity restore to group %u (mask 0x%llx) failed: %lu\n",
+                     (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -366,7 +393,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
         threads_.emplace_back([this, i, core] {
-            pin_this_thread(core);
+            pin_this_thread(core, i);
             worker(i);
         });
     }
