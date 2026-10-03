@@ -4935,23 +4935,35 @@ int main(int argc, char** argv) {
             }
             return true;
         };
-        // cooperative prefill preemption's shared state (docs/PREFILL-PREEMPT.md): the stdin thread arms the yield
-        // when a GEN/GENI line lands while a preemptable request reads its prompt; the park happens at a chunk
-        // end, one request at a time, and the parked record holds the request's whole state until RESUME.
-        std::atomic<bool> yield_req{false};      // a queued request wants the next chunk boundary
-        std::atomic<bool> preempt_arm{false};    // a preemptable request is reading its prompt (armed per request)
+        // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
+        // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.  The queue
+        // lives here, above the preemption block, because the park decision looks into it.
+        std::atomic<bool> stop_req{false};
+        std::mutex in_mu;
+        std::condition_variable in_cv;
+        std::deque<std::string> in_lines;
+        bool in_eof = false;
+
+        // cooperative prefill preemption's shared state (docs/PREFILL-PREEMPT.md).  The server decides WHEN a
+        // yield makes sense (it can see its own queue; the engine cannot): while a request is reading its prompt
+        // and another one is queued, the server sends YIELD - a flag like STOP, checked at chunk ends only.  The
+        // park happens one request at a time, and the parked record holds the request's whole state until RESUME.
+        std::atomic<bool> yield_req{false};      // the server offered the running prefill's next boundary
         std::atomic<long long> parked_rid{-1};   // the parked record's request id (-1: the slot is free)
         SuspReq parked;                          // the one parked request (guarded by the main loop alone)
         long long preempt_count = 0;             // the running request's park count so far
         long long preempt_pos = 0;               // the position the running request's chunks reached
         bool preempt_declined = false;           // a park failed for the running request: it keeps the engine
         long long cur_rid = -1;                  // the running request's id (suffixed onto its output lines)
+        bool cur_can_park = false;               // it is a text request with an id (images never park)
         auto rid_suffix = [&] { return cur_rid >= 0 ? " id=" + std::to_string(cur_rid) : std::string(); };
         sp.should_suspend = [&] {
+            if (!cur_can_park || preempt_declined || preempt_pos < o.preempt_min_tokens ||
+                preempt_count >= o.preempt_max)
+                return false;
             const long long pr = parked_rid.load(std::memory_order_relaxed);
-            return !preempt_declined && yield_req.load(std::memory_order_relaxed) &&
-                   preempt_pos >= o.preempt_min_tokens && preempt_count < o.preempt_max &&
-                   (pr < 0 || pr == cur_rid);
+            if (pr >= 0 && pr != cur_rid) return false;   // the one slot holds another request
+            return yield_req.load(std::memory_order_relaxed);
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
@@ -5148,13 +5160,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
             profile_saved_at = Clock::now();
         };
-        // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
-        // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
-        std::mutex in_mu;
-        std::condition_variable in_cv;
-        std::deque<std::string> in_lines;
-        bool in_eof = false;
+        std::atomic<bool> stop_req{false};   // (in_mu/in_lines live above, with the preemption state)
         std::thread([&] {
             // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
             // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
@@ -5187,11 +5193,7 @@ int main(int argc, char** argv) {
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
                 if (l == "STOP") { stop_req.store(true); continue; }
-                // preemption's arm: a request is waiting while another one is reading its prompt in chunks - the
-                // boundary check itself re-verifies the position, park budget and slot (sp.should_suspend)
-                if (o.prefill_preempt && preempt_arm.load(std::memory_order_relaxed) &&
-                    (l.rfind("GEN ", 0) == 0 || l.rfind("GENI ", 0) == 0))
-                    yield_req.store(true, std::memory_order_relaxed);
+                if (l == "YIELD") { yield_req.store(true); continue; }
                 std::lock_guard<std::mutex> lk(in_mu);
                 in_lines.push_back(l);
                 in_cv.notify_one();
@@ -5344,13 +5346,13 @@ int main(int argc, char** argv) {
                 continue;
             }
             stop_req.store(false);   // a STOP that arrived between requests is stale
+            yield_req.store(false);  // ... and a YIELD too
             err.clear();
-            yield_req.store(false);  // a stale arm must not park the next request after one chunk
-            preempt_arm.store(false);
             preempt_declined = false;
             preempt_pos = 0;
             preempt_count = 0;
             cur_rid = -1;
+            cur_can_park = false;
             // RESUME / CANCEL id=N: the client's commands for the parked request.  The optional id names it;
             // with none, the one parked request (there is at most one) is meant.
             SuspReq pr;
@@ -5457,9 +5459,7 @@ int main(int argc, char** argv) {
             const int64_t n = (int64_t) ids.size();
             req_imgs.clear();
             cur_rid = req_id;
-            // a prefill of this request may park for a queued one: text, with an id, while the feature is on
-            // (a layer split was refused at startup).  Disarmed again once the prompt is read - decode never yields.
-            preempt_arm.store(o.prefill_preempt && !geni && req_id >= 0);
+            cur_can_park = o.prefill_preempt && !geni && req_id >= 0;   // a layer split was refused at startup
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision%s\n", rid_suffix().c_str()); continue; }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
@@ -6040,9 +6040,8 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                         } catch (const std::bad_alloc&) {
                             save_err = "the park snapshot does not fit in RAM";
                         }
-                        yield_req.store(false);
-                        preempt_arm.store(false);
                         if (saved) {
+                            yield_req.store(false);
                             ++preempt_count;
                             size_t snap = parked.run.gdn.size() + parked.run.ple.size() + parked.run.tails.size() +
                                           parked.dead.size() + parked.pooled.size() + parked.mtp_kv.size();
@@ -6092,9 +6091,8 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 }
                 if (parked_now) break;
             }
-            preempt_arm.store(false);   // decode never yields
             if (parked_now) {           // the queued request's line is next; RESUME id=N brings this one back
-                continue;
+                continue;               // (decode never yields: there is no boundary check past this point)
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed%s: %s\n", rid_suffix().c_str(), err.c_str());

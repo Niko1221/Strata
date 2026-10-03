@@ -1,0 +1,353 @@
+"""tools/prefill_preempt_test.py - the prefill-preemption parity harness (docs/PREFILL-PREEMPT.md).
+
+Drives `strata --serve` directly over its stdin/stdout protocol (no HTTP), against the real model, and proves the
+three things the feature must prove:
+
+  1. STATE: A parked at a chunk boundary, B run to completion in between, then A resumed - A's final
+     STRATA_STATE_HASH (gdn, ple, indexer tails/pooled/kv, the drafter's ring, stale cells, ple_prev) equals the
+     hash of an uninterrupted A that ran after its own B on a control engine.  Bits, not tolerances.
+  2. OUTPUT: A's and B's generated token ids (greedy) are identical to their uninterrupted references.
+  3. MECHANICS: parks land on chunk boundaries; a cancelled parked request releases its snapshot and the next
+     request is healthy; repeated preemptions do not drift; decode is never preempted.
+
+Deterministic configuration: greedy (no temperature key), --adapt-swaps 0 (fixed VRAM expert set), --pcie-frac 0,
+no turn token in the prompts (no checkpoint-mount differences between the arms), prompts that share no prefix.
+STRATA_STATE_HASH=1 makes the engine print the fingerprint after every request that leaves live state behind;
+the engine needs --prompt-cache > 0 for it (the harness passes 6).
+
+    python3 tools/prefill_preempt_test.py                 # the full suite (one engine start per scenario)
+    python3 tools/prefill_preempt_test.py -k boundary     # the boundary sweep only
+    python3 tools/prefill_preempt_test.py --quick         # a short A, one boundary, mode-0 KV
+
+Exit code 0 when every scenario passes.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ENGINE = ROOT / "build" / "strata"
+CONFIG = ROOT / "strata-iq3_xxs.json"
+HASH_RE = re.compile(r"STATE_HASH L=(\d+) gdn=([0-9a-f]+) ple=([0-9a-f]+) tail=([0-9a-f]+) pooled=([0-9a-f]+) "
+                     r"kv=([0-9a-f]+) mtp=([0-9a-f]+) stale=([0-9a-f]+) ple_prev=(-?\d+),(-?\d+)")
+
+
+def deterministic_tokens(n: int, seed: int, lo=1000, hi=30000) -> list[int]:
+    """A pseudo-random prompt over the plain-vocabulary range: no <|im_start|> (248045, a checkpoint turn
+    boundary), no image pads, nothing special.  The same seed is the same prompt."""
+    out, x = [], (seed * 2654435761 + 1) & 0xFFFFFFFF
+    for _ in range(n):
+        x = (1103515245 * x + 12345) & 0x7FFFFFFF
+        out.append(lo + x % (hi - lo))
+    return out
+
+
+class Engine:
+    """One `strata --serve` process: request lines in, protocol lines out (demultiplexed by the id suffix)."""
+
+    def __init__(self, exe: str, args: list[str], log_path: Path):
+        env = dict(os.environ)
+        env["STRATA_STATE_HASH"] = "1"
+        self.log = open(log_path, "ab")
+        self.proc = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
+        self.lines: queue.Queue[str | None] = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+        ready = self._next_line(lambda l: l.startswith("READY"), timeout=1800)
+        if ready is None:
+            raise RuntimeError(f"the engine did not become ready (log: {log_path})")
+        self.max_context = int(ready.split()[1])
+
+    def _pump(self):
+        for line in self.proc.stdout:
+            self.lines.put(line.rstrip("\n"))
+        self.lines.put(None)
+
+    def _next_line(self, pred, timeout: float) -> str | None:
+        """The next line satisfying `pred` (every other protocol line is swallowed; an ERR is never)."""
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                line = self.lines.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if line is None:
+                raise RuntimeError("the engine ended (see the scenario log)")
+            if line.startswith("ERR"):
+                raise RuntimeError("engine ERR: " + line)
+            if pred(line):
+                return line
+        raise RuntimeError("timeout waiting for a protocol line")
+
+    def send(self, line: str):
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+
+    @staticmethod
+    def _rid_of(line: str) -> int | None:
+        _, _, suffix = line.rpartition(" id=")
+        return int(suffix) if suffix and suffix.lstrip("-").isdigit() else None
+
+    def collect(self, rid: int | None, stop_on=None) -> dict:
+        """Reads a request's lines until its DONE (-> {'tokens', 'finish', 'reused', 'generated'}) or until
+        `stop_on(line)` is true (-> adds 'stopped': True).  Lines of other requests pass through untouched."""
+        tokens: list[int] = []
+        while True:
+            line = self._next_line(lambda l: True, timeout=1200)
+            if stop_on is not None and stop_on(line):
+                return {"tokens": tokens, "stopped": True, "finish": None, "generated": len(tokens), "reused": 0}
+            if line.startswith("T ") and (rid is None or self._rid_of(line) == rid):
+                tokens.append(int(line[2:].split(" id=")[0]))
+            elif line.startswith("DONE") and (rid is None or self._rid_of(line) == rid):
+                f = line.split(" id=")[0].split()
+                return {"tokens": tokens, "finish": f[5], "generated": int(f[1]),
+                        "reused": int(f[8]) if len(f) > 8 else 0, "stopped": False}
+
+    def gen(self, rid: int | None, ids: list[int], max_new: int):
+        head = f"GEN {max_new}" + (f" id={rid}" if rid is not None else "")
+        self.send(head + " " + ",".join(map(str, ids)))
+
+    def state_hash(self) -> dict:
+        """The latest STATE_HASH line from the engine's stderr log (written after every finished request)."""
+        with open(self.log.name, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 262144))
+            tail = f.read().decode("utf-8", "replace")
+        m = None
+        for m in HASH_RE.finditer(tail):
+            pass
+        if m is None:
+            raise RuntimeError("no STATE_HASH in the engine log (STRATA_STATE_HASH=1 and --prompt-cache > 0?)")
+        keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale", "ple_prev0", "ple_prev1"]
+        return dict(zip(keys, m.groups()))
+
+    def close(self):
+        try:
+            self.send("QUIT")
+            self.proc.wait(timeout=60)
+        except Exception:
+            self.proc.kill()
+
+
+def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
+                kv_resident: int | None = None) -> list[str]:
+    drop = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--pcie-frac", "--prompt-cache",
+            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max"}
+    out, skip = [], False
+    for a in cfg["args"]:
+        if skip:
+            skip = False
+            continue
+        if a in drop:
+            skip = True        # the flag and its value
+            continue
+        out.append(a)
+    out += ["--adapt-swaps", "0", "--pcie-frac", "0", "--prompt-cache", "6", "--prefill", str(prefill)]
+    out += ["--max-context", str(max_context or 32768)]
+    if kv_resident is not None:
+        out += ["--kv-resident", str(kv_resident)]
+    if preempt:
+        out += ["--prefill-preempt", "--prefill-preempt-min-tokens", "0"]
+    return out
+
+
+def start_engine(name: str, exe: str, args: list[str], workdir: Path) -> Engine:
+    return Engine(exe, args, workdir / f"{name}.log")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--engine", default=str(DEFAULT_ENGINE))
+    ap.add_argument("--config", default=str(CONFIG))
+    ap.add_argument("--workdir", default=str(ROOT / "bench" / "results" / "prefill-preempt"))
+    ap.add_argument("-k", dest="only", help="run the scenarios whose name contains this")
+    ap.add_argument("--quick", action="store_true", help="a short A, one boundary, mode-0 KV")
+    ap.add_argument("--max-new", type=int, default=32)
+    args = ap.parse_args()
+
+    cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
+    workdir = Path(args.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    chunk = 2048
+    n_a = (3 if args.quick else 6) * chunk + 491          # a final partial chunk, like the plan's 10,731 example
+    a_ids = deterministic_tokens(n_a, seed=7)
+    b_ids = deterministic_tokens(220, seed=99)
+    if a_ids[:8] == b_ids[:8]:
+        b_ids[0] += 1                                     # the prompts share no prefix: no checkpoint mounts
+
+    boundaries = [2048, 4096, 6144] if args.quick else [2048, 4096, 6144, 8192, 10240]
+    scenarios: list[tuple[str, dict]] = [(f"boundary-{b}", dict(trigger=b, preempts=[2], cancel=False))
+                                         for b in boundaries]
+    if not args.quick:
+        scenarios += [
+            ("streaming-kv", dict(trigger=4096, preempts=[2], cancel=False, max_context=65536, kv_resident=8192)),
+            ("repeat-3", dict(trigger=2048, preempts=[2, 3, 4], cancel=False)),
+            ("cancel-parked", dict(trigger=2048, preempts=[2], cancel=True)),
+            ("decode-nopark", dict(trigger=None, preempts=[2], cancel=False)),   # B queued during A's decode
+        ]
+    if args.only:
+        scenarios = [s for s in scenarios if args.only in s[0]]
+
+    print(f"[harness] engine {args.engine}", flush=True)
+    print(f"[harness] control engine (references): A={len(a_ids)} tokens, B={len(b_ids)} tokens", flush=True)
+    t0 = time.time()
+    control = start_engine("control", args.engine, engine_args(cfg, prefill=chunk, preempt=False), workdir)
+    try:
+        control.gen(None, b_ids, args.max_new)            # B first: both engines then end with 'A complete, B
+        ref_b = control.collect(None)                     # somewhere earlier', so the hashes are comparable
+        control.gen(None, a_ids, args.max_new)
+        ref_a = control.collect(None)
+        ref_hash = control.state_hash()
+    finally:
+        control.close()
+    print(f"[harness] references in {time.time() - t0:.0f} s: A {len(ref_a['tokens'])} tokens "
+          f"({ref_a['finish']}), B {len(ref_b['tokens'])} tokens ({ref_b['finish']})", flush=True)
+
+    failures: list[str] = []
+    for name, sc in scenarios:
+        print(f"[harness] scenario {name}: trigger after {sc['trigger']} tokens, interim {sc['preempts']}, "
+              f"cancel={sc['cancel']}, ctx={sc.get('max_context')}, kv_resident={sc.get('kv_resident')}", flush=True)
+        t0 = time.time()
+        try:
+            e = start_engine(f"preempt-{name}", args.engine,
+                             engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
+                                         kv_resident=sc.get("kv_resident")), workdir)
+            try:
+                fails = run_scenario(e, name, sc, a_ids, b_ids, ref_a, ref_b, ref_hash, args.max_new, chunk)
+            finally:
+                e.close()
+            failures += fails
+            print(f"[harness] scenario {name}: {'PASS' if not fails else 'FAIL'} ({time.time() - t0:.0f} s)",
+                  flush=True)
+        except Exception as ex:
+            failures.append(f"{name}: {ex}")
+            print(f"[harness] scenario {name}: ERROR {ex}", flush=True)
+
+    print(f"[harness] {'ALL PASS' if not failures else f'{len(failures)} FAILURE(S)'}", flush=True)
+    for f in failures:
+        print(f"[harness] FAIL {f}", flush=True)
+    return 0 if not failures else 1
+
+
+def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref_hash, max_new, chunk) -> list[str]:
+    """One preempt engine: A parks at the boundary, the interim request(s) run, A resumes; outputs and the final
+    state hash must match the references.  Returns a list of failure descriptions (empty = pass)."""
+    failures: list[str] = []
+    a_tokens: list[int] = []
+    suspensions: list[int] = []
+
+    def watch_b_trigger(sent: dict) -> object:
+        """on_line for A's first leg: queues the first interim request once A's read passes the trigger."""
+        def on_line(line: str) -> bool:
+            if line.startswith("PP ") and sc["trigger"] is not None and not sent["b"]:
+                if int(line.split()[1]) >= sc["trigger"]:
+                    e.gen(sc["preempts"][0], b_ids, max_new)
+                    sent["b"] = True
+            if line.startswith("SUSPENDED"):
+                suspensions.append(int(line.split()[1]))
+                return True
+            return False
+        return on_line
+
+    sent = {"b": False}
+    e.gen(1, a_ids, max_new)
+    if sc["trigger"] is not None:
+        leg = e.collect(1, stop_on=watch_b_trigger(sent))
+        a_tokens += leg["tokens"]
+        if not sent["b"]:
+            return [f"{name}: the trigger ({sc['trigger']}) never fired - no PP line reached it"]
+        if not leg.get("stopped"):
+            return [f"{name}: A finished its prompt without parking (trigger {sc['trigger']})"]
+
+        for i, rid in enumerate(sc["preempts"]):
+            last = i == len(sc["preempts"]) - 1
+            if sc["cancel"] and last:
+                e.send("CANCEL id=1")
+                c = e.collect(1)
+                if c["finish"] != "cancel":
+                    failures.append(f"{name}: the cancelled parked request finished with {c['finish']!r}")
+                e.gen(None, b_ids, 8)                     # the engine must be healthy afterwards
+                h = e.collect(None)
+                if h["tokens"] != ref_b["tokens"][:8]:
+                    failures.append(f"{name}: the request after a cancel does not match the B reference")
+                bad = [p for p in suspensions if p % chunk != 0 or p >= len(a_ids)]
+                if bad:
+                    failures.append(f"{name}: parks at non-chunk boundaries {bad}")
+                return failures                           # a cancelled A has no output parity to check
+            b = e.collect(rid)
+            if b["tokens"] != ref_b["tokens"]:
+                failures.append(f"{name}: interim request {rid} tokens differ from the B reference "
+                                f"({len(b['tokens'])} vs {len(ref_b['tokens'])})")
+                break
+            if not last:
+                e.gen(sc["preempts"][i + 1], b_ids, max_new)   # queue the next interim BEFORE the resume
+            e.send("RESUME id=1")
+            if last:
+                done_a = e.collect(1)
+                a_tokens += done_a["tokens"]
+                if done_a["finish"] != ref_a["finish"]:
+                    failures.append(f"{name}: A finish {done_a['finish']!r} != reference {ref_a['finish']!r}")
+            else:
+                leg = e.collect(1, stop_on=lambda l: l.startswith("SUSPENDED"))
+                a_tokens += leg["tokens"]
+                if not leg.get("stopped"):
+                    failures.append(f"{name}: A did not park again for request {sc['preempts'][i + 1]}")
+                    break
+    else:
+        # decode-nopark: B is queued once the prompt is read (REUSED) - decode must never yield
+        def on_reused(line: str) -> bool:
+            if line.startswith("REUSED"):
+                e.gen(sc["preempts"][0], b_ids, max_new)
+                sent["b"] = True
+            return line.startswith("SUSPENDED")
+
+        leg = e.collect(1, stop_on=on_reused)
+        a_tokens += leg["tokens"]
+        if leg.get("stopped"):
+            return [f"{name}: A parked during decode - decode must never yield"]
+        if not sent["b"]:
+            return [f"{name}: REUSED never arrived"]
+        b = e.collect(sc["preempts"][0])
+        if b["tokens"] != ref_b["tokens"]:
+            failures.append(f"{name}: the queued request's tokens differ from the B reference")
+        e.send("RESUME id=1")
+        head = e._next_line(lambda l: l.startswith("ERR") or l.startswith("RESUME") or l.startswith("DONE"),
+                            timeout=60)
+        if not head.startswith("ERR no parked request"):
+            failures.append(f"{name}: RESUME without a parked request answered {head!r}")
+
+    if failures:
+        return failures
+
+    if suspensions:
+        legal = set(range(chunk, (len(a_ids) - 1) // chunk * chunk + 1, chunk))
+        bad = [p for p in suspensions if p not in legal]
+        if bad:
+            failures.append(f"{name}: parks at non-chunk boundaries {bad} (legal: chunk multiples)")
+
+    if not failures:
+        if a_tokens != ref_a["tokens"]:
+            n = min(len(a_tokens), len(ref_a["tokens"]))
+            first = next((i for i in range(n) if a_tokens[i] != ref_a["tokens"][i]), n)
+            failures.append(f"{name}: A tokens differ from the reference at [{first}] "
+                            f"({len(a_tokens)} vs {len(ref_a['tokens'])} tokens)")
+        else:
+            got = e.state_hash()
+            if got != ref_hash:
+                diff = [k for k in ref_hash if ref_hash[k] != got.get(k)]
+                failures.append(f"{name}: state hash differs ({', '.join(diff)}): ref {ref_hash} got {got}")
+    return failures
+
+
+if __name__ == "__main__":
+    sys.exit(main())

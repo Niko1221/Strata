@@ -87,7 +87,11 @@ class Engine(Protocol):
 
 class MockEngine:
     """Replays a scripted completion (text) as token ids, one per step, then the end-of-turn token.  Given a list of
-    scripts, each request gets the next one and the last one repeats (a tool call, then the answer after it)."""
+    scripts, each request gets the next one and the last one repeats (a tool call, then the answer after it).
+
+    For the preemption tests it also speaks the EngineRequest protocol: `park_hook(tokens_so_far, queued) -> bool`
+    is consulted after every token of an open_request; when it says so, the request yields Parked and waits for
+    resume() - the scheduler state machine, with no GPU."""
 
     def __init__(self, tokenizer, script: str | list[str], max_context: int = 32768, delay_s: float = 0.0):
         self.tok, self.max_context, self.delay = tokenizer, max_context, delay_s
@@ -96,6 +100,9 @@ class MockEngine:
                                                                                  else script)]
         self.script, self.turns = self.scripts[0], 0
         self.last_prompt: list[int] = []
+        self.can_preempt = True                  # open_request works; Service.preempt decides
+        self.park_hook = None                    # -> bool, see the class comment
+        self.queued = lambda: 0                  # what the engine would see waiting on stdin
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
@@ -109,6 +116,64 @@ class MockEngine:
             if self.delay:
                 time.sleep(self.delay)
             yield t
+
+    def open_request(self, ids, max_new, sampling, rid: int, embeddings=None):
+        return MockRequest(self, ids, max_new, sampling, rid, embeddings)
+
+
+class MockRequest:
+    """MockEngine's EngineRequest: the same Parked/resume/cancel contract over the scripted completion."""
+
+    def __init__(self, engine: MockEngine, ids, max_new, sampling, rid: int, embeddings=None):
+        self.engine, self.rid = engine, rid
+        self.parked = False
+        self._cancelled = False
+        self._stream = self._tokens(ids, max_new, embeddings)
+
+    def _tokens(self, ids, max_new, embeddings):
+        eng = self.engine
+        eng.last_prompt = list(ids)
+        eng.last_embeddings = embeddings
+        if len(eng.scripts) > 1:
+            eng.script = eng.scripts[min(eng.turns, len(eng.scripts) - 1)]
+            eng.turns += 1
+        for i, t in enumerate(eng.script[:max_new]):
+            if self._cancelled:
+                return
+            if eng.park_hook is not None and eng.park_hook(i, eng.queued()):
+                self.parked = True
+                yield Parked(i, max_new)
+                while self.parked and not self._cancelled:
+                    time.sleep(0.005)
+                if self._cancelled:
+                    return
+            if self.delay_sleep():
+                return
+            yield t
+
+    def delay_sleep(self):
+        if self.engine.delay:
+            time.sleep(self.engine.delay)
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._stream)
+
+    def resume(self):
+        self.parked = False
+
+    def cancel_parked(self):
+        self._cancelled = True
+        self.parked = False
+
+    def drain(self):
+        pass
+
+    def close(self):
+        self._cancelled = True
 
 
 class EngineDied(RuntimeError):
@@ -299,6 +364,11 @@ class StrataEngine:
     Per-request sampling rides the same line as engine-side keys between max_new and the ids
     (`temperature=F top_p=F top_k=N seed=N`, the engine's own spelling).  An absent temperature keeps the
     engine's default, which is greedy; `temperature=0` means the same thing, so it is not forwarded.
+
+    With `--prefill-preempt` (INFO preempt=1) a request may also carry `id=N`: the engine may then park its
+    long prompt at a chunk boundary (`SUSPENDED <pos> <total> id=N`) while another request runs, and continue
+    it on a `RESUME id=N` line.  Every line an id-carrying request produces carries the same ` id=N` suffix,
+    so output can always be told apart (docs/PREFILL-PREEMPT.md).
     """
     silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
     silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
@@ -313,6 +383,7 @@ class StrataEngine:
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
+        self.can_preempt = False         # the engine was started with --prefill-preempt (INFO preempt=1)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
@@ -361,6 +432,7 @@ class StrataEngine:
                 pass
             raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else "") +
                                start_failure_hint(log, log_start) + start_log_tail(log, log_start))
+        self.can_preempt = self.info.get("preempt") == 1
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
         if self.info.get("engine"):
@@ -612,6 +684,21 @@ class StrataEngine:
             pass
         return EngineSilent(f"{what}; the server ended the engine")
 
+    def write_line(self, line: str):
+        """One command line to the engine (the FIFO holder's privilege).  OSError: the engine died."""
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+
+    def open_request(self, ids, max_new, sampling, rid: int, embeddings=None) -> "EngineRequest":
+        """A preemptable request: like generate(), but the engine may park it (SUSPENDED) while another request
+        runs; the FIFO holder releases the lock then and calls EngineRequest.resume() once it holds it again."""
+        self.progress = None
+        self.prefill_tok_s_mean = None
+        return EngineRequest(self, ids, max_new, sampling, rid, embeddings)
+
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while), then terminate, then kill, each given 20 s.  Raises EngineStuck when it still runs after all three."""
@@ -646,6 +733,114 @@ class StrataEngine:
                 self.proc = None
                 self.ended = True
                 self.progress, self.last = None, {}
+
+
+class Parked:
+    """The marker an EngineRequest yields where the engine parked the request: the prompt is not fully read, the
+    engine holds a valid snapshot of it, and another request may run.  `pos` is the prompt position reached."""
+
+    def __init__(self, pos: int, total: int):
+        self.pos, self.total = pos, total
+
+
+class EngineRequest:
+    """One request's turn with the engine, when preemption is on: iterating it yields token ids (and None
+    heartbeats) exactly like `StrataEngine.generate`, plus one Parked marker where the engine parked it - the
+    consumer then stops reading (the FIFO is released for the queued request) until it calls resume().
+
+    Only the FIFO holder talks to the engine and only the holder reads its output, so a line with no id suffix
+    and a line with this request's id are both this request's; any other id belongs to nobody reading now and is
+    skipped (it cannot exist while the lock is held and the request is not parked, but a bogus one must not
+    crash the server)."""
+
+    def __init__(self, engine: StrataEngine, ids, max_new, sampling, rid: int, embeddings=None):
+        self.engine, self.rid, self.ids = engine, rid, ids
+        self.parked = False
+        self._closed = False
+        keys = engine.sampling_keys(sampling or {})
+        head = f"GENI {int(max_new)}{keys} {embeddings}" if embeddings else f"GEN {int(max_new)}{keys}"
+        engine.write_line(f"{head} id={rid} {','.join(str(int(t)) for t in ids)}")
+
+    @staticmethod
+    def _mine(line: str, rid: int) -> bool:
+        _, _, suffix = line.rpartition(" id=")
+        return not suffix or suffix == str(rid)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.parked or self._closed:
+            raise StopIteration
+        while True:
+            try:
+                line = self.engine.lines.get(timeout=10)
+            except queue.Empty:
+                return None                       # heartbeat: the consumer checks `cancel` and keeps reading
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.engine.exit_code()})")
+            if not self._mine(line, self.rid):
+                continue                          # not this request's line (see the class comment)
+            if line.startswith("T "):
+                return int(line[2:].split(" id=")[0])
+            if line.startswith("PP "):
+                f = line.split()
+                if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+                    self.engine.progress = (int(f[1]), int(f[2]))
+                    self.engine.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                return None
+            if line.startswith("SUSPENDED"):
+                f = line.split(" id=")[0].split()
+                self.parked = True
+                return Parked(int(f[1]), int(f[2]))
+            if line.startswith("DONE"):
+                self.engine._parse_done(line.split(" id=")[0])
+                self._closed = True
+                raise StopIteration
+            if line.startswith("ERR"):
+                self._closed = True
+                raise ValueError(line[4:].strip())
+            # RESUME echoes and anything unknown: not a token, keep reading
+
+    def resume(self):
+        """Continue the parked prompt (the caller holds the FIFO again)."""
+        self.parked = False
+        self.engine.write_line(f"RESUME id={self.rid}")
+
+    def cancel_parked(self):
+        """Drop the engine's parked snapshot (the caller holds the FIFO); consumes the DONE cancel that answers."""
+        if not self.parked:
+            return
+        self.parked = False
+        self.engine.write_line(f"CANCEL id={self.rid}")
+        self.drain()
+
+    def drain(self):
+        """Consume lines until this request's DONE (STOP's drain, a cancel's answer).  A dead engine or an ERR
+        ends the drain quietly: the caller is already unwinding with the real error."""
+        while True:
+            line = self.engine.lines.get()
+            if line is None or line.startswith("ERR"):
+                self._closed = True
+                return
+            if not self._mine(line, self.rid):
+                continue
+            if line.startswith("DONE"):
+                self.engine._parse_done(line.split(" id=")[0])
+                self._closed = True
+                return
+
+    def close(self):
+        """The consumer stopped early (stop token, cancel): STOP the engine and drain to THIS request's DONE."""
+        if self.parked or self._closed:
+            return
+        self._closed = True
+        if self.engine.can_stop:
+            try:
+                self.engine.write_line("STOP")
+            except EngineDied:
+                return
+        self.drain()
 
 
 class Vision:
@@ -945,7 +1140,7 @@ class Detokenizer:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, preempt: bool = False):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -976,7 +1171,8 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+                       "drafts_offered": 0, "drafts_accepted": 0,   # #457: the MTP drafts, summed where reported
+                       "prefill_preemptions": 0, "prefill_resumes": 0, "max_queue_wait_ms": 0.0}
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -992,6 +1188,11 @@ class Service:
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
+        # --prefill-preempt: long prefills park at chunk boundaries for queued requests (docs/PREFILL-PREEMPT.md).
+        # The engine must offer it (INFO preempt=1); a layer split is refused engine-side, and image requests
+        # never park - they just never get an id.
+        self.preempt = bool(preempt) and bool(getattr(engine, "can_preempt", False))
+        self.preempt_rid = iter(range(1, 1 << 62))       # engine-side request ids (SUSPENDED/RESUME demux)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -1434,6 +1635,9 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        if self.preempt and not getattr(self.embeddings, "path", None) and hasattr(self.engine, "open_request"):
+            yield from self.run_preemptable(ids, thinking, tools, max_new, sampling, cancel)
+            return
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         timings, before = None, None                    # this request's timings; the engine's `last` before it
@@ -1592,7 +1796,7 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser.state == "reasoning":   # #530
+                            if finish == "length" and parser_state == "reasoning":   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -1604,6 +1808,248 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
+    def _record_done(self, prompt_tokens, n, finish, sampling, raw_ids, before, engine_last0, cancel,
+                     record=None, parser_state=None):
+        """The end-of-request bookkeeping both run paths share: the history entry, the totals, the last timings
+        and the server-window line.  -> this request's timings (None when the engine kept no clock).  `record`
+        gates the history/totals: the plain path keeps its old "only while busy" rule; the preemption path always
+        records, because with an interleaved request the shared busy flag says nothing about who just ended."""
+        timings = None
+        if record is None:
+            record = self.status.get("busy")
+        with self.status_lock:
+            if record:
+                # only this request's DONE counts: same object means no DONE arrived (death, error, disconnect)
+                last = dict(getattr(self.engine, "last", {}) or {}) \
+                    if getattr(self.engine, "last", None) is not engine_last0 else {}
+                started = self.status.get("started", time.time())
+                cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
+                loaded = str(cvec) not in ("0", "", "None")
+                hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                seen = prompt_tokens_seen(prompt_tokens, last)   # #471: < len(ids) when cancelled mid-read
+                self.history.append({
+                    "projection": (sampling or {}).get("experimental_speed_projection") is not False
+                    if loaded else None,
+                    "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                    "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                    # the request's whole prompt, and the tokens read of it (None: an older engine)
+                    "prompt_total": prompt_tokens, "prompt_read": last.get("prompt_read"),
+                    "engine_generated": last.get("generated"),
+                    "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
+                    "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
+                    if n and last.get("generated") and last.get("decode_ms") else None,
+                    "hit_rate": hit_rate, "ram_blobs": last.get("ram_blobs"),
+                    "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
+                    # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                    "drafts_offered": last.get("drafts_offered"),
+                    "drafts_accepted": last.get("drafts_accepted")})
+                t = self.totals
+                t["requests"] += 1
+                t["prompt_tokens"] += seen
+                t["reused"] += last.get("reused") or 0
+                t["output_tokens"] += n
+                t["prompt_ms"] += last.get("prompt_ms") or 0.0
+                t["decode_ms"] += last.get("decode_ms") or 0.0
+                t["drafts_offered"] += last.get("drafts_offered") or 0
+                t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                fresh = getattr(self.engine, "last", None)
+                if fresh is not None and fresh is not before:      # the engine's clock for THIS request
+                    timings = request_timings(seen, n, last)
+                    self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                self.last_request_at = time.time()
+                now = time.time()
+                el = now - self.status.get("started", now)
+                ft = self.status.get("first_token")
+                rate = n / max(1e-6, now - ft) if ft else 0.0
+                hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
+                parked_msg = f", {self.totals['prefill_preemptions']} preempted so far" \
+                    if self.totals["prefill_preemptions"] else ""
+                print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                      f"({finish}, cancel={cancel.is_set()}){hit_msg}{parked_msg}", flush=True)
+                if finish == "length" and parser_state == "reasoning":   # #530
+                    print("[strata] the reply reached max tokens while still thinking, so it has no "
+                          "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
+                          "strata-<model>.json for every request) leaves room to answer", flush=True)
+                if os.environ.get("STRATA_DEBUG") and raw_ids:
+                    print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
+            self.status["busy"] = False
+            self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
+            self.status.pop("tool", None)
+            self.status.pop("parked", None)
+        return timings
+
+    def run_preemptable(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
+        """run() when --prefill-preempt is on: the FIFO gives this request the engine for one OWNERSHIP PERIOD -
+        GEN to SUSPENDED, RESUME to the next SUSPENDED, or to DONE - and the queued request holds it between
+        periods.  That is what a park is for.  Only the lock's scope differs from run(): the token loop, the
+        parser and the finish bookkeeping are the same, and still exactly one thread talks to the engine."""
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        detok, n, finish = Detokenizer(self.tok), 0, "length"
+        timings, before = None, None                    # this request's timings; the engine's `last` before it
+        raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
+        engine_last0 = getattr(self.engine, "last", None)
+        rid = next(self.preempt_rid)
+        req = None
+        enqueued_at = time.time()
+        with self.status_lock:
+            self.status["queued"] += 1
+        first = True
+        try:
+            while True:
+                if req is not None and req.parked and cancel.is_set():
+                    # the client is gone while this request is parked: drop the engine-side snapshot instead of
+                    # resuming it (bounded wait - the interim request releases the lock when it is done)
+                    if self.fifo.acquire(timeout=900):
+                        try:
+                            req.cancel_parked()
+                        except (EngineDied, ValueError):
+                            pass
+                        finally:
+                            self.fifo.release()
+                    with self.status_lock:
+                        self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
+                    finish = "cancel"
+                    break
+                with self.fifo:
+                    with self.status_lock:
+                        if first:
+                            self.status["queued"] -= 1
+                            first = False
+                            wait_ms = (time.time() - enqueued_at) * 1000.0
+                            self.totals["max_queue_wait_ms"] = max(self.totals["max_queue_wait_ms"], wait_ms)
+                    if hasattr(self.engine, "alive") and not self.engine.alive():
+                        # issue #27: it died in an earlier request - start it again instead of failing every
+                        # request.  A parked request's snapshot died with the old process: it fails cleanly
+                        # below (the new engine answers RESUME with ERR no parked request).
+                        code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
+                        print(f"[strata] the engine had stopped (exit code {code}); starting it again "
+                              "(a minute or two) ...", flush=True)
+                        self.engine.restart()
+                        print("[strata] the engine is running again", flush=True)
+                        if req is not None and req.parked:
+                            raise ValueError("the engine died while this request was parked; its prompt "
+                                             "snapshot is gone and it cannot be resumed")
+                        req = None
+                    now = time.time()
+                    with self.status_lock:
+                        if req is None:
+                            self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                                               generated=0, started=now, first_token=None, tool=None, tail="",
+                                               max_tokens=max_new, parked=False)
+                            self.last_request_at = now
+                            self.rate.clear()           # the previous request's samples must not leak into this one
+                        else:
+                            # tail/tool may have been cleaned by the interim request's end (they are per-answer)
+                            self.status.update(parked=False, phase="reading the prompt (resumed)", tail="",
+                                               tool=None,
+                                               parked_requests=max(0, self.status.get("parked_requests", 0) - 1))
+                    if req is None:
+                        before = getattr(self.engine, "last", None)
+                        req = self.engine.open_request(ids, max_new, sampling, rid)
+                    else:
+                        req.resume()
+                        with self.status_lock:
+                            self.totals["prefill_resumes"] += 1
+                    last_print = time.time()
+                    parked = False
+                    try:
+                        for t in req:
+                            if isinstance(t, Parked):
+                                with self.status_lock:
+                                    queued = self.status.get("queued", 0)
+                                if not cancel.is_set() and queued < 1:
+                                    # the request that made us offer the yield is gone (a cancel): nobody wants
+                                    # the engine - take it straight back instead of releasing the lock for nobody
+                                    req.resume()
+                                    with self.status_lock:
+                                        self.status["phase"] = "reading the prompt (yield withdrawn)"
+                                    continue
+                                parked = True
+                                with self.status_lock:
+                                    self.status["parked"] = True
+                                    self.status["parked_requests"] = self.status.get("parked_requests", 0) + 1
+                                    self.status["phase"] = f"parked at {t.pos} of {t.total} prompt tokens"
+                                    self.totals["prefill_preemptions"] += 1
+                                print(f"[strata] parked after {t.pos} of {t.total} prompt tokens - the queued "
+                                      "request runs first", flush=True)
+                                break
+                            if t is None:                   # a heartbeat: PP lines during the prompt read
+                                # the engine cannot see this server's queue: while a request is waiting and we
+                                # are still reading the prompt, tell the engine to offer its next boundary
+                                # (YIELD is a flag like STOP; it acts at a chunk end or never)
+                                if self.status.get("first_token") is None and not cancel.is_set():
+                                    with self.status_lock:
+                                        waiting = self.status.get("queued", 0)
+                                    if waiting > 0:
+                                        self.engine.write_line("YIELD")
+                                last_print = self._progress(last_print)
+                                yield "ping", None
+                                continue
+                            n += 1
+                            if cancel.is_set():
+                                finish = "cancel"
+                                break
+                            if t in self.stop_ids:
+                                finish = "stop"
+                                raw_ids.append(t)
+                                break
+                            raw_ids.append(t)
+                            evs = parser.feed(detok.push(t))
+                            self._note(n, evs)
+                            last_print = self._progress(last_print)
+                            for ev in evs:
+                                yield "event", ev
+                        if cancel.is_set() and not parked:
+                            finish = "cancel"
+                    except EngineDied as e:
+                        finish = "error"
+                        note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
+                        print(f"[strata] {e}. {note} The next request starts the engine again."
+                              f"{' Its log: ' + self.engine.log_path if getattr(self.engine, 'log_path', None) else ''}",
+                              flush=True)
+                        raise
+                    except ValueError as e:                 # the engine's ERR line (it may have ended after it)
+                        finish = "error"
+                        print(f"[strata] the engine reported an error: {e}", flush=True)
+                        raise
+                    finally:
+                        req.close()                         # STOP + drain when we broke out early; a no-op once
+                        #                                     DONE was consumed - still holding the fifo, so
+                        #                                     the shared engine queue is never left mid-drain
+                    if not parked:
+                        break       # DONE: the lock ends here; a parked request continues below, outside it
+                if not parked:
+                    break               # DONE: the request is over
+                # Parked, and the lock is RELEASED.  Do not knock on it again before the queued request has had its
+                # turn: it is still counted in `queued` until ITS period starts, so wait for the queue to drain -
+                # outside the lock, with keep-alives for the client's watchdog.
+                last_ping = time.time()
+                while not cancel.is_set():
+                    with self.status_lock:
+                        waiting = self.status.get("queued", 0)
+                    if waiting < 1:
+                        break
+                    if time.time() - last_ping >= 2.0:
+                        last_ping = time.time()
+                        yield "ping", None
+                    time.sleep(0.02)
+        except GeneratorExit:                           # the client disconnected mid-stream
+            finish = "disconnect"
+            raise
+        finally:
+            if req is not None and req.parked:
+                # disconnected while parked (the GeneratorExit landed at a keep-alive): drop the snapshot
+                if self.fifo.acquire(timeout=900):
+                    try:
+                        req.cancel_parked()
+                    except (EngineDied, ValueError):
+                        pass
+                    finally:
+                        self.fifo.release()
+                with self.status_lock:
+                    self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
+            timings = self._record_done(len(ids), n, finish, sampling, raw_ids, before, engine_last0, cancel,
+                                        record=True, parser_state=parser.state)
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
@@ -2847,6 +3293,10 @@ def main() -> int:
     ap.add_argument("--fit-max-tokens", action="store_true",
                     help="clamp max_tokens to the remaining context instead of rejecting the request "
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
+    ap.add_argument("--prefill-preempt", action="store_true",
+                    help="a long prompt parks at a chunk boundary while another request is queued, and resumes "
+                         "when the engine is free again (the engine needs --prefill-preempt too; one GPU; "
+                         "docs/PREFILL-PREEMPT.md)")
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
@@ -2934,16 +3384,26 @@ def main() -> int:
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's
     tpl = tpath / "chat_template.jinja"
+    preempt = bool(a.prefill_preempt)
+    if preempt and len(gpu_list(cfg)) > 1:
+        print("[strata] prefill preemption disabled: layer split unsupported", flush=True)
+        preempt = False
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True, preempt=preempt)
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:
         raise SystemExit(f"[strata] config {e}")
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
+    if a.prefill_preempt and svc.preempt:
+        print("[strata] prefill preemption on: a long prompt parks at a chunk boundary while another request "
+              "waits", flush=True)
+    elif a.prefill_preempt:
+        print("[strata] prefill preemption requested but the engine does not offer it (start the engine with "
+              "--prefill-preempt; INFO preempt=1 is missing)", flush=True)
     if ("STRATA_API_KEY" in os.environ and not os.environ["STRATA_API_KEY"].strip()) or             any(x == "--api-key" and i + 1 < len(sys.argv) and not sys.argv[i + 1].strip() or x.strip() == "--api-key="
                 for i, x in enumerate(sys.argv)):
         # #213: an empty key would switch authentication off without a word
