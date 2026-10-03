@@ -3192,7 +3192,9 @@ def main() -> int:
     else:
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
-            say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else ""))
+            nvidia_only = hip and any(m.get("budget") and f in m["families"] for m in MODELS.values())   # #429
+            say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
+                + ("   [NVIDIA only so far]" if nvidia_only else ""))
         family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)], "1", a.yes)) - 1]
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
@@ -3232,8 +3234,10 @@ def main() -> int:
             # Q4_K / Q5_K experts (STRATA_MMQ_KQUANTS is CUDA-only) and it has not been run on AMD: asked, not refused
             confirm_risk(f"{model} has not been run on AMD cards yet: its prompt kernels are NVIDIA-only, so on "
                          f"{gpu_name(gpu)} long prompts read much more slowly, and it may not work at all",
-                         bool(a.model), a.yes, f"{model} is NVIDIA-only so far", "choose one of the 2-3-bit models, "
-                         f"or --model {model} --yes to try it on AMD anyway", "  Try it anyway?")
+                         bool(a.model), a.yes, f"{model} is NVIDIA-only so far",
+                         ("run setup without --backend hip to use the NVIDIA card, " if nv_ok else "") +
+                         f"choose one of the 2-3-bit models, or --model {model} --yes to try it on AMD anyway",
+                         "  Try it anyway?")
             warn(f"installing {model} on an AMD card, as you chose (please report how it runs)")
         if ram < MODELS[model]["ram_gb"]:
             confirm_risk(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB: "

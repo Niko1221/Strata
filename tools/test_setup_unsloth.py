@@ -139,7 +139,7 @@ class Main(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0):
+    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, family=True):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": "local"}))
@@ -178,7 +178,8 @@ class Main(unittest.TestCase):
             mock.patch.object(setup, "saved_calibration", lambda cfg: None),
             mock.patch.object(setup, "start", mock.Mock(side_effect=AssertionError("started"))),
             mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),
-            mock.patch.object(sys, "argv", ["setup.py", "--family", "unsloth", *(["--model", M] if model else []),
+            mock.patch.object(sys, "argv", ["setup.py", *(["--family", "unsloth"] if family else []),
+                                            *(["--model", M] if model else []),
                                             "--yes", "--no-start",
                                             "--models-dir", str(self.t / "models"), *argv]),
             mock.patch("builtins.input", mock.Mock(side_effect=AssertionError("asked"))),
@@ -355,6 +356,27 @@ class Main(unittest.TestCase):
         self.assertIn("--gpus 0,1 shares it", out)
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--resident-budget-gib", cfg["args"])
+
+    def test_mixed_pc_with_hip_points_to_the_nvidia_card(self):
+        """#429: NVIDIA and AMD cards with --backend hip: the stop before the download names the NVIDIA card."""
+        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
+                  "driver": "amdgpu"}]
+        code, out, cfg = self.main(["--context", "8192", "--backend", "hip"], model=False, amd=r9700)
+        self.assertEqual(code, 1, out)
+        self.assertIn("run setup without --backend hip to use the NVIDIA card", out)
+        self.assertEqual(self.downloads, [])
+
+    def test_menu_marks_it_nvidia_only_on_hip(self):
+        """#429: on an AMD-only PC (the HIP backend chosen by itself) the model menu marks the Unsloth family."""
+        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
+                  "driver": "amdgpu"}]
+        # free=1.0: it stops at the disk check, after the menus and before any engine or model download
+        code, out, cfg = self.main(["--context", "8192"], model=False, family=False, n_gpus=0, amd=r9700, free=1.0)
+        self.assertIn("not enough free disk space", out)
+        self.assertRegex(out, r"\(Unsloth\).*\[NVIDIA only so far\]")
+        self.assertEqual(out.count("[NVIDIA only so far]"), 1, out)
+        code, out, cfg = self.main(["--context", "8192"], model=False, family=False)    # NVIDIA: no mark
+        self.assertNotIn("[NVIDIA only", out)
 
 
 class LayerSplit(unittest.TestCase):
