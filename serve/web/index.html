@@ -28,6 +28,23 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
   <span class="st-header__spacer"></span>
+  <div class="model-controls" id="model-controls" hidden>
+    <label class="model-selector">
+      <span>Type</span><select id="model-family-select" aria-label="Model type" disabled>
+        <option value="native">Strata models</option><option value="additional">Additional models</option>
+      </select>
+    </label>
+    <label class="model-selector" id="model-selector" hidden>
+      <span>Strata model</span>
+      <select id="model-select" aria-label="Strata model" disabled></select>
+      <span id="model-switch-status" role="status" aria-live="polite"></span>
+    </label>
+    <div class="model-selector" id="provider-selector" hidden>
+      <label for="provider-select">Additional model</label><select id="provider-select" aria-label="Additional model" disabled></select>
+      <button class="st-btn st-btn--secondary" type="button" id="provider-add">Add</button>
+    </div>
+    <span id="provider-switch-status" role="status" aria-live="polite"></span>
+  </div>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
@@ -37,8 +54,35 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+    <aside class="chat-history" id="chat-history" aria-label="Chat history">
+      <div class="history-head"><span class="card-title">Chat history</span>
+        <button class="st-btn st-btn--icon" id="history-close" aria-label="Close history">
+          <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
+      <button class="st-btn st-btn--secondary" id="history-new" type="button">
+        <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-new-chat"/></svg>New chat</button>
+      <input class="st-input" id="history-search" type="search" placeholder="Search history" aria-label="Search history">
+      <nav class="history-list" id="history-list" aria-label="Saved chats"></nav>
+      <button class="st-btn st-btn--secondary" id="history-more" type="button" hidden>Show more chats</button>
+      <p class="small msg-error" id="history-save-status" role="status" hidden>Changes are not saved. Export any conversation you need to keep.</p>
+      <div class="history-backup">
+        <button class="st-btn st-btn--secondary" id="history-export" type="button">Export history</button>
+        <button class="st-btn st-btn--secondary" id="history-import" type="button">Import</button>
+        <input type="file" id="history-file" accept=".json,.gz,application/json,application/gzip" hidden>
+      </div>
+      <p class="muted small history-note">Chats are compressed on this PC. Only the open chat is loaded.</p>
+      <p class="muted small history-note" id="history-storage" role="status"></p>
+      <button class="st-btn st-btn--secondary" id="history-retry" type="button" hidden>Retry loading history</button>
+    </aside>
+    <button class="history-scrim" id="history-scrim" aria-label="Close history and return to chat" hidden></button>
+    <div class="chat-main">
+      <div class="chat-toolbar">
+        <button class="st-btn st-btn--secondary" id="history-btn" aria-controls="chat-history" aria-expanded="true">
+          <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>History</button>
+        <span id="chat-title">New chat</span>
+      </div>
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat" id="chat">
+        <button class="st-btn st-btn--secondary chat-older" id="chat-older" type="button" hidden>Show earlier messages</button>
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
           <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
@@ -46,6 +90,24 @@
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="chat-context" aria-label="Conversation context">
+        <span id="context-status" role="status" aria-live="polite">Checking token count…</span>
+        <button type="button" class="st-btn st-btn--secondary" id="compact-btn" disabled
+                title="Summarize earlier messages while keeping the original history.">Compact conversation</button>
+      </div>
+      <details class="chat-memory" id="chat-memory" hidden>
+        <summary id="memory-label">View summary</summary>
+        <p class="muted small">Continue with this summary and recent messages. Summaries may omit details. The original messages remain in the history above.</p>
+        <pre id="memory-text"></pre>
+      </details>
+      <div class="history-recall-row">
+        <label><input type="checkbox" id="history-recall">Reference past chats</label>
+        <span class="muted small">Use only excerpts related to your question</span>
+      </div>
+      <details class="chat-memory" id="history-references" hidden>
+        <summary id="history-references-label">Referenced past conversations</summary>
+        <div id="history-references-list"></div>
+      </details>
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
@@ -53,7 +115,7 @@
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
             <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
           <input type="file" id="file" multiple hidden>
-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat · Previous conversations remain in history" aria-label="New chat">
             <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
@@ -67,6 +129,7 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
         </div>
       </form>
+    </div>
     </div>
   </section>
 
@@ -137,6 +200,21 @@
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
+      <div class="st-card" id="provider-card">
+        <span class="card-title">Add a model connection</span>
+        <p class="muted small">Connect to Ollama or a compatible engine on this PC. Enter the model ID used by that server.</p>
+        <form id="provider-form" class="provider-form">
+          <div class="st-field"><label class="st-label" for="provider-preset">Connection type</label>
+            <select class="st-input" id="provider-preset"><option value="ollama">Qwen and others (Ollama)</option><option value="bonsai">Bonsai 2</option><option value="custom">Other compatible server</option></select></div>
+          <div class="st-field"><label class="st-label" for="provider-name">Display name</label><input class="st-input" id="provider-name" value="Qwen / Ollama" required maxlength="100"></div>
+          <div class="st-field"><label class="st-label" for="provider-url">Server URL</label><input class="st-input" id="provider-url" value="http://127.0.0.1:11434/v1" required type="url"></div>
+          <div class="st-field"><label class="st-label" for="provider-model">Model ID</label><input class="st-input" id="provider-model" value="qwen3.5:4b" list="provider-model-list" required maxlength="200"><datalist id="provider-model-list"></datalist></div>
+          <div class="st-field"><label class="st-label" for="provider-context">Context length (within the model's supported limit)</label><input class="st-input" id="provider-context" type="number" min="2048" max="2097152" value="32768" step="1" required></div>
+          <label class="provider-image-option"><input id="provider-images" type="checkbox">Model supports images</label>
+          <div class="provider-actions"><button class="st-btn st-btn--secondary" type="button" id="provider-discover">List models</button><button class="st-btn st-btn--primary" type="submit">Save and use</button></div>
+          <p class="muted small" id="provider-result" role="status" aria-live="polite"></p>
+        </form>
+      </div>
       <div class="st-card">
         <span class="card-title">Model and engine</span>
         <dl class="facts" id="facts-engine"></dl>
@@ -147,18 +225,20 @@
       </div>
       <div class="st-card">
         <span class="card-title">Connect your tools</span>
-        <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
+        <p class="muted" id="api-protocol-note">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
       </div>
       <div class="st-card">
         <span class="card-title">Settings</span>
-        <div class="st-field">
+        <div class="st-field" id="api-key-field">
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+          <button class="st-btn" id="api-key-save" type="button">Save API key</button>
         </div>
+        <p class="muted small" id="desktop-key-note" hidden>The desktop app manages the connection key. No key entry is needed here.</p>
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
-        <p class="muted small">Chats, settings and the key are kept in this browser only.
+        <p class="muted small"><span id="settings-storage-note">Chats are compressed on this PC. Settings and the API key are saved in this browser.</span>
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
       </div>
     </div>
@@ -217,7 +297,18 @@
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>
+<dialog class="history-source" id="history-source" aria-labelledby="history-source-title">
+  <div class="history-source-head"><strong id="history-source-title">Source conversation</strong>
+    <button class="st-btn st-btn--secondary" id="history-source-close" type="button">Close</button></div>
+  <p class="muted small">Only the referenced messages are loaded.</p>
+  <div id="history-source-body"></div>
+</dialog>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
+<script src="web/context.js"></script>
+<script src="web/history.js"></script>
+<script src="web/disk_history.js"></script>
 <script src="web/app.js"></script>
+<script src="web/models.js"></script>
+<script src="web/providers.js"></script>
 </body>
 </html>
