@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,6 +12,11 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 using namespace strata::core;
 namespace fs = std::filesystem;
@@ -111,11 +117,21 @@ void spit(const fs::path& p, const std::vector<char>& d) {
     f.write(d.data(), (std::streamsize) d.size());
 }
 
-bool rejects(const fs::path& p, const SessionFileIdentity& id, const char* expect = nullptr) {
+// no temporary file (any leftover of a write) in the directory
+bool no_temp(const fs::path& dir) {
+    for (const auto& e : fs::directory_iterator(dir)) {
+        const std::string n = e.path().filename().string();
+        if (n.size() > 4 && n.compare(n.size() - 4, 4, ".tmp") == 0 && n != "planted.bin.tmp") return false;
+    }
+    return true;
+}
+
+bool rejects(const fs::path& p, const SessionFileIdentity& id, const char* expect = nullptr,
+             const SessionReadLimits& limits = {}) {
     SavedConversation out;
     size_t bytes = 0;
     std::string error;
-    const bool ok = session_file_read(p.string(), id, out, bytes, error);
+    const bool ok = session_file_read(p.string(), id, out, bytes, error, limits);
     if (!ok && expect && error.find(expect) == std::string::npos) {
         std::fprintf(stderr, "  unexpected error text: %s (wanted %s)\n", error.c_str(), expect);
         return false;
@@ -138,7 +154,7 @@ int main() {
     check(session_file_write(good.string(), original, id, written, error), "write succeeds");
     check(error.empty(), "write leaves no error");
     check(written == fs::file_size(good), "write reports the file size");
-    check(!fs::exists(dir / "good.bin.tmp"), "no temporary left behind");
+    check(no_temp(dir), "no temporary left behind");
     {
         SavedConversation back;
         size_t read = 0;
@@ -158,7 +174,7 @@ int main() {
         spit(over, std::vector<char>(100, 'o'));
         check(session_file_write(over.string(), original, id, written, error), "write over an existing file");
         check(slurp(over) == slurp(good), "existing file replaced by the session");
-        check(!fs::exists(dir / "over.bin.tmp"), "no temporary left behind after replace");
+        check(no_temp(dir), "no temporary left behind after replace");
     }
     // buffered I/O (the path taken where direct I/O is refused or unavailable) writes and reads the same bytes
     {
@@ -168,7 +184,7 @@ int main() {
         check(slurp(p) == slurp(good), "buffered write equals the default write");
         SavedConversation back;
         size_t read = 0;
-        check(session_file_read(good.string(), id, back, read, error) && same(original, back), "buffered read");
+        check(session_file_read(p.string(), id, back, read, error) && same(original, back), "buffered read");
         set_env("STRATA_SESSION_BUFFERED", nullptr);
     }
 
@@ -230,7 +246,7 @@ int main() {
         split.live.stage_parts.push_back(checkpoint(1, 9));
         const fs::path p = dir / "split.bin";
         check(!session_file_write(p.string(), split, id, written, error), "layer-split image refused");
-        check(!fs::exists(p) && !fs::exists(dir / "split.bin.tmp"), "refused write leaves no file");
+        check(!fs::exists(p) && no_temp(dir), "refused write leaves no file");
     }
     // a write into a missing directory fails cleanly
     check(!session_file_write((dir / "nope" / "x.bin").string(), original, id, written, error),
@@ -248,13 +264,27 @@ int main() {
         const fs::path m1 = dir / "m1.bin", m2 = dir / "m2.bin";
         spit(m1, std::vector<char>(3u << 20, 'a'));
         spit(m2, std::vector<char>(100, 'b'));
-        uint64_t f1 = 0, f2 = 0, f3 = 0, f4 = 0;
-        check(session_model_fingerprint({m1.string(), m2.string()}, f1, error), "fingerprint ok");
-        check(session_model_fingerprint({m1.string()}, f2, error), "fingerprint subset ok");
+        uint64_t f1 = 0, f2 = 0, f3 = 0, f4 = 0, f5 = 0, f6 = 0, f7 = 0, f8 = 0;
+        const std::vector<SessionModelFile> both = {{"a", m1.string()}, {"b", m2.string()}};
+        check(session_model_fingerprint(both, f1, error), "fingerprint ok");
+        check(session_model_fingerprint({{"a", m1.string()}}, f2, error), "fingerprint subset ok");
+        check(session_model_fingerprint({{"b", m1.string()}, {"a", m2.string()}}, f5, error), "fingerprint roles ok");
+        check(f1 != f5, "fingerprint follows the role each file plays");
+        // a moved folder: same roles, same bytes, other paths
+        const fs::path moved = dir / "moved";
+        fs::create_directories(moved);
+        fs::copy_file(m1, moved / "m1.bin"); fs::copy_file(m2, moved / "m2.bin");
+        check(session_model_fingerprint({{"a", (moved / "m1.bin").string()}, {"b", (moved / "m2.bin").string()}}, f6,
+                                        error) && f6 == f1, "fingerprint does not follow the folder");
+        // an optional input that is absent is recorded, not an error; a present one changes the fingerprint
+        check(session_model_fingerprint({{"a", m1.string()}, {"b", m2.string()}, {"c", (dir / "nothere").string(), true}},
+                                        f7, error), "absent optional input ok");
+        check(session_model_fingerprint({{"a", m1.string()}, {"b", m2.string()}, {"c", m2.string(), true}}, f8, error) &&
+              f7 != f8 && f7 != f1, "optional input presence enters the fingerprint");
         auto d = slurp(m1); d[10] = 'z'; spit(m1, d);
-        check(session_model_fingerprint({m1.string(), m2.string()}, f3, error), "fingerprint after edit ok");
+        check(session_model_fingerprint(both, f3, error), "fingerprint after edit ok");
         check(f1 != f2 && f1 != f3, "fingerprint follows files and content");
-        check(!session_model_fingerprint({(dir / "absent").string()}, f4, error), "fingerprint of a missing file fails");
+        check(!session_model_fingerprint({{"x", (dir / "absent").string()}}, f4, error), "fingerprint of a missing file fails");
     }
 
     // only the deepest checkpoint is worth a disk write: the next turn resumes from it
@@ -291,11 +321,127 @@ int main() {
         broken[1].read = [](size_t, size_t, void*, size_t) { return false; };
         const fs::path q = dir / "broken.bin";
         check(!session_file_write(q.string(), meta, broken, id, written, error), "failing source fails the write");
-        check(!fs::exists(q) && !fs::exists(dir / "broken.bin.tmp"), "failed streamed write leaves no file");
+        check(!fs::exists(q) && no_temp(dir), "failed streamed write leaves no file");
         // K/V in the image and as sources at once is ambiguous: refused
         check(!session_file_write((dir / "both.bin").string(), original, sources, id, written, error),
               "image K/V plus sources refused");
     }
+
+    // the configuration fingerprint: every field counts, doubles by their exact bits
+    {
+        SessionConfig c;
+        c.engine_version = "0.1.38"; c.backend = "cuda"; c.kv = "int8"; c.max_context = 65536; c.kv_resident = 0;
+        c.mtp_window = 4; c.rope.type = 0; c.rope.freq_base = 1e7; c.rope.factor = 1.0; c.rope.freq_scale = 1.0;
+        c.rope.orig_ctx = 262144; c.rope.attn_factor = 1.0; c.rope.beta_fast = 32; c.rope.beta_slow = 1;
+        c.switches = {{"STRATA_FAST_GDN", 0}};
+        const uint64_t base = session_config_fingerprint(c);
+        check(session_config_fingerprint(c) == base, "config fingerprint is deterministic");
+        auto differs = [&](auto edit) { SessionConfig d = c; edit(d); return session_config_fingerprint(d) != base; };
+        check(differs([](SessionConfig& d) { d.engine_version = "0.1.39"; }), "engine version enters the config");
+        check(differs([](SessionConfig& d) { d.backend = "hip"; }), "backend enters the config");
+        check(differs([](SessionConfig& d) { d.kv = "fp16"; }), "kv enters the config");
+        check(differs([](SessionConfig& d) { d.max_context = 65537; }), "max context enters the config");
+        check(differs([](SessionConfig& d) { d.kv_resident = 1; }), "kv residency enters the config");
+        check(differs([](SessionConfig& d) { d.mtp_window = 0; }), "mtp window enters the config");
+        check(differs([](SessionConfig& d) { d.kv_rot = true; }), "kv rotation enters the config");
+        check(differs([](SessionConfig& d) { d.rope.factor = std::nextafter(1.0, 2.0); }),
+              "a one-ulp rope change enters the config");
+        check(differs([](SessionConfig& d) { d.rope.type = 2; }), "rope type enters the config");
+        check(differs([](SessionConfig& d) { d.rope.beta_slow = 2; }), "rope beta enters the config");
+        check(differs([](SessionConfig& d) { d.cvec = 7; }), "control vectors enter the config");
+        check(differs([](SessionConfig& d) { d.switches[0].second = 1; }), "a switch value enters the config");
+        check(differs([](SessionConfig& d) { d.switches.push_back({"X", 0}); }), "the switch list enters the config");
+        // field boundaries: ("ab","c") and ("a","bc") hash differently
+        SessionIdentityBuilder x(1), y(1);
+        x.str("ab", "c"); y.str("a", "bc");
+        check(x.digest() != y.digest(), "identity fields are length-delimited");
+        SessionIdentityBuilder i(1), u(1);
+        i.i64("n", 5); u.u64("n", 5);
+        check(i.digest() != u.digest(), "identity fields are typed");
+    }
+    // bounds a read checks before it allocates, and the caller's admission
+    {
+        SessionReadLimits l;
+        l.max_tokens = 999;   // the live state holds 1000
+        check(rejects(good, id, "limit", l), "token count over the limit refused");
+        l = {}; l.max_checkpoints = 1;
+        check(rejects(good, id, "limit", l), "checkpoint count over the limit refused");
+        l = {}; l.max_kv_layers = 2;
+        check(rejects(good, id, "limit", l), "K/V layer count over the limit refused");
+        l = {}; l.max_file_bytes = image.size() - 1;
+        check(rejects(good, id, "limit", l), "file over the size limit refused");
+        l = {};
+        uint64_t asked = 0;
+        l.admit = [&](uint64_t n, std::string& why) { asked = n; why = "no room for it"; return false; };
+        check(rejects(good, id, "no room", l) && asked == image.size(), "admission sees the file size and can refuse");
+        l = {};
+        bool admitted = false;
+        l.admit = [&](uint64_t, std::string&) { admitted = true; return true; };
+        check(rejects(good, {id.model ^ 1, id.config}, "model", l) && !admitted,
+              "admission is not asked for a foreign file");
+        SavedConversation back;
+        size_t n = 0;
+        check(session_file_read(good.string(), id, back, n, error, l) && admitted && same(back, original),
+              "admitted file reads");
+    }
+    // free-space reserve: an impossible reserve refuses the write and leaves the existing file untouched
+    {
+        const fs::path p = dir / "reserve.bin";
+        spit(p, std::vector<char>(10, 'r'));
+        SessionWriteOptions opt;
+        opt.min_free_bytes = UINT64_MAX / 2;
+        check(!session_file_write(p.string(), original, id, written, error, opt) &&
+              error.find("disk space") != std::string::npos, "write over the free-space reserve refused");
+        check(slurp(p) == std::vector<char>(10, 'r') && no_temp(dir), "refused write keeps the old file, no temporary");
+        opt.min_free_bytes = 1;
+        uint64_t calls = 0;
+        opt.progress = [&](uint64_t, uint64_t) { ++calls; };
+        check(session_file_write(p.string(), original, id, written, error, opt) && slurp(p) == image,
+              "write with a small reserve succeeds");
+    }
+    // a failed write over an existing session keeps it, and touches no other file (a planted name of the old
+    // fixed temporary pattern included)
+    {
+        const fs::path p = dir / "keep.bin", planted = dir / "planted.bin.tmp";
+        check(session_file_write(p.string(), original, id, written, error), "keep: first write");
+        spit(planted, std::vector<char>(5, 'p'));
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> broken(1);
+        broken[0].sizes = {100, 0, 0, 0, 0};
+        broken[0].read = [](size_t, size_t, void*, size_t) { return false; };
+        check(!session_file_write(p.string(), meta, broken, id, written, error), "keep: failing write fails");
+        check(slurp(p) == image, "keep: the previous session survives a failed write");
+        check(slurp(planted) == std::vector<char>(5, 'p') && no_temp(dir), "keep: no other file touched");
+    }
+#ifndef _WIN32
+    // what restore will not open: a symbolic link, a hard-linked file, a FIFO, a directory
+    {
+        const fs::path link = dir / "link.bin";
+        fs::create_symlink(good, link);
+        check(rejects(link, id, "symbolic link"), "a symbolic link is not followed");
+        const fs::path hard = dir / "hard.bin";
+        fs::create_hard_link(dir / "again.bin", hard);
+        check(rejects(hard, id, "hard link"), "a hard-linked file is refused");
+        fs::remove(hard);
+        check(!rejects(dir / "again.bin", id), "the same file with one name again reads");
+        const fs::path fifo = dir / "fifo.bin";
+        check(::mkfifo(fifo.c_str(), 0600) == 0, "mkfifo");
+        check(rejects(fifo, id, "regular"), "a FIFO is refused without blocking");
+        check(rejects(dir / "moved", id, "regular"), "a directory is refused");
+    }
+    // saving over a symbolic link replaces the link, never writes through it; the new file is the owner's only
+    {
+        const fs::path target = dir / "target.bin", link = dir / "out-link.bin";
+        spit(target, std::vector<char>(7, 't'));
+        fs::create_symlink(target, link);
+        check(session_file_write(link.string(), original, id, written, error), "write at a link name");
+        check(!fs::is_symlink(link) && slurp(link) == image, "the link was replaced by the file");
+        check(slurp(target) == std::vector<char>(7, 't'), "the link's target is untouched");
+        struct stat st {};
+        check(::stat(link.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the session file is mode 0600");
+    }
+#endif
 
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);

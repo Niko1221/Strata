@@ -614,21 +614,47 @@ class StrataEngine:
 
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
-        -> {"tokens", "bytes", "ms"}; ValueError with the engine's reason when it refuses the file."""
+        -> {"tokens", "bytes", "ms"}.  ValueError with the engine's reason when it refused the file and the session is
+        as it was; EngineDied when the engine ended (a restore transfer that failed after the device state changed
+        ends it on purpose: FATAL), and EngineSilent (#481) when it printed nothing - no SESSION progress line either -
+        for engine_silence_s."""
+        if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
+            raise ValueError("invalid session command")
         try:
             self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        silence = float(self.silence_s or 0)
+        heard = time.monotonic()
+        want = "SAVED " if action == "save" else "RESTORED "
         while True:
-            line = self.lines.get()
+            left = silence - (time.monotonic() - heard) if silence > 0 else None
+            try:
+                if left is not None and left <= 0:
+                    raise queue.Empty
+                line = self.lines.get(timeout=left)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {silence:.0f} s during a session {action}") from None
             if line is None:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            heard = time.monotonic()
+            if line.startswith("SESSION "):               # a large file moving: progress, also a heartbeat
+                continue
+            if line.startswith("FATAL"):
+                raise EngineDied(line[6:].strip() or "the engine ended during a session restore")
             if line.startswith("ERR"):
                 raise ValueError(line[4:].strip())
-            if line.startswith(("SAVED ", "RESTORED ")):
+            if line.startswith(want):
                 f = line.split()
-                return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+                try:
+                    if len(f) != 4:
+                        raise ValueError
+                    return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+                except ValueError:
+                    raise EngineDied(f"the engine answered a session {action} with {line.strip()!r}") from None
+            if line.startswith(("SAVED ", "RESTORED ", "T ", "DONE")):
+                raise EngineDied(f"the engine answered a session {action} with {line.strip()!r}")
 
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
@@ -960,6 +986,50 @@ class Detokenizer:
         return delta
 
 
+
+# Windows names that open a device whatever their extension or folder (Microsoft, "Naming Files, Paths, and Namespaces")
+_WIN_DEVICES = {"con", "prn", "aux", "nul", "conin$", "conout$", *(f"com{i}" for i in "123456789\u00b9\u00b2\u00b3"),
+                *(f"lpt{i}" for i in "123456789\u00b9\u00b2\u00b3")}
+
+
+def slot_filename_problem(name) -> str | None:
+    """/slots/0 {"filename": NAME}: why NAME is not one plain file name inside the slot save path, on Linux and on
+    Windows alike (None when it is).  No separator or drive (`D:x`), no stream (`a:b`), no device (`NUL.txt`), no
+    trailing dot or space (Windows drops them), no control character, no leading dot (temporary files use it)."""
+    if not isinstance(name, str) or not name:
+        return "must be a non-empty string"
+    if len(name.encode("utf-8", "surrogatepass")) > 200:
+        return "is too long (at most 200 bytes)"
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return "must not contain control characters"
+    if any(c in name for c in '/\\:*?"<>|'):
+        return "must be a plain file name (no / \\ : * ? \" < > |)"
+    if name.startswith("."):
+        return "must not start with a dot"
+    if name.endswith((".", " ")):
+        return "must not end with a dot or a space"
+    if name.split(".")[0].rstrip(" ").lower() in _WIN_DEVICES:
+        return "names a Windows device"
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return "is not valid Unicode"
+    return None
+
+
+def slot_save_dir(value, base: str | None = None) -> str:
+    """The slot save path as one absolute, normalized directory (relative to `base`, else the server's working
+    directory), created private to this user when missing.  ValueError for anything else."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("slot_save_path must be a directory path (a string)")
+    if any(ord(c) < 32 for c in value):
+        raise ValueError("slot_save_path must not contain control characters")
+    path = os.path.abspath(os.path.join(base, value) if base and not os.path.isabs(value) else value)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if not os.path.isdir(path):
+        raise ValueError(f"slot_save_path {path} is not a directory")
+    return path
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -1027,19 +1097,43 @@ class Service:
             return error(400, "this server has one slot: 0")
         if action not in ("save", "restore"):
             return error(400, "action must be save or restore")
-        if (not isinstance(filename, str) or not filename or filename in (".", "..") or "/" in filename
-                or "\\" in filename or any(ord(c) < 32 for c in filename)):
-            return error(400, "filename must be a plain file name inside the slot save path")
+        why = slot_filename_problem(filename)
+        if why:
+            return error(400, f"filename {why}")
         path = os.path.join(self.slot_save_path, filename)
-        if action == "restore" and not os.path.isfile(path):
-            return error(404, f"no saved session named {filename}")
-        with self.fifo:
-            if not self.loaded():
-                return error(503, "the model is not loaded")
+        if action == "restore":
             try:
-                r = self.engine.session_file(action, path)
-            except ValueError as e:
-                return error(400, str(e))
+                os.lstat(path)                              # the engine opens it without following a link
+            except OSError:
+                return error(404, f"no saved session named {filename}")
+        self.last_request_at = time.time()                  # the idle unload counts this as activity
+        with self.status_lock:
+            self.status["queued"] += 1
+        waiting = True
+        try:
+            with self.fifo:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+                waiting = False
+                if not self.loaded():
+                    return error(503, "the model is not loaded")
+                with self.status_lock:
+                    self.status.update(busy=True, phase="saving the session" if action == "save"
+                                       else "restoring a session", started=time.time(), first_token=None,
+                                       prompt_tokens=None, generated=None, max_tokens=None)
+                try:
+                    r = self.engine.session_file(action, path)
+                except ValueError as e:
+                    msg = str(e)
+                    return error(507 if "disk space" in msg else 503 if "RAM" in msg else 400, msg)
+                finally:
+                    with self.status_lock:
+                        self.status["busy"] = False
+                    self.last_request_at = time.time()
+        finally:
+            if waiting:                                     # never reached the FIFO (an exception while waiting)
+                with self.status_lock:
+                    self.status["queued"] -= 1
         if action == "save":
             return 200, {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
                          "timings": {"save_ms": r["ms"]}}
@@ -2332,8 +2426,9 @@ def make_handler(svc: Service):
                     try:
                         code, body = svc.slot_action(path[len("/slots/"):], (query.get("action") or [""])[0],
                                                      req.get("filename"))
-                    except EngineDied as e:
-                        code, body = 500, {"error": {"code": 500, "message": str(e), "type": "server_error"}}
+                    except EngineDied as e:                  # EngineSilent included: the engine was ended
+                        code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
+                                                     "the engine again", "type": "server_error"}}
                     self._json(code, body)
                 elif path == "/v1/chat/completions":
                     self._openai(req)
@@ -3037,10 +3132,16 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
-    svc.slot_save_path = a.slot_save_path or cfg.get("slot_save_path") or None
-    if svc.slot_save_path:
-        os.makedirs(svc.slot_save_path, exist_ok=True)
-        print(f"[strata] slot save/restore on: {svc.slot_save_path}", flush=True)
+    # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
+    # to the config's "cwd" (the engine's folder) when it has one.  Either way the engine gets an absolute path.
+    if a.slot_save_path or cfg.get("slot_save_path"):
+        try:
+            svc.slot_save_path = slot_save_dir(a.slot_save_path) if a.slot_save_path else \
+                slot_save_dir(cfg["slot_save_path"], cfg.get("cwd"))
+        except (ValueError, OSError) as e:
+            raise SystemExit(f"[strata] {e}")
+        print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
+              "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")

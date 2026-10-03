@@ -4,7 +4,12 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <cstdlib>
 #include <limits>
 #include <vector>
@@ -153,7 +158,13 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_snapshot_sources(meta,sources,view,ss,g,draft.state,err),"disk-save sources");
         check(meta.kv.empty() && sources.size()==b.kv.size(),"one source per K/V layer, none captured");
         const SessionFileIdentity id{1,2};
-        const std::string p1="/tmp/strata-snap-src-"+std::to_string(experts)+".bin", p2=p1+".ref";
+        namespace fs=std::filesystem;
+        const fs::path dir=fs::temp_directory_path()/("strata-snap-test-"+std::to_string(experts)+"-"+
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(dir);
+        const std::string p1=(dir/"streamed.bin").string(), p2=(dir/"captured.bin").string();
+        auto slurp=[](const std::string& p){ std::ifstream f(p,std::ios::binary);
+            return std::vector<char>((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()); };
         size_t n1=0,n2=0;
         check(session_file_write(p1,meta,sources,id,n1,err),"streamed session write");
         check(session_file_write(p2,b,id,n2,err),"captured session write");
@@ -162,7 +173,9 @@ void full_session(int fmt, int mode, int experts) {
         check(x.live.gdn==y.live.gdn && x.live.dead==y.live.dead && x.live.ids==y.live.ids &&
               x.checkpoints.size()==y.checkpoints.size() && equal(x.kv[0],y.kv[0]) && equal(x.kv.back(),y.kv.back()),
               "streamed file equals captured file");
-        std::remove(p1.c_str()); std::remove(p2.c_str());
+        check(slurp(p1)==slurp(p2),"streamed file is byte-identical to the captured file");
+        std::error_code ec;
+        fs::remove_all(dir,ec);
         auto empty_ids=std::vector<int32_t>{};
         const ConversationView none{empty_ids,images,checkpoints,true};
         check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
