@@ -50,4 +50,9 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+# IDEs
+.vscode/
+.idea/
+.cursor/
+
 /.rocm-win/
