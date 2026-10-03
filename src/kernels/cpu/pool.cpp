@@ -175,23 +175,16 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         int cpu = -1;
         long pkg = -1;
         long core = -1;
-        long cap = -1;
         bool is_sibling = false;
     };
-    std::vector<CoreLinux> all_cpus;
+    std::vector<detail::CpuCore> all_cpus;
     std::vector<std::pair<long, long>> seen_phys;
-    long max_cap = 0, min_cap = 1000000;
 
     for (int cpu : allowed) {
         CoreLinux cl;
         cl.cpu = cpu;
         cl.pkg = topo_read(cpu, "physical_package_id");
         cl.core = topo_read(cpu, "core_id");
-        cl.cap = cap_read(cpu);
-        if (cl.cap > 0) {
-            max_cap = (std::max)(max_cap, cl.cap);
-            min_cap = (std::min)(min_cap, cl.cap);
-        }
         if (cl.pkg >= 0 && cl.core >= 0) {
             const std::pair<long, long> key{cl.pkg, cl.core};
             if (std::find(seen_phys.begin(), seen_phys.end(), key) != seen_phys.end()) {
@@ -200,60 +193,15 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
                 seen_phys.push_back(key);
             }
         }
-        all_cpus.push_back(cl);
+        all_cpus.push_back({cl.cpu, cap_read(cpu), cl.is_sibling});
     }
 
-    topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
-    if (topo.is_hybrid) {
-        for (const auto& cl : all_cpus) {
-            if (cl.cap == max_cap) {
-                if (!cl.is_sibling) topo.p_cores++;
-                topo.p_threads++;
-            } else {
-                if (!cl.is_sibling) topo.e_cores++;
-            }
-        }
-    } else {
-        topo.p_cores = (int) seen_phys.size();
-        topo.p_threads = (int) all_cpus.size();
-    }
-
-    if (affinity == PoolAffinity::All || !topo.is_hybrid) {
-        for (const auto& cl : all_cpus) {
-            if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
-        }
-        if (skip_first && !topo.worker_cores.empty()) {
-            topo.host_core = topo.worker_cores.front();
-            topo.worker_cores.erase(topo.worker_cores.begin());
-        }
-        return topo;
-    }
-
-    // Hybrid CPU on Linux:
-    std::vector<int> p_primaries;
-    std::vector<int> p_siblings;
-    std::vector<int> e_cores;
-
-    for (const auto& cl : all_cpus) {
-        if (cl.cap == max_cap) {
-            if (!cl.is_sibling) p_primaries.push_back(cl.cpu);
-            else p_siblings.push_back(cl.cpu);
-        } else {
-            e_cores.push_back(cl.cpu);
-        }
-    }
-
-    if (skip_first && !p_primaries.empty()) {
-        topo.host_core = p_primaries.front();
-        p_primaries.erase(p_primaries.begin());
-    }
-
-    for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
-    for (int cpu : p_siblings) topo.worker_cores.push_back(cpu);
-    if (affinity != PoolAffinity::PCores) {
-        for (int cpu : e_cores) topo.worker_cores.push_back(cpu);
-    }
-    return topo;
+#if defined(__aarch64__)
+    constexpr bool group_arm_capacities = true;
+#else
+    constexpr bool group_arm_capacities = false;
+#endif
+    return detail::linux_cpu_layout(all_cpus, skip_first, affinity, group_arm_capacities);
 #endif
     return topo;
 }

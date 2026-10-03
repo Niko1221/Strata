@@ -3852,7 +3852,7 @@ int main(int argc, char** argv) {
     // Initialised unconditionally, including under --no-pool: the loop validates the scratch it is handed, so
     // passing a default-constructed one is an error rather than a fallback.  (It was, and the guard caught it -
     // which is the point of the guard.)  One allocation at setup either way.
-    if (!loop_scratch.init((size_t) K * g.n_embd * 4, err)) {
+    if (!loop_scratch.init((size_t) K * g.n_embd * 4, err, pool.host_core())) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }

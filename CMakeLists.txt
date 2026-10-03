@@ -814,6 +814,7 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
+            src/kernels/cpu/cpu_topology.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
@@ -1061,6 +1062,17 @@ if(STRATA_BUILD_TESTS)
   # missing file would otherwise be reported as a pass by a test that skipped everything.
   add_test(NAME expert_parity COMMAND expert_parity --selftest
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+  add_executable(cpu_topology_test tests/core/cpu_topology_test.cpp src/kernels/cpu/cpu_topology.cpp)
+  target_include_directories(cpu_topology_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME cpu_topology_test COMMAND cpu_topology_test)
+
+  if(STRATA_ENABLE_CUDA AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(session_host_affinity_test tests/core/session_host_affinity_test.cpp)
+    target_link_libraries(session_host_affinity_test PRIVATE strata_engine)
+    add_test(NAME session_host_affinity_test COMMAND session_host_affinity_test)
+    set_tests_properties(session_host_affinity_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  endif()
 
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
