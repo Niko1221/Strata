@@ -136,6 +136,31 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can 
 
 More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
 
+### Saved chats and long conversations
+
+The Chat page saves conversations, drafts and attachments on this PC. Its history panel loads the conversation
+list first, then the selected chat's recent messages; older messages load when you ask for them. Message records
+are gzip-compressed in SQLite, and all chats can be exported or imported as JSON or JSON.GZ backups.
+
+For long text conversations, you can summarize older turns manually or let the page do so before a request reaches
+the context limit. The original messages remain available. Optional history recall uses keyword search to add
+small, relevant excerpts from saved chats; summaries and search can miss details.
+See [chat history, migration and recovery](docs/CHAT_HISTORY.md).
+
+### Choose a local model
+
+The model controls separate Strata's native configurations from additional models served on this PC. Native
+switching is opt-in and uses Strata's process manager. Additional connections use a local OpenAI-compatible server,
+such as Ollama or a compatible llama.cpp router. Register models after preparing them in their own server; no
+additional model weights are included or downloaded by these controls. See [local model selection](docs/LOCAL_MODELS.md).
+
+### Optional Windows app
+
+The Windows desktop client opens the same Chat, Monitor and About views in a WebView2 window. It starts or reuses
+the local server, shares the same saved chats and can manage local API authentication outside the page's JavaScript.
+Closing the app leaves the model server running. Build it and create shortcuts with the
+[Windows app instructions](docs/DESKTOP_APP.md).
+
 ## Something went wrong?
 
 - **My PC froze the first time Strata started.** Normal while it loads the model: wait, don't close the window.

@@ -54,6 +54,10 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.compaction import compact_history  # noqa: E402
+from serve.model_switch import ModelSwitcher  # noqa: E402
+from serve.providers import ProviderManager, dispatch as provider_dispatch, finish_native  # noqa: E402
+from serve.chat_history import dispatch as history_dispatch  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -952,6 +956,10 @@ class Service:
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
+        self.model_switcher = None                    # opt-in selection for this local installation
+        self.chat_history = None                      # Disk history opens on first authorized history request.
+        self.history_lock = threading.Lock()
+        self.history_directory = ROOT / "Strata-data" / "chat-history"
         self.fifo = threading.Lock()
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -2106,6 +2114,18 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/api/history"):
+                if self._authorized():
+                    history_dispatch(self, svc, path, "GET")
+                return
+            if (path.startswith("/api/provider") or getattr(svc, "providers", None) and svc.providers.current) and path not in ("",):
+                if path.startswith(("/web/", "/fonts/")):
+                    pass
+                else:
+                    if not self._authorized():
+                        return
+                    if provider_dispatch(self, svc, path, "GET"):
+                        return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -2143,6 +2163,11 @@ def make_handler(svc: Service):
                 if self._authorized():
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
+                return
+            if path == "/api/local-models":
+                if self._authorized():
+                    self._json(200, svc.model_switcher.snapshot(svc)) if svc.model_switcher else self._json(
+                        404, {"error": {"message": "model selection is disabled"}})
                 return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
@@ -2219,15 +2244,58 @@ def make_handler(svc: Service):
 
         def do_POST(self):
             if not self._authorized():
+                # Drain a small rejected POST before closing the HTTP/1.0 connection. Windows otherwise
+                # resets the socket with unread request bytes and clients lose the 401 response.
+                previous_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(0.25)  # An unauthenticated client must not hold this thread open.
+                    rejected_length = int(self.headers.get("Content-Length", "0"))
+                    if 0 < rejected_length <= 65536:
+                        self.rfile.read(rejected_length)
+                except (ValueError, OSError):
+                    pass
+                finally:
+                    self.connection.settimeout(previous_timeout)
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if history_dispatch(self, svc, path, "POST"):
+                return
+            if provider_dispatch(self, svc, path, "POST"):
                 return
             if path == "/settings":
                 self._settings()
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
+                finish_native(self, svc)
+                return
+            if path == "/api/local-models/switch":
+                try:
+                    try:
+                        length = int(self.headers.get("Content-Length", "0"))
+                        raw_body = self.rfile.read(min(max(length, 0), 1025))
+                        if not 0 < length <= 1024:
+                            raise ValueError()
+                        body = json.loads(raw_body)
+                        if not isinstance(body, dict) or set(body) != {"model"}:
+                            raise ValueError()
+                        if not self._own_page("model selection"):
+                            return
+                        if svc.model_switcher is None:
+                            self._json(404, {"error": {"message": "model selection is disabled"}})
+                            return
+                        code, result = svc.model_switcher.begin(svc, body["model"])
+                    except (ValueError, UnicodeError):
+                        self._json(400, {"error": {"message": "a JSON model selection is required"}})
+                        return
+                    except OSError:
+                        self._json(503, {"error": {"message": "could not start the model switch worker"}})
+                        return
+                    self._json(code, result)
+                finally:
+                    finish_native(self, svc)
                 return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
@@ -2243,6 +2311,8 @@ def make_handler(svc: Service):
                     self._json(200, {"status": "loaded"})
                 except GpuBusy as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                finally:
+                    finish_native(self, svc)
                 return
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
@@ -2280,6 +2350,10 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/v1/chat/completions/count_tokens":
+                    self._openai_count_tokens(req)
+                elif path == "/v1/chat/compact":
+                    self._compact(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
@@ -2300,6 +2374,7 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 raise                                        # as before #332: the server's own handling
             finally:
+                finish_native(self, svc)
                 if self.watch_done is not None:
                     self.watch_done.set()
                 record = self.record
@@ -2335,11 +2410,11 @@ def make_handler(svc: Service):
                 props["build_info"] = "Strata " + str(version)
             self._json(200, props)
 
-        def _own_page(self, what) -> bool:
+        def _own_page(self, what, content_types=("application/json",), require_content_type=True) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
             server never grants) and no foreign Origin: a web page elsewhere must not change settings or run tools."""
-            if not self.headers.get("Content-Type", "").startswith("application/json"):
-                self._json(415, {"error": {"message": "send application/json"}})
+            if require_content_type and self.headers.get("Content-Type", "").split(";", 1)[0].strip() not in content_types:
+                self._json(415, {"error": {"message": "send " + " or ".join(content_types)}})
                 return False
             # The Origin must be this server's own address (host and port), or an origin the config trusts
             # (trusted_origins: the web app behind a reverse proxy or tunnel).  Headers a proxy adds (X-Forwarded-*,
@@ -2473,6 +2548,50 @@ def make_handler(svc: Service):
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             prompt = svc.template.render(messages, tools=tools, **kw)
             self._json(200, {"input_tokens": len(svc.tok.encode(prompt, parse_special=True))})
+
+        def _openai_count_tokens(self, req):
+            req = svc.with_shared(req, "openai")
+            messages, tools, kw = openai_to_messages(req)
+            messages, _ = prepare_format(req.get("response_format"), messages)
+            if req.get("strata_mcp") is True and svc.mcp is not None:
+                if not self._own_page("MCP tool definitions can be read"):
+                    return
+                svc.mcp.wait(10)
+                own = {t.get("name") for t in tools or []}
+                tools = (tools or []) + svc.mcp.template_tools(exclude=own) or None
+            prompt = svc.template.render(messages, tools=tools, **kw)
+            if images_of(messages):
+                raise ValueError("Compaction token counting does not support conversations with images.")
+            self._json(200, {"input_tokens": len(svc.tok.encode(prompt, parse_special=True)),
+                             "max_context": svc.engine.max_context, "context_slack": CTX_SLACK})
+
+        def _compact(self, req):
+            if not self._own_page("chat history can be summarized"):
+                return
+            # Validate before loading the model; summaries never run MCP tools.
+            from serve.compaction import transcript_of
+            transcript_of(req.get("messages"))
+            svc.load()
+            cancel = threading.Event()
+            self._watch_client(cancel)
+
+            def count(messages):
+                prompt = svc.template.render(messages, enable_thinking=False)
+                return len(svc.tok.encode(prompt, parse_special=True))
+
+            def summarize(messages, budget):
+                ids, thinking, cap = svc.prepare(messages, None, {"enable_thinking": False}, budget)
+                result = openai_collect(openai_chunks(
+                    svc, {"temperature": 0, "reasoning_effort": "none"}, ids, thinking, None, cap, cancel))
+                choice = result["choices"][0]
+                if choice.get("finish_reason") == "length":
+                    raise ValueError("The summary reached its output limit. The original conversation is unchanged.")
+                return choice["message"].get("content", "")
+
+            result = compact_history(req.get("messages"), req.get("previous_summary", ""),
+                                     count_prompt=count, summarize=summarize,
+                                     max_context=svc.engine.max_context, cancelled=cancel.is_set)
+            self._json(200, result)
 
         def _anthropic(self, req):
             svc.load()
@@ -2938,6 +3057,7 @@ def main() -> int:
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+    svc.providers = ProviderManager(ROOT / ".local" / "model-providers.json")
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:
@@ -3005,6 +3125,10 @@ def main() -> int:
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
+    if cfg.get("model_switch") is True:
+        if a.host != "127.0.0.1" or a.port != 8080:
+            raise ValueError("model_switch requires 127.0.0.1:8080")
+        svc.model_switcher = ModelSwitcher(ROOT)
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host

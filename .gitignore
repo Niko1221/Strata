@@ -51,3 +51,20 @@ build-vision.bat
 /third_party/*.zip
 
 /.rocm-win/
+
+# Local runtime: downloaded weights, credentials, private state and local artifacts.
+/.local/
+/Strata-data/
+/.secrets/
+/deploy/runtime/
+.env
+.env.*
+*.dmp
+*.sqlite3
+*.pem
+*.key
+
+# Windows desktop build intermediates (the published app is already in /dist/).
+/desktop/**/bin/
+/desktop/**/obj/
+*.csproj.user
