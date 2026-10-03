@@ -5,6 +5,7 @@
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "qsa_prompt_attn_sm70.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -1023,10 +1024,14 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
     bool turing = false;   // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
+#if defined(STRATA_V100_OPT)
+    bool volta = false;
+#endif
     {   // sm_75 or newer: the MMA above compiles for both.  sm_80+ runs the cp.async kernel (launch_i8); Turing has
-        // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  An older card
-        // keeps the old kernel.
-        // #371: the compute capability with its minor - sm_70 (V100) has no m16n8k8 (the kernels trap below sm_75)
+        // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  Older than
+        // Volta keeps the old kernel; with the V100 switch on, sm_70 (V100) takes the WMMA kernel in
+        // qsa_prompt_attn_sm70.cu (it has no m16n8k8 - #371 - and no cp.async).
+        // #371: the compute capability with its minor
         static int cc[64] = {};
         int dev = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
@@ -1042,7 +1047,12 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
                       : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
         }
-        if (cc[dev] < 75) return false;
+#if defined(STRATA_V100_OPT)
+        if (cc[dev] < 70) return false;      // the Volta WMMA kernel needs sm_70
+        volta = cc[dev] < 75;
+#else
+        if (cc[dev] < 75) return false;      // the trunk: pre-sm_75 cards keep the old kernel
+#endif
         turing = cc[dev] < 80;
     }
 #if defined(__HIPCC__)
@@ -1067,6 +1077,11 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         if (q4_off || turing || pools.v_q4 == nullptr) return false;
         return launch<4>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
+#if defined(STRATA_V100_OPT)
+    // sm_70 (Volta): the WMMA kernel (qsa_prompt_attn_sm70.cu).  Its own pool checks decide; false here means the
+    // caller keeps the old kernel, as this function did before on a pre-sm_75 card.
+    if (volta) return qsa_prompt_attn_sm70_batch(q, pools, ids, steps, cap, s, attn, n_q, st);
+#endif
     if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
         if (!pools.k_scale) return false;
         return launch<3>(q, pools, ids, steps, cap, s, attn, n_q, st);

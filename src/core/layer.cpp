@@ -98,6 +98,25 @@ void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weight
     else if (split) bf16_gemv_split(x_bf16, weights, out, n_in, n_out, TPR, stream);
     else bf16_gemv(x_bf16, weights, out, n_in, n_out, stream);
 }
+#if defined(STRATA_V100_OPT)
+// TWO BF16 projections of the SAME x in ONE kernel (`ssm_alpha`/`ssm_beta`, `indexer.q`/`indexer.k`).
+// `bf16_gemv_pair` reproduces the warp-per-row accumulation, which is what `bf16_gemv_split` at TPR 32
+// always runs and what plain `bf16_gemv` runs at n_out >= 64 - below that the plain entry uses the naive
+// one-thread-per-row sum and the pair would round differently, so those shapes keep two calls.
+void project_bf16_pair(const float* x, const uint16_t* x_bf16, const uint16_t* w1, float* o1, int64_t n_out1,
+                       const uint16_t* w2, float* o2, int64_t n_out2, int64_t n_in, bool split, void* stream) {
+    using namespace strata::kernels;
+    if (native_bf16_projections) {
+        bf16_gemv_fp32_mmvf(x, w1, o1, n_in, n_out1, stream);
+        bf16_gemv_fp32_mmvf(x, w2, o2, n_in, n_out2, stream);
+    } else if (split || (n_out1 >= 64 && n_out2 >= 64)) {
+        bf16_gemv_pair(x_bf16, w1, o1, n_out1, w2, o2, n_out2, n_in, stream);
+    } else {
+        bf16_gemv(x_bf16, w1, o1, n_in, n_out1, stream);
+        bf16_gemv(x_bf16, w2, o2, n_in, n_out2, stream);
+    }
+}
+#endif
 ///< threads per row for the row-split GEMVs.
 /// **MEASURED, NOT ASSUMED, AND 64 IS NOT BETTER.**  `dense_pass.exe` drives the same split kernels at
 /// threads_per_row 64 and reports 248.5 GB/s, so matching it looked like free performance.  It is not:
@@ -233,8 +252,12 @@ const float* conv_kernel = (const float*) w_conv->data;    const float* ssm_norm
 st_begin(layer, 8, stream);
     // Plan v0.3 P3: the canonical activation images only when a canonical projection reads them.
     if (!w_qkv->native_data || !w_gate->native_data) {
+#if defined(STRATA_V100_OPT)
+        quantize_act_images(mixed, g.n_embd, b.x_q8_0, b.x_q8k, nullptr, stream);   // ONE pass, was two kernels
+#else
         quantize_q8_K(mixed, b.x_q8k, g.n_embd, stream);
         quantize_q8_0(mixed, b.x_q8_0, g.n_embd, stream);
+#endif
     }
     st_end(layer, 8, stream);
 // ---- 2. qkv = wqkv @ x, with the activation THIS layer's `attn_qkv` asks for
@@ -288,8 +311,13 @@ st_begin(layer, 12, stream);
                      (int) g.n_embd, (int) g.ssm_v_heads, stream);
     } else {
     if (!native_bf16_projections) f32_to_bf16_bulk(mixed, b.x_bf16, g.n_embd, stream);
+#if defined(STRATA_V100_OPT)
+    project_bf16_pair(mixed, b.x_bf16, (const uint16_t*) w_alpha->data, b.alpha, g.ssm_v_heads,
+                      (const uint16_t*) w_beta->data, b.beta, g.ssm_v_heads, g.n_embd, true, stream);
+#else
     project_bf16(mixed, b.x_bf16, (const uint16_t*) w_alpha->data, b.alpha, g.n_embd, g.ssm_v_heads, true, stream);
     project_bf16(mixed, b.x_bf16, (const uint16_t*) w_beta->data, b.beta, g.n_embd, g.ssm_v_heads, true, stream);
+#endif
     }
     if (!fused_pre) try {
         if (native_gdn_enabled()) {
@@ -328,8 +356,12 @@ st_end(layer, 14, stream);
 // ---- 8. out = ssm_out @ y, whose activation is whatever THIS layer's `ssm_out` asks for
 st_begin(layer, 15, stream);
     if (!w_out->native_data) {
+#if defined(STRATA_V100_OPT)
+        quantize_act_images(b.y, g.ssm_value_dim, b.y_q8_0, b.y_q8k, nullptr, stream);   // ONE pass, was two
+#else
         quantize_q8_K(b.y, b.y_q8k, g.ssm_value_dim, stream);
         quantize_q8_0(b.y, b.y_q8_0, g.ssm_value_dim, stream);
+#endif
     }    if (!gemv_quantized(*w_out, p_out, f_out, b.y_q8_0, b.y_q8k, out, g.ssm_value_dim, g.n_embd,                        v.name("ssm_out.weight"), stream, err, b.y)) return false;    st_end(layer, 15, stream);    return true;}
 // ================================ the MoE block ================================
 uint64_t moe_buffers_bytes(const ModelGeometry& g, int64_t k) {    const uint64_t parts[] = {        (uint64_t) g.n_embd * 2,
@@ -399,10 +431,18 @@ if (w_ginp->kind != WeightKind::Bf16InF32) {        err = v.name("ffn_gate_inp_s
 // the rest, `ffn_up_shexp` Q2_0 on 13, and `ffn_down_shexp` is LEGACY in every layer (IQ4_NL/Q4_0/Q5_0/
 // Q8_0/Q2_0, `n_in` 640 so Q8_K is impossible).  So BOTH quantized images of the activation are produced
 // and each projection takes the one its own form asks for.
-f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
+// ONE pass over `x` produces the bf16 image and both quantized images (was three kernels): which quantized
+// one is wanted is a property of the TENSOR and the pack mixes them by layer, so both are produced.
     if (!w_sgate->native_data || !w_sup->native_data) {
+#if defined(STRATA_V100_OPT)
+        quantize_act_images(x, g.n_embd, b.x_q8_0, b.x_q8k, b.x_bf16, stream);   // ONE pass, was three kernels
+#else
+        f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
         quantize_q8_K(x, b.x_q8k, g.n_embd, stream);
         quantize_q8_0(x, b.x_q8_0, g.n_embd, stream);
+#endif
+    } else {
+        f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
     }
     NativeSharedWeights native;
     native.gate_type = w_sgate->native_type; native.gate_data = w_sgate->native_data;
@@ -866,10 +906,16 @@ struct Req { const char* suf; };    const WeightRef* w_idxk = v.get("indexer.k_p
 if (w_idxk->kind != WeightKind::Bf16InF32 || w_idxq->kind != WeightKind::Bf16InF32) {        err = v.name("indexer.*_proj.weight") + " must be engine form 1 (bf16); they are " +              std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);        return false;    }
 // ---- 1. the three activation formats, once each
 if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
+#if defined(STRATA_V100_OPT)
+        quantize_act_images(x, g.n_embd, b.x_q8_0, b.x_q8k,
+                            native_bf16_projections ? nullptr : b.x_bf16, stream);   // ONE pass, was two or three
+    } else if (!native_bf16_projections) f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
+#else
         quantize_q8_K(x, b.x_q8k, g.n_embd, stream);
         quantize_q8_0(x, b.x_q8_0, g.n_embd, stream);
     }
     if (!native_bf16_projections) f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
+#endif
 // ---- 2. the step state: ONE H2D carries every per-token count the kernels need.  Nothing below passes a
 // per-token scalar as an argument, which is what keeps this layer capturable.
 //
@@ -886,8 +932,16 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
             strata::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
         } else
         if (cudaMemcpyAsync(st.step, st.host_step, qsa_step_bytes(), cudaMemcpyHostToDevice,                            (cudaStream_t) stream) != cudaSuccess ||            cudaMemcpyAsync(st.pos_dev, st.host_pos, (size_t) g.n_head * 4, cudaMemcpyHostToDevice,                            (cudaStream_t) stream) != cudaSuccess) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
-// ---- 3. the indexer's RAW key: appended before any norm, pooled later once per block
+// ---- 3. the indexer's RAW key (and, with the V100 switch, its QUERY in the same kernel; was two launches)
+#if defined(STRATA_V100_OPT)
+// two BF16 projections of the same x in ONE kernel: the query is needed only at step 7 and nothing in between
+// touches it, so computing it here changes no order that matters; `idx_raw` is still appended at step 5.
+project_bf16_pair(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.idx_key_dim,
+                  (const uint16_t*) w_idxq->data, b.q_idx, g.idx_q_heads * g.idx_key_dim, g.n_embd,
+                  false, stream);
+#else
 project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
+#endif
 // ---- 4. K and V, in Q8_K, then norm and rotate K only
 SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"), err)) return false;    if (!sform_of(*w_attnv, f_v, v.name("attn_v.weight"), err)) return false;    if (!sform_of(*w_attno, f_o, v.name("attn_output.weight"), err)) return false;    if (!sform_of(*w_attnq, f_q, v.name("attn_q.weight"), err)) return false;    Planes p_k, p_v, p_o, p_q;    if (!plane_ptrs(*w_attnk, v.name("attn_k.weight"), p_k, err)) return false;    if (!plane_ptrs(*w_attnv, v.name("attn_v.weight"), p_v, err)) return false;    if (!plane_ptrs(*w_attno, v.name("attn_output.weight"), p_o, err)) return false;    if (!plane_ptrs(*w_attnq, v.name("attn_q.weight"), p_q, err)) return false;
 // k and v, with the activation THIS layer's tensors ask for.  Both are K-quants in every QSA layer of this
@@ -930,8 +984,12 @@ if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, g
 // the norm and the rotation see whole rows.  A 2-D copy is a memcpy node, which captures (`pinned_capture`
 // case A) and needs no kernel.
 if (cudaMemcpy2DAsync(b.qcur, (size_t) g.head_dim * 4, b.q_full, (size_t) g.head_dim * 2 * 4,                          (size_t) g.head_dim * 4, (size_t) g.n_head, cudaMemcpyDeviceToDevice,                          (cudaStream_t) stream) != cudaSuccess) {        err = "qsa_layer: the q/gate split failed";        return false;    }    if (!normalize_rotate(b.qcur, w_qn, (int) g.n_head, (int) g.head_dim)) return false;
-// ---- 7. the indexer's query: BF16, then norm and rotate
-project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim, false, stream);
+// ---- 7. the indexer's query: with the V100 switch it was projected at step 3 (paired with the raw key);
+// the trunk projects it here.  Either way, norm and rotate it now.
+#if !defined(STRATA_V100_OPT)
+project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim,
+             false, stream);
+#endif
 if (!normalize_rotate(b.q_idx, w_iqn, (int) g.idx_q_heads, (int) g.idx_key_dim)) return false;
 // ---- 8. score, select, gather, attend.  `max_blocks` and `cap` are CAPACITIES from the state, not this
 // token's counts: a grid or a shared-memory size that follows the sequence length is baked into a captured

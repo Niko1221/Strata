@@ -7,6 +7,7 @@
 //   3. against the FP16 path, the INT8 values differ by at most half a quantization step of their group plus the
 //      fp16 rounding of both sides (0.624 steps).
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/qsa.hpp"
 
@@ -29,7 +30,80 @@ void ck(cudaError_t e, const char* w) {
 template <typename T> T* dalloc(size_t n) { T* p = nullptr; ck(cudaMalloc(&p, n * sizeof(T) + 64), "malloc"); ck(cudaMemset(p, 0, n * sizeof(T) + 64), "memset"); return p; }
 }  // namespace
 
-int main() {
+// A decode-shaped microbench: a 32k pool, the 2,051-cell selection the QSA decoder gathers per layer, random
+// cells (so the reads miss L2).  Times the INT8 and Q4_0 gathers and prints the per-format KV footprint.  The
+// hybrid k8v4 gathers INT8 K and Q4_0 V separately (`layer.cpp:955`), so its traffic is their sum.  Not part of
+// the test.
+int bench() {
+    k::QsaShapes s = k::qsa_real_shapes();
+    const int H = (int) s.n_head_kv, D = (int) s.head_dim, P = (int) s.page_size, G = D / k::KV_Q8_GROUP;
+    const int ctx = 32768, pages = ctx / P;
+    const long long rows = (long long) pages * H * P;
+    const int max_ids = (int) k::qsa_selection_width(ctx, s);
+    const int bph = (int) k::kv_q4_bytes_per_head(D);
+    std::mt19937 rng(7);
+    std::vector<int8_t> kq((size_t) rows * D), vq((size_t) rows * D);
+    std::vector<uint16_t> ks((size_t) rows * G), vs((size_t) rows * G);
+    std::vector<uint8_t> k4((size_t) rows * bph), v4((size_t) rows * bph);
+    for (auto& x : kq) x = (int8_t) (rng() & 0xFF);
+    for (auto& x : vq) x = (int8_t) (rng() & 0xFF);
+    for (auto& x : k4) x = (uint8_t) (rng() & 0xFF);
+    for (auto& x : v4) x = (uint8_t) (rng() & 0xFF);
+    for (auto& x : ks) x = (uint16_t) (0x3000 | (rng() & 0x3FF));
+    for (auto& x : vs) x = (uint16_t) (0x3000 | (rng() & 0x3FF));
+    std::vector<int32_t> table(pages);
+    for (int i = 0; i < pages; ++i) table[i] = i;
+    std::shuffle(table.begin(), table.end(), rng);
+    std::vector<int32_t> ids(max_ids);
+    for (auto& x : ids) x = (int32_t) (rng() % ctx);
+    int8_t* d_kq = dalloc<int8_t>(kq.size()); ck(cudaMemcpy(d_kq, kq.data(), kq.size(), cudaMemcpyHostToDevice), "up");
+    int8_t* d_vq = dalloc<int8_t>(vq.size()); ck(cudaMemcpy(d_vq, vq.data(), vq.size(), cudaMemcpyHostToDevice), "up");
+    uint8_t* d_k4 = dalloc<uint8_t>(k4.size()); ck(cudaMemcpy(d_k4, k4.data(), k4.size(), cudaMemcpyHostToDevice), "up");
+    uint8_t* d_v4 = dalloc<uint8_t>(v4.size()); ck(cudaMemcpy(d_v4, v4.data(), v4.size(), cudaMemcpyHostToDevice), "up");
+    uint16_t* d_ks = dalloc<uint16_t>(ks.size()); ck(cudaMemcpy(d_ks, ks.data(), ks.size() * 2, cudaMemcpyHostToDevice), "up");
+    uint16_t* d_vs = dalloc<uint16_t>(vs.size()); ck(cudaMemcpy(d_vs, vs.data(), vs.size() * 2, cudaMemcpyHostToDevice), "up");
+    int32_t* d_table = dalloc<int32_t>(pages); ck(cudaMemcpy(d_table, table.data(), pages * 4, cudaMemcpyHostToDevice), "up");
+    int32_t* d_ids = dalloc<int32_t>(max_ids); ck(cudaMemcpy(d_ids, ids.data(), max_ids * 4, cudaMemcpyHostToDevice), "up");
+    int32_t* d_step = dalloc<int32_t>(k::kStepCount);
+    int32_t hstep[k::kStepCount] = {0, 0, 0, max_ids};
+    ck(cudaMemcpy(d_step, hstep, sizeof hstep, cudaMemcpyHostToDevice), "up");
+    uint16_t* k8 = dalloc<uint16_t>((size_t) max_ids * H * D);
+    uint16_t* v8 = dalloc<uint16_t>((size_t) max_ids * H * D);
+    auto time_gathers = [&](bool q4, int reps, float* out_ms) {
+        cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
+        cudaEventRecord(e0);
+        for (int r = 0; r < reps; ++r) {
+            if (q4) k::kv_gather_q4_step(d_k4, d_v4, d_table, d_ids, d_step, max_ids, s, k8, v8, nullptr);
+            else k::kv_gather_q8_step(d_kq, d_vq, d_ks, d_vs, d_table, d_ids, d_step, max_ids, s, k8, v8, nullptr);
+        }
+        cudaEventRecord(e1); ck(cudaEventSynchronize(e1), "time");
+        cudaEventElapsedTime(out_ms, e0, e1);
+        cudaEventDestroy(e0); cudaEventDestroy(e1);
+    };
+    const int reps = 200;
+    float ms8 = 0, ms4 = 0;
+    time_gathers(false, 5, &ms4); time_gathers(true, 5, &ms4);       // warmup
+    time_gathers(false, reps, &ms8);
+    time_gathers(true, reps, &ms4);
+    const double scratch = (double) max_ids * H * D * 2 * 2;         // K + V fp16 write, both formats
+    const double b8 = (double) max_ids * H * D * 2 + (double) max_ids * H * G * 2 * 2 + scratch;
+    const double b4 = (double) max_ids * H * bph * 2 + scratch;
+    const double us8 = ms8 * 1000.0 / reps, us4 = ms4 * 1000.0 / reps;
+    std::printf("gather bench (32k pool, %d ids, K+V): int8 %.2f us %.1f GB/s | q4_0 %.2f us %.1f GB/s\n",
+                max_ids, us8, b8 / (us8 * 1e-6) / 1e9, us4, b4 / (us4 * 1e-6) / 1e9);
+    const double cell16 = (double) H * D * 2 * 2;
+    const double cell8 = (double) k::kv_q8_bytes_per_cell(s);
+    const double cell4 = (double) k::kv_q4_bytes_per_cell(s);
+    const double cellh = (double) H * D + (double) H * (D / k::KV_Q8_GROUP) * 2 + (double) H * bph;
+    const double mebibytes = 32768.0 * 12.0 / 1048576.0;           // 32k cells x 12 QSA layers, per B/cell
+    std::printf("KV footprint at 32k, 12 QSA layers: fp16 %.0f MiB | int8 %.0f MiB (%.0f B/cell) | "
+                "q4_0 %.0f MiB (%.0f B/cell) | k8v4 %.0f MiB (%.0f B/cell)\n",
+                cell16 * mebibytes, cell8 * mebibytes, cell8, cell4 * mebibytes, cell4, cellh * mebibytes, cellh);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) if (!std::strcmp(argv[i], "--bench")) return bench();
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;                                                              // several pages in a small pool
     const int H = (int) s.n_head_kv, D = (int) s.head_dim, P = (int) s.page_size, G = D / k::KV_Q8_GROUP;

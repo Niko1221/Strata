@@ -1943,9 +1943,20 @@ def source_hash(parts) -> str:
     return h.hexdigest()[:16]
 
 
+def experimental_v100() -> bool:
+    """v100-opt: STRATA_EXPERIMENTAL_V100=1 compiles the community V100 (sm_70) optimizations - Volta
+    tensor-core attention, P2P hand-off, the fused GEMV/quantize paths and the BF16-via-FP16 prefill GEMM
+    (-DSTRATA_EXPERIMENTAL_V100=ON).  Off is the ready-made engine's behaviour."""
+    return os.environ.get("STRATA_EXPERIMENTAL_V100", "").strip() == "1"
+
+
 def engine_defs(archs) -> list:
-    """Extra CMake definitions for the engine: the experimental Pascal/Volta build (#295) for cards below sm_75."""
-    return ["-DSTRATA_EXPERIMENTAL_SM60=ON"] if min(int(x) for x in archs) < 75 else []
+    """Extra CMake definitions for the engine: the experimental Pascal/Volta build (#295) for cards below sm_75
+    and, opt-in, the V100 (sm_70) optimizations."""
+    defs = ["-DSTRATA_EXPERIMENTAL_SM60=ON"] if min(int(x) for x in archs) < 75 else []
+    if experimental_v100():
+        defs.append("-DSTRATA_EXPERIMENTAL_V100=ON")
+    return defs
 
 
 def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:

@@ -1,3 +1,4 @@
+#include "strata/kernels/s2_qpn8.hpp"
 #include "strata/core/remote_experts.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -156,7 +157,8 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     if (!check(cudaMemGetInfo(&free_bytes, &total_bytes), "free memory", err, device)) { close(); return false; }
     uint64_t needed = 0;
     for (const auto& pair : selected)
-        needed += lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
+        needed += lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256
+                             : (uint64_t) strata::kernels::s2_qpn8_slot_bytes((int64_t) lay.max_blob);
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
     if (needed + (512ull << 20) > free_bytes) {
         err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);

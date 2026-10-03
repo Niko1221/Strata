@@ -69,6 +69,11 @@ __global__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict
     if (i < n) y[i] = bf16_from_f32(x[i]);
 }
 
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ x, uint16_t* __restrict__ y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = f16_from_bf16(x[i]);
+}
+
 __global__ void silu_kernel(float* __restrict__ x, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -174,6 +179,13 @@ void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     to_bf16_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);
     check_launch("f32_to_bf16_bulk");
     sync_if_needed(stream, "f32_to_bf16_bulk");
+}
+
+void bf16_to_f16_bulk(const uint16_t* x, uint16_t* y, int64_t n, void* stream) {
+    if (n <= 0) return;
+    bf16_to_f16_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);
+    check_launch("bf16_to_f16_bulk");
+    sync_if_needed(stream, "bf16_to_f16_bulk");
 }
 
 void silu_inplace(float* x, int64_t n, void* stream) {

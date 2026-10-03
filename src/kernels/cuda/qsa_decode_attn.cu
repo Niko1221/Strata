@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/qsa_grouped_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
 
@@ -211,6 +212,12 @@ __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict_
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return;
+#if defined(STRATA_V100_OPT)
+    // V100 (cc < 80) verify windows of 2..8 rows: the grouped Volta WMMA kernel shares each KV cell across the
+    // rows that selected it (qsa_grouped_attn.hpp).  It refuses anything it cannot serve and the FP32 path
+    // below runs unchanged - including every call on sm_80+ and every n_q == 1.
+    if (qsa_grouped_attn_batch(q, pools, ids, steps, cap, s, scratch, attn, n_q, stream)) return;
+#endif
     if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
         !pools.page_table || n_q > 65535) {
         std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");

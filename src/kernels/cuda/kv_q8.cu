@@ -65,7 +65,51 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
     }
 }
 
-// One thread = 4 consecutive values of one cell and head (as the FP16 gather does with uint2).
+#if defined(STRATA_V100_OPT)
+// One thread = 8 consecutive values of one cell and head: an 8-byte `uint2` load of codes and a 16-byte `uint4`
+// store of the dequantized fp16.  The 8 values share one 64-value group, so one scale is loaded per thread and
+// the arithmetic stays `(float) code * scale -> f16_from_f32`, i.e. bitwise the same as the previous 4-wide
+// version (whose char4 loads became these uint2 loads).  `load8_q8` in qsa_decode_attn.cu reads 8 int8 the
+// same way; this is the gather's other half.
+__device__ __forceinline__ uint32_t q8_pair_to_f16x2(const int8_t* c, float s) {
+    return (uint32_t) f16_from_f32((float) c[0] * s) | ((uint32_t) f16_from_f32((float) c[1] * s) << 16);
+}
+
+__global__ void kv_gather_q8_kernel(const int8_t* __restrict__ k_q, const int8_t* __restrict__ v_q,
+                                    const uint16_t* __restrict__ k_scale, const uint16_t* __restrict__ v_scale,
+                                    const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
+                                    const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
+                                    uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch) {
+    const long long n_ids = (long long) __ldg(step + kStepWidth);
+    const int per = head_dim / 8;
+    const long long total = n_ids * kv_heads * per;
+    const long long i = blockIdx.x * (long long) blockDim.x + threadIdx.x;
+    if (i >= total) return;
+    const long long id = i / (kv_heads * (long long) per);
+    const int rem = (int) (i % (kv_heads * (long long) per));
+    const int h = rem / per, q8 = rem - h * per;
+    const int cell = ids[id];
+    const long long page = (long long) table[cell / page_size];
+    const long long row = (page * kv_heads + h) * page_size + (cell % page_size);
+    const int d = q8 * 8;                    // 8 divides KV_Q8_GROUP, so all 8 values share the group's scale
+    const int groups = head_dim / KV_Q8_GROUP;
+    const float ks = f32_from_f16(k_scale[row * groups + d / KV_Q8_GROUP]);
+    const float vs = f32_from_f16(v_scale[row * groups + d / KV_Q8_GROUP]);
+    const uint2 kraw = *reinterpret_cast<const uint2*>(k_q + row * head_dim + d);   // one 8-byte load
+    const uint2 vraw = *reinterpret_cast<const uint2*>(v_q + row * head_dim + d);
+    const int8_t* kc = reinterpret_cast<const int8_t*>(&kraw);
+    const int8_t* vc = reinterpret_cast<const int8_t*>(&vraw);
+    uint4 ko, vo;
+    ko.x = q8_pair_to_f16x2(kc + 0, ks); ko.y = q8_pair_to_f16x2(kc + 2, ks);
+    ko.z = q8_pair_to_f16x2(kc + 4, ks); ko.w = q8_pair_to_f16x2(kc + 6, ks);
+    vo.x = q8_pair_to_f16x2(vc + 0, vs); vo.y = q8_pair_to_f16x2(vc + 2, vs);
+    vo.z = q8_pair_to_f16x2(vc + 4, vs); vo.w = q8_pair_to_f16x2(vc + 6, vs);
+    const long long dst = (id * kv_heads + h) * (long long) per + q8;
+    reinterpret_cast<uint4*>(k_scratch)[dst] = ko;
+    reinterpret_cast<uint4*>(v_scratch)[dst] = vo;
+}
+#else
+// the trunk: one thread = 4 consecutive values of one cell and head (as the FP16 gather does with uint2)
 __global__ void kv_gather_q8_kernel(const int8_t* __restrict__ k_q, const int8_t* __restrict__ v_q,
                                     const uint16_t* __restrict__ k_scale, const uint16_t* __restrict__ v_scale,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
@@ -97,6 +141,7 @@ __global__ void kv_gather_q8_kernel(const int8_t* __restrict__ k_q, const int8_t
     reinterpret_cast<ushort4*>(k_scratch)[dst] = ko;
     reinterpret_cast<ushort4*>(v_scratch)[dst] = vo;
 }
+#endif
 
 }  // namespace
 
@@ -116,7 +161,11 @@ void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_s
                        const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream) {
     validate(s, "kv_gather_q8");
     if (max_ids <= 0) return;
+#if defined(STRATA_V100_OPT)
+    const long long total = max_ids * s.n_head_kv * (s.head_dim / 8);
+#else
     const long long total = max_ids * s.n_head_kv * (s.head_dim / 4);
+#endif
     const unsigned blocks = (unsigned) ((total + 255) / 256);
     kv_gather_q8_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(
         k_q, v_q, k_scale, v_scale, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,

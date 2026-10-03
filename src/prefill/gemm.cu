@@ -1,6 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
+#include "strata/kernels/elementwise.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -16,11 +17,13 @@
 #undef __ballot_sync
 #endif
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
@@ -57,6 +60,61 @@ void absorb_hipblas_sticky(const char* what) {
 #define STRATA_ABSORB_HIPBLAS_STICKY(what) absorb_hipblas_sticky(what)
 #else
 #define STRATA_ABSORB_HIPBLAS_STICKY(what) ((void) 0)
+#endif
+
+// V100 (sm_70) and older have no BF16 ALUs and `cublasGemmEx` with `CUDA_R_16BF` is emulated there - measured
+// 5.6x slower than `CUDA_R_16F` on a V100-SXM2 (0.496 vs 0.088 ms, N=K=2560, T=256, CUBLAS_COMPUTE_32F).  So
+// on cc < 8.0 the BF16 GEMM multiplies in FP16 instead: each operand goes through `f16_from_bf16` (exact for
+// 2^-14 <= |x| <= 65280, clamped to +-65504 past that - see bf16_bits.hpp) and the existing FP16 GEMM runs.
+// sm_75/80+ and HIP never enter any of this; STRATA_PREFILL_BF16_F16 (0 = keep the BF16 cuBLAS call anywhere,
+// 1 = force the FP16 path) is the full-engine A/B.
+//
+// The FP16 twins of the static BF16 weights, keyed by their BF16 pointer.  A twin is paid for once and read
+// by every later chunk; the cache is bounded (STRATA_PREFILL_BF16_TWINS_MB, default 256 MiB, 0 = no cache)
+// and a W that does not fit converts per call into the scratch - slower, exactly as accurate.
+struct F16Twins {
+    struct Entry {
+        const void* w;
+        void* f16;
+        int64_t elems;
+    };
+    std::vector<Entry> entries;
+    int64_t bytes = 0;
+    int64_t cap = 0;
+};
+
+#if !defined(__HIPCC__)
+// Re-read at every init (same as bf16_as_f16_auto): the engine reads it once per session at most, and the
+// micro benchmark can hold one Gemm per cache policy in one process.
+int64_t bf16_twins_cap_bytes() {
+    const char* e = std::getenv("STRATA_PREFILL_BF16_TWINS_MB");
+    if (e == nullptr) return (int64_t) 256 << 20;
+    const long long mb = std::atoll(e);
+    return mb <= 0 ? (int64_t) 0 : (int64_t) mb << 20;
+}
+
+// Auto on cc < 8.0; STRATA_PREFILL_BF16_F16=0/1 overrides for A/B (and for a broken cc query: 0 = keep the
+// BF16 call, anything else = take the FP16 path).  Re-read at every init so one process can hold one Gemm of
+// each flavor (the micro benchmark's A/B); the engine reads it once per session at most.
+bool bf16_as_f16_auto() {
+#if !defined(STRATA_V100_OPT)
+    return false;   // the V100 switch is off: the BF16 cuBLAS call is the trunk (STRATA_PREFILL_BF16_F16 ignored)
+#else
+    const char* e = std::getenv("STRATA_PREFILL_BF16_F16");
+    const int forced = e == nullptr ? -1 : std::atoi(e);
+    if (forced == 0) return false;
+    if (forced > 0) return true;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    int major = 0;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) return false;
+    return major < 8;
+#endif
+}
+#else
+// AMD: the BF16 GEMM is native there (hipBLASLt / HIP_R_16BF) and this V100 route is not taken at all.
+inline int64_t bf16_twins_cap_bytes() { return 0; }
+inline bool bf16_as_f16_auto() { return false; }
 #endif
 
 // A setup call whose failure the engine survives (the handle keeps its defaults), as before #240 - but said.
@@ -297,6 +355,7 @@ Gemm::~Gemm() {
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
+    free_twins();
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
     if (!external_) {
         if (scratch_) cudaFree(scratch_);
@@ -314,6 +373,13 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
     handle_ = h;
     stream_ = stream;
     external_ = true;
+    bf16_as_f16_ = bf16_as_f16_auto();
+    free_twins();   // a re-init may see different weights at the same addresses: no stale twins
+    {
+        auto* tw = new F16Twins();
+        tw->cap = bf16_twins_cap_bytes();
+        f16_twins_ = tw;
+    }
     note(cublasSetStream(h, (cudaStream_t) stream), "cublasSetStream");
     workspace_ = workspace;
     note(cublasSetWorkspace(h, workspace_, ws_bytes), "cublasSetWorkspace");
@@ -349,6 +415,13 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     }
     handle_ = h;
     stream_ = stream;
+    bf16_as_f16_ = bf16_as_f16_auto();
+    free_twins();   // a re-init may see different weights at the same addresses: no stale twins
+    {
+        auto* tw = new F16Twins();
+        tw->cap = bf16_twins_cap_bytes();
+        f16_twins_ = tw;
+    }
     note(cublasSetStream(h, (cudaStream_t) stream), "cublasSetStream");
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
@@ -384,12 +457,77 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         return;
     }
 #endif
+    if (bf16_as_f16_) {
+        bf16_via_f16(X, W, Y, T, N, K, ldy, beta);
+        return;
+    }
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx");
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
+}
+
+void Gemm::bf16_via_f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                        float beta) {
+    // X converted into the scratch, W served from its FP16 twin when the cache holds one.  The cache is an
+    // optimization only - a miss (or a disabled cache) converts W per call into the scratch after X's region.
+    const uint16_t* w16 = f16_twin(W, N, K);
+    const int64_t kmax = std::max<int64_t>(K, 1);
+    if (scratch_elems_ < kmax) {
+        std::fprintf(stderr, "prefill gemm: scratch too small for K=%lld\n", (long long) K);
+        std::exit(1);
+    }
+    if (w16 != nullptr) {
+        const int64_t xt = std::min(T, std::max<int64_t>(1, scratch_elems_ / kmax));
+        for (int64_t t0 = 0; t0 < T; t0 += xt) {
+            const int64_t t = std::min(xt, T - t0);
+            strata::kernels::bf16_to_f16_bulk(X + t0 * K, scratch_, t * K, stream_);
+            f16(scratch_, w16, Y + t0 * ldy, t, N, K, ldy, beta);
+        }
+        return;
+    }
+    // No twin: the scratch holds the X tile AND a W slab at the same time, so the W slab never collapses.
+    // The old layout sized the X tile from nearly the whole scratch and then took whatever was left for W;
+    // with K >= scratch/(2*T) (every hc projection here: K=10240, T=8192) that left `rows == 1` and the
+    // "fallback" became N one-row GEMMs - 50-1000x slower than the BF16 call it was replacing.  Sizing the
+    // X tile from half the scratch keeps `rows >= xt` for every shape.
+    const int64_t xt = std::min(T, std::max<int64_t>(1, scratch_elems_ / (2 * kmax)));
+    for (int64_t t0 = 0; t0 < T; t0 += xt) {
+        const int64_t t = std::min(xt, T - t0);
+        strata::kernels::bf16_to_f16_bulk(X + t0 * K, scratch_, t * K, stream_);
+        const int64_t rows = std::max<int64_t>(1, (scratch_elems_ - t * K) / kmax);
+        for (int64_t r0 = 0; r0 < N; r0 += rows) {
+            const int64_t n = std::min(rows, N - r0);
+            strata::kernels::bf16_to_f16_bulk(W + r0 * K, scratch_ + t * K, n * K, stream_);
+            f16(scratch_, scratch_ + t * K, Y + t0 * ldy + r0, t, n, K, ldy, beta);
+        }
+    }
+}
+
+const uint16_t* Gemm::f16_twin(const uint16_t* W, int64_t N, int64_t K) {
+    if (f16_twins_ == nullptr) return nullptr;
+    auto* tw = static_cast<F16Twins*>(f16_twins_);
+    const int64_t elems = N * K;
+    if (elems <= 0) return nullptr;
+    for (const F16Twins::Entry& e : tw->entries)
+        if (e.w == W && e.elems == elems) return (const uint16_t*) e.f16;
+    if (tw->bytes + elems * 2 > tw->cap) return nullptr;
+    void* dst = nullptr;
+    if (cudaMalloc(&dst, (size_t) elems * 2) != cudaSuccess) return nullptr;   // per-call conversion instead
+    strata::kernels::bf16_to_f16_bulk(W, (uint16_t*) dst, elems, stream_);
+    tw->entries.push_back({W, dst, elems});
+    tw->bytes += elems * 2;
+    return (const uint16_t*) dst;
+}
+
+void Gemm::free_twins() {
+    if (f16_twins_ == nullptr) return;
+    auto* tw = static_cast<F16Twins*>(f16_twins_);
+    for (const F16Twins::Entry& e : tw->entries) cudaFree(e.f16);
+    delete tw;
+    f16_twins_ = nullptr;
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,

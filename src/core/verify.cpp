@@ -8,6 +8,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/s2_qpn8.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/native_router.hpp"
@@ -749,7 +750,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         float* hit_out = hit_out_ + (size_t) tb * K * N;
         const auto& lay = strata::kernels::cpu::expert_layout();
         // plan v0.3 P6: the VRAM groups now; the PCIe groups once the copy engine has landed them in staging.
-        // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
+        // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).  The VRAM call
+        // passes 0 and its blobs are this cache's dual-form slots, so QPN8 may take it; the PCIe share below is
+        // staged canonical bytes and keeps the DP4A kernels (s2_qpn8.hpp).
         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy) {
             if (lay.native) {
                 // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
@@ -757,6 +760,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
                 native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
                                       nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, hit_out, cs, gy);
+            } else if (gy == 0 && strata::kernels::s2_qpn8_active()) {
+                moe_grouped_s2_qpn8(gp, gs, gn, p_dst, p_tok, cap, cap, (int64_t) lay.blob_bytes(l),
+                                    hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32),
+                                    hit_scratch_, hit_out, cs);
             } else {
                 moe_grouped_s2(gp, gs, gn, p_dst, p_tok, cap, cap, hit_xq_ + (size_t) tb * (N / 32) * 34,
                                hit_xs_ + (size_t) tb * (N / 32), hit_scratch_, hit_out, cs);

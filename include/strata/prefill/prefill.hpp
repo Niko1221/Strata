@@ -79,8 +79,11 @@ public:
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);
 
-    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
-    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `hand_in`:
+    /// this path also holds the two P2P hand-off receive buffers (`set_handoff_p2p`'s `in`) - a later stage's
+    /// chunk buffers include them, so its loan prices them.
+    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                 bool hand_in = false);
 
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
@@ -120,10 +123,18 @@ public:
         stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
     }
 
+    /// LAYER SPLIT over peer access (STRATA_SPLIT_P2P, strata::core::split_handoff_p2p): `out` - this stage's
+    /// hand-off to `next` lands with one cudaMemcpyPeerAsync in a device buffer on the next card, where `in` is
+    /// set on that stage (its `init` allocates the two buffers, in turn, instead of this stage's pinned pair).
+    /// One link crossing instead of two PCIe ones; the rows are bit-identical.  Set with `set_stage`.
+    void set_handoff_p2p(bool out, bool in) { handoff_p2p_out_ = out; handoff_p2p_in_ = in; }
+
 private:
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
-    const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
+    bool handoff_p2p_out_ = false, handoff_p2p_in_ = false;
+    const float* hand_in_ = nullptr;    ///< the previous stage's rows being read (pinned host; with the P2P
+                                        ///< hand-off, one of this stage's own device buffers)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
     struct Impl;

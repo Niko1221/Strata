@@ -1,5 +1,6 @@
 // src/prefill/kernels.cu - see include/strata/prefill/kernels.hpp.
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/gdn_chunk.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/router_top10.hpp"
 
@@ -274,6 +275,60 @@ __global__ void gdn_l2_kernel(float* __restrict__ h, float eps) {
     x[threadIdx.x] = v * rsqrtf(ss + eps);
 }
 constexpr int RG = 4, RPG = S / RG;
+constexpr int CB = 32, NCB = S / CB;  // value columns per block kernel / blocks per head
+#if defined(STRATA_V100_OPT)
+// v100/gdn-chunk: the same recurrence with WARP-LOCAL reductions - no __syncthreads at all.  gdn_rec_cols_*'
+// per-token shape is two cross-warp reductions (k^T W and q^T W) behind two barriers each (six barriers per
+// token in the pipelined kernel); here a warp owns 8 columns and the 4 row-groups are lanes within the warp,
+// so the reductions are __shfl's.  The arithmetic is the same expressions in the same order - the four
+// row-group partials still sum as ((p0+p1)+p2)+p3 - so this kernel is BIT-EXACT against gdn_rec_cols_pipe
+// (the parity test asserts it).  The state has the same (S, h_v, S) layout and the same j-fastest column.
+__global__ void __launch_bounds__(S) gdn_rec_cols_warp_kernel(float* __restrict__ state, const float* __restrict__ h,
+                                                             const float* __restrict__ gate,
+                                                             const float* __restrict__ beta,
+                                                             float* __restrict__ oc_out, int64_t T) {
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int w = threadIdx.x >> 5, l = threadIdx.x & 31;   // warp w: columns w*8..w*8+7
+    const int col = cb * CB + w * 8 + (l & 7);              // lane: column within the warp's 8
+    const int rg = l >> 3;                                  // lane group: 4 row-groups of 32 rows
+    const int qh = head % HK;
+    float s[RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+    const unsigned full = 0xffffffffu;
+    for (int64_t t = 0; t < T; ++t) {
+        const float* ht = h + t * C;
+        const float* krow = ht + HK * S + qh * S + rg * RPG;
+        const float* qrow = ht + qh * S + rg * RPG;
+        float kv = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], krow[r], kv);
+        // ((p0 + p1) + p2) + p3 over the row-groups, exactly as red[0]+red[1]+red[2]+red[3]
+        float p0 = __shfl_sync(full, kv, (l & 7));
+        float p1 = __shfl_sync(full, kv, (l & 7) + 8);
+        float p2 = __shfl_sync(full, kv, (l & 7) + 16);
+        float p3 = __shfl_sync(full, kv, (l & 7) + 24);
+        const float kv_col = ((p0 + p1) + p2) + p3;
+        const float g = __expf(gate[t * HV + head]);
+        const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
+        float o = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            s[r] = fmaf(g, s[r], krow[r] * delta);
+            o = fmaf(s[r], qrow[r], o);
+        }
+        float q0 = __shfl_sync(full, o, (l & 7));
+        float q1 = __shfl_sync(full, o, (l & 7) + 8);
+        float q2 = __shfl_sync(full, o, (l & 7) + 16);
+        float q3 = __shfl_sync(full, o, (l & 7) + 24);
+        oc_out[t * HV * S + head * S + col] = (((q0 + q1) + q2) + q3) * rsqrtf((float) S);
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+}
+#endif
 __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                          const float* __restrict__ gate,
                                                          const float* __restrict__ beta, const float* __restrict__ z,
@@ -333,7 +388,7 @@ __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ sta
 // quarter of its threads per __syncthreads), and the output norm - the only step that couples the head's columns -
 // in its own kernel. Per column the same arithmetic in the same order (the 4 row-group partial sums added as
 // red[0] + red[1] + red[2] + red[3]; the norm's warp sums over the same 32-column warps): the same bits.
-constexpr int CB = 32, NCB = S / CB;
+
 __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                 const float* __restrict__ gate,
                                                                 const float* __restrict__ beta,
@@ -433,6 +488,71 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
+// v100/gdn-chunk: gdn_rec_cols_pipe_kernel with the two 32-deep FMA chains (k^T W and q^T W) split into 4
+// accumulators each.  The chain is the recurrence's per-token floor (a 32-step dependent FFMA chain is ~128
+// cycles before the barriers); the split keeps the load pattern, the barriers and the (S, h_v, S) state
+// layout untouched.  FP32-level, NOT bit-exact - the four partial sums group the 32 products differently -
+// so it is opt-in by measured benefit (STRATA_GDN_REC_WARP=2; gdn_chunk_parity bounds the error).
+#if defined(STRATA_V100_OPT)
+__global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_fast_kernel(float* __restrict__ state,
+                                                                        const float* __restrict__ h,
+                                                                        const float* __restrict__ gate,
+                                                                        const float* __restrict__ beta,
+                                                                        float* __restrict__ oc_out, int64_t T) {
+    constexpr int NT = CB * RG, LPT = S / NT;
+    __shared__ float sk[S], sq[S], red[RG][CB];
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
+    const int qh = head % HK;
+    float s[RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+    float nq[LPT], nk[LPT], nv = 0.0f, ng = 0.0f, nb = 0.0f;
+    auto fetch = [&](int64_t t) {
+        const float* ht = h + t * C;
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { nq[u] = ht[qh * S + tid + u * NT]; nk[u] = ht[HK * S + qh * S + tid + u * NT]; }
+        nv = ht[2 * HK * S + head * S + col];
+        ng = gate[t * HV + head];
+        nb = beta[t * HV + head];
+    };
+    if (T > 0) fetch(0);
+    for (int64_t t = 0; t < T; ++t) {
+        float cq[LPT], ck[LPT];
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { cq[u] = nq[u]; ck[u] = nk[u]; }
+        const float cv = nv, cg = ng, cbt = nb;
+        __syncthreads();
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
+        __syncthreads();
+        if (t + 1 < T) fetch(t + 1);
+        const float g = __expf(cg);
+        float kv[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv[r & 3] = fmaf(s[r], sk[rg * RPG + r], kv[r & 3]);
+        red[rg][c] = (kv[0] + kv[1]) + (kv[2] + kv[3]);
+        __syncthreads();
+        const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
+        const float delta = (cv - g * kv_col) * cbt;
+        float o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
+            o[r & 3] = fmaf(s[r], sq[rg * RPG + r], o[r & 3]);
+        }
+        __syncthreads();
+        red[rg][c] = (o[0] + o[1]) + (o[2] + o[3]);
+        __syncthreads();
+        if (rg == 0) oc_out[t * HV * S + head * S + col] = (red[0][c] + red[1][c] + red[2][c] + red[3][c]) * rsqrtf((float) S);
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+}
+#endif
+
 #if !defined(__HIPCC__)
 // The recurrence with one thread for the three value heads that share a key head (head % HK): column c of heads
 // qh, qh + 16 and qh + 32, row group rg.  gdn_rec_cols_pipe_kernel spends its time in shared memory, not in
@@ -907,6 +1027,43 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
                     const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream) {
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
+#if defined(STRATA_V100_OPT)
+    // v100/gdn-chunk: the chunked recurrence (src/prefill/gdn_chunk.cu) on Volta, where the token chain is the
+    // cost.  STRATA_GDN_CHUNK=0 forces the recurrence, =1 forces the chunked path (the parity test's A/B switch);
+    // unset: cc == 7.0 only, every other architecture keeps the recurrence bit-for-bit as before.  Read per call
+    // on purpose - cheap next to the work, and the tests flip it between two launches.
+    const char* chunk_v = std::getenv("STRATA_GDN_CHUNK");
+    const int chunk_env = chunk_v && *chunk_v ? std::atoi(chunk_v) : -1;
+    static const bool chunk_default = gdn_chunk_available();
+    const bool chunked = !serial && T > 0 && (chunk_env >= 0 ? chunk_env != 0 : false);
+    // v100/gdn-chunk: the sync-free warp-reduction recurrence (bit-exact vs gdn_rec_cols_pipe) is the
+    // measured-fast path on Volta; the chunked recurrence is opt-in (STRATA_GDN_CHUNK=1/2) - correct and
+    // measured, but slower than this on the V100 (bench/gdn_chunk_bench).  STRATA_GDN_REC_WARP=0 restores
+    // the old pipelined kernel bit-for-bit.
+    // STRATA_GDN_REC_WARP: unset -> the chain-split kernel on Volta (measured +6..9%, FP32-level), 0 -> the
+    // old pipelined kernel bit-for-bit, 1 -> the sync-free bit-exact control, 2 -> the chain split forced.
+    const char* warp_v = std::getenv("STRATA_GDN_REC_WARP");
+    const int warp_env = warp_v && *warp_v ? std::atoi(warp_v) : (chunk_default ? 2 : 0);
+    const bool warp_rec = !serial && !chunked && T > 0 && warp_env != 0;
+    if (chunked && T >= 64) {
+        // the chunked prefix + the recurrence over the tail (< 64 tokens), then the out norm over all of T
+        const int64_t T64 = T - T % 64;
+        gdn_chunk_recurrence(state, h, gate, beta, y, T64, stream);
+        if (T > T64)
+            gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(
+                state, h + T64 * C, gate + T64 * HV, beta + T64 * HV, y + T64 * (size_t) HV * S, T - T64);
+        gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16);
+    } else if (warp_rec) {
+        // =2: the 4-accumulator chain split on the pipelined structure (FP32-level, not bit-exact);
+        // =1: the sync-free bit-exact warp reduction (measured slower - kept as the bitwise control)
+        if (warp_env == 2)
+            gdn_rec_cols_pipe_fast_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta,
+                                                                                                y, T);
+        else
+            gdn_rec_cols_warp_kernel<<<HV * NCB, S, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16);
+    } else
+#endif
     if (serial || T <= 0) {
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {

@@ -26,8 +26,19 @@ public:
                        std::string& err);
 
     /// Y[T, N] (fp32, row stride ldy) = X[T, K] (bf16, row-major) . W[N, K]^T (bf16, row-major).  `beta` = 1 adds.
+    ///
+    /// ON cc < 8.0 (V100 and older: no BF16 ALUs, and `cublasGemmEx` with `CUDA_R_16BF` measures 5.6x slower
+    /// there than `CUDA_R_16F`) this multiplies in FP16 instead: both operands go through `f16_from_bf16`
+    /// (exact for 2^-14 <= |x| <= 65280, clamped to +-65504 past that) and the existing FP16 GEMM.  The static
+    /// W is converted ONCE into a bounded cache of FP16 twins (`STRATA_PREFILL_BF16_TWINS_MB`, default 256 MiB,
+    /// 0 = convert per call into the scratch); X is converted per call into the scratch.  sm_75/80+ and HIP
+    /// never enter this path (`STRATA_PREFILL_BF16_F16=0` forces the BF16 cuBLAS call anywhere, `=1` forces
+    /// the FP16 path - the full-engine A/B).
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
               float beta = 0.0f);
+
+    /// The cc < 8.0 BF16-over-FP16 fallback is armed (see `bf16`).  For tests and the micro benchmark.
+    bool bf16_as_f16() const { return bf16_as_f16_; }
 
     /// Y = X . W^T with both in FP16 (bits).
     void f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
@@ -45,6 +56,14 @@ public:
     void* stream() const { return stream_; }
 
 private:
+    /// The cc < 8.0 fallback: Y = X . W^T with both operands rounded to FP16 first (see `bf16`).
+    void bf16_via_f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                      float beta);
+    /// The FP16 twin of a static BF16 W, converted once on first use and cached until destruction; null when
+    /// the cache is disabled or full (the caller then converts per call into the scratch).
+    const uint16_t* f16_twin(const uint16_t* W, int64_t N, int64_t K);
+    void free_twins();
+
     void* handle_ = nullptr;
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;
@@ -52,6 +71,8 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
+    bool bf16_as_f16_ = false;   ///< cc < 8.0 (or STRATA_PREFILL_BF16_F16=1): the BF16 GEMM goes through FP16
+    void* f16_twins_ = nullptr;  ///< private cache of converted Ws (struct F16Twins*), cc < 8.0 only
 };
 
 

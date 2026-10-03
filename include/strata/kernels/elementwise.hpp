@@ -63,6 +63,12 @@ void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 /// four - and nothing downstream could tell which was intended.
 void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 
+/// `y[i] = f16(x[i])` with `x` in BF16 BITS, the operand conversion of the V100 (sm_70) BF16 GEMM fallback:
+/// Volta has no BF16 ALUs and `cublasGemmEx` with `CUDA_R_16BF` measures 5.6x slower there than `CUDA_R_16F`,
+/// so the prefill GEMM multiplies in FP16 instead and this turns each operand around.  See `f16_from_bf16`
+/// for the exactness envelope (exact for 2^-14 <= |x| <= 65280, clamped to +-65504 past that).
+void bf16_to_f16_bulk(const uint16_t* x, uint16_t* y, int64_t n, void* stream);
+
 /// `x[i] = x[i] / (1 + exp(-x[i]))`, in place.
 void silu_inplace(float* x, int64_t n, void* stream);
 

@@ -1,6 +1,8 @@
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the header first.
 #include "strata/core/expert_cache.hpp"
 
+#include "strata/kernels/s2_qpn8.hpp"
+
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -170,6 +172,11 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         return false;
     }
 
+    // V100 QPN8 (s2_qpn8.hpp): a dual-form slot holds the canonical blob AND its repacked copy, so the
+    // M=1 hit path keeps reading canonical bytes while the verify-window GEMV reads the repacked half.
+    // `s2_qpn8_slot_bytes` is the policy: only the canonical Q2_0 blob doubles, and only with the knob on.
+    qpn8_rep_ = strata::kernels::s2_qpn8_slot_bytes(blob_bytes) != blob_bytes;
+    blob_bytes = strata::kernels::s2_qpn8_slot_bytes(blob_bytes);
     const uint64_t want = (uint64_t) n_slots * (uint64_t) blob_bytes;
 
     // ---- **THE ALLOCATION IS CHECKED AGAINST THE CARD, NOT AGAINST THE REQUEST.**
@@ -336,6 +343,14 @@ const uint8_t* ExpertCache::device_slot(int32_t slot) const {
     return base_ + (size_t) slot * (size_t) blob_;
 }
 
+// The QPN8 half of a dual-form slot: `s2_qpn8_repack_blob(dst + n, dst, n)` after the canonical copy.
+// One-time per admission; only `open()`'s dual-form arenas take it (the flag), and only for the canonical
+// blob size (the layout's one geometry).
+static void repack_qpn8(bool dual, uint8_t* dst, size_t n, void* stream) {
+    if (dual && n == (size_t) strata::kernels::s2_qpn8_blob_bytes())
+        strata::kernels::s2_qpn8_repack_blob(dst + n, dst, (int64_t) n, stream);
+}
+
 bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream, std::string& err, int64_t bytes) {
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
@@ -354,6 +369,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
         err = std::string("ExpertCache::fill_slot: ") + cudaGetErrorString(e);
         return false;
     }
+    repack_qpn8(qpn8_rep_, dst, n, stream);                     // ordered after the copy on the caller's stream
     ++fills_;
     return true;
 }
@@ -385,6 +401,11 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
         err = std::string("ExpertCache::fill_slot_blocking: ") + cudaGetErrorString(e);
         return false;
     }
+    repack_qpn8(qpn8_rep_, dst, n, nullptr);
+    if (cudaDeviceSynchronize() != cudaSuccess) {    // the blocking form's slot is live on return
+        err = "ExpertCache::fill_slot_blocking: the QPN8 repack did not finish";
+        return false;
+    }
     ++fills_;
     return true;
 }
@@ -402,6 +423,7 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
         err = std::string("ExpertCache::fill_slot_queued: ") + cudaGetErrorString(e);
         return false;
     }
+    repack_qpn8(qpn8_rep_, dst, n, nullptr);                    // stream 0: ordered after the copy, before sync_queued
     ++fills_;
     return true;
 }

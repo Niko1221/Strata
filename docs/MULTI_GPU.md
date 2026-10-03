@@ -7,9 +7,15 @@ the experts one card holds - for the Coder model on a 16 GB + 24 GB pair, nearly
 speed comes from (decode then barely touches the CPU pool).
 
 This is pipeline (layer) parallelism, not tensor parallelism: a token crosses from one card to the next once per
-verify window (a few hundred KB through pinned RAM), not twice per layer. No NVLink or peer-to-peer access is
-needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
-is every card's share and skips those probes; there is no per-card setting yet.
+verify window (a few hundred KB) and once per prompt chunk (tens of MB), not twice per layer. The hand-off goes
+through **peer-to-peer when the cards can peer** (NVLink or PCIe P2P) and through pinned host RAM otherwise; cards
+on x4 or x1 slots work either way, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
+is every card's share and skips those probes; there is no per-card setting yet. `STRATA_SPLIT_P2P=0`
+forces the pinned path, `=1` forces peer access wherever the cards support it - the A/B is bit-identical (the
+hand-off is a copy, not arithmetic). On 2x V100-SXM2 with NVLink (`nvidia-smi topo` NV2) the link measured 48.3 GB/s
+against 3.3 GB/s through pinned RAM: 0.015 ms per 8-token verify window instead of 0.122, and 1.74 s of copies for
+a 2048-token chunk instead of 25.3 ms (bench/results/2026-10-02-v100-split-p2p). The peer path is the default only
+where it was measured (Volta cards that can peer); sm_80 and newer keep the pinned path unless `STRATA_SPLIT_P2P=1`.
 
 ## Using it
 
@@ -81,7 +87,7 @@ placement that leaves the fullest card the most room. The startup log prints the
 
 ```
 strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)
-strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window
+strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window and per prompt chunk, through pinned RAM (STRATA_SPLIT_P2P=0)
 ```
 
 ## What each card holds
@@ -140,3 +146,13 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
+
+## The V100 (sm_70) build
+
+The community V100 optimizations (Volta tensor-core attention, the P2P hand-off above, the fused GEMV/quantize
+paths, the BF16-via-FP16 prefill GEMM and the int8 KV gather) live behind one build switch,
+`-DSTRATA_EXPERIMENTAL_V100=ON`. Off - the default - is the trunk: those sources are not compiled and every entry
+point takes its original path, bit-for-bit. On, they run when the device is a V100; the older `STRATA_QPN8`,
+`STRATA_SPLIT_P2P`, `STRATA_GROUPED_ATTN` and `STRATA_GDN_CHUNK` variables remain per-feature A/B switches on top.
+`STRATA_EXPERIMENTAL_V100=1` before `setup.sh`/`START-HERE.bat` passes the switch to the build; as with
+`STRATA_EXPERIMENTAL_SM60` it needs a CUDA 12.x toolkit (CUDA 13 dropped sm_70).

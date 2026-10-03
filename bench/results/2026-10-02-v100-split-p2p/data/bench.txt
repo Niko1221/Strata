@@ -1,0 +1,26 @@
+# Tesla V100-SXM2-16GB (sm_70) <-> Tesla V100-SXM2-16GB (sm_70); peer access: 1/1
+# d2d-auto / pin-bounce / map-bounce copy the pattern byte for byte
+# cudaDeviceEnablePeerAccess: 0->1 no error, 1->0 no error
+# cudaMemcpyPeerAsync inside a captured graph (capture+instantiate+launch): REJECTED
+# p2p-memcpy / p2p-kernel copy the pattern byte for byte
+
+shape (one hand-off)         d2d-auto p2p-memcpy p2p-kernel pin-bounce map-bounce
+--------------------------------------------------------------------------------
+verify 2 tokens (100 KB)       0.0469     0.0099     0.0117     0.0455     0.0332
+verify 4 tokens (200 KB)       0.0809     0.0114     0.0130     0.0747     0.0655
+verify 8 tokens (400 KB)       0.1375     0.0154     0.0174     0.1366     0.1220
+2560x256 float (2.5 MB)        0.5807     0.0611     0.0661     0.8100     1.0634
+2560x4096 float (40 MB)        6.8419     0.8734     0.9261    12.6753    18.5072
+prompt chunk 512 (20 MB)       3.5065     0.4413     0.4685     6.3466     8.5772
+prompt chunk 2048 (84 MB)     13.4967     1.7390     1.8415    25.3366    38.0492
+prompt chunk 2560 (104 MB)    16.8453     2.1702     2.2992    31.6669    46.9836
+
+useful GB/s                  d2d-auto p2p-memcpy p2p-kernel pin-bounce map-bounce
+verify 2 tokens (100 KB)         2.18      10.34       8.72       2.25       3.09
+verify 4 tokens (200 KB)         2.53      17.96      15.79       2.74       3.13
+verify 8 tokens (400 KB)         2.98      26.60      23.51       3.00       3.36
+2560x256 float (2.5 MB)          4.51      42.88      39.67       3.24       2.47
+2560x4096 float (40 MB)          6.13      48.02      45.29       3.31       2.27
+prompt chunk 512 (20 MB)         5.98      47.52      44.76       3.30       2.45
+prompt chunk 2048 (84 MB)        6.22      48.24      45.55       3.31       2.20
+prompt chunk 2560 (104 MB)       6.22      48.32      45.61       3.31       2.23

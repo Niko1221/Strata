@@ -57,6 +57,15 @@ DeviceInfo device_info(int ordinal = 0);
 /// otherwise fail at its first kernel launch, with nothing that names the cause.
 std::string device_code_error();
 
+/// The layer-split hand-off between two cards (docs/MULTI_GPU.md): true to move the activation through peer
+/// access instead of pinned host RAM, after enabling it from `src_dev` to `dst_dev` (a no-op when they are the
+/// same device - which takes the host path either way).  STRATA_SPLIT_P2P=0 forces the host path, =1 forces
+/// P2P wherever peer access works; unset takes it on Volta (sm_70) cards that can peer - the measured
+/// configuration (bench/results/2026-10-02-v100-split-p2p: 48.3 GB/s and 0.015 ms per 8-token window over the
+/// link vs 3.3 GB/s and 0.122 ms through pinned RAM) - and keeps the host path on sm_80 and above.  HIP builds
+/// always take the host path.  `note` gets a short reason either way, for the startup log.
+bool split_handoff_p2p(int src_dev, int dst_dev, std::string* note = nullptr);
+
 class CudaError : public std::runtime_error {
 public:
     CudaError(const std::string& what, int code) : std::runtime_error(what), code_(code) {}

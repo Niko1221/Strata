@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "strata/kernels/f16_bits.hpp"
+
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_BF16_HD __host__ __device__
 #else
@@ -56,6 +58,34 @@ STRATA_BF16_HD inline float f32_from_bf16(uint16_t h) {
     std::memcpy(&f, &i, 4);
 #endif
     return f;
+}
+
+/// bf16 -> fp16, the V100 (sm_70) GEMM fallback's operand conversion: FP16 has no room for BF16's range, so
+/// this is exact ONLY where fp16 is exact, and the two ends are handled explicitly:
+///
+///   * `2^-14 <= |x| <= 65280` (every bf16 value whose unbiased exponent is in [-14, 15]) - EXACT.
+///     bf16's 7 mantissa bits sit inside fp16's 10, so the value survives untouched.  This is why the GEMM
+///     through fp16 is faithful: the products are the very same numbers the BF16 GEMM would multiply.
+///   * `|x| >= 65536` (bf16 exponent field >= 143) - CLAMPED to +-65504 (0x7BFF), the largest finite fp16,
+///     sign kept.  A bf16 weight of 1e38 becomes 65504 here; the alternative (fp16 inf) would poison the
+///     whole row with NaN, which is worse than a wrong magnitude on an element that must already be
+///     pathological.  The bf16 grid jumps 65280 -> 65536 with nothing in between, so nothing finite rounds
+///     across the clamp boundary by accident.
+///   * `|x| < 2^-14` - f16_from_f32's RNE into the fp16 subnormals (relative error <= 2^-11, and below
+///     2^-25 the value flushes to a signed zero).  bf16 subnormals (< 2^-126) flush too - past anything
+///     that could matter next to a dot product.
+///   * inf/NaN pass through as fp16 inf/NaN, tested on the BF16 exponent field and before the clamp - a
+///     NaN must not be "clamped" into a plausible 65504.
+///
+/// The route is bf16 -> f32 (a shift, exact) -> f16_from_f32 (the hand-written, oracle-checked converter):
+/// no __float2half, same as the two conversions above.
+STRATA_BF16_HD inline uint16_t f16_from_bf16(uint16_t h) {
+    const uint16_t sign = (uint16_t) (h & 0x8000u);
+    const uint32_t exp = ((uint32_t) h >> 7) & 0xFFu;   // bf16 exponent field, bias 127
+    const uint32_t man = (uint32_t) h & 0x7Fu;
+    if (exp == 0xFFu) return (uint16_t) (sign | 0x7C00u | (man ? 0x200u : 0u));   // inf / quiet NaN
+    if (exp > 142u) return (uint16_t) (sign | 0x7BFFu);                            // >= 65536: clamp
+    return f16_from_f32(f32_from_bf16(h));
 }
 
 }  // namespace strata::kernels
