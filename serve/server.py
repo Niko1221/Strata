@@ -652,7 +652,29 @@ class Vision:
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
-    def __init__(self, cfg: dict, log=None, env: dict | None = None):
+    @staticmethod
+    def work_dir() -> Path:
+        """The directory the encoder's temporary files go in.  `encode()` hands the encoder an
+        `ENC <image> <out>` line and the encoder splits that line at its last space
+        (tools/vision/strata_vision.cpp: parse_enc), so a space anywhere in the *output's* path leaves it
+        reading a nonsense file name: every picture fails with "Unable to open file ...", which is what a
+        machine whose %TEMP% (or user name) contains a space gets.  The image's own path may contain spaces -
+        only the directory has to be clean.  The system temp directory is used while its path is clean, then
+        the working directory, then the system drive's root; the plain temp directory is the last resort."""
+        for parent in (None, Path.cwd(), Path(os.environ.get("SystemDrive", "C:") + os.sep)):
+            try:
+                d = Path(tempfile.mkdtemp(prefix="strata-vision-", dir=parent))
+            except OSError:
+                continue                                        # not writable, or no such drive
+            if " " not in str(d):
+                return d
+            try:
+                d.rmdir()                                       # just created, so still empty
+            except OSError:
+                pass
+        return Path(tempfile.mkdtemp(prefix="strata-vision-"))
+
+    def __init__(self, cfg: dict, log=None, env: dict | None = None, start: bool = True):
         args = [cfg["exe"], "--mmproj", cfg["mmproj"], "--model", cfg["model"]]
         if cfg.get("gpu"):
             args.append("--gpu")
@@ -660,10 +682,12 @@ class Vision:
             args += ["--threads", str(cfg["threads"])]
         if cfg.get("max_tokens"):
             args += ["--max-tokens", str(cfg["max_tokens"])]
-        self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
+        self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
-        self.stopped = False
-        self._start()
+        self.proc = None                                # with start=False nothing runs until restart()
+        self.stopped = True
+        if start:
+            self._start()
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
 
@@ -678,7 +702,7 @@ class Vision:
         self.stopped = False
 
     def alive(self) -> bool:
-        return not self.stopped and self.proc.poll() is None
+        return self.proc is not None and not self.stopped and self.proc.poll() is None
 
     def unload(self):
         """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
@@ -687,10 +711,11 @@ class Vision:
 
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
-        try:
-            self.proc.kill()
-        except OSError:
-            pass
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
         self._start()
 
     @staticmethod
@@ -759,6 +784,8 @@ class Vision:
             return self.cache[key]
 
     def close(self):
+        if self.proc is None:
+            return
         try:
             self.proc.stdin.write("QUIT\n")
             self.proc.stdin.flush()
@@ -2659,7 +2686,8 @@ def main() -> int:
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
-    ap.add_argument("--lazy", action="store_true", help="start the text-only API unloaded; load on first request")
+    ap.add_argument("--lazy", action="store_true",
+                    help="start the API unloaded; the model (and the image encoder) load on the first request")
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
@@ -2708,16 +2736,17 @@ def main() -> int:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
-        if lazy and cfg.get("vision"):
-            ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
-            print("loading the vision encoder ...", flush=True)
+            # with --lazy the encoder starts on the first request, inside ensure_loaded(): it takes its VRAM
+            # before the engine sizes its expert cache, exactly as it does at a normal start
+            print("the vision encoder starts with the model, on the first request ..." if lazy else
+                  "loading the vision encoder ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env))
+                            env=vision_env(cfg, env), start=not lazy)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:

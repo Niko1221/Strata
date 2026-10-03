@@ -513,6 +513,39 @@ class ClientShapes(unittest.TestCase):
         self.assertEqual(list(v.dir.iterdir()), [])
         v.dir.rmdir()
 
+    def test_vision_encoder_directory_has_no_space(self):
+        # the encoder splits its "ENC <image> <out>" line at its last space (tools/vision/strata_vision.cpp:
+        # parse_enc), so a %TEMP% (or user name) with a space in it cut the output path short and every picture
+        # failed with "Unable to open file ...": the directory the encoder's temporary files go in must have none
+        from serve.server import Vision
+
+        with tempfile.TemporaryDirectory() as t:
+            spaced = Path(t) / "john smith" / "Temp"
+            spaced.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"TEMP": str(spaced), "TMP": str(spaced)}), \
+                    mock.patch.object(tempfile, "tempdir", None):
+                d = Vision.work_dir()
+            try:
+                self.assertNotIn(" ", str(d))
+                self.assertTrue(d.is_dir())
+            finally:
+                d.rmdir()
+
+    def test_vision_encoder_can_start_deferred(self):
+        # --lazy with a "vision" entry in the config: nothing runs until the first request, when ensure_loaded()
+        # restarts the encoder before the engine (the order test_vision_encoder_unloads_and_starts_first pins)
+        from serve.server import Vision
+
+        with tempfile.TemporaryDirectory() as t:
+            with mock.patch.object(Vision, "work_dir", return_value=Path(t)):
+                v = Vision({"exe": "x", "mmproj": "m", "model": "d"}, start=False)
+                self.assertIsNone(v.proc)
+                self.assertFalse(v.alive())
+                v.close()                                   # nothing to close, and no crash
+                started = []
+                v._start = lambda: started.append(True)
+                v.restart()
+                self.assertEqual(started, [True])
     def test_leading_system_unchanged(self):
         from serve.frontend import anthropic_to_messages, openai_to_messages
         msgs, _, _ = openai_to_messages({"messages": [{"role": "developer", "content": "D"}, {"role": "user", "content": "u"}]})
