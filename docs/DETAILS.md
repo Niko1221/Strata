@@ -646,6 +646,10 @@ also paste as it is (key `"mcpServers"`):
 "mcp": {"timeout_s": 60, "max_result_chars": 20000, "max_rounds": 8}
 ```
 
+A re-run of setup keeps blocks like these (and other keys it does not write itself) and says so in its output; it
+rewrites only the settings the choices it asks for decide. Engine flags a re-run drops are named in the output, not
+merged.
+
 Or keep them in their own file and start the server with `--mcp-config path\to\claude_desktop_config.json` (a file
 with an `mcpServers` block; add it to the `serve/server.py` line of your run script). Restart Strata after a change.
 

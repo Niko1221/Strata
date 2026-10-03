@@ -368,6 +368,101 @@ class SmallCardTip(unittest.TestCase):
         self.assertIn("close other programs", tip)
 
 
+class ConfigPreserve(unittest.TestCase):
+    """#629: a fresh re-run of setup (another --context, another size) used to regenerate the run config and quietly
+    wipe what the generator does not write itself - the hand-edited "sampling", "mcp_servers" and "mcp" blocks
+    DETAILS.md documents, and hand-set keys inside "vision" and "env".  The extra keys are carried over and named; a
+    key the generator owns ("host", "api_key", "backend" - chosen again by this run, and a secret never carried over)
+    is regenerated as before; engine flags the new args dropped are warned about, not merged into the flags list."""
+
+    def install(self, *extra, configs=()):
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["64GB-1x32GB"]
+        return install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra], configs=configs)
+
+    @staticmethod
+    def seed(**more):
+        """An earlier run config as a previous install writes it, plus overrides."""
+        return {"exe": "<T>/engine/<EXE>", "args": ["--pack", "<T>/data/packs/q2_0"], **more}
+
+    def test_hand_authored_blocks_are_carried(self):
+        blocks = {"sampling": {"temp": 0.7, "top_k": 40}, "mcp_servers": {"fs": {"cmd": "mcp-fs"}},
+                  "mcp": {"server": "built-in"}}
+        code, out, cfg, _ = self.install(configs=[("strata-q2_0.json", self.seed(**blocks))])
+        self.assertEqual(code, 0, out)
+        for k, v in blocks.items():
+            self.assertEqual(cfg[k], v)                              # verbatim, at the top level, next to the rest
+        self.assertIn("carried over from the earlier strata-q2_0.json: mcp; mcp_servers; sampling", out)
+
+    def test_hand_set_keys_inside_vision_and_env_survive(self):
+        old = self.seed(vision={"cuda_device": 1, "backend": "vulkan", "max_tokens": 256},
+                        env={"STRATA_SPLIT_OWN": "1", "STRATA_HIPBLASLT_TUNING": "77"})
+        code, out, cfg, _ = self.install("--vision", "cpu", configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["vision"]["cuda_device"], 1)            # set by hand before (the #408 workflow): kept
+        self.assertEqual(cfg["vision"]["backend"], "vulkan")
+        self.assertEqual(cfg["env"]["STRATA_SPLIT_OWN"], "1")        # a hand-set env value survives a re-run
+        self.assertNotIn("STRATA_HIPBLASLT_TUNING", cfg["env"])      # setup's own computed values: regenerated
+        self.assertIn("vision: backend, cuda_device", out)
+        self.assertIn("env: STRATA_SPLIT_OWN", out)
+
+    def test_a_hand_env_value_survives_without_a_vision_block(self):
+        code, out, cfg, _ = self.install(configs=[("strata-q2_0.json",
+                                                   {"env": {"STRATA_ARENA_PIN_GIB": "8"}})])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["env"]["STRATA_ARENA_PIN_GIB"], "8")
+        self.assertIn("env: STRATA_ARENA_PIN_GIB", out)
+
+    def test_generator_keys_inside_vision_are_regenerated(self):
+        code, out, cfg, _ = self.install("--vision", "cpu",
+                                         configs=[("strata-q2_0.json", self.seed(
+                                             vision={"exe": "old", "mmproj": "old", "max_tokens": 64,
+                                                     "cuda_device": 2}))])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("old", json.dumps(cfg))
+        self.assertNotEqual(cfg["vision"]["max_tokens"], 64)         # this run's choice, as before
+        self.assertEqual(cfg["vision"]["cuda_device"], 2)            # only what the generator doesn't write: carried
+
+    def test_owned_keys_are_never_carried(self):
+        old = self.seed(host="0.0.0.0", api_key="secret", backend="hip",
+                        env={"STRATA_HIPBLASLT_TUNING": "77"})
+        code, out, cfg, _ = self.install(configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        for k in ("host", "api_key", "backend"):
+            self.assertNotIn(k, cfg)                                 # chosen again by this run, secrets never kept
+        self.assertNotIn("STRATA_HIPBLASLT_TUNING", cfg.get("env") or {})   # computed for one install, not carried
+        self.assertNotIn("carried over", out)
+        self.assertNotIn("drops the earlier config's", out)          # nothing hand-set was lost: no warning
+
+    def test_a_block_this_run_drops_is_warned_about(self):
+        code, out, cfg, _ = self.install(configs=[("strata-q2_0.json", self.seed(vision={"gpu": True}))])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("vision", cfg)
+        self.assertIn("drops the earlier config's vision block", out)
+
+    def test_dropped_engine_flags_are_warned_not_merged(self):
+        old = self.seed(args=["--pack", "<T>/data/packs/q2_0", "--my-tuning", "8"])
+        code, out, cfg, _ = self.install(configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        for a in cfg["args"]:
+            self.assertNotIn(a, ("--my-tuning", "8"))                   # the flags list is this run's, not a merge
+        self.assertIn("engine args do not carry the earlier config's flags: --my-tuning", out)
+
+    def test_fresh_install_and_an_unreadable_file_do_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            cfg = {"args": ["--model", "x"]}
+            quiet(setup.carry_over, p, cfg)
+            self.assertEqual(cfg["args"], ["--model", "x"])          # no file yet: a first install
+            p.write_text("{not json")
+            quiet(setup.carry_over, p, cfg)
+            self.assertEqual(cfg, {"args": ["--model", "x"]})        # corrupt: regenerated, as before the fix
+            p.write_text(json.dumps({"port": 1234, "gpu": [0], "exe": "e"}))
+            out = quiet(setup.carry_over, p, cfg)[1]
+            self.assertEqual(cfg, {"args": ["--model", "x"]})
+            self.assertEqual(out, "")                                # nothing of the generator's to carry: silent
+
+
 class DesktopReserveTip(unittest.TestCase):
     """#560 #516: an AMD card on a Linux desktop gets a recommended reserve (3072 MiB) - a tip, the config is not
     changed."""

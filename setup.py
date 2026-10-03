@@ -2369,6 +2369,65 @@ def write_config(path: Path, cfg: dict):
     os.replace(tmp, path)
 
 
+# The top-level keys the run-config generator may write; the docs name the others (DETAILS.md's "sampling" and the
+# "mcp_servers"/"mcp" blocks) as hand-edited in the same file.
+GENERATED_CONFIG_KEYS = {"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend",
+                         "env", "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"}
+# The env values setup computes for one install (its HIP table and a ROCm pin); any other env value in the config is
+# hand-set (DETAILS.md's table) and survives a re-run.
+GENERATED_ENV_KEYS = {"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN"}
+
+
+def carry_over(path: Path, cfg: dict):
+    """#629: a fresh re-run (another --context, another size) used to regenerate the run config and quietly wipe what
+    it does not write itself - the hand-edited "sampling", "mcp_servers" and "mcp" blocks DETAILS.md documents, and
+    the hand-set keys inside "vision" and "env".  The earlier file's extra keys are carried over, naming them; a key
+    the generator writes is never carried (a re-run is allowed to change those, a different backend or host must not
+    survive it by accident); engine flags a new args dropped are only warned about, a flags list is not merged."""
+    try:
+        earlier = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else None
+    except (OSError, ValueError):
+        earlier = None
+    if not isinstance(earlier, dict):
+        return
+    kept = sorted(k for k in earlier if k not in cfg and k not in GENERATED_CONFIG_KEYS)
+    for k in kept:
+        cfg[k] = earlier[k]
+    merged = []
+    for k in ("env", "vision"):
+        earlier_block = earlier.get(k) if isinstance(earlier.get(k), dict) else None
+        if earlier_block is None:
+            continue
+        if isinstance(cfg.get(k), dict):         # set again this run: what setup writes itself is this run's choice
+            hand = {x: y for x, y in earlier_block.items() if x not in cfg[k]}
+        elif k == "env":                         # a hand-set env value survives even a run that sets none itself
+            hand = {x: y for x, y in earlier_block.items() if x not in GENERATED_ENV_KEYS}
+        else:
+            hand = None
+        if not hand:
+            continue
+        cfg[k] = {**(cfg.get(k) or {}), **hand}
+        merged.append(f"{k}: {', '.join(sorted(hand))}")
+    dropped = sorted({a for a in (earlier.get("args") or []) if isinstance(a, str) and a.startswith("--")}
+                     - {a for a in cfg.get("args") or [] if isinstance(a, str) and a.startswith("--")})
+    left = []
+    for k in ("env", "vision"):
+        earlier_block = earlier.get(k) if isinstance(earlier.get(k), dict) else None
+        if earlier_block is None or k in cfg:
+            continue
+        if k == "env" and not any(x not in GENERATED_ENV_KEYS for x in earlier_block):
+            continue                                   # only setup's own values were in it: nothing hand-set lost
+        left.append(k)
+    if dropped:
+        warn("this run's engine args do not carry the earlier config's flags: " + ", ".join(dropped)
+             + " (add them back by hand if you meant them)")
+    if left:
+        warn("this run drops the earlier config's " + ", ".join(left) + " block (that choice was not given this "
+             "time): add it back by hand if you meant it")
+    if kept or merged:
+        ok(f"carried over from the earlier {path.name}: " + "; ".join([*kept, *merged]))
+
+
 def readable_config(path: Path) -> bool:
     """#459: a config that parses as a JSON object; any other gets a one-line warning naming it."""
     text = None
@@ -3664,6 +3723,7 @@ def main() -> int:
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
+    carry_over(cfg_path, cfg)
     write_config(cfg_path, cfg)
     script = write_run_script(tag, cfg_path, port)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
