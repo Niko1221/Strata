@@ -58,6 +58,10 @@ other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [commu
 Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
+An **NVIDIA DGX Spark** (GB10, ARM) works too (experimental; tested with IQ2_XS and UD-Q4_K_XL): `./setup.sh` compiles the engine
+there, and every expert fits on its GPU (decode 56-64 tok/s, prefill 957-1,548 tok/s). Details:
+[DGX Spark](docs/DGX_SPARK.md).
+
 ## Install
 
 ### Let your AI set it up

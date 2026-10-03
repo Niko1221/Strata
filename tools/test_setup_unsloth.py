@@ -139,12 +139,15 @@ class Main(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0):
+    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, unified_memory=False):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": "local"}))
         found = [{"index": i, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.9, "arch": "120", "driver": "580.97"}
                  for i in range(n_gpus)]
+        if unified_memory:   # a DGX Spark: the GPU's memory is the system's RAM
+            found = [{"index": 0, "name": "NVIDIA GB10", "vram_gb": ram, "arch": "121", "driver": "580.173.02",
+                      "unified_memory": True}]
 
         def fake_download(url, dst, what=None):
             self.downloads.append(url)
@@ -164,6 +167,7 @@ class Main(unittest.TestCase):
             mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),
+            mock.patch.object(setup, "ARM", False),   # an x86 PC, whatever runs the test
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "free_gb", lambda p: free),
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
@@ -356,6 +360,16 @@ class Main(unittest.TestCase):
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--resident-budget-gib", cfg["args"])
 
+
+    def test_unified_memory_has_no_ram_budget(self):
+        # a RAM budget would be a second copy of the experts in the memory the GPU's expert cache uses
+        code, out, cfg = self.main(["--context", "262144"], ram=121.6, unified_memory=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("no RAM budget", out)
+        self.assertNotIn("--resident-budget-gib", cfg["args"])
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertIn("--mmap-experts", cfg["args"])
+        self.assertIn("auto", cfg["args"][cfg["args"].index("--expert-cache") + 1])
 
 class LayerSplit(unittest.TestCase):
     """#498: UD-Q4_K_XL across GPUs - asked at setup (one GPU by default), and a start with --gpus no longer keeps

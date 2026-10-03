@@ -47,6 +47,15 @@ bool cpu_avx512_ok();
 /// Whether this CPU (and its OS) runs the AVX2 kernels (AVX, AVX2, FMA, F16C): the floor of every expert kernel
 /// (q2_avx2.cpp, iq_avx2.cpp, and ggml-cpu in the portable build).  STRATA_FORCE_AVX2 does not change it.
 bool cpu_avx2_ok();
+/// Whether Q2_0 rows of a native pack take this repository's own kernels (q2_rows_any: AVX-512 / AVX2, x86 only).
+/// Elsewhere (aarch64) they go through ggml-cpu like every other native format (its NEON vec_dot_q2_0_q8_0).
+constexpr bool q2_own_kernels() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    return true;
+#else
+    return false;
+#endif
+}
 /// The CPU's brand string (CPUID 0x80000002..4), for messages; "unknown" when it has none.
 std::string cpu_name();
 /// Q2_0 GGUF rows / activation quantizer on the kernels this CPU has.

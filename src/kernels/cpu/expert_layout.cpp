@@ -5,10 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "strata/platform/cpu_relax.hpp"
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
-#else
+#elif defined(STRATA_X86)
 #include <cpuid.h>
 #endif
 #include <fstream>
@@ -21,6 +22,26 @@ ExpertLayout g_layout;
 
 const ExpertLayout& expert_layout() { return g_layout; }
 
+#if !defined(STRATA_X86)
+// aarch64 / other: no AVX kernels exist in this build (CMake leaves their files out); the experts run on ggml-cpu's
+// own (NEON) dot products.
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+std::string cpu_name() {
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("model name", 0) == 0 || line.rfind("Model name", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) return line.substr(line.find_first_not_of(' ', c + 1));
+        }
+#if defined(__aarch64__)
+    return "aarch64";
+#else
+    return "unknown";
+#endif
+}
+#else
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -107,6 +128,8 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+
+#endif  // STRATA_X86
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {

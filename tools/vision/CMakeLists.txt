@@ -30,6 +30,8 @@ if(STRATA_PORTABLE)
   foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
     set(${_f} ON CACHE BOOL "" FORCE)
   endforeach()
+elseif(GGML_CPU_ARM_ARCH)   # aarch64 with explicit flags (setup's arm_cpu_arch): -mcpu=native finds none on GB10
+  set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 else()
   set(GGML_NATIVE ON CACHE BOOL "" FORCE)
 endif()

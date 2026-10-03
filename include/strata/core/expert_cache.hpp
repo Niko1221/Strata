@@ -73,6 +73,12 @@ std::vector<std::pair<int32_t, int32_t>> rank_learned_profile(int64_t n_layers, 
 bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
                           const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err);
 
+/// Free device memory for the expert cache.  On a unified memory system - one memory for the CPU and the GPU, such as
+/// the DGX Spark (GB10); CUDA reports it as cudaDevAttrIntegrated - cudaMemGetInfo counts only MemFree, not the page cache - which, with the experts read from the GGUF in place, is mostly those
+/// files' clean pages and gives way to a device allocation.  There the figure is MemAvailable less 6 GiB for the OS
+/// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
+size_t device_free_bytes();
+
 class ExpertCache {
 public:
     ExpertCache() = default;
