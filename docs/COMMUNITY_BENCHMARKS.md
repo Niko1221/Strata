@@ -16,6 +16,11 @@ and their limits. Report what you actually measured and label estimates separate
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
 
+- [2026-10-03: RTX 3090 Ti, 2x Xeon E5-2699 v3 (HP Z840, AVX2, PCIe 3.0), 384 GB RAM](../bench/results/2026-10-03-community-z840-rtx3090ti/README.md):
+  Strata 0.1.38 source build, IQ3_S at 262,144-token context; warm decode 91-95 tok/s, a three-way NUMA
+  placement comparison (node binding vs interleave vs default) and the `--calibrate` sweep on a dual-socket
+  Haswell host.
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
