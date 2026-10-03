@@ -438,6 +438,68 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
+// gdn_rec_cols_pipe_kernel with the two 32-deep FMA chains (k^T W and q^T W) split into 4 accumulators each.
+// The chain is the recurrence's per-token floor (a 32-step dependent FFMA chain is ~128 cycles before the
+// barriers); the split keeps the load pattern, the barriers and the (S, h_v, S) state layout untouched.
+// FP32-level, NOT bit-exact - the four partial sums group the 32 products differently - so it is gated by
+// STRATA_GDN_REC_FAST (unset: cc 7.0 only; 0: baseline; 1: opt in).
+__global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_fast_kernel(float* __restrict__ state,
+                                                                         const float* __restrict__ h,
+                                                                         const float* __restrict__ gate,
+                                                                         const float* __restrict__ beta,
+                                                                         float* __restrict__ oc_out, int64_t T) {
+    constexpr int NT = CB * RG, LPT = S / NT;
+    __shared__ float sk[S], sq[S], red[RG][CB];
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
+    const int qh = head % HK;
+    float s[RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+    float nq[LPT], nk[LPT], nv = 0.0f, ng = 0.0f, nb = 0.0f;
+    auto fetch = [&](int64_t t) {
+        const float* ht = h + t * C;
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { nq[u] = ht[qh * S + tid + u * NT]; nk[u] = ht[HK * S + qh * S + tid + u * NT]; }
+        nv = ht[2 * HK * S + head * S + col];
+        ng = gate[t * HV + head];
+        nb = beta[t * HV + head];
+    };
+    if (T > 0) fetch(0);
+    for (int64_t t = 0; t < T; ++t) {
+        float cq[LPT], ck[LPT];
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { cq[u] = nq[u]; ck[u] = nk[u]; }
+        const float cv = nv, cg = ng, cbt = nb;
+        __syncthreads();
+#pragma unroll
+        for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
+        __syncthreads();
+        if (t + 1 < T) fetch(t + 1);
+        const float g = __expf(cg);
+        float kv[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv[r & 3] = fmaf(s[r], sk[rg * RPG + r], kv[r & 3]);
+        red[rg][c] = (kv[0] + kv[1]) + (kv[2] + kv[3]);
+        __syncthreads();
+        const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
+        const float delta = (cv - g * kv_col) * cbt;
+        float o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
+            o[r & 3] = fmaf(s[r], sq[rg * RPG + r], o[r & 3]);
+        }
+        __syncthreads();
+        red[rg][c] = (o[0] + o[1]) + (o[2] + o[3]);
+        __syncthreads();
+        if (rg == 0) oc_out[t * HV * S + head * S + col] = (red[0][c] + red[1][c] + red[2][c] + red[3][c]) * rsqrtf((float) S);
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+}
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
                                                          float eps, float* __restrict__ y, uint16_t* __restrict__ y16) {
     __shared__ float wsum[4];
@@ -753,6 +815,28 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
     gdn_l2_kernel<<<dim3(2 * HK, (unsigned) T), S, 0, (cudaStream_t) stream>>>(h, eps);
     check("gdn_conv");
 }
+// STRATA_GDN_REC_FAST gates gdn_rec_cols_pipe_fast_kernel, which is FP32-level but not bit-exact against the
+// pipelined baseline.  Unset: the fast kernel on cc 7.0 (Volta) only, every other architecture keeps
+// gdn_rec_cols_pipe_kernel bit-for-bit.  0: the baseline everywhere.  1: opt in anywhere.  Read per call; the
+// default is resolved against the device the work is launched on, whose capability is queried once per thread
+// per device (the layer loop calls this every chunk), so a multi-GPU process dispatches per device.
+static bool gdn_rec_fast() {
+    const char* v = std::getenv("STRATA_GDN_REC_FAST");
+    if (v != nullptr && *v != '\0') return std::atoi(v) != 0;
+    static thread_local int cached_dev = -1;
+    static thread_local bool cached_fast = false;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    if (dev != cached_dev) {
+        int major = 0, minor = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;   // a failed query is not a value: re-query on the next call
+        cached_dev = dev;
+        cached_fast = major == 7 && minor == 0;
+    }
+    return cached_fast;
+}
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
                     const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream) {
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
@@ -760,7 +844,9 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
-        if (pipe)   // the software-pipelined loads (same bits)
+        if (pipe && gdn_rec_fast())   // the 4-accumulator chain split (FP32-level, not bit-exact)
+            gdn_rec_cols_pipe_fast_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        else if (pipe)   // the software-pipelined loads (same bits)
             gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
             gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
