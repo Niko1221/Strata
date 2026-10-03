@@ -2677,6 +2677,7 @@ int main(int argc, char **argv) try {
         for device information which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
+        dpct::get_current_device().get_memory_info(fb, tb);   // SYCL port: dpct dropped this (see tools/fixups.py)
 
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
         const int64_t reserve = ((int64_t) o.vram_reserve_mib + pf + (later ? kWindowMib : 0) +

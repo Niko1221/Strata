@@ -614,6 +614,18 @@ now inside the layer loop, deadlocked the prompt past ~4K tokens under the Level
 again): the upload is marked by a polled sequence number now. #413's gate is an NVIDIA SM-count rule and its parity
 test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 19 / 2,184 tokens, IQ2_XS, 40K).
 
+**Several cards (2026-10-03).** A layer split across two B70s crashed at the second card's expert cache ("no
+room"): upstream reads free memory in an `if` with an initializer, and dpct dropped the call itself, so every later
+stage saw 0 bytes free. The call is restored (and re-applied by `tools/fixups.py` after a re-migration); found and
+tested on 2x B70 by a PR reviewer (Coder split at layer 24: 70.7 tok/s; Flash-Next IQ3_XXS all resident: 66.0 tok/s).
+The image pins `ONEAPI_DEVICE_SELECTOR=level_zero:0`; `serve/strata-sycl.sh` forwards the host's value and, for a
+`--layer-split`, defaults to `level_zero:gpu` so the engine sees every card.
+
+**Int8 XMX on IQ4_NL experts (2026-10-03): no.** `xmx_int8_bench` runs an int8 DPAS GEMM straight from IQ4_NL (one
+32-element block per DPAS, rescaled by d_x * d_w after each) on a Coder down expert (2560 x 640). Within 0.5% of
+exact, but 0.98x of dequant + oneMKL at 32 rows and 0.38x at 512: the per-block rescale keeps the matrix engine
+waiting, and the dequant it would save is ~20 us per expert.
+
 **Not ported yet (2026-10-01).**
 
 - Three kernels carry inline PTX (`mma.sync` tensor-core matrix ops, `ldmatrix`, `cp.async`):

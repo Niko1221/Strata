@@ -209,6 +209,14 @@ edit("src/program/generate.cpp", lambda s: s.replace(
     "gs ? gs->adapt_stream\n                           : adapt_stream->memcpy(",
     "(gs ? gs->adapt_stream : adapt_stream)->memcpy("))
 
+# 9b. layer split's stage_room(): upstream reads free memory as `if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != ...)`
+#     and dpct emitted only the DPCT1106 comment for that if-with-initializer - the query itself vanished, fb stayed 0,
+#     and every later stage found "expert cache: no room" (multi-GPU --layer-split crashed). Restore the query.
+edit("src/program/generate.cpp", sub(
+    r"(auto stage_room = \[&\]\(int dev, bool later, bool drafter,\s*bool search = false\) -> int64_t \{\s*try \{\s*"
+    r"const strata::core::OnDevice on\(dev\);\s*size_t fb = 0, tb = 0;\s*/\*\s*DPCT1106:[^*]*\*/\n)(?!\s*dpct::get_current_device)",
+    r"\1        dpct::get_current_device().get_memory_info(fb, tb);   // SYCL port: dpct dropped this (see tools/fixups.py)\n"))
+
 # 10. %globaltimer: there is no device-side wall clock in SPIR-V; the verify-window stage profiler reads zeros.
 edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
     'asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));',
