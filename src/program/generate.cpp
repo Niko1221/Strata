@@ -5381,6 +5381,7 @@ int main(int argc, char** argv) {
                 }
                 resuming = true;
                 cur_rid = pr.rid;
+                yield_req.store(false);     // the park consumed the offer; a fresh one rides the next YIELD line
             }
             const bool geni = !resuming && line.rfind("GENI ", 0) == 0;
             if (!resuming && !geni && line.rfind("GEN ", 0) != 0) {
@@ -6379,6 +6380,17 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (!hash_ok) {
                     std::printf("ERR reading state fingerprint\n");
                     return 1;
+                }
+                if (std::getenv("STRATA_STATE_HASH_MTP_BLOCKS") != nullptr) {   // DEBUG: which 256-cell chunk of
+                    const int64_t ps2 = qs.page_size;                           // the drafter's KV diverges first
+                    for (int64_t c0 = 0; c0 < mL; c0 += 256) {
+                        uint64_t hb = 1469598103934665603ull;
+                        for (const auto& [pool, w] : kv_arrays(ms))
+                            if (pool != nullptr) hb = hash_cells(pool, w, c0, std::min(mL, c0 + 256), hb);
+                        std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
+                                     (unsigned long long) hb);
+                    }
+                }
                 }
                 std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
                                      "kv=%016llx mtp=%016llx stale=%016llx dead=%016llx pooled_full=%016llx ple_prev=%d,%d\n", (long long) L,
