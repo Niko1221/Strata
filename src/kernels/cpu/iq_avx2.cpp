@@ -56,19 +56,26 @@ inline __m256i sc32(int s) { return _mm256_set1_epi16(s); }
 // keven_signs_q2xs (ggml keeps it static in arch/x86/quants.c): one u64 per 7-bit sign index, byte k
 // = 0xFF when bit k of ksigns_iq2xs[i] is set, 0x01 otherwise.  With this a whole 32-value sign vector
 // is four scalar loads and a set_epi64x - no ksigns byte packing chain and no bit_selector expansion.
-// Built once at load time from the shared ggml-common table so it can never drift from it.
+// Built from the shared ggml-common table so it can never drift from it - on the first call into these kernels,
+// NOT at load time: this file is compiled -mavx2 and the compiler vectorizes the loop, so a static constructor
+// here would execute AVX2 at startup and kill the engine on a CPU without it (which the engine otherwise runs on).
 struct EvenSigns {
     uint64_t v[128];
-    EvenSigns() {
+};
+static EvenSigns even_signs;
+
+void even_signs_init() {
+    static const bool done = [] {
         for (int i = 0; i < 128; ++i) {
             uint64_t r = 0;
             for (int k = 0; k < 8; ++k)
                 r |= (uint64_t) (((ksigns_iq2xs[i] >> k) & 1) ? 0xFF : 0x01) << (8 * k);
-            v[i] = r;
+            even_signs.v[i] = r;
         }
-    }
-};
-static const EvenSigns even_signs;
+        return true;
+    }();
+    (void) done;
+}
 
 inline float hsum8(__m256 v) {
     const __m128 lo = _mm256_castps256_ps128(v), hi = _mm256_extractf128_ps(v, 1);
@@ -384,6 +391,7 @@ bool iq256_supported(int type) noexcept {
 
 void iq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                    float* const* ff, int r0, int r1) {
+    even_signs_init();
     switch (type) {
         case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
@@ -397,6 +405,7 @@ void iq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
 
 void iq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                 int r0, int r1) {
+    even_signs_init();
     switch (type) {
         case 16: dot_rows_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 17: dot_rows_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
