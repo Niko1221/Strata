@@ -445,8 +445,12 @@ class Updater:
                     self._verify(tag)
                     self._step("verify", "Start it and check the version", "done",
                                f"running {self.detail['verified_version']}")
-            self.state = "done"
+            # A successful run keeps the backup (that is the point of it) but not the 124 MB archive it
+            # came from, and never the staging copy: those are what fill the disk when setup.py and the
+            # updater both run on a machine nobody prunes.
             self.detail["installed"] = tag
+            self._clean_workspace(keep_zip=False)
+            self.state = "done"
             self._emit()
         except Exception as e:
             note = str(e)
@@ -463,6 +467,10 @@ class Updater:
             self.state = "failed"
             self.detail["error"] = note
             self.detail["rolled_back"] = bool(self._changed and "Restored" in note)
+            # A failed run keeps the backup too, and also the archive: it is what a user would re-run
+            # the install from, and it is already downloaded. `keep_zip` only says whether to KEEP it -
+            # so it is False in both cases, and the argument is what says whether the backup survives.
+            self._clean_workspace(keep_zip=False)
             self._emit()
         finally:
             if staging and staging.exists():
@@ -470,6 +478,20 @@ class Updater:
             for leftover in self.root.glob("*.part"):
                 leftover.unlink(missing_ok=True)
         return self.state_dict()
+
+    def _clean_workspace(self, keep_zip: bool = False):
+        """Remove the staging copy and the downloaded archive. Never touches a backup-<...> directory.
+
+        The archive is 124 MB per run and the staging tree another 221 MB; on a machine where setup.py
+        has also left copies, leaving them accumulates. It is not kept even after a failure: the release
+        URL is stable for a tag, so re-running downloads it again, and keeping it would mean the engine
+        directory's parent grows by 124 MB per attempt with no way to tell what is stale.
+        """
+        for path in list(self.root.glob("stage-*")) + list(self.root.glob("*.zip")):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
 
     # ---- the individual checks ---------------------------------------------------------------------
 

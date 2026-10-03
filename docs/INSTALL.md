@@ -123,6 +123,23 @@ The same idea, in a container (NVIDIA cards).
 
 ## Updating
 
+**From the web app.** The About tab has an **Update the engine** card: it shows the installed version and the latest
+release, and installs the new engine for you. It shows each step as it happens, and it is deliberately hard to get
+wrong:
+
+- Nothing on this PC changes until the download, the archive, the version inside it and the **staged** engine have
+  all been checked. The staged engine is run before the installed one is touched.
+- The installed engine is copied to a backup first, and that backup is kept until the new engine has started and
+  reported its version. If anything fails after that point, the backup is restored and the card says so.
+- It refuses a downgrade, and it refuses while a request is running or queued - the model is stopped first, through
+  the same `unload` the UI already uses.
+- The card's compute capability is checked **before** the download, so a release with no code for your GPU is
+  refused in a moment rather than after 124 MB.
+- An update left running is picked up again when you reopen the page, so the card shows how it ended.
+
+It updates the engine only. The Python packages, each model's settings and draft subset, and the model files are
+untouched - use `UPDATE.bat` (below) for those.
+
 **`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
 something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
 `START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
@@ -137,6 +154,10 @@ Or by hand: download the new version and unzip it anywhere (or `git pull`), then
 finds them and sets itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup
 compiles the engine again when its source changed (a minute or two for the changed files); if that compile fails, it
 says so and starts the engine you had.
+
+**If an update goes wrong.** The backups are kept in `.strata-update` next to the engine directory
+(`backup-<timestamp>`), newest last; three are kept. Copy the files from the newest one back over the engine
+directory to go back by hand. The card names the exact folder when a rollback happened.
 
 ## Where things are stored
 

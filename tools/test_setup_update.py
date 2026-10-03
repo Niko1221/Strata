@@ -359,6 +359,42 @@ def t_probe_explains_a_missing_runtime():
         check(U.installed_version(eng) == "0.1.31", "the installed engine is still untouched")
 
 
+def t_workspace_is_cleaned():
+    print("\nthe downloaded archive and staging copy are cleaned up, backups are not")
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38")
+        up, state, _ = run_update(eng, net)
+        check(state["state"] == "done", "the update succeeded", str(state.get("detail", {}).get("error", ""))[:40])
+        left = sorted(p.name for p in up.root.glob("*"))
+        check(all(n.startswith("backup-") for n in left),
+              "only the backup is left (no 124 MB zip, no staging tree)", str(left))
+        check(up.backup_dir and up.backup_dir.exists(), "the backup is kept for a by-hand restore")
+
+        # a failed run must clean up too, and must not take the backups with it
+        with tempfile.TemporaryDirectory() as d2:
+            eng2 = install_fake(Path(d2) / "engine", "0.1.31")
+            net2 = Fake("0.1.38", zip_bytes=make_zip({"strata.exe": fake_engine("0.1.20")}, "0.1.20"))
+            up2, state2, _ = run_update(eng2, net2)
+            check(state2["state"] == "failed", "a version-mismatch release fails")
+            left2 = sorted(p.name for p in up2.root.glob("*"))
+            check(not [n for n in left2 if n.endswith(".zip") or n.startswith("stage-")],
+                  "a failed run leaves no archive and no staging tree", str(left2))
+
+        # three updates in a row must not leave three zips behind
+        with tempfile.TemporaryDirectory() as d3:
+            eng3 = install_fake(Path(d3) / "engine", "0.1.31")
+            for i in range(3):
+                up3, st3, _ = run_update(eng3, Fake("0.1.38"))
+                # each round starts from the new version, so pretend a newer one is out
+                (eng3 / "BUILD.json").write_text(json.dumps({"version": "0.1.31"}), encoding="utf-8")
+            zips = list(up3.root.glob("*.zip"))
+            check(not zips, f"three updates leave no zips behind", str([p.name for p in zips]))
+            check(len(list(up3.root.glob("backup-*"))) <= U.KEEP_BACKUPS,
+                  f"and at most {U.KEEP_BACKUPS} backups",
+                  str(len(list(up3.root.glob("backup-*")))))
+
+
 def t_truncated_download_refused():
     print("\na download that stops early is caught by the size check")
     with tempfile.TemporaryDirectory() as d:
@@ -510,7 +546,7 @@ def t_missing_asset_refused():
 def main() -> int:
     for fn in (t_version_and_assets, t_installed_version, t_zip_safety, t_happy_path,
                t_no_update_needed, t_downgrade_refused, t_version_mismatch_refused,
-               t_staged_engine_must_run, t_probe_explains_a_missing_runtime, t_gpu_arch_refused_before_download, t_truncated_download_refused, t_rollback_after_apply,
+               t_staged_engine_must_run, t_probe_explains_a_missing_runtime, t_gpu_arch_refused_before_download, t_workspace_is_cleaned, t_truncated_download_refused, t_rollback_after_apply,
                t_backup_retention, t_missing_asset_refused):
         fn()
     print(f"\n{U.__name__}: {len(FAILS)} failures out of {CHECKS[0]} checks")

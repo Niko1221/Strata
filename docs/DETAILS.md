@@ -414,6 +414,31 @@ the OS file cache, so loading again takes seconds while that RAM is not needed e
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
 
+**Updating the engine from the web app.** The About tab's **Update the engine** card compares the installed
+`BUILD.json` with the project's latest release (`api.github.com/repos/<repo>/releases/latest`) and installs the
+right archive: `POST /api/update/check`, then `POST /api/update/apply` (answer `202`, or `409` while a request is
+running or queued), then `GET /api/update/state` for the nine steps, each with its own status and note. Both POST
+routes take `Content-Type: application/json` from Strata's own page, exactly like `/settings` and `/unload`; the
+state route only reads, so it is open.
+
+The order of the steps is the safety property. Nothing on disk changes until the download, the archive's member
+paths, its CRCs, the version in its `BUILD.json` and the **staged** binary have all been checked - the staged engine
+is run with `--help` before the installed one is touched. The installed files are then copied to
+`.strata-update/backup-<timestamp>` (three kept), replaced, and the new `BUILD.json` verified; any failure from the
+apply step onward restores the backup. A downgrade is refused, as is a release with no build for this platform or
+backend. The card's compute capability is compared against the engine's `archs`/`ptx` **before** the download, which
+is the same rule `setup.py` applies before installing; an unknown card is let through, because a wrong refusal is
+worse than a download. Measured on a GTX 1070 (compute capability 6.1) against release v0.1.38 (`archs` [75, 86, 89,
+120]): the check refuses in 0.3-0.5 s (measured over five check-and-apply rounds on this PC, including the
+round trip to GitHub for the release metadata) instead of downloading the 124,279,645 bytes - a 6.5 s download on
+this PC, measured with the check removed - to learn the engine cannot start.
+
+Integrity is limited to what the release publishes: there is no checksum in the release assets and none in
+`BUILD.json`, so a short or oversized download is caught by comparing against the size the API reported, and the
+rest is covered by the CRC check on every member plus running the staged binary. The Python checkout, the pinned
+packages and the model files are **not** updated here - that is `git pull` and `pip install`, and rewriting the code
+this server is running from is a different thing from replacing a binary next to it.
+
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
 With `"expert_profile_save": "expert-profile-learned.bin"` in `strata-<model>.json` the engine saves that as a
