@@ -50,4 +50,5 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+/.ccache/
 /.rocm-win/

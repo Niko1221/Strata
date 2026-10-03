@@ -545,7 +545,9 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 // a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
 namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
     unsigned long long t;
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
+    t = wall_clock64() * 40ull;   // gfx906: the wall clock runs at 25 MHz (hipDeviceAttributeWallClockRate) -> ns
+#elif defined(__HIPCC__)
     t = wall_clock64() * 10ull;   // gfx10.3 / gfx11 / gfx12: a constant 100 MHz counter, in ns
 #else
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));

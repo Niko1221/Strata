@@ -15,6 +15,9 @@
 #pragma once
 
 #include <cstdint>
+#if defined(__HIPCC__)
+#include <hip/hip_runtime.h>
+#endif
 
 #include "strata/kernels/rope_scaling.hpp"
 

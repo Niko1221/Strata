@@ -387,6 +387,34 @@ if (db != nullptr && g_publish_kernel) {
 // write idempotent across replays of the same graph - a captured literal would ring the same number
 // forever and the host would never see a change.
 strata::kernels::doorbell_ring(db->d_seq, stream);    }    return true;}
+// The verify window's routing: n tokens' logits in one BF16 projection and their top-k in one launch, each token
+// bitwise what `moe_route` gives it (the projection is the same kernel per column, the top-k kernel is per token).
+// Anything else (a native router, the canonical BF16 GEMVs, a doorbell) takes the per-token `moe_route`.
+bool moe_route_window(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
+                      const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream, std::string& err) {
+    using namespace strata::kernels;
+    const bool batched = native_bf16_projections && !(native_router_enabled() && g.n_expert == 512 && k == 10) &&
+                         !std::getenv("STRATA_ROUTE_PER_TOKEN");
+    if (!batched || n == 1) {
+        for (int t = 0; t < n; ++t) {
+            MoEBuffers mb = b;
+            mb.logits = logits + t * g.n_expert; mb.ids = ids + t * k; mb.weights = weights + t * k;
+            if (!moe_route(tables, g, layer, k, mb, x + t * g.n_embd, stream, err, nullptr)) return false;
+        }
+        return true;
+    }
+    const LayerView v(tables, layer);
+    const WeightRef* w_router = v.get("ffn_gate_inp.weight");
+    if (w_router == nullptr) { err = v.name("ffn_gate_inp.weight") + " is missing"; return false; }
+    if (std::getenv("STRATA_ROUTE_PROJ_PER_TOKEN"))
+        for (int t = 0; t < n; ++t)
+            bf16_gemv_fp32_mmvf(x + t * g.n_embd, (const uint16_t*) w_router->data, logits + t * g.n_expert, g.n_embd,
+                                g.n_expert, stream);
+    else
+        bf16_gemv_fp32_mmvf_cols(x, (const uint16_t*) w_router->data, logits, g.n_embd, g.n_expert, n, stream);
+    router_top10(logits, n, (int) g.n_expert, (int) k, ids, weights, stream);
+    return true;
+}
 bool moe_shared(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const MoEBuffers& b,                const float* x, void* stream, std::string& err) {    using namespace strata::kernels;    const LayerView v(tables, layer);    const WeightRef* w_ginp = v.get("ffn_gate_inp_shexp.weight");    const WeightRef* w_sgate = v.get("ffn_gate_shexp.weight");    const WeightRef* w_sup = v.get("ffn_up_shexp.weight");    const WeightRef* w_sdown = v.get("ffn_down_shexp.weight");    const char* missing = !w_ginp ? "ffn_gate_inp_shexp.weight" : !w_sgate ? "ffn_gate_shexp.weight"                          : !w_sup ? "ffn_up_shexp.weight" : !w_sdown ? "ffn_down_shexp.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
 // ---- the shared expert.  Its three weights are quantized, so they need their planes.
 SForm f_gate, f_up, f_down;    if (!sform_of(*w_sgate, f_gate, v.name("ffn_gate_shexp.weight"), err)) return false;    if (!sform_of(*w_sup, f_up, v.name("ffn_up_shexp.weight"), err)) return false;    if (!sform_of(*w_sdown, f_down, v.name("ffn_down_shexp.weight"), err)) return false;    Planes p_gate, p_up, p_down;    if (!plane_ptrs(*w_sgate, v.name("ffn_gate_shexp.weight"), p_gate, err)) return false;    if (!plane_ptrs(*w_sup, v.name("ffn_up_shexp.weight"), p_up, err)) return false;    if (!plane_ptrs(*w_sdown, v.name("ffn_down_shexp.weight"), p_down, err)) return false;

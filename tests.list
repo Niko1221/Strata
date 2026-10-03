@@ -1,0 +1,34 @@
+file_expert_source_test file_expert_source_test
+expert_profile_save_test expert_profile_save_test
+dequant_s2_parity dequant_s2_parity --selftest
+s2_gemv_parity s2_gemv_parity --selftest
+mmvq_multi_parity mmvq_multi_parity
+mmvq_multi_parity_cuda_layout env STRATA_MMVQ_WAVE=0 ./mmvq_multi_parity
+iq_multi_parity iq_multi_parity
+native_grouped_parity native_grouped_parity
+shared_expert_parity shared_expert_parity --selftest
+gr_parity gr_parity --selftest
+gdn_parity gdn_parity --selftest
+s2_gemv_q8_parity s2_gemv_q8_parity --selftest
+sampler_parity sampler_parity --selftest
+sampler_parity_one_block sampler_parity --selftest
+sampler_parity_old sampler_parity --selftest
+decode_cluster_parity decode_cluster_parity --selftest
+rope_parity rope_parity --selftest
+quantize_act_parity quantize_act_parity --selftest
+router_top10_parity router_top10_parity --selftest
+s_gemv_parity s_gemv_parity --selftest
+elementwise_parity elementwise_parity --selftest
+bf16_gemv_parity bf16_gemv_parity --selftest
+s_gemv_q8k_parity s_gemv_q8k_parity --selftest
+qsa_parity qsa_parity --selftest
+kv_q8_parity kv_q8_parity
+kv_stream_parity kv_stream_parity
+kv_hybrid_parity kv_hybrid_parity
+kv_q4_parity kv_q4_parity
+cvec_parity cvec_parity
+s2_expert_grouped_parity s2_expert_grouped_parity --selftest
+platform_memory_test platform_memory_test
+pinned_shared_test pinned_shared_test
+ple_reader_selftest ple_reader_test --selftest
+cuda_device_selftest strata-device --selftest

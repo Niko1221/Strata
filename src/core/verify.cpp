@@ -680,6 +680,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           NE, n, cs);
                 native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
             } catch (const std::exception& e) { err = "verify router: " + std::string(e.what()); return false; }
+#if defined(STRATA_HIP_GFX906)
+        } else if (dec_batch) {
+            // gfx906: the Coder's 256-expert router (the native router is 512 x 10 only) for the whole window in one
+            // multi-column BF16 projection and one top-k, bitwise the per-token calls (route_window_parity); ~3 ms
+            // of a ~55 ms verify window on 2x MI50.  STRATA_ROUTE_PER_TOKEN=1: the per-token calls.
+            if (!moe_route_window(wt, g, l, K, ss.moe, mixed_ + tb * N, logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n,
+                                  cs, err))
+                return false;
+#endif
         } else
         for (int t = tb; t < te; ++t) {
             MoEBuffers mb = ss.moe;
