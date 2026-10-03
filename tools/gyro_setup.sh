@@ -40,7 +40,8 @@ step "python environment"
 
 step "download $F -> $MODELS (keep it on a fast local SSD: the n-gram table is read per token)"
 mkdir -p "$MODELS"
-HF_HUB_ENABLE_HF_TRANSFER=1 .venv/bin/hf download agentionai/Qwen3.8-Flash-Next-Gyro-GGUF "$F" --local-dir "$MODELS"
+if [ -s "$MODELS/$F" ]; then echo "already there: $MODELS/$F (delete it to download again)"
+else HF_HUB_ENABLE_HF_TRANSFER=1 .venv/bin/hf download agentionai/Qwen3.8-Flash-Next-Gyro-GGUF "$F" --local-dir "$MODELS"; fi
 G=$(cd "$MODELS" && pwd)/$F
 
 step "pack -> packs/$P"
