@@ -723,6 +723,7 @@ struct GpuStage {
     int dev = 0;
     int64_t lb = 0, le = 0;
     double pcie_frac = 0.0;
+    void* arena = nullptr;                               ///< `wt`'s device arena, held for the process's lifetime
     strata::core::WeightTable wt;
     strata::core::NativeDense dense;
     strata::core::NativeHead head;
@@ -1984,44 +1985,10 @@ int main(int argc, char** argv) {
         }
         if (native_pack) skip.insert("token_embd.weight");
     }
-    uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
-        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-        return 1;
-    }
-    void* arena = nullptr;
-    if (const cudaError_t ce = cudaMalloc(&arena, pool_bytes); ce != cudaSuccess) {
-        // #486: the arena is the first large allocation and its size does not depend on the context, so what is
-        // missing is held by something else: say how much was free
-        cudaGetLastError();
-        size_t free_b = 0, total_b = 0;
-        cudaMemGetInfo(&free_b, &total_b);
-        std::fprintf(stderr, "strata generate: cudaMalloc(%llu) for the weight arena failed (%s): %llu MiB of %llu "
-                             "MiB VRAM free on this GPU. The arena is allocated first, before the KV and expert "
-                             "caches: another program (or an engine that is still exiting) holds the rest - "
-                             "nvidia-smi / rocm-smi lists them\n",
-                     (unsigned long long) pool_bytes, cudaGetErrorString(ce), (unsigned long long) (free_b >> 20),
-                     (unsigned long long) (total_b >> 20));
-        return 1;
-    }
-    strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
-        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-        return 1;
-    }
-    std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s (%zu canonical tensors skipped: "
-                         "served natively)\n",
-                 (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), skip.size());
-
-    strata::core::NativeDense native_dense;
-    if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
-            std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights\n",
-                     native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0));
-    }
+    // ---- CUDA0's DENSE WEIGHTS WAIT FOR THE SPLIT SEARCH TOO.  They are the largest single block on the card
+    // and, with a layer split, CUDA0 runs only [0, split_at[0]) of them - so the arena cannot be sized here.
+    // `WeightTable wt` and `NativeDense native_dense` are constructed in "the carve" below, once the range is
+    // known; everything between here and there touches no weight, which is why nothing else had to move.
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
@@ -2166,55 +2133,9 @@ int main(int argc, char** argv) {
                                  "(STRATA_SSD_KEEPALIVE=0 turns it off)\n", pio.keepalive_ms, pio.keepalive_window_s);
         else if (pio.mode == strata::kernels::PleIo::Direct)
             std::fprintf(stderr, "strata generate: SSD keep-alive off: the SSD may fall asleep between reads\n");
-        const strata::core::WeightRef* wk = wt.find("blk.1.ple_key.weight");
-        const strata::core::WeightRef* wv = wt.find("blk.1.ple_value.weight");
-        const strata::core::WeightRef* wnk = wt.find("blk.1.ple_norm_key.weight");
-        const strata::core::WeightRef* wnq = wt.find("blk.1.ple_norm_query.weight");
-        const strata::core::WeightRef* wnc = wt.find("blk.1.ple_norm_conv.weight");
-        const strata::core::WeightRef* wc = wt.find("blk.1.ple_conv1d.weight");
-        if (!wk || !wv || !wnk || !wnq || !wnc || !wc) {
-            std::fprintf(stderr, "strata generate: the pack has no blk.1.ple_* tensors, so the PLE cannot be "
-                                 "wired - and running without it is a DIFFERENT MODEL (LEDGER L123)\n");
-            return 1;
-        }
-        // `ple_key` is S2 and the loader has already widened its scales to f32, so the two planes are located
-        // by the sizes the `WeightRef` records rather than re-derived - the same rule `plane_ptrs` follows.
-        if (!wk->quantized()) {
-            // plan v0.3 P6: the IQ model files' BF16 key (the pack's extra.bin, raw BF16)
-            ss.ple.w.key_bf16 = (const uint16_t*) wk->data;
-        } else if (wk->data != nullptr) {
-            ss.ple.w.key_codes = (const uint8_t*) wk->data;
-            ss.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
-        }
-        if (o.native_ple_key && wk->quantized()) {
-            if (!wk->native_data || (wk->native_type != 42 && wk->native_type != 18 && wk->native_type != 23 &&
-                                     wk->native_type != 8) || !wk->native_q8_1) {
-                std::fprintf(stderr, "strata generate: native PLE key is absent or incompatible\n");
-                return 1;
-            }
-            ss.ple.w.key_native_data = wk->native_data;
-            ss.ple.w.key_native_type = wk->native_type;
-            ss.ple.w.key_native_q8_1 = wk->native_q8_1;
-        }
-        ss.ple.w.value_bf16 = (const uint16_t*) wv->data;
-        ss.ple.w.norm_key = (const float*) wnk->data;
-        ss.ple.w.norm_query = (const float*) wnq->data;
-        ss.ple.w.norm_conv = (const float*) wnc->data;
-        // The conv1d kernel reads F16, so this cast is a claim about the pack's storage.  A checkpoint that keeps
-        // the tensor F32 (Q8_0, UD-Q4_K_XL) would hand the kernel the low halves of the f32 words - not an error,
-        // a plausible wrong layer-1 routing.  tools/iq_pack.py narrows it (index kind 3); a pack that did not is
-        // refused here (#255, gopinath87607).  F16 is index kind 5 or 3 (F16InF32) in a native pack and kind 0
-        // (verbatim 2-byte F16) in the canonical Q2_0 pack; BF16 (kind 4) has the same size and is not F16.
-        const bool f16 = wc->kind == strata::core::WeightKind::F16InF32 ||
-                         (wc->kind == strata::core::WeightKind::Verbatim && wc->code_bits == 0);
-        if (!f16 || wc->bytes != (uint64_t) wc->elements * 2) {
-            std::fprintf(stderr, "strata generate: blk.1.ple_conv1d.weight is not stored as F16 (pack index kind %d, "
-                                 "%llu B for %lld values); the PLE conv1d kernel reads F16 - repack with "
-                                 "tools/iq_pack.py\n",
-                         (int) wc->kind, (unsigned long long) wc->bytes, (long long) wc->elements);
-            return 1;
-        }
-        ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+        // THE SIX WEIGHTS ARE WIRED IN "the carve" BELOW, not here: `wt` does not exist yet.  Nothing between
+        // the two points reads the PLE weights, so the only thing this costs is that a pack with no
+        // `blk.1.ple_*` tensors is refused a little later than it used to be.
         ss.ple.consts = strata::kernels::ple_artifact_consts();
         if (o.ple_delay_us > 0) ple_table.set_injected_delay_us(o.ple_delay_us);
         ss.ple.table = &ple_table;
@@ -2243,6 +2164,67 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- THE RANGE CARVE, PRICED.  A stage that runs [lb, le) holds that range's dense weights and no others,
+    // and `layer_bytes` / `served_layer_bytes` read that cost out of the pack's index and the GGUF headers
+    // alone - the same "priced before it is allocated" rule the session carve already follows, and what lets
+    // the search below subtract it.  Before this, EVERY stage held the whole model's dense weights: a card
+    // running 9 of 48 layers was holding 39 layers' worth of projections it can never reach.
+    //
+    // It is read HERE, before the split search and before `--split-skip-if-fits`, because that decision is a
+    // VRAM measurement on CUDA0 whose weights are no longer resident when it is taken (`full_dense` below).
+    //
+    // STRATA_WEIGHT_SLICE=0 disables the carve everywhere, so one binary runs both arms of the A/B.
+    const bool weight_slice = []() {
+        const char* v = std::getenv("STRATA_WEIGHT_SLICE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    std::vector<uint64_t> wt_layer;             // dense bytes per layer: canonical arena + native projections
+    uint64_t wt_global = 0;                     // what EVERY range also holds: the head, the embedding
+    uint64_t wt_routers = 0;                    // the routers CUDA0 holds whatever its range (see `router_keep`)
+    // CS-T's file-tier lookahead reads EVERY layer's router out of CUDA0's table to warm the next layer's
+    // pages, and a dropped row has `data == nullptr`: the copy fails, `ok` goes false, and the lookahead turns
+    // itself off without saying so.  Keeping all 48 is 120 MiB and is cheaper than losing the prefetch.
+    std::set<std::string> router_keep;
+    for (int64_t l = 0; l < g.n_layers; ++l)
+        router_keep.insert("blk." + std::to_string(l) + ".ffn_gate_inp.weight");
+    if (multi_gpu) {
+        std::vector<uint64_t> canon, native_;
+        if (!strata::core::WeightTable::layer_bytes(o.pack, g.n_layers, canon, wt_global, wt_routers, err,
+                                                    skip.empty() ? nullptr : &skip, &router_keep) ||
+            (!o.native_dense_gguf.empty() &&
+             !strata::core::NativeDense::served_layer_bytes(o.native_dense_gguf, o.native_ple_key, g.n_layers,
+                                                            native_, err))) {
+            std::fprintf(stderr, "strata generate: layer split: the weight carve cannot price itself: %s\n",
+                         err.c_str());
+            return 1;
+        }
+        wt_layer.assign((size_t) g.n_layers, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l) wt_layer[(size_t) l] = canon[(size_t) l];
+        for (size_t l = 0; l < native_.size() && l < wt_layer.size(); ++l) wt_layer[l] += native_[l];
+    }
+    auto range_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (lo < 0) lo = 0;
+        if (hi > (int64_t) wt_layer.size()) hi = (int64_t) wt_layer.size();
+        uint64_t sum = 0;
+        for (int64_t l = lo; l < hi; ++l) sum += wt_layer[(size_t) l];
+        return sum;
+    };
+    // THE WHOLE MODEL - what every stage loads when the carve is off, and what CUDA0 alone would need to run
+    // without a split at all (`--split-skip-if-fits`).
+    const uint64_t full_dense = wt_global + wt_routers + range_bytes(0, (int64_t) wt_layer.size());
+    // WHAT A STAGE HOLDING [lo, hi) SPENDS ON WEIGHTS.  Priced with the carve OFF as well, and that is not
+    // symmetry for its own sake: the weights load after the split search in BOTH arms, so `stage_room` has
+    // already measured the VRAM they are about to take.  `weight_slice` decides only WHICH bytes.
+    auto weight_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (wt_layer.empty()) return 0;   // no split at all: nothing is loaded after the search
+        return weight_slice ? wt_global + range_bytes(lo, hi) : full_dense;
+    };
+    // CUDA0's own, which also carries every router.
+    auto cuda0_bytes = [&](int64_t lo, int64_t hi) -> uint64_t {
+        if (wt_layer.empty()) return 0;
+        return weight_slice ? wt_global + wt_routers + range_bytes(lo, hi) : full_dense;
+    };
+
     // ---- --split-skip-if-fits: before any later stage loads, does CUDA0 alone hold every profiled pair?  What it
     // still has to allocate on one GPU is the whole session (the KV of every layer), the drafter and the head
     // (kDrafterMib below), the verify windows and the reserve; the prompt path borrows from the cache.  If the
@@ -2264,7 +2246,11 @@ int main(int argc, char** argv) {
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
             const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers);
-            const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
+            // CUDA0's own dense weights are NOT resident yet - the carve loads them after the search - so they
+            // are part of what this measurement has to hold back.  Without this term a carve would make the
+            // split look skippable by exactly the VRAM it is about to spend.
+            const int64_t held_back = session + (int64_t) full_dense +
+                                      (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
             const int64_t room = (int64_t) fb - held_back;
             cudaDeviceProp dp{};
             cudaGetDeviceProperties(&dp, 0);
@@ -2290,8 +2276,10 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
-    // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
-    // head, made on its device before the host arena is mapped (as the drafter below, for the same WDDM reason)
+    // ---- layer split across GPUs: its own devices are claimed, and its streams, position table and PCIe share
+    // made on them, before the host arena is mapped (as the drafter below, for the same WDDM reason).  ITS
+    // WEIGHTS, SESSION AND (the last) ITS HEAD WAIT FOR THE SPLIT SEARCH BELOW, because all three are priced by
+    // the layer range the search is what decides.
     std::vector<std::unique_ptr<GpuStage>> stages;
     for (size_t i = 0; multi_gpu && i < split_devs.size(); ++i) {
         stages.push_back(std::make_unique<GpuStage>());
@@ -2303,27 +2291,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         const strata::core::OnDevice on(st.dev);
-        void* arena_s = nullptr;
-        if (cudaMalloc(&arena_s, pool_bytes) != cudaSuccess ||
-            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
-            cudaGetLastError();
-            size_t free_b = 0, total_b = 0;   // #486: what that card had free
-            cudaMemGetInfo(&free_b, &total_b);
-            std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s (%llu MiB needed, %llu MiB of %llu "
-                                 "MiB free on that card)\n", st.dev,
-                         err.empty() ? "the weight arena does not fit" : err.c_str(),
-                         (unsigned long long) (pool_bytes >> 20), (unsigned long long) (free_b >> 20),
-                         (unsigned long long) (total_b >> 20));
-            return 1;
-        }
-        if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
-            std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
-                         err.c_str());
-            return 1;
-        }
-        // THE SESSION AND THE HEAD WAIT FOR THE SPLIT SEARCH.  `session_bytes` prices a stage's session by its
-        // LAYER RANGE (the carve - every stage used to hold all 48 layers' state whatever it ran), so the
-        // sessions are allocated after the search below has set `st.lb`/`st.le`; the last stage's head follows.
+        // THE WEIGHTS, THE SESSION AND THE HEAD ALL WAIT FOR THE SPLIT SEARCH.  Every one of them is sized by
+        // the stage's LAYER RANGE - the carve - and the search is what decides that range, so none of the three
+        // can be committed to VRAM before it.  See "the carve" below.
         if (cudaStreamCreateWithFlags(&st.stream, cudaStreamNonBlocking) != cudaSuccess ||
             cudaStreamCreateWithFlags(&st.adapt_stream, cudaStreamNonBlocking) != cudaSuccess ||
             cudaEventCreateWithFlags(&st.adapt_ev, cudaEventDisableTiming) != cudaSuccess) {
@@ -2358,8 +2328,8 @@ int main(int argc, char** argv) {
         }
         size_t fb = 0, tb = 0;
         cudaMemGetInfo(&fb, &tb);
-        std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights; %.2f GiB free (its session "
-                             "follows the split search)\n", st.dev, (double) fb / 1073741824.0);
+        std::fprintf(stderr, "strata generate: layer split: CUDA%d ready; %.2f GiB free (its weights, session and "
+                             "the head follow the split search)\n", st.dev, (double) fb / 1073741824.0);
     }
     GpuStage* const last_st = stages.empty() ? nullptr : stages.back().get();
 
@@ -2420,9 +2390,11 @@ int main(int argc, char** argv) {
     //     for the ~0.1% of the mass it pushes out of its cache);
     //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
     //     reserve, the prompt path's buffers and, on a later GPU, 1 GiB for its windows and the drafter) is used;
-    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
-    //     99.53/99.34/99.15%, measured 99.5/99.4/99.0%).
-    // Up to 3 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    //     the routed mass a cache holds follows the COVERAGE CURVE below, not the (r+1)^-1.2 this used to use.
+    // Up to 4 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    // A FOUR-WAY PLACEMENT USED TO BE THE PROPORTIONAL GUESS AND NOTHING ELSE.  That formula reads only
+    // `layer_ms`, so on four GPUs the free VRAM a placement leaves for expert caches - the whole point of
+    // the search - never entered it.  It does now; see the ns == 4 branch below.
     // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher).
     // THE PROMPT PATH'S BUFFERS ARE BORROWED FROM THE CACHE, NOT WITHHELD BESIDE IT.  With borrowing the cache
     // is sized first and at full size, and the prompt path is laid out in the tail of it (`Prefill::relayout`),
@@ -2441,6 +2413,7 @@ int main(int argc, char** argv) {
     if (split_ring_mib > 0) strata::prefill::Prefill::set_ring_override(96);
     const int64_t split_pf_mib =
         (o.prefill_chunk > 0 && !pf_borrow) ? 160 + (o.prefill_chunk * 680) / 1024 + split_ring_mib : 0;
+
     // ---- WHAT A STAGE RESERVES, AND ON WHICH STAGE.  The flat 1 GiB this used to withhold from EVERY stage
     // after the first was booked "for its windows and the drafter", but the windows measure 75 MiB ("window up
     // to 6 tokens, 74.1 MiB of device buffers", on every boot) and the drafter is loaded on ONE stage - the
@@ -2489,22 +2462,59 @@ int main(int argc, char** argv) {
                          (double) cap[(size_t) i] / 1073741824.0);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        std::vector<double> mass(profile.size());
+        // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.
+        //
+        // `mass[r]` used to be (r+1)^-1.2, fitted to the 5080+3090 sweep.  That fit is still right ON THE RIG IT
+        // WAS FITTED TO - at 20,000 pairs held it predicts 99.35% of the routed mass and that rig measured 99.4%.
+        // It is wrong on THIS model, badly: it claims the top 5,805 pairs hold 94.9% of the mass, and the 4-way
+        // rig measures 69.2% (four boots, 14.9M decode lookups).  No exponent reconciles them, because the curve
+        // is a property of the MODEL'S ROUTING, not a universal constant - and the profile file carries only a
+        // RANKING, with no counts, so it cannot be read off the data either.  (tools/make_profile.py has the
+        // frequencies, and drops them; see the note there.)
+        //
+        // What the two rigs do agree on is that the hit rate follows the HELD COUNT and almost nothing else: two
+        // different splits - K=10,19,34 and K=2,3,27 with helper tiers - held 14,541 and 14,384 pairs and measured
+        // 92.2% and 89.8%.  So the curve is taken over the held FRACTION f, as H(f) = 1 - (1 - f)^b, and each
+        // rank's mass is that curve's increment, which makes any prefix of N pairs sum to exactly H(N/total)
+        // while a cache holding colder-than-prefix pairs still scores below it.
+        //
+        // b = 3 IS CHOSEN TO LEAVE THE PREVIOUSLY VALIDATED REGIME WHERE IT WAS.  At 20,000 held (f = 0.8138) it
+        // gives 99.35%, against the old fit's 99.35% and that rig's measured 99.4% - the 2-GPU placement is
+        // untouched.  At this rig's f = 0.59 it gives 93.2% against 92.2% measured.  Below f ~ 0.5 the two curves
+        // diverge, and that is the whole point: it is exactly the regime where the old one was wrong, and where
+        // it told the search that stranding a card's VRAM costs almost nothing.  With this curve the 4-way rig's
+        // K=2,3,27 - which holds 5,805 pairs - is charged for the misses it really takes.  (Both that rig's
+        // stranding figures here and the ~20 GiB in this branch's first commit were measured BEFORE the weight
+        // carve landed: a stage holding only its own layers has far less to strand.)
+        //
+        // THE CURVE IS A FIT TO ONE MODEL'S TRAFFIC.  STRATA_SPLIT_COVER_B overrides b for a model whose routing
+        // is sharper or flatter, and STRATA_SPLIT_MISS_MS still scales the miss cost it feeds.
+        const size_t n_ranked = profile.size();
+        const double cover_b = std::getenv("STRATA_SPLIT_COVER_B") ? std::atof(std::getenv("STRATA_SPLIT_COVER_B")) : 3.0;
+        std::vector<double> mass(n_ranked);
         double total_mass = 0;
-        for (size_t r = 0; r < profile.size(); ++r) total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
+        for (size_t r = 0; r < n_ranked; ++r) {
+            const double hi = std::pow(1.0 - (double) r / (double) n_ranked, cover_b);
+            const double lo = std::pow(1.0 - (double) (r + 1) / (double) n_ranked, cover_b);
+            total_mass += (mass[r] = hi - lo);
+        }
         auto cost = [&](int64_t l) -> int64_t {
             return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
         };
         // the predicted window time (ms) of a placement, and the routed mass its caches hold
         auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
-            // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
-            // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
-            // is why the sessions are allocated after the search: `session_bytes` is pure arithmetic.
+            // THE CARVE, PRICED BOTH WAYS: a placement gives stage i the layers [lb, le), and that range's
+            // session AND its dense weights are real costs on its device - subtracted here so the search knows
+            // what it leaves for experts.  Stage 0 is in this too: CUDA0's weights are no longer resident when
+            // `stage_room` measured its free VRAM either, and its range is [0, at[0]).  This is why the
+            // sessions and the weights are both allocated after the search - `session_bytes` and `layer_bytes`
+            // are pure arithmetic over a range.
             std::vector<int64_t> capr((size_t) ns);
             for (int i = 0; i < ns; ++i) {
                 const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1];
                 const int64_t le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
+                capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+                                   (int64_t) (i == 0 ? cuda0_bytes(lb, le) : weight_bytes(lb, le));
             }
             std::fill(used.begin(), used.end(), 0);
             held_mass = 0;
@@ -2530,20 +2540,18 @@ int main(int argc, char** argv) {
         };
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0;
+        int64_t best_held = 0, tried = 0;
         auto consider = [&]() {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
+            ++tried;
             if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
         };
         const int64_t L = g.n_layers;
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-        } else {
+        // share the layers in proportion to speed: the fallback beyond four GPUs, and the only placement a
+        // model too small to hold four stages has (see the ns == 4 branch).
+        auto proportional = [&]() {
             double total = 0;
             for (const double c : layer_ms) total += 1.0 / c;
             double acc = 0;
@@ -2553,13 +2561,84 @@ int main(int argc, char** argv) {
                                                     i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
             }
             consider();
+        };
+        if (ns == 2) {
+            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
+        } else if (ns == 3) {
+            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
+        } else if (ns == 4) {
+            // ---- EVERY FOUR-WAY PLACEMENT IS TRIED.  This branch used to share the layers in proportion to
+            // speed and score that ONE candidate, and that formula reads only `layer_ms` - never `capr`.  So
+            // on a four-GPU rig free VRAM and cache capacity did not influence the placement AT ALL, and the
+            // card with the most room left could be handed the fewest layers: on this 3060/3060/5060/5060 box
+            // CUDA1 ended up with 1,841 MiB no cache could use while CUDA2 ran 15 layers it could only hold a
+            // third of.  All C(L-3,3) placements - 15,180 at 48 layers - are now scored.
+            //
+            // A STAGE'S FILL DEPENDS ONLY ON ITS OWN RANGE AND ITS OWN FREE VRAM.  `predict` hands each ranked
+            // pair to the one stage that owns its layer and each stage stops at its first pair that does not
+            // fit, so the four fills are independent and a placement's held mass is a SUM over its four
+            // ranges.  That is what makes this affordable: each distinct range is walked once and memoised,
+            // 1,121 walks instead of 15,180 - measured at 14 ms against 740 ms, for the same answer.
+            // `le` runs to L inclusive, so a row is L+1 wide - keying on a stride of L would put the last
+            // stage's [lb, L) one past the end of the vector.
+            const size_t stride = (size_t) L + 1;
+            std::vector<double> held_mass_at((size_t) ns * (size_t) L * stride, -1.0);
+            std::vector<int64_t> held_at(held_mass_at.size(), 0);
+            auto range_hold = [&](int i, int64_t lb, int64_t le) -> size_t {
+                const size_t key = ((size_t) i * (size_t) L + (size_t) lb) * stride + (size_t) le;
+                if (held_mass_at[key] < 0.0) {
+                    // one stage's own carve, exactly as `predict` prices it - including CUDA0's router keep
+                    const int64_t room = cap[(size_t) i] -
+                        (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+                        (int64_t) (i == 0 ? cuda0_bytes(lb, le) : weight_bytes(lb, le));
+                    double hm = 0;
+                    int64_t used = 0, cnt = 0;
+                    for (size_t r = 0; r < profile.size(); ++r) {
+                        const int64_t l = profile[r].first;
+                        if (l < lb || l >= le) continue;
+                        if (used + cost(l) > room) break;   // the fill stops exactly where predict's does
+                        used += cost(l);
+                        hm += mass[r];
+                        ++cnt;
+                    }
+                    held_mass_at[key] = hm;
+                    held_at[key] = cnt;
+                }
+                return key;
+            };
+            const double denom = std::max(total_mass, 1e-9);
+            for (int64_t k1 = 2; k1 + 2 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 + 1 < L; ++k2)
+                    for (int64_t k3 = k2 + 1; k3 < L; ++k3) {
+                        const size_t a = range_hold(0, 0, k1), b = range_hold(1, k1, k2);
+                        const size_t c = range_hold(2, k2, k3), d = range_hold(3, k3, L);
+                        const double hm = held_mass_at[a] + held_mass_at[b] + held_mass_at[c] + held_mass_at[d];
+                        const double ms = miss_ms * (1.0 - hm / denom) +
+                                          (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
+                                          (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
+                        ++tried;
+                        if (ms < best_ms) {
+                            best = {k1, k2, k3};
+                            best_ms = ms;
+                            best_mass = hm / denom;
+                            best_held = held_at[a] + held_at[b] + held_at[c] + held_at[d];
+                        }
+                    }
+            // Four stages into fewer than five layers: nothing was enumerated, so keep the old guess rather
+            // than leave `best` empty - an empty split would leave every stage's lb/le unset.
+            if (best.empty()) proportional();
+        } else {
+            // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
+            // 163,185 at five).  Nothing on this rig reaches it.
+            proportional();
         }
         split_at = best;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
         std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
-                     (long long) best_held, profile.size(), 100.0 * best_mass);
+                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
+                     ks.c_str(), best_ms, (long long) best_held, profile.size(), 100.0 * best_mass, (long long) tried);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
@@ -2584,6 +2663,125 @@ int main(int argc, char** argv) {
             stages[i]->lb = split_at[i];
             stages[i]->le = i + 1 < stages.size() ? split_at[i + 1] : g.n_layers;
         }
+    }
+
+    // ---- CUDA0'S OWN CARVE, AND THE PLE WEIGHTS THAT READ IT.  The same rule as the stages below, and the
+    // same guard: `--split-skip-if-fits` and `--split-device 0` both clear `multi_gpu`, and both want CUDA0 to
+    // hold everything - `ver_same` replays a later stage against THIS table, so a carved one would hand it the
+    // null `data` of a dropped row rather than an error.  `hi0 < 0` is the whole model.
+    strata::core::WeightTable wt;
+    strata::core::NativeDense native_dense;
+    void* arena = nullptr;
+    const int64_t hi0 = (multi_gpu && weight_slice && !split_at.empty()) ? split_at[0] : -1;
+    {
+        const strata::core::OnDevice on(0);
+        const std::set<std::string>* const sk = skip.empty() ? nullptr : &skip;
+        const std::set<std::string>* const kp = hi0 >= 0 ? &router_keep : nullptr;
+        uint64_t arena_bytes = 0;
+        if (!strata::core::WeightTable::pool_bytes(o.pack, arena_bytes, err, sk, 0, hi0, kp) ||
+            cudaMalloc(&arena, arena_bytes) != cudaSuccess ||
+            !wt.load(o.pack, arena, arena_bytes, err, sk, 0, hi0, kp)) {
+            std::fprintf(stderr, "strata generate: %s\n",
+                         err.empty() ? "cudaMalloc for the weight arena failed" : err.c_str());
+            return 1;
+        }
+        if (!o.native_dense_gguf.empty()) {
+            if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key, 0, hi0)) {
+                std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights\n",
+                         native_dense.tensor_count(), (double) native_dense.weight_bytes() / 1048576.0);
+        }
+        std::fprintf(stderr, "strata generate: %.2f MiB of weights for layers [0, %lld) from %s (%zu canonical "
+                             "tensors skipped: served natively)\n", (double) arena_bytes / 1048576.0,
+                     (long long) (hi0 < 0 ? g.n_layers : hi0), o.pack.c_str(), skip.size());
+    }
+    // THE PLE's SIX WEIGHTS.  Wired here and not in the PLE block above because `wt` is built just now - and
+    // every one of them is `blk.1.*`, which is inside CUDA0's range whatever the split turns out to be.
+    if (!o.ple_gguf.empty()) {
+        const strata::core::WeightRef* wk = wt.find("blk.1.ple_key.weight");
+        const strata::core::WeightRef* wv = wt.find("blk.1.ple_value.weight");
+        const strata::core::WeightRef* wnk = wt.find("blk.1.ple_norm_key.weight");
+        const strata::core::WeightRef* wnq = wt.find("blk.1.ple_norm_query.weight");
+        const strata::core::WeightRef* wnc = wt.find("blk.1.ple_norm_conv.weight");
+        const strata::core::WeightRef* wc = wt.find("blk.1.ple_conv1d.weight");
+        if (!wk || !wv || !wnk || !wnq || !wnc || !wc) {
+            std::fprintf(stderr, "strata generate: the pack has no blk.1.ple_* tensors, so the PLE cannot be "
+                                 "wired - and running without it is a DIFFERENT MODEL (LEDGER L123)\n");
+            return 1;
+        }
+        // `ple_key` is S2 and the loader has already widened its scales to f32, so the two planes are located
+        // by the sizes the `WeightRef` records rather than re-derived - the same rule `plane_ptrs` follows.
+        if (!wk->quantized()) {
+            // plan v0.3 P6: the IQ model files' BF16 key (the pack's extra.bin, raw BF16)
+            ss.ple.w.key_bf16 = (const uint16_t*) wk->data;
+        } else if (wk->data != nullptr) {
+            ss.ple.w.key_codes = (const uint8_t*) wk->data;
+            ss.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
+        }
+        if (o.native_ple_key && wk->quantized()) {
+            if (!wk->native_data || (wk->native_type != 42 && wk->native_type != 18 && wk->native_type != 23 &&
+                                     wk->native_type != 8) || !wk->native_q8_1) {
+                std::fprintf(stderr, "strata generate: native PLE key is absent or incompatible\n");
+                return 1;
+            }
+            ss.ple.w.key_native_data = wk->native_data;
+            ss.ple.w.key_native_type = wk->native_type;
+            ss.ple.w.key_native_q8_1 = wk->native_q8_1;
+        }
+        ss.ple.w.value_bf16 = (const uint16_t*) wv->data;
+        ss.ple.w.norm_key = (const float*) wnk->data;
+        ss.ple.w.norm_query = (const float*) wnq->data;
+        ss.ple.w.norm_conv = (const float*) wnc->data;
+        // The conv1d kernel reads F16, so this cast is a claim about the pack's storage.  A checkpoint that keeps
+        // the tensor F32 (Q8_0, UD-Q4_K_XL) would hand the kernel the low halves of the f32 words - not an error,
+        // a plausible wrong layer-1 routing.  tools/iq_pack.py narrows it (index kind 3); a pack that did not is
+        // refused here (#255, gopinath87607).  F16 is index kind 5 or 3 (F16InF32) in a native pack and kind 0
+        // (verbatim 2-byte F16) in the canonical Q2_0 pack; BF16 (kind 4) has the same size and is not F16.
+        const bool f16 = wc->kind == strata::core::WeightKind::F16InF32 ||
+                         (wc->kind == strata::core::WeightKind::Verbatim && wc->code_bits == 0);
+        if (!f16 || wc->bytes != (uint64_t) wc->elements * 2) {
+            std::fprintf(stderr, "strata generate: blk.1.ple_conv1d.weight is not stored as F16 (pack index kind %d, "
+                                 "%llu B for %lld values); the PLE conv1d kernel reads F16 - repack with "
+                                 "tools/iq_pack.py\n",
+                         (int) wc->kind, (unsigned long long) wc->bytes, (long long) wc->elements);
+            return 1;
+        }
+        ss.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+    }
+
+    // ---- EACH STAGE LOADS ONLY ITS OWN LAYERS' DENSE WEIGHTS.  `st.lb`/`st.le` are set, so this is the first
+    // moment a stage's arena can be sized - and the price `predict` subtracted is the same arithmetic as the
+    // bytes `pool_bytes` and the loader produce here, so what the search left for the expert cache is what the
+    // cache gets.  A tensor outside the range is DROPPED, not deferred: `find` still returns it, with a null
+    // `data` (see WeightTable::load), so nothing may run one.
+    for (size_t i = 0; i < stages.size(); ++i) {
+        GpuStage& st = *stages[i];
+        const strata::core::OnDevice on(st.dev);
+        // BOTH ENDS OF THE RANGE, NOT JUST THE TOP: a stage that runs [10, 19) must not keep layers 0-9
+        // either, and sizing the arena as [0, le) is exactly the bug that leaves two thirds of the hole
+        // unclaimed while every printed number looks plausible.
+        const int64_t lo = weight_slice ? st.lb : 0;
+        const int64_t hi = weight_slice ? st.le : -1;
+        const std::set<std::string>* const sk = skip.empty() ? nullptr : &skip;
+        uint64_t arena_bytes = 0;
+        if (!strata::core::WeightTable::pool_bytes(o.pack, arena_bytes, err, sk, lo, hi) ||
+            cudaMalloc(&st.arena, arena_bytes) != cudaSuccess ||
+            !st.wt.load(o.pack, st.arena, arena_bytes, err, sk, lo, hi)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev,
+                         err.empty() ? "the weight arena does not fit" : err.c_str());
+            return 1;
+        }
+        if (!o.native_dense_gguf.empty() &&
+            !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key, lo, hi)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
+                         err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: layer split: CUDA%d dense weights for layers [%lld, %lld): %.2f MiB "
+                             "arena + %.2f MiB native\n", st.dev, (long long) st.lb, (long long) st.le,
+                     (double) arena_bytes / 1048576.0, (double) st.dense.weight_bytes() / 1048576.0);
     }
 
     // ---- CUDA0's session, and the stages' sessions: sized to each device's own layer range (the carve).  A
@@ -3126,7 +3324,16 @@ int main(int argc, char** argv) {
         const strata::core::OnDevice on(st.dev);
         std::vector<int64_t> sized;
         int64_t used = 0;
+        // STRATA_STAGE_CACHE_SLOTS=S pins every stage's cache to S slots instead of sizing it from free VRAM.
+        // A test hook in the same spirit as STRATA_TEST_CACHE_FAIL below, and it exists for one reason: the
+        // weight carve FREES VRAM, so an A/B against STRATA_WEIGHT_SLICE=0 would otherwise change the slot
+        // counts as well - and then a token difference says nothing about the weights.  Pinned, the cache
+        // holds the same pairs in both arms and the arena layout is the only variable left.
+        const int64_t pin_slots = std::getenv("STRATA_STAGE_CACHE_SLOTS")
+                                      ? (int64_t) std::atoll(std::getenv("STRATA_STAGE_CACHE_SLOTS"))
+                                      : -1;
         for (const auto& pr : st.profile) {
+            if (pin_slots >= 0 && (int64_t) sized.size() >= pin_slots) break;
             const int64_t b = native_pack ? ((int64_t) lay.blob_bytes(pr.first) + 255) / 256 * 256 : (int64_t) lay.max_blob;
             if (used + b > room) break;
             used += b;
