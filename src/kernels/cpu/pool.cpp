@@ -354,6 +354,10 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         n_ = (int) topo_.worker_cores.size();
     }
     if (n_ < 1) n_ = 1;
+    if (const char* e = std::getenv("STRATA_POOL_QUANT_THRESH"))
+        quant_threshold_ = (std::max)(0, std::atoi(e));
+    else
+        quant_threshold_ = (std::max)(8, n_);
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
@@ -532,6 +536,17 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
+        } else if (mode_ == 7) {
+            const QuantTask& q = quant_tasks_[i];
+            const int e = q.e, t = q.t;
+            if (nfmt_ != nullptr) {
+                if (nfmt_->d_type == 42)
+                    act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+                else
+                    native_quant_h(*nfmt_, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+            } else {
+                act_quant_q8_1(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+            }
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows
             const int per = mode_ == 5 ? FF : H;
@@ -640,14 +655,22 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     mjobs_ = jobs;
+    nfmt_ = nullptr;
     const int threads = n_ + (host_works_ ? 1 : 0);
     mtasks_ = 3 * threads;
     mrows_ = (int64_t) n * FF;
     run_phase(3, mtasks_);
     const auto t1 = std::chrono::steady_clock::now();
+    quant_tasks_.clear();
     for (int e = 0; e < n; ++e)
         for (int t = 0; t < jobs[e].nt; ++t)
-            act_quant_q8_1(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+            quant_tasks_.push_back({e, t});
+    if ((int) quant_tasks_.size() > quant_threshold_) {
+        run_phase(7, (int) quant_tasks_.size());
+    } else {
+        for (const auto& q : quant_tasks_)
+            act_quant_q8_1(split_multi_[(size_t) q.e].ff[q.t], FF, split_multi_[(size_t) q.e].a2[q.t]);
+    }
     const auto t2 = std::chrono::steady_clock::now();
     mrows_ = (int64_t) n * H;
     run_phase(4, mtasks_);
@@ -674,10 +697,20 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
+        quant_tasks_.clear();
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (f.d_type == 42) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
-                else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+                quant_tasks_.push_back({e, t});
+        if ((int) quant_tasks_.size() > quant_threshold_) {
+            run_phase(7, (int) quant_tasks_.size());
+        } else {
+            for (const auto& q : quant_tasks_) {
+                if (f.d_type == 42)
+                    act_quant_any(split_multi_[(size_t) q.e].ff[q.t], FF, split_multi_[(size_t) q.e].a2[q.t]);
+                else
+                    native_quant_h(f, split_multi_[(size_t) q.e].ff[q.t], split_multi_[(size_t) q.e].hq[q.t]);
+            }
+        }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * H;
         run_phase(6, mtasks_);
