@@ -305,12 +305,14 @@ class WindowsDetection(unittest.TestCase):
             pub = root / "pub"
             pub.mkdir()
 
-            def publish(meta):
+            def publish(meta, encoder=False):
                 with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
                     z.writestr("strata.exe", "engine")
                     z.writestr("strata-device.exe", "probe")
                     z.writestr("rocm/bin/amdhip64_7.dll", "dll")
                     z.writestr("BUILD.json", json.dumps(meta))
+                    if encoder:
+                        z.writestr(setup.VEXE, "encoder")
             ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
             good = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": ["gfx1100", "gfx1201"],
                     "lib_dirs": ["rocm/bin"]}
@@ -327,6 +329,16 @@ class WindowsDetection(unittest.TestCase):
                 self.assertEqual(setup.hip_lib_dirs(eng), [eng / "rocm" / "bin"])
                 (pub / setup.WIN_HIP_ASSET).unlink()           # installed: kept, nothing downloaded again
                 self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}), eng)
+                # An installed text-only engine cannot satisfy an explicit image request.
+                publish(good)
+                self.assertIsNone(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}, vision="gpu"))
+                self.assertTrue((eng / "strata.exe").exists())
+                publish({**good, "vision": "gpu", "vision_archs": ["gfx1100"]}, encoder=True)
+                self.assertIsNone(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}, vision="gpu"))
+                publish({**good, "vision": "gpu", "vision_archs": ["gfx1201"]}, encoder=True)
+                self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}, vision="gpu"), eng)
+                (pub / setup.WIN_HIP_ASSET).unlink()
+                self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}, vision="cpu"), eng)
 
 
 _HIP_DEVICES = setup.hip_devices                      # the real parser, for the tests that mock setup.hip_devices
@@ -337,12 +349,29 @@ def setup_hip(text):
 
 
 class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
+    def test_requested_modes_on_windows(self):
         with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
+            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+            self.assertEqual(setup.hip_vision("yes"), "gpu")
+            self.assertEqual(setup.hip_vision("gpu"), "gpu")
+            for asked in (None, "none", "no"):
+                self.assertEqual(setup.hip_vision(asked), "none")
         with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
             self.assertEqual(setup.hip_vision("cpu"), "cpu")
+
+    def test_package_capabilities(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            gpu = {"arch": "gfx1100"}
+            meta = {"vision": "gpu", "vision_archs": ["gfx1100"]}
+            self.assertFalse(setup.hip_prebuilt_vision(meta, eng, gpu, "gpu"))
+            (eng / setup.VEXE).write_bytes(b"encoder")
+            self.assertTrue(setup.hip_prebuilt_vision(meta, eng, gpu, "gpu"))
+            self.assertTrue(setup.hip_prebuilt_vision(meta, eng, {"arch": "gfx1201"}, "cpu"))
+            self.assertFalse(setup.hip_prebuilt_vision(meta, eng, {"arch": "gfx1201"}, "gpu"))
+            self.assertFalse(setup.hip_prebuilt_vision({"vision": "cpu"}, eng, gpu, "gpu"))
+            self.assertTrue(setup.hip_prebuilt_vision({"vision": "cpu"}, eng, gpu, "cpu"))
+            self.assertFalse(setup.hip_prebuilt_vision({"vision": "none"}, eng, gpu, "cpu"))
 
 
 class HipRuntimeBesideExe(unittest.TestCase):

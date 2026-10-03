@@ -72,7 +72,13 @@ def main() -> int:
     ap.add_argument("--archs", required=True, help="the archs the engine was compiled for, ';'-separated")
     ap.add_argument("--rocm-version", required=True)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--vision-build", type=Path, help="vision build directory containing bin/strata-vision.exe")
+    ap.add_argument("--vision-mode", choices=("none", "cpu", "gpu"), default="none")
     a = ap.parse_args()
+    if (a.vision_build is None) != (a.vision_mode == "none"):
+        ap.error("--vision-build and --vision-mode cpu|gpu must be supplied together")
+    if a.vision_build is not None and not (a.vision_build / "bin" / "strata-vision.exe").is_file():
+        ap.error("vision build is missing bin/strata-vision.exe")
     archs = [x for x in re.split(r"[;, ]+", a.archs) if x]
     rbin = a.rocm / "bin"
     objdump = a.rocm / "lib" / "llvm" / "bin" / "llvm-objdump.exe"
@@ -82,10 +88,14 @@ def main() -> int:
 
     for p in PROGRAMS:
         shutil.copy2(a.build / p, stage / p)
+    programs = list(PROGRAMS)
+    if a.vision_build is not None:
+        shutil.copy2(a.vision_build / "bin" / "strata-vision.exe", stage / "strata-vision.exe")
+        programs.append("strata-vision.exe")
 
     # the ROCm DLLs: the programs' imports, followed through the ROCm DLLs themselves
     rocm_dlls = {p.name.lower(): p for p in rbin.glob("*.dll")}
-    need, todo, crt = [], [stage / p for p in PROGRAMS] + [rbin / d for d in DYNAMIC], set()
+    need, todo, crt = [], [stage / p for p in programs] + [rbin / d for d in DYNAMIC], set()
     while todo:
         f = todo.pop()
         for name in imports(objdump, f):
@@ -146,7 +156,8 @@ def main() -> int:
     hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text()
     hlv = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", hl).group(1)) for k in ("MAJOR", "MINOR", "PATCH")]
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,
-            "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2], "vision": "none",
+            "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2],
+            "vision": a.vision_mode, "vision_archs": archs if a.vision_mode == "gpu" else [],
             "lib_dirs": ["rocm/bin"]}
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 

@@ -77,8 +77,9 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** published Windows AMD packages have no image encoder.
+  The optional source build below can include a CPU or HIP encoder; a Windows RX 7900 XTX image check is recorded below.
+  One card per model (`--gpus` is Linux-only for now), no calibration.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -115,6 +116,113 @@ git; no admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-w
 `dist\strata-windows-x64-hip.zip`; `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
 `tools\hip\build_windows.bat tests` also builds the HIP tests (`ctest` in `build-hip-win`, with
 `.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin` on the PATH). `STRATA_HIP_ARCHS` picks other architectures.
+
+To include the optional HIP image encoder for an RX 7900 XT / XTX, run from a command prompt:
+
+```bat
+set STRATA_HIP_ARCHS=gfx1100
+set STRATA_HIP_VISION=gpu
+tools\hip\build_windows.bat
+START-HERE.bat --setup --backend hip --prebuilt dist\ --vision gpu
+```
+
+`STRATA_HIP_VISION=cpu` builds a CPU-only encoder; `none` (the default) keeps the text-only package.
+The encoder uses the engine's pinned llama.cpp checkout and the same ROCm toolchain. The package includes
+`strata-vision.exe`, follows its DLL imports, and records its mode and GPU architectures in `BUILD.json`.
+Setup refuses an image request when the package has no matching encoder. A GPU encoder also accepts `--vision cpu`.
+The configured image VRAM reservation is 700 MiB. Check GPU memory with both processes loaded on your card;
+the short run below does not establish the reservation needed for sustained or large-image workloads.
+
+**Windows image check (2026-10-03, source build 0.1.38):** RX 7900 XTX 24 GiB (gfx1100), Ryzen 7 7800X3D,
+32 GB RAM, display driver 32.0.31041.1004, TheRock ROCm 10.2.0a20260930 and pinned llama.cpp `3cf03257f`.
+An integrated Radeon was also present; the HIP probe listed the XTX as device 0, and the encoder and engine
+were both restricted to that device. Model: Coder IQ1_M with its matching BF16 projector, int8 KV and MTP.
+
+- Standalone CPU and HIP encodes of solid red and blue 196-by-196 PNGs produced finite, distinct embeddings
+  (36 tokens, width 2560). CPU/HIP cosine similarities were 0.99977 for red and 0.99921 for blue.
+  With four CPU threads and a 1024-token image cap, the helper reported 393/386 ms on CPU and 9/11 ms on HIP.
+  These are two small encodes after startup, not an end-to-end or sustained performance comparison.
+- OpenAI and Anthropic image requests recognized the colors. Ordered two-image input, OpenAI image streaming,
+  a repeated image request and text after images passed at both 8192 and 131072 configured context.
+  The longest color-check prompt was 105 tokens; this is not full-window validation. At 131072 configured context, the
+  first red-image request took 2.74 s and the repeated request 0.28 s, measured end-to-end at the local API.
+- Both processes started with the 700 MiB reservation; the engine shrank its automatic expert cache to fit
+  the Windows memory budget. Other GPUs, browser attachment input and sustained workloads
+  were not checked in this run.
+- OCR follow-up on the same Windows HIP configuration: six 900-by-260 black-on-white text PNGs were
+  transcribed exactly through the OpenAI API, including capitalization, punctuation and line breaks.
+  Fixtures used Arial at 24, 42 or 64 pixels and Consolas at 42 pixels: `strata42`, `DOG 29`,
+  `HIP vision: RX 7900 XTX`, a two-line invoice, `Windows HIP OCR test 2026`, and a two-line product/version label.
+  Each request used temperature 0, reasoning disabled and a 128-token output cap; API times were 1.78-1.98 s.
+  Separate CPU/HIP encodes produced finite 224-by-2560 embeddings with cosine similarities 0.99753-0.99966.
+  This is a small clean-text smoke test, not an OCR accuracy benchmark; scans, photographs, handwriting and
+  non-Latin text remain untested.
+- CPU encoder follow-up on the same PC and model, at 131072 configured context: four CPU threads and the
+  standard 300-token image cap passed OpenAI and Anthropic color requests, ordered two-image input, OpenAI
+  streaming, repeated image requests and text after images. All six OCR fixtures above were transcribed
+  exactly through the OpenAI API, matching the HIP answers; CPU API times were 4.02-4.86 s.
+  The text engine stayed on HIP with the original settings. Its automatic expert cache selected more GPU
+  slots with the CPU encoder, so these API timings are not a controlled encoder performance comparison.
+
+### Validate Windows images on another AMD card
+
+The [original HIP port](#original-backend-validation-pr-94), the Windows text-engine checks above and
+[community card reports](#community-validated-cards) separate a successful build, device tests and real model
+requests. Use the same approach for images: a text-engine self-test does not exercise the image encoder.
+The RX 7900 XTX results above are the current Windows image evidence; other cards need their own reports.
+
+1. Use a package built with `STRATA_HIP_VISION=gpu` and your card's architecture in `STRATA_HIP_ARCHS`.
+   For example, set `STRATA_HIP_ARCHS=gfx1201` for an RX 9070 XT before the build command above.
+   Record the Strata commit/package, Windows and driver versions, GPU and VRAM, CPU/RAM,
+   ROCm version, model quantization and matching projector.
+2. For candidate-package checks, use a fresh Strata checkout/install and put the candidate ZIP in `dist\`:
+   `--prebuilt` can reuse an already installed compatible engine instead of installing the new ZIP.
+   Install with `START-HERE.bat --setup --backend hip --prebuilt dist\ --vision gpu --context 8192`.
+   Verify `engine\BUILD.json` matches the candidate's metadata: both `archs` and `vision_archs` must include
+   your architecture, and `vision` must be `gpu`. Run the device-list and self-test commands above; record
+   which HIP device the engine and encoder use, especially when an integrated Radeon is present.
+   Keep the server on `127.0.0.1`. Start with a modest context, then repeat at the context you normally use.
+   Record the image-token cap, VRAM reservation, expert-cache size and free GPU memory with both processes
+   loaded. Confirm `vision.gpu` is `true` in the generated config and the running `strata-vision.exe` command
+   line includes `--gpu`; inspect `strata-<model>.log` for backend errors. These flags show the requested mode;
+   the encoder library can fall back to CPU without a visible startup message. In Windows Task Manager,
+   enable the Details tab's GPU, GPU engine and Dedicated GPU memory columns. Check the encoder's PID for
+   activity on the intended adapter and dedicated memory use while encoding a new, uncached image. Record
+   that observation separately from the text engine's GPU activity; if you cannot confirm it, report GPU
+   execution as unverified.
+3. Make a solid red and a solid blue 196-by-196 PNG, and a 900-by-260 white PNG with black text such as
+   `HIP vision: RX 7900 XTX` (Arial, 42 pixels). Keep these same files for CPU and GPU checks.
+   Attach these files in Strata's chat, terminal chat or your usual image-capable client connected to Strata
+   (including [Claude Code](DETAILS.md#using-it)); ask each color, the colors of both images in
+   order, and the text verbatim. The [image examples](DETAILS.md#images-vision) describe terminal input and
+   both OpenAI-compatible and Anthropic-compatible image requests to the local server. For controlled API
+   checks, use temperature 0, reasoning disabled and a 128-token output cap.
+   Report the actual answers, including OCR mistakes; clean printed text is a smoke check, not an accuracy benchmark.
+4. Repeat an image request, try streaming, then a text-only question such as `What is 2 + 2?`.
+   For release-candidate checks, exercise image input through both API formats and the client you normally
+   use (for example, a browser attachment or Claude Code). Record which paths you checked, any errors,
+   and first-request versus repeated-request times separately; an API check alone does not validate a client's
+   attachment handling.
+5. Stop the server and rerun setup with the same options and `--vision cpu` in place of `--vision gpu`.
+   Repeat the same image requests with the same model and projector. Record CPU threads and image-token cap:
+   setup uses 300 image tokens on CPU and 1024 on GPU by default. To compare encoder performance, set the same
+   `vision.max_tokens` in each generated `strata-<model>.json` before restarting, and record cache/memory differences.
+   CPU/GPU answers need not be bit-identical; check that both read the images correctly.
+6. Restore GPU mode and send repeated larger images representative of your workload. Watch both processes'
+   memory use and logs for allocation failures, crashes or growing memory use. Report image dimensions, image
+   tokens and request count. A short prompt at a large configured context does not validate a full context window.
+
+Post the results on the image-support PR or in an issue, with the commands/configuration, actual answers and
+relevant engine/encoder logs (remove private paths or prompts). Mark failed, skipped and untested checks separately.
+Keep card-specific settings with their measurements; a reservation or cache setting from a 24 GiB card may
+not fit a smaller card. The setup/package regression tests run without a GPU, but do not establish hardware support.
+
+For a normal download to support `--vision gpu`, the Windows AMD release build must enable
+`STRATA_HIP_VISION=gpu`, build the encoder for the advertised architectures and publish the resulting package.
+The build still defaults to `none`; this optional source build does not change an already published ZIP.
+Check the candidate ZIP on a PC without a ROCm development installation as well, so the run tests its bundled
+libraries. Report hardware checks against that release candidate; a successful single-architecture source build
+does not validate a package for every card. Release maintainers decide which card coverage is sufficient to publish.
 
 ## Build
 
