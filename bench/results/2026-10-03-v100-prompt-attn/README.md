@@ -58,12 +58,39 @@ old kernel (upstream's mode 4 is sm_80+ only).
   answer starts the same and **differs later**: the kernel sums in another order and a greedy decode can follow a near tie elsewhere. A recall test
   with a code word does not tell small shifts of the output distribution apart, and a teacher-forced top-1 comparison was not run.
 
+## Distribution check (teacher-forced, against the old path and against controls)
+
+The method of `docs/UNSLOTH_Q4.md`: `STRATA_LOGPOS=<file> STRATA_LOGPOS_TOPK=256` on a serve engine (`--short-read 640 --adapt-every 100000`, greedy,
+`--max-context 204800`). Each prompt is a chat: a long first message (8,543 / 32,906 / 99,040 tokens of this repository's docs and code, read by the
+batched prompt path, i.e. by the kernel under test), a short reply, and a last message of ~600 tokens of other repository text that goes through the verify
+windows, where every token is scored: 617 positions per prompt. KL is old || other over the old run's top 256 plus a bucket for the rest.
+
+| comparison | KL mean (8.5K / 33K / 99K) | argmax same | top-10 overlap |
+| --- | --- | --- | --- |
+| old path vs old path (a second run) | 0 / 0 / 0 | 100% | 100% |
+| new kernel vs new kernel (a second run) | 0 / 0 / 0 | 100% | 100% |
+| **old path vs new kernel** | 0.028 / 0.040 / 0.116 | 97.7 / 93.2 / 86.4% | 93.3 / 91.9 / 88.4% |
+| control A: old path, BF16 GEMMs without the FP16 detour (`STRATA_BF16_VIA_F16=0`) | 0.026 / 0.051 / 0.090 | 97.2 / 91.4 / 91.2% | 92.9 / 91.4 / 88.5% |
+| control B: old path, `--prefill 2048` instead of auto (8192) | 0.023 / 0.035 / 0.038 | 97.9 / 94.8 / 95.6% | 92.9 / 92.2 / 89.7% |
+
+Median KL old vs new: 0.0007 / 0.0088 / 0.022; p99: 0.35 / 0.39 / 1.12 (heavy-tailed). The perplexity of the true tokens moves a lot under every
+change (old 365 / 127 / 24; new 346 / 192 / 12; control A 395 / 161 / 18), so it says nothing about quality here.
+
+Reading: the model amplifies small numeric differences, and both controls, which change nothing but the order of the rounding, move the distribution as
+much as the kernel does. At 99K the kernel is somewhat above both controls; this is one document and 617 positions, so a real effect there is neither
+confirmed nor excluded.
+
+**The kernel on the model's own data.** A temporary check (not in this PR) ran the decode kernel beside the new one on the same inputs, for every 8th batch of
+32 queries, in all 12 QSA layers, on the three prompts above (positions up to 98K, ~5 million (query, head) rows of 256): ||new - old|| / ||old|| per row is
+4.4e-7 on average and 4.8e-6 in the worst row; the largest absolute difference is 4e-5 against values up to 31. No trend over the layers or the context
+length. That is FP32 rounding level, so the differences above come from the model's sensitivity, not from the kernel's arithmetic.
+
 ## Limits
 
 - sm_70 only (`__CUDA_ARCH__` 700-749). Q4_0 KV (`--kv q4_0`) and the QSA block scores (`block_scores_kernel`, the warp kernel below sm_80) still use their
   old kernels on Volta.
 - One request, one card. The Unsloth IQ4_XS pack is not a setup model; the GSQ-RCO quants were not run on this rig.
-- The profile above is one capture of one prompt.
+- The profile above is one capture of one prompt. The distribution check is one document per length; the 99K row is the least certain.
 
 ## Reproduce
 
