@@ -108,6 +108,13 @@ public:
     /// sweep) and a placeholder policy would set the hit rate that everything downstream is then sized against.
     int32_t admit(int64_t layer, int64_t expert);
 
+    /// Publish a same-layer replacement after its slot copy has completed.
+    void replace(int64_t layer, int32_t old_expert, int32_t new_expert) {
+        auto& old = residency_[(size_t) layer * n_expert_ + old_expert];
+        residency_[(size_t) layer * n_expert_ + new_expert] = old;
+        old = kNotResident;
+    }
+
     /// **R4.2g: GIVE EACH LAYER ITS OWN SLOTS.  ROUND 328 MEASURED WHY THE GLOBAL FORM CANNOT WORK.**
     ///
     /// `admit`'s original policy hands out slots in ARRIVAL ORDER from one counter shared by every layer
