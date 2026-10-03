@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,63 +83,128 @@ struct SessionConfig {
 };
 uint64_t session_config_fingerprint(const SessionConfig& config);
 
-// One model input the engine loaded and the role it plays ("native shard 1", "pack dense.bin", ...).  The role, not
-// the path, enters the fingerprint, so a moved model folder still matches.  `optional`: a missing file is recorded
-// as absent instead of failing (a pack without experts.bin).
+// One model input the engine loaded and the role it plays ("native shard 1", "expert blk.3.ffn_up", ...).  The role,
+// not the path, enters the fingerprint, so a moved model folder still matches.  Every (role, file) pair counts: one
+// file in two roles is two entries (its bytes are read once).  `optional`: a missing file is recorded as absent
+// instead of failing (a pack without experts.bin).
 struct SessionModelFile {
     std::string role, path;
     bool optional = false;
 };
-// Sampled fingerprint of the model inputs: role, size, first and last MiB of each file, in the given order.  Paths
-// are UTF-8 (wide APIs on Windows; invalid UTF-8 is refused).  An edit in the middle of a file that keeps its size is
-// NOT detected: model files must not change while sessions saved with them are kept.
-bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error);
+// Sampled fingerprint of the model inputs: role, size, first and last MiB of each entry, in the given order (a file
+// listed under several roles is read once).  Paths are UTF-8 (wide APIs on Windows; invalid UTF-8 is refused).  An
+// edit in the middle of a file that keeps its size is NOT detected: model files must not change while sessions saved
+// with them are kept.  `beat` (optional) is called after each distinct file is read.
+bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error,
+                               const std::function<void()>& beat = {});
+
+// What the engine loaded, as its loaders resolved it (generate.cpp fills it).  `experts`: (role, file) of the expert
+// source - the pack's experts.bin, or every expert tensor read from a GGUF in place, per layer and role, as
+// native_experts.txt resolved it (ExpertSource::model_inputs).
+struct SessionInputs {
+    std::vector<std::string> native_shards, native_dense, native_head;
+    std::string embedding, ple, pack, mtp;
+    std::vector<std::pair<std::string, std::string>> experts;
+};
+// The fingerprint's list: every role with its file, none merged (a path in two roles is two entries).
+std::vector<SessionModelFile> session_model_inputs(const SessionInputs& inputs);
+
+// Why a session file operation failed, for the caller's answer (the server maps it to an HTTP status):
+//   invalid   refused: not a session file, corrupt, another model or configuration, over this engine's limits, a
+//             link, nothing to save (400; nothing changed)
+//   storage   no room on the disk: the free-space preflight, or ENOSPC / EDQUOT / EFBIG (507)
+//   memory    the RAM preflight refused it, or an allocation failed (503)
+//   io        any other failure: permissions, read/write/flush/rename errors, a missing folder (500)
+enum class SessionError { none, invalid, storage, memory, io };
+const char* session_error_name(SessionError e);
+struct SessionStatus {
+    SessionError error = SessionError::none;
+    // write: the new file has replaced `path` (the rename happened).  Together with a failure: the file's bytes are
+    // complete and flushed, but the folder flush after the rename failed, so the new name may not survive a power loss
+    bool published = false;
+    // write (POSIX): this filesystem cannot flush a folder (fsync EINVAL); the save succeeded without that flush
+    bool dir_flush_unsupported = false;
+};
 
 // Optional knobs of a write.
 struct SessionWriteOptions {
-    uint64_t min_free_bytes = 0;    // refuse when the disk would keep less than this free after the file
-    bool durable = true;            // flush the file before the rename and the directory after it
-    std::function<void(uint64_t done, uint64_t total)> progress;   // about every 256 MiB
+    // the free-space PREFLIGHT: refused when the disk has less than the new file plus this many bytes free before the
+    // write starts.  Not a reservation: other writers can take the space afterwards.
+    uint64_t min_free_bytes = 0;
+    bool durable = true;            // flush the file before the rename and (POSIX) the folder after it
+    // after a 16 MiB block at most once a second, and at least at every 256 MiB boundary
+    std::function<void(uint64_t done, uint64_t total)> progress;
+    // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
+    std::function<int(const char* step)> fault;
 };
 
-// Writes a temporary file beside `path` (a unique name, created exclusively: never an existing file or link; mode
-// 0600 on POSIX), flushes it to the disk, renames it over `path` and flushes the directory.  On failure an existing
-// file at `path` is kept and only this call's own temporary file is removed.
+// Writes a temporary file beside `path` (a unique hidden name, created exclusively: never an existing file or link;
+// mode 0600 on POSIX), flushes it, renames it over `path` and, on POSIX, flushes the folder (Windows has no folder
+// flush: the rename is MoveFileExW with MOVEFILE_WRITE_THROUGH).  A failure BEFORE the rename keeps an existing file
+// at `path` and removes only this call's own temporary file.  A failure of the folder flush AFTER the rename returns
+// false with `status->published`: the new file is at `path` (the old one is gone), its directory entry may not
+// survive a power loss.  A filesystem that cannot flush a folder (EINVAL) is not a failure; `status` says so.
 bool session_file_write(const std::string& path, const SavedConversation& image, const SessionFileIdentity& id,
-                        size_t& bytes, std::string& error, const SessionWriteOptions& options = {});
+                        size_t& bytes, std::string& error, const SessionWriteOptions& options = {},
+                        SessionStatus* status = nullptr);
 
 // One K/V layer read straight from where it lives (device or pinned host pool) into the file's staging buffer,
 // without a full host copy first.  `read(part, offset, dst, n)` copies bytes [offset, offset+n) of part
-// 0..4 = k, v, k_scale, v_scale, pooled.  The file bytes are identical to writing a captured ConversationKv.
+// 0..4 = k, v, k_scale, v_scale, pooled; after a failed read `error()` (optional) says why.  The file bytes are
+// identical to writing a captured ConversationKv.
 struct SessionKvSource {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
     std::array<size_t, 5> sizes{};
     std::function<bool(size_t part, size_t offset, void* dst, size_t n)> read;
+    std::function<std::string()> error;
 };
 // `meta` carries everything but the K/V (meta.kv must be empty); `kv` supplies the layers in order.
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
-                        const SessionWriteOptions& options = {});
+                        const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
 
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);
 
-// What a read checks before it allocates.  `admit(file_bytes, why)` is asked once the header and identity match and
-// before any payload allocation (the parsed image is about as large as the file); false refuses the file.
+// What a read checks before it allocates.  Every count is checked against the bytes left in the payload and against
+// these limits BEFORE its array is allocated; the defaults accept whatever the payload can hold.  The engine sets all
+// of them from its runtime (conversation_session_read_limits), and then the file size is bounded too.
 struct SessionReadLimits {
     uint64_t max_file_bytes = UINT64_MAX;
     uint64_t max_tokens = UINT64_MAX;       // token and image counts of the live state and of each checkpoint
     uint64_t max_checkpoints = UINT64_MAX;
     uint64_t max_kv_layers = UINT64_MAX;
-    std::function<bool(uint64_t file_bytes, std::string& why)> admit;
-    std::function<void(uint64_t done, uint64_t total)> progress;   // about every 256 MiB
+    // the runtime's geometry and layer range: a file with others is refused before its state arrays are read
+    std::optional<std::array<int64_t, 18>> geometry;
+    std::optional<std::pair<int64_t, int64_t>> layer_range;
+    // the most bytes of each running-state array (gdn, ple, tails, dead, block_pos), live and per checkpoint
+    std::array<uint64_t, 5> max_state_bytes{UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+    // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
+    // A layer past the end of the list is bounded by the payload only.
+    std::vector<std::array<uint64_t, 5>> max_kv_bytes;
+    // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
+    // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
+    std::function<bool(uint64_t need_bytes, std::string& why)> admit;
+    // after a 16 MiB block at most once a second, and at least at every 256 MiB boundary
+    std::function<void(uint64_t done, uint64_t total)> progress;
 };
+// The largest file these limits admit (UINT64_MAX when one of them is open); session_file_read applies it.
+uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
+// What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read
+// buffer, and the per-allocation overhead of its arrays (a page per 16 MiB segment plus the small vectors).
+uint64_t session_read_peak_bytes(uint64_t file_bytes);
 // Full validation (a regular file with one link, size, header, identity, bounded parse, payload hash) before `image`
 // is replaced.  The file is opened without following a symbolic link (or a reparse point) at its name, and the checks
-// are made on the opened handle.  On failure `image` is unchanged.
+// are made on the opened handle.  On failure `image` is unchanged and `status->error` says what kind of failure.
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
-                       size_t& bytes, std::string& error, const SessionReadLimits& limits = {});
+                       size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
+                       SessionStatus* status = nullptr);
+
+// The folder the free-space preflight asks about for `path`, by the rules of Windows or of POSIX (exposed so both can
+// be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC
+// folder (\\server\share\dir\) and gives a drive root (C:\); empty for a bare file name (the current folder).
+std::string session_free_space_dir(const std::string& path, bool windows_rules);
 
 } // namespace strata::core

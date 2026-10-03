@@ -46,13 +46,13 @@ class FakeProc:
             return
         if cmd == "SAVE":
             if self.engine.fail:
-                self.engine.lines.put("ERR no complete session to save\n")
+                self.engine.lines.put("SERR invalid 0 no complete session to save\n")
             else:
                 Path(path).write_bytes(b"x" * 1234)
                 self.engine.lines.put("SAVED 62993 1234 401.5\n")
         elif cmd == "RESTORE":
             if not Path(path).exists() or self.engine.fail:
-                self.engine.lines.put("ERR session file: saved with another model (model fingerprint differs)\n")
+                self.engine.lines.put("SERR invalid 0 session file: saved with another model (model fingerprint differs)\n")
             else:
                 self.engine.lines.put("RESTORED 62993 1234 560.2\n")
         elif cmd == "DIE":
@@ -204,7 +204,7 @@ class Slots(unittest.TestCase):
         link.symlink_to(target)
         dangling = Path(self.dir.name, "dangling.bin")
         dangling.symlink_to(Path(self.dir.name, "nothing"))
-        self.engine.script = ["ERR session file: x: a symbolic link, not a file\n"]
+        self.engine.script = ["SERR invalid 0 session file: x: a symbolic link, not a file\n"]
         for name in ("link.bin", "dangling.bin"):
             s, b = self.post("/slots/0?action=restore", {"filename": name})
             self.assertEqual(s, 400, b)
@@ -249,16 +249,64 @@ class Slots(unittest.TestCase):
     def test_malformed_or_mismatched_reply_is_a_server_error(self):
         for script in (["RESTORED 1 2 3\n"], ["SAVED x y z\n"], ["SAVED 1 2\n"], ["T 5\n"]):
             self.engine.script = script
+            self.engine.ended = False
+            self.engine.proc = FakeProc(self.engine)
             s, b = self.post("/slots/0?action=save", {"filename": "m.bin"})
             self.assertEqual(s, 500, (script, b))
+            self.assertTrue(self.engine.ended, script)           # out of step: the engine is ended
+
+    def test_out_of_protocol_lines_end_the_engine(self):
+        """R4: a line this exchange does not allow is not a heartbeat, and an answer must hold valid numbers."""
+        for script in (["SESSION nonsense\n"], ["SESSION 5\n"], ["SESSION -1 10\n"], ["SESSION 11 10\n"],
+                       ["SESSION 8 10\n", "SESSION 4 10\n"],      # progress going back
+                       ["SAVED -1 -2 nan\n"], ["SAVED 1 2 nan\n"], ["SAVED 1 2 inf\n"], ["SAVED 1 2 -5\n"],
+                       ["SAVED +1 2 3\n"], ["ERR bare refusal\n"], ["SERR weird 0 x\n"], ["SERR io 2 x\n"],
+                       ["SERR io\n"], ["garbage\n"]):
+            self.engine.script = script
+            self.engine.ended = False
+            self.engine.proc = FakeProc(self.engine)
+            s, b = self.post("/slots/0?action=save", {"filename": "p.bin"})
+            self.assertEqual(s, 500, (script, b))
+            self.assertTrue(self.engine.ended and self.engine.proc.killed, script)
+            json.dumps(b, allow_nan=False)                        # standard JSON
+
+    def test_log_lines_are_not_answers(self):
+        self.engine.script = ["INFO something\n", "SAVED 1 2 3.0\n"]
+        s, b = self.post("/slots/0?action=save", {"filename": "i.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertFalse(self.engine.ended)
+
+    def test_typed_refusals_have_their_own_codes(self):
+        """R5: the engine's category decides the status, never the words of the message."""
+        cases = [("storage", "No space left on device", 507), ("storage", "espace insuffisant", 507),
+                 ("memory", "out of memory for the write buffer", 503), ("invalid", "not enough disk space", 400),
+                 ("invalid", "saved with another model", 400), ("io", "Permission denied", 500),
+                 ("io", "RAM", 500)]
+        for kind, msg, code in cases:
+            self.engine.script = [f"SERR {kind} 0 {msg}\n"]
+            s, b = self.post("/slots/0?action=save", {"filename": "k.bin"})
+            self.assertEqual(s, code, (kind, msg, b))
+            self.assertEqual(b["error"]["kind"], kind)
+            self.assertEqual(b["error"]["message"], msg)
+            self.assertNotIn("published", b["error"])
+            self.assertFalse(self.engine.ended)                   # a refusal keeps the engine
+
+    def test_published_failure_is_reported(self):
+        """R3: the folder flush failed after the rename - the new file replaced the old one; the answer says so."""
+        self.engine.script = ["SERR io 1 flushing the directory: Input/output error (the new file has already "
+                              "replaced the old one)\n"]
+        s, b = self.post("/slots/0?action=save", {"filename": "pub.bin"})
+        self.assertEqual(s, 500, b)
+        self.assertTrue(b["error"]["published"])
+        self.assertIn("replaced", b["error"]["message"])
 
     def test_disk_and_ram_refusals_have_their_own_codes(self):
-        self.engine.script = ["ERR session file: not enough disk space (1143 MiB plus a reserve of 4096 MiB needed, "
-                              "10 MiB free)\n"]
+        self.engine.script = ["SERR storage 0 session file: not enough disk space (1143 MiB plus a reserve of 4096 "
+                              "MiB needed, 10 MiB free)\n"]
         self.assertEqual(self.post("/slots/0?action=save", {"filename": "d.bin"})[0], 507)
         Path(self.dir.name, "r.bin").write_bytes(b"x")
-        self.engine.script = ["ERR session file: not enough RAM to read it (1143 MiB plus a floor of 2560 MiB needed, "
-                              "900 MiB available)\n"]
+        self.engine.script = ["SERR memory 0 session file: not enough RAM to read it (1143 MiB plus a floor of 2560 "
+                              "MiB needed, 900 MiB available)\n"]
         self.assertEqual(self.post("/slots/0?action=restore", {"filename": "r.bin"})[0], 503)
 
     def test_slot_work_counts_as_activity_and_shows_in_status(self):

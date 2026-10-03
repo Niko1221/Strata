@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
+#include <unordered_map>
+#include <optional>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -45,6 +48,36 @@ constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
 constexpr uint32_t kVersion = 1;
 constexpr size_t kHeader = 64, kTrailer = 16;
 constexpr uint64_t kProgressEvery = 256ull << 20;
+
+// Progress for a large transfer: after a block when a second has passed since the last report, and always at a
+// 256 MiB boundary - so a slow disk still reports (and beats the engine's watchdog) once per 16 MiB block.
+class Ticker {
+public:
+    explicit Ticker(const std::function<void(uint64_t, uint64_t)>& fn) : fn_(fn), last_(Clock::now()) {}
+    void operator()(uint64_t before, uint64_t done, uint64_t total) {
+        if (!fn_) return;
+        const auto now = Clock::now();
+        if (done / kProgressEvery == before / kProgressEvery && now - last_ < std::chrono::seconds(1)) return;
+        last_ = now;
+        fn_(done, total);
+    }
+private:
+    using Clock = std::chrono::steady_clock;
+    std::function<void(uint64_t, uint64_t)> fn_;
+    Clock::time_point last_;
+};
+
+SessionError errno_kind(int e) {
+    switch (e) {
+        case ENOSPC:
+#ifdef EDQUOT
+        case EDQUOT:
+#endif
+        case EFBIG: return SessionError::storage;
+        case ENOMEM: return SessionError::memory;
+        default: return SessionError::io;
+    }
+}
 
 constexpr uint64_t P1 = 0x9E3779B185EBCA87ull, P2 = 0xC2B2AE3D27D4EB4Full, P3 = 0x165667B19E3779F9ull,
                    P4 = 0x85EBCA77C2B2AE63ull, P5 = 0x27D4EB2F165667C5ull;
@@ -89,6 +122,11 @@ std::string temp_name(const std::string& leaf) {
     return "." + leaf.substr(0, keep) + "." + hex + ".tmp";
 }
 
+// a test's injected failure at `step`: its errno value (0 = none)
+int injected(const std::function<int(const char*)>* fault, const char* step) {
+    return fault && *fault ? (*fault)(step) : 0;
+}
+
 bool split_path(const std::string& path, std::string& dir, std::string& leaf, std::string& error) {
     const size_t cut = path.find_last_of(
 #ifdef _WIN32
@@ -115,6 +153,14 @@ bool wide(const std::string& s, std::wstring& w) {
     return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int) s.size(), w.data(), n) == n;
 }
 
+SessionError win_kind(DWORD code) {
+    switch (code) {
+        case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: case ERROR_FILE_TOO_LARGE: return SessionError::storage;
+        case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: return SessionError::memory;
+        default: return SessionError::io;
+    }
+}
+
 std::string last_error(DWORD code = GetLastError()) {
     char msg[256] = {};
     const DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, msg,
@@ -131,42 +177,43 @@ public:
     bool create_new(const std::wstring& path) {
         h_ = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (h_ == INVALID_HANDLE_VALUE) { error_ = last_error(); return false; }
+        if (h_ == INVALID_HANDLE_VALUE) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
         return true;
     }
     // a session to restore: the name itself is opened, never what a link or reparse point there points to; it must be
     // an ordinary disk file with one name
     bool open_session(const std::string& path, uint64_t& size) {
         std::wstring w;
-        if (!wide(path, w)) { error_ = "the path is not valid UTF-8"; return false; }
+        if (!wide(path, w)) { refused_ = true; error_ = "the path is not valid UTF-8"; return false; }
         h_ = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                          FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (h_ == INVALID_HANDLE_VALUE) { error_ = last_error(); return false; }
+        if (h_ == INVALID_HANDLE_VALUE) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
         BY_HANDLE_FILE_INFORMATION info{};
-        if (!GetFileInformationByHandle(h_, &info)) { error_ = last_error(); return false; }
-        if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) { error_ = "a link or reparse point, not a file"; return false; }
+        if (!GetFileInformationByHandle(h_, &info)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) { refused_ = true; error_ = "a link or reparse point, not a file"; return false; }
         if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || GetFileType(h_) != FILE_TYPE_DISK) {
+            refused_ = true;
             error_ = "not a regular file";
             return false;
         }
-        if (info.nNumberOfLinks != 1) { error_ = "the file has more than one name (hard link)"; return false; }
+        if (info.nNumberOfLinks != 1) { refused_ = true; error_ = "the file has more than one name (hard link)"; return false; }
         size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
         return true;
     }
     // a model input: links followed (model folders are often linked)
     bool open_model(const std::string& path, uint64_t& size) {
         std::wstring w;
-        if (!wide(path, w)) { error_ = "the path is not valid UTF-8"; return false; }
+        if (!wide(path, w)) { refused_ = true; error_ = "the path is not valid UTF-8"; return false; }
         h_ = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                          nullptr);
         if (h_ == INVALID_HANDLE_VALUE) {
             const DWORD code = GetLastError();
             missing_ = code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
-            error_ = last_error(code);
+            kind_ = win_kind(code); error_ = last_error(code);
             return false;
         }
         LARGE_INTEGER s{};
-        if (!GetFileSizeEx(h_, &s)) { error_ = last_error(); return false; }
+        if (!GetFileSizeEx(h_, &s)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
         size = (uint64_t) s.QuadPart;
         return true;
     }
@@ -176,7 +223,7 @@ public:
         while (n) {
             DWORD w = 0;
             const DWORD want = (DWORD) std::min<size_t>(n, size_t(1) << 30);
-            if (!WriteFile(h_, p, want, &w, nullptr) || w == 0) { error_ = last_error(); return false; }
+            if (!WriteFile(h_, p, want, &w, nullptr) || w == 0) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
             p += w; n -= w;
         }
         return true;
@@ -185,7 +232,7 @@ public:
     long long read_some(uint8_t* p, size_t n) {
         DWORD r = 0;
         if (!ReadFile(h_, p, (DWORD) std::min<size_t>(n, size_t(1) << 30), &r, nullptr)) {
-            error_ = last_error();
+            { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
             return -1;
         }
         return (long long) r;
@@ -193,7 +240,7 @@ public:
     bool read_at(uint64_t offset, uint8_t* p, size_t n) {
         LARGE_INTEGER at{};
         at.QuadPart = (LONGLONG) offset;
-        if (!SetFilePointerEx(h_, at, nullptr, FILE_BEGIN)) { error_ = last_error(); return false; }
+        if (!SetFilePointerEx(h_, at, nullptr, FILE_BEGIN)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
         while (n) {
             const long long r = read_some(p, n);
             if (r <= 0) { if (r == 0) error_ = "file ends early"; return false; }
@@ -205,25 +252,30 @@ public:
         LARGE_INTEGER at{};
         at.QuadPart = (LONGLONG) n;
         if (SetFilePointerEx(h_, at, nullptr, FILE_BEGIN) && SetEndOfFile(h_)) return true;
-        error_ = last_error();
+        { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
         return false;
     }
     bool sync() {
         if (FlushFileBuffers(h_)) return true;
-        error_ = last_error();
+        { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
         return false;
     }
     bool close() {
         if (h_ == INVALID_HANDLE_VALUE) return true;
         const bool ok = CloseHandle(h_) != 0;
-        if (!ok) error_ = last_error();
+        if (!ok) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
         h_ = INVALID_HANDLE_VALUE;
         return ok;
     }
     const std::string& error() const { return error_; }
     bool missing() const { return missing_; }
+    SessionError kind() const { return kind_; }
+    // a validation refusal (a link, not a regular file, ...): bad input, not an I/O failure
+    bool refused() const { return refused_; }
 private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
+    SessionError kind_ = SessionError::io;
+    bool refused_ = false;
     bool missing_ = false;
     std::string error_;
 };
@@ -254,14 +306,25 @@ public:
         error = f.error();
         return false;
     }
-    bool publish(std::string& error, bool) {
+    bool publish(std::string& error, bool, SessionStatus& st, const std::function<int(const char*)>* fault) {
+        if (const int e = injected(fault, "rename")) { error = std::strerror(e); st.error = errno_kind(e); return false; }
         if (MoveFileExW(temp_.c_str(), final_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             own_ = false;
+            st.published = true;
+            // Windows has no folder flush; a test can still make this step fail after the move
+            if (const int e = injected(fault, "dir_flush")) {
+                error = std::string("flushing the directory: ") + std::strerror(e);
+                st.error = errno_kind(e);
+                return false;
+            }
             return true;
         }
-        error = last_error();
+        const DWORD c = GetLastError();
+        st.error = win_kind(c);
+        error = last_error(c);
         return false;
     }
+    SessionError kind() const { return SessionError::io; }
     ~Publisher() { if (own_) DeleteFileW(temp_.c_str()); }   // only the temporary file this call created
 private:
     std::wstring prefix_, final_, temp_;
@@ -270,12 +333,10 @@ private:
 };
 
 bool free_space(const std::string& path, uint64_t& out) {
-    std::string dir, leaf, e;
-    if (!split_path(path, dir, leaf, e)) return false;
     std::wstring w;
-    if (!wide(dir.empty() ? std::string(".") : dir, w)) return false;
+    if (!wide(session_free_space_dir(path, true), w)) return false;
     ULARGE_INTEGER avail{};
-    if (!GetDiskFreeSpaceExW(w.c_str(), &avail, nullptr, nullptr)) return false;
+    if (!GetDiskFreeSpaceExW(w.empty() ? nullptr : w.c_str(), &avail, nullptr, nullptr)) return false;
     out = avail.QuadPart;
     return true;
 }
@@ -297,7 +358,7 @@ public:
     // a new file that did not exist (O_CREAT|O_EXCL: never an existing file or link), readable by its owner only
     bool create_new(int dirfd, const std::string& name) {
         fd_ = ::openat(dirfd, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (fd_ < 0) { error_ = std::strerror(errno); return false; }
+        if (fd_ < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
         try_direct();
         return true;
     }
@@ -306,13 +367,15 @@ public:
     bool open_session(const std::string& path, uint64_t& size) {
         fd_ = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);   // NONBLOCK: a FIFO cannot hang
         if (fd_ < 0) {
+            refused_ = errno == ELOOP;
+            kind_ = errno_kind(errno);
             error_ = errno == ELOOP ? std::string("a symbolic link, not a file") : std::string(std::strerror(errno));
             return false;
         }
         struct stat st {};
         if (::fstat(fd_, &st) != 0) { error_ = std::strerror(errno); return false; }
-        if (!S_ISREG(st.st_mode)) { error_ = "not a regular file"; return false; }
-        if (st.st_nlink != 1) { error_ = "the file has more than one name (hard link)"; return false; }
+        if (!S_ISREG(st.st_mode)) { refused_ = true; error_ = "not a regular file"; return false; }
+        if (st.st_nlink != 1) { refused_ = true; error_ = "the file has more than one name (hard link)"; return false; }
         const int fl = ::fcntl(fd_, F_GETFL);
         if (fl >= 0) ::fcntl(fd_, F_SETFL, fl & ~O_NONBLOCK);
         size = (uint64_t) st.st_size;
@@ -322,7 +385,7 @@ public:
     // a model input: links followed (model folders are often linked)
     bool open_model(const std::string& path, uint64_t& size) {
         fd_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd_ < 0) { missing_ = errno == ENOENT; error_ = std::strerror(errno); return false; }
+        if (fd_ < 0) { missing_ = errno == ENOENT; kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
         struct stat st {};
         if (::fstat(fd_, &st) != 0) { error_ = std::strerror(errno); return false; }
         if (!S_ISREG(st.st_mode)) { error_ = "not a regular file"; return false; }
@@ -337,7 +400,7 @@ public:
             if (w < 0 && errno == EINTR) continue;
             // a filesystem that took O_DIRECT at open but refuses this transfer: nothing was written, go buffered
             if (w < 0 && errno == EINVAL && direct_ && leave_direct()) continue;
-            if (w <= 0) { error_ = w < 0 ? std::strerror(errno) : "short write"; return false; }
+            if (w <= 0) { kind_ = w < 0 ? errno_kind(errno) : SessionError::io; error_ = w < 0 ? std::strerror(errno) : "short write"; return false; }
             p += w; n -= (size_t) w;
         }
         return true;
@@ -348,7 +411,7 @@ public:
             const ssize_t r = ::read(fd_, p, n);
             if (r < 0 && errno == EINTR) continue;
             if (r < 0 && errno == EINVAL && direct_ && leave_direct()) continue;
-            if (r < 0) error_ = std::strerror(errno);
+            if (r < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); }
             return (long long) r;
         }
     }
@@ -356,30 +419,35 @@ public:
         while (n) {
             const ssize_t r = ::pread(fd_, p, n, (off_t) offset);
             if (r < 0 && errno == EINTR) continue;
-            if (r <= 0) { error_ = r < 0 ? std::strerror(errno) : "file ends early"; return false; }
+            if (r <= 0) { kind_ = r < 0 ? errno_kind(errno) : SessionError::io; error_ = r < 0 ? std::strerror(errno) : "file ends early"; return false; }
             p += r; n -= (size_t) r; offset += (uint64_t) r;
         }
         return true;
     }
     bool truncate(uint64_t n) {
         if (::ftruncate(fd_, (off_t) n) == 0) return true;
+        kind_ = errno_kind(errno);
         error_ = std::strerror(errno);
         return false;
     }
     bool sync() {
         if (::fsync(fd_) == 0) return true;
+        kind_ = errno_kind(errno);
         error_ = std::strerror(errno);
         return false;
     }
     bool close() {
         if (fd_ < 0) return true;
         const bool ok = ::close(fd_) == 0;
-        if (!ok) error_ = std::strerror(errno);
+        if (!ok) { kind_ = errno_kind(errno); error_ = std::strerror(errno); }
         fd_ = -1;
         return ok;
     }
     const std::string& error() const { return error_; }
     bool missing() const { return missing_; }
+    SessionError kind() const { return kind_; }
+    // a validation refusal (a link, not a regular file, ...): bad input, not an I/O failure
+    bool refused() const { return refused_; }
 private:
     // O_DIRECT is switched on the open descriptor: a filesystem that refuses it (EINVAL, e.g. tmpfs) keeps buffered
     // I/O, and the file is never opened twice
@@ -395,7 +463,8 @@ private:
         return true;
     }
     int fd_ = -1;
-    bool direct_ = false, missing_ = false;
+    bool direct_ = false, missing_ = false, refused_ = false;
+    SessionError kind_ = SessionError::io;
     std::string error_;
 };
 
@@ -408,7 +477,11 @@ public:
         std::string dir;
         if (!split_path(path, dir, leaf_, error)) return false;
         dirfd_ = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (dirfd_ < 0) { error = "session file: cannot open the directory of " + path + ": " + std::strerror(errno); return false; }
+        if (dirfd_ < 0) {
+            kind_ = errno_kind(errno);
+            error = "session file: cannot open the directory of " + path + ": " + std::strerror(errno);
+            return false;
+        }
         return true;
     }
     bool create_temp(RawFile& f, std::string& error) {
@@ -420,15 +493,28 @@ public:
         error = f.error();
         return false;
     }
-    bool publish(std::string& error, bool durable) {
-        if (::renameat(dirfd_, temp_.c_str(), dirfd_, leaf_.c_str()) != 0) { error = std::strerror(errno); return false; }
+    bool publish(std::string& error, bool durable, SessionStatus& st, const std::function<int(const char*)>* fault) {
+        int e = injected(fault, "rename");
+        if (e || ::renameat(dirfd_, temp_.c_str(), dirfd_, leaf_.c_str()) != 0) {
+            if (!e) e = errno;
+            error = std::strerror(e);
+            st.error = errno_kind(e);
+            return false;
+        }
         own_ = false;
-        if (durable && ::fsync(dirfd_) != 0 && errno != EINVAL) {   // EINVAL: this filesystem cannot flush a directory
-            error = std::string("flushing the directory: ") + std::strerror(errno);
+        st.published = true;   // the new file is at its name now: a failure below cannot bring the old one back
+        if (!durable) return true;
+        e = injected(fault, "dir_flush");
+        if (!e && ::fsync(dirfd_) != 0) e = errno;
+        if (e == EINVAL) { st.dir_flush_unsupported = true; return true; }   // this filesystem cannot flush a folder
+        if (e) {
+            error = std::string("flushing the directory: ") + std::strerror(e);
+            st.error = errno_kind(e);
             return false;
         }
         return true;
     }
+    SessionError kind() const { return kind_; }
     ~Publisher() {
         if (own_) ::unlinkat(dirfd_, temp_.c_str(), 0);   // only the temporary file this call created
         if (dirfd_ >= 0) ::close(dirfd_);
@@ -437,13 +523,12 @@ private:
     int dirfd_ = -1;
     std::string leaf_, temp_;
     bool own_ = false;
+    SessionError kind_ = SessionError::io;
 };
 
 bool free_space(const std::string& path, uint64_t& out) {
-    std::string dir, leaf, e;
-    if (!split_path(path, dir, leaf, e)) return false;
     struct statvfs s {};
-    if (::statvfs(dir.empty() ? "." : dir.c_str(), &s) != 0) return false;
+    if (::statvfs(session_free_space_dir(path, false).c_str(), &s) != 0) return false;
     out = (uint64_t) s.f_bavail * (uint64_t) s.f_frsize;
     return true;
 }
@@ -453,7 +538,11 @@ class FileSink {
 public:
     explicit FileSink(RawFile& f) : buf_(aligned_block()), f_(f) {}
     bool ok() const { return buf_ != nullptr; }
-    std::string error() const { return buf_ ? f_.error() : std::string("out of memory for the write buffer"); }
+    std::string error() const {
+        if (!buf_) return "out of memory for the write buffer";
+        return fault_ ? fault_msg_ : f_.error();
+    }
+    SessionError kind() const { return buf_ ? (fault_ ? fault_kind_ : f_.kind()) : SessionError::memory; }
     // room in the block for in-place production (avoids a staging copy)
     uint8_t* span(size_t& room) { room = kBlock - used_; return buf_.get() + used_; }
     bool commit(size_t n) { used_ += n; total_ += n; return used_ < kBlock || drain(); }
@@ -472,25 +561,33 @@ public:
     // last block padded to the alignment for direct I/O, then the file cut back to its exact size and flushed
     bool finish(bool durable) {
         if (!f_.is_open()) return false;
+        if (fault_) { f_.close(); return false; }
         const size_t padded = f_.direct() ? (used_ + kAlign - 1) / kAlign * kAlign : used_;
         std::memset(buf_.get() + used_, 0, padded - used_);
         bool ok = f_.write_all(buf_.get(), padded);
         ok = ok && (padded == used_ || f_.truncate(total_));
+        if (ok && durable && flush_fault) { fail_with(flush_fault); ok = false; }
         ok = ok && (!durable || f_.sync());
         ok = f_.close() && ok;
         return ok;
     }
-    std::function<void(uint64_t, uint64_t)> progress;
+    std::optional<Ticker> progress;
     uint64_t expected = 0;
+    int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
 private:
+    void fail_with(int e) { fault_ = true; fault_kind_ = errno_kind(e); fault_msg_ = std::strerror(e); }
     bool drain() {
+        if (write_fault) { fail_with(write_fault); return false; }
         if (!f_.write_all(buf_.get(), used_)) return false;
         used_ = 0;
-        if (progress && total_ / kProgressEvery != (total_ - kBlock) / kProgressEvery) progress(total_, expected);
+        if (progress) (*progress)(total_ - kBlock, total_, expected);
         return true;
     }
     Aligned buf_;
     RawFile& f_;
+    bool fault_ = false;
+    SessionError fault_kind_ = SessionError::io;
+    std::string fault_msg_;
     size_t used_ = 0;
     uint64_t total_ = 0;
 };
@@ -500,6 +597,7 @@ public:
     explicit FileSource(RawFile& f) : buf_(aligned_block()), f_(f) {}
     bool ok() const { return buf_ != nullptr; }
     std::string error() const { return buf_ ? f_.error() : std::string("out of memory for the read buffer"); }
+    SessionError kind() const { return buf_ ? f_.kind() : SessionError::memory; }
     bool read(void* p, size_t n) {
         uint8_t* d = static_cast<uint8_t*>(p);
         while (n) {
@@ -510,7 +608,7 @@ public:
         }
         return true;
     }
-    std::function<void(uint64_t, uint64_t)> progress;
+    std::optional<Ticker> progress;
     uint64_t expected = 0;
 private:
     bool fill() {
@@ -524,7 +622,7 @@ private:
         }
         const uint64_t before = total_;
         total_ += have_;
-        if (progress && total_ / kProgressEvery != before / kProgressEvery) progress(total_, expected);
+        if (progress) (*progress)(before, total_, expected);
         return have_ > 0;
     }
     Aligned buf_;
@@ -565,7 +663,12 @@ struct Out {
             size_t room = 0;
             uint8_t* d = f->span(room);
             const size_t c = std::min(room, size - at);
-            if (!s.read || !s.read(part, at, d, c)) { ok = false; read_failed = true; return; }
+            if (!s.read || !s.read(part, at, d, c)) {
+                ok = false;
+                read_failed = true;
+                if (s.error) read_error = s.error();
+                return;
+            }
             if (hash) hash->update(d, c);
             count(c);
             ok = ok && f->commit(c);
@@ -573,6 +676,7 @@ struct Out {
         }
     }
     bool read_failed = false;
+    std::string read_error;
 };
 
 void put_kv_header(Out& o, int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page_size,
@@ -616,10 +720,12 @@ struct In {
     uint64_t left;
     std::string& error;
     const SessionReadLimits& limits;
+    SessionError kind = SessionError::invalid;
+    size_t kv_layer = 0;
     bool fail(const std::string& m) { if (error.empty()) error = "session file: " + m; return false; }
     bool raw(void* p, size_t c) {
         if (c > left) return fail("payload ends early");
-        if (c && !f->read(p, c)) return fail("read error: " + f->error());
+        if (c && !f->read(p, c)) { kind = f->kind(); return fail("read error: " + f->error()); }
         hash.update(p, c);
         left -= c;
         return true;
@@ -641,9 +747,10 @@ struct In {
         v.resize((size_t) n);
         return raw(v.data(), (size_t) n * sizeof(T));
     }
-    bool buffer(ConversationBuffer& b) {
+    bool buffer(ConversationBuffer& b, size_t part) {
         uint64_t n = 0;
-        if (!count(n, 1)) return false;
+        const uint64_t limit = kv_layer < limits.max_kv_bytes.size() ? limits.max_kv_bytes[kv_layer][part] : UINT64_MAX;
+        if (!count(n, 1, limit)) return false;
         b = {};
         b.resize((size_t) n);
         return b.visit(0, b.size(), [&](uint8_t* p, size_t c, size_t) { return raw(p, c); });
@@ -656,14 +763,21 @@ bool get_checkpoint(In& in, ConversationCheckpoint& c) {
     if (!in.count(n, 16, in.limits.max_tokens)) return false;
     c.imgs.resize((size_t) n);
     for (auto& k : c.imgs) if (!in.i64(k.start) || !in.u64(k.hash)) return false;
-    return in.vec(c.gdn) && in.vec(c.ple) && in.vec(c.tails) && in.vec(c.dead) && in.vec(c.block_pos) &&
-           in.u64(c.used);
+    const auto& m = in.limits.max_state_bytes;   // byte arrays: element and byte counts are the same
+    return in.vec(c.gdn, m[0]) && in.vec(c.ple, m[1]) && in.vec(c.tails, m[2]) && in.vec(c.dead, m[3]) &&
+           in.vec(c.block_pos, m[4]) && in.u64(c.used);
 }
 
 bool get_payload(In& in, SavedConversation& s) {
     for (auto& g : s.geometry) if (!in.i64(g)) return false;
+    // checked before any state array is read: a file of another geometry allocates nothing
+    if (in.limits.geometry && *in.limits.geometry != s.geometry)
+        return in.fail("saved with another model geometry than this runtime's");
     uint64_t cvec = 0;
     if (!in.i64(s.layer_lo) || !in.i64(s.layer_hi) || !in.u64(cvec)) return false;
+    if (in.limits.layer_range &&
+        (in.limits.layer_range->first != s.layer_lo || in.limits.layer_range->second != s.layer_hi))
+        return in.fail("saved with another layer range than this runtime's");
     if (cvec > 1) return in.fail("invalid cvec flag");
     s.cvec = cvec == 1;
     if (!get_checkpoint(in, s.live)) return false;
@@ -675,13 +789,14 @@ bool get_payload(In& in, SavedConversation& s) {
     if (!in.count(n, 96, in.limits.max_kv_layers)) return false;
     s.kv.resize((size_t) n);
     for (auto& k : s.kv) {
+        in.kv_layer = (size_t) (&k - s.kv.data());
         int64_t format = 0;
         if (!in.i64(format) || !in.i64(k.cells) || !in.i64(k.heads) || !in.i64(k.head_dim) ||
             !in.i64(k.page_size) || !in.i64(k.pooled_rows) || !in.i64(k.idx_dim)) return false;
         if (format < INT32_MIN || format > INT32_MAX) return in.fail("invalid K/V format");
         k.format = (int) format;
-        if (!in.buffer(k.k) || !in.buffer(k.v) || !in.buffer(k.k_scale) || !in.buffer(k.v_scale) ||
-            !in.buffer(k.pooled)) return false;
+        if (!in.buffer(k.k, 0) || !in.buffer(k.v, 1) || !in.buffer(k.k_scale, 2) || !in.buffer(k.v_scale, 3) ||
+            !in.buffer(k.pooled, 4)) return false;
     }
     return true;
 }
@@ -790,42 +905,136 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     return b.digest();
 }
 
-bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error) {
+const char* session_error_name(SessionError e) {
+    switch (e) {
+        case SessionError::none: return "none";
+        case SessionError::invalid: return "invalid";
+        case SessionError::storage: return "storage";
+        case SessionError::memory: return "memory";
+        case SessionError::io: return "io";
+    }
+    return "io";
+}
+
+std::string session_free_space_dir(const std::string& path, bool windows_rules) {
+    if (!windows_rules) {
+        const size_t cut = path.find_last_of('/');
+        if (cut == std::string::npos) return ".";
+        return path.substr(0, cut == 0 ? 1 : cut);
+    }
+    std::string p = path;
+    for (char& c : p) if (c == '/') c = '\\';
+    const size_t cut = p.find_last_of('\\');
+    if (cut == std::string::npos) {
+        // "C:chat.bin" (drive-relative): the drive root answers for the same volume
+        if (p.size() >= 2 && p[1] == ':') return p.substr(0, 2) + "\\";
+        return std::string();   // the current folder
+    }
+    return p.substr(0, cut + 1);   // with its trailing backslash: "\\server\share\dir\", "C:\"
+}
+
+std::vector<SessionModelFile> session_model_inputs(const SessionInputs& in) {
+    std::vector<SessionModelFile> f;
+    for (size_t i = 0; i < in.native_shards.size(); ++i) f.push_back({"native shard " + std::to_string(i), in.native_shards[i]});
+    for (size_t i = 0; i < in.native_dense.size(); ++i) f.push_back({"native dense " + std::to_string(i), in.native_dense[i]});
+    for (size_t i = 0; i < in.native_head.size(); ++i) f.push_back({"native head " + std::to_string(i), in.native_head[i]});
+    if (!in.embedding.empty()) f.push_back({"embedding", in.embedding});
+    if (!in.ple.empty()) f.push_back({"ple", in.ple});
+    if (!in.mtp.empty()) f.push_back({"mtp", in.mtp});
+    if (!in.pack.empty()) f.push_back({"pack native_experts.txt", in.pack + "/native_experts.txt", true});
+    for (const auto& [role, path] : in.experts) f.push_back({role, path});
+    return f;
+}
+
+bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error,
+                               const std::function<void()>& beat) {
     SessionIdentityBuilder h(0x5354524154414d44ull);
     std::vector<uint8_t> buf(1u << 20);
+    // a file in several roles is read once; its sample enters the fingerprint under every role
+    std::unordered_map<std::string, std::pair<bool, uint64_t>> seen;   // path -> (present, sample digest)
     h.u64("files", files.size());
     for (const auto& file : files) {
-        RawFile f;
-        uint64_t size = 0;
-        if (!f.open_model(file.path, size)) {
-            if (file.optional && f.missing()) { h.str("absent", file.role); continue; }
-            error = "session fingerprint: " + file.role + " " + file.path + ": " + f.error();
-            return false;
+        auto it = seen.find(file.path);
+        if (it == seen.end()) {
+            RawFile f;
+            uint64_t size = 0;
+            std::pair<bool, uint64_t> d{false, 0};
+            if (!f.open_model(file.path, size)) {
+                if (!(file.optional && f.missing())) {
+                    error = "session fingerprint: " + file.role + " " + file.path + ": " + f.error();
+                    return false;
+                }
+            } else {
+                SessionIdentityBuilder one(0x46494c4553414d50ull);   // "FILESAMP"
+                one.u64("size", size);
+                const uint64_t head = std::min<uint64_t>(size, buf.size());
+                if (!f.read_at(0, buf.data(), (size_t) head)) {
+                    error = "session fingerprint: reading " + file.path + ": " + f.error();
+                    return false;
+                }
+                one.bytes("head", buf.data(), (size_t) head);
+                if (size > buf.size()) {
+                    const uint64_t tail = std::min<uint64_t>(size - head, buf.size());
+                    if (!f.read_at(size - tail, buf.data(), (size_t) tail)) {
+                        error = "session fingerprint: reading " + file.path + ": " + f.error();
+                        return false;
+                    }
+                    one.bytes("tail", buf.data(), (size_t) tail);
+                }
+                d = {true, one.digest()};
+            }
+            it = seen.emplace(file.path, d).first;
+            if (beat) beat();
+        }
+        if (!it->second.first) {
+            if (!file.optional) { error = "session fingerprint: " + file.role + " " + file.path + " is missing"; return false; }
+            h.str("absent", file.role);
+            continue;
         }
         h.str("role", file.role);
-        h.u64("size", size);
-        const uint64_t head = std::min<uint64_t>(size, buf.size());
-        if (!f.read_at(0, buf.data(), (size_t) head)) {
-            error = "session fingerprint: reading " + file.path + ": " + f.error();
-            return false;
-        }
-        h.bytes("head", buf.data(), (size_t) head);
-        if (size > buf.size()) {
-            const uint64_t tail = std::min<uint64_t>(size - head, buf.size());
-            if (!f.read_at(size - tail, buf.data(), (size_t) tail)) {
-                error = "session fingerprint: reading " + file.path + ": " + f.error();
-                return false;
-            }
-            h.bytes("tail", buf.data(), (size_t) tail);
-        }
+        h.u64("sample", it->second.second);
     }
     fingerprint = h.digest();
     return true;
 }
 
 namespace {
+uint64_t sat_add(uint64_t a, uint64_t b) { return a > UINT64_MAX - b ? UINT64_MAX : a + b; }
+uint64_t sat_mul(uint64_t a, uint64_t b) { return a && b > UINT64_MAX / a ? UINT64_MAX : a * b; }
+} // namespace
+
+uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
+    const uint64_t open = UINT64_MAX;
+    if (l.max_tokens == open || l.max_checkpoints == open || l.max_kv_layers == open) return l.max_file_bytes;
+    for (uint64_t b : l.max_state_bytes) if (b == open) return l.max_file_bytes;
+    if (l.max_kv_bytes.size() < l.max_kv_layers) return l.max_file_bytes;
+    // one checkpoint: ids (8 + 4 per token), images (8 + 16 per image), five state arrays (8 + bytes), used (8)
+    uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
+    for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
+    cp = sat_add(cp, 8);
+    uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
+    n = sat_add(n, cp);                                            // live
+    n = sat_add(n, sat_add(8, sat_mul(l.max_checkpoints, cp)));    // checkpoints
+    n = sat_add(n, 8);
+    for (uint64_t i = 0; i < l.max_kv_layers; ++i) {
+        n = sat_add(n, 7 * 8);
+        for (uint64_t b : l.max_kv_bytes[(size_t) i]) n = sat_add(n, sat_add(8, b));
+    }
+    return std::min(n, l.max_file_bytes);
+}
+
+uint64_t session_read_peak_bytes(uint64_t file_bytes) {
+    const uint64_t segments = file_bytes / kBlock + 1;
+    // the parsed image (about the payload), the read buffer, a page per buffer segment, the small vectors
+    return sat_add(sat_add(sat_add(file_bytes, kBlock), sat_mul(segments, 4096)), uint64_t(1) << 20);
+}
+
+namespace {
 bool write_impl(const std::string& path, const SavedConversation& image, const std::vector<SessionKvSource>* sources,
-                const SessionFileIdentity& id, size_t& bytes, std::string& error, const SessionWriteOptions& opt) {
+                const SessionFileIdentity& id, size_t& bytes, std::string& error, const SessionWriteOptions& opt,
+                SessionStatus& st) {
+    st = {};
+    st.error = SessionError::invalid;   // refusals before any disk access
     if (has_stage_parts(image)) { error = "session file: layer-split state cannot be saved"; return false; }
     if (sources && !image.kv.empty()) { error = "session file: K/V given both in the image and as sources"; return false; }
     Out sizing;
@@ -836,10 +1045,12 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
         return false;
     }
     const uint64_t payload = sizing.n, total = kHeader + payload + kTrailer;
+    st.error = SessionError::io;
     if (opt.min_free_bytes) {
         uint64_t avail = 0;
         if (!free_space(path, avail)) { error = "session file: cannot read the free disk space for " + path; return false; }
         if (avail < total || avail - total < opt.min_free_bytes) {
+            st.error = SessionError::storage;
             error = "session file: not enough disk space (" + std::to_string(total >> 20) + " MiB plus a reserve of " +
                     std::to_string(opt.min_free_bytes >> 20) + " MiB needed, " + std::to_string(avail >> 20) +
                     " MiB free)";
@@ -847,13 +1058,20 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
         }
     }
     Publisher pub;
-    if (!pub.open(path, error)) return false;
+    if (!pub.open(path, error)) { st.error = pub.kind(); return false; }
     RawFile raw;
-    if (!pub.create_temp(raw, error)) { error = "session file: cannot create a temporary file beside " + path + ": " + error; return false; }
+    if (!pub.create_temp(raw, error)) {
+        st.error = raw.kind();
+        error = "session file: cannot create a temporary file beside " + path + ": " + error;
+        return false;
+    }
     FileSink f(raw);
-    if (!f.ok()) { error = "session file: " + f.error(); return false; }
-    f.progress = opt.progress;
+    if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
+    if (opt.progress) f.progress.emplace(opt.progress);
     f.expected = total;
+    const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
+    f.write_fault = injected(fault, "write");
+    f.flush_fault = injected(fault, "file_flush");
     uint8_t h[kHeader];
     header_bytes(h, id, payload);
     bool ok = f.write(h, kHeader);
@@ -866,13 +1084,35 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
         ok = f.write(&ph, 8) && f.write(kEnd, 8);
     }
     ok = f.finish(opt.durable) && ok;
-    std::string why = out.read_failed ? std::string("K/V source read") : f.error();
-    if (ok && pub.publish(why, opt.durable)) {
+    std::string why;
+    if (!ok) {
+        why = out.read_failed ? "K/V source read" + (out.read_error.empty() ? std::string() : ": " + out.read_error)
+                              : f.error();
+        st.error = out.read_failed ? SessionError::io : f.kind();
+    } else if (pub.publish(why, opt.durable, st, fault)) {
+        st.error = SessionError::none;
         bytes = (size_t) total;
         return true;
     }
     error = "session file: writing " + path + " failed" + (why.empty() ? std::string() : ": " + why);
+    if (st.published) error += " (the new file has already replaced the old one; its folder entry may not survive a power loss)";
     return false;   // Publisher removes this call's temporary file, and only that
+}
+
+bool write_guarded(const std::string& path, const SavedConversation& image, const std::vector<SessionKvSource>* sources,
+                   const SessionFileIdentity& id, size_t& bytes, std::string& error, const SessionWriteOptions& opt,
+                   SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = write_impl(path, image, sources, id, bytes, error, opt, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while writing " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
 }
 } // namespace
 
@@ -886,30 +1126,39 @@ std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vecto
 
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
-                        const SessionWriteOptions& options) {
-    return write_impl(path, meta, &kv, id, bytes, error, options);
+                        const SessionWriteOptions& options, SessionStatus* status) {
+    return write_guarded(path, meta, &kv, id, bytes, error, options, status);
 }
 
 bool session_file_write(const std::string& path, const SavedConversation& image, const SessionFileIdentity& id,
-                        size_t& bytes, std::string& error, const SessionWriteOptions& options) {
-    return write_impl(path, image, nullptr, id, bytes, error, options);
+                        size_t& bytes, std::string& error, const SessionWriteOptions& options, SessionStatus* status) {
+    return write_guarded(path, image, nullptr, id, bytes, error, options, status);
 }
 
-bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
-                       size_t& bytes, std::string& error, const SessionReadLimits& limits) {
+namespace {
+bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
+               size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus& st) {
     error.clear();
+    st = {};
+    st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
     RawFile raw;
     uint64_t size = 0;
-    if (!raw.open_session(path, size)) { error = "session file: " + path + ": " + raw.error(); return false; }
+    if (!raw.open_session(path, size)) {
+        st.error = raw.refused() ? SessionError::invalid : raw.kind();
+        error = "session file: " + path + ": " + raw.error();
+        return false;
+    }
     if (size < kHeader + kTrailer) { error = "session file: size " + std::to_string(size) + " is below the minimum"; return false; }
-    if (size > limits.max_file_bytes || size > (uint64_t) std::numeric_limits<size_t>::max()) {
-        error = "session file: size " + std::to_string(size) + " exceeds this engine's limit";
+    const uint64_t max_size = session_read_max_file_bytes(limits);
+    if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
+        error = "session file: size " + std::to_string(size) + " exceeds this engine's limit" +
+                (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
         return false;
     }
     FileSource f(raw);
-    if (!f.ok()) { error = "session file: " + f.error(); return false; }
+    if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
     uint8_t h[kHeader];
-    if (!f.read(h, kHeader)) { error = "session file: header read error"; return false; }
+    if (!f.read(h, kHeader)) { st.error = f.kind(); error = "session file: header read error: " + f.error(); return false; }
     uint32_t version = 0, hsize = 0;
     uint64_t model = 0, config = 0, payload = 0, r0 = 0, r1 = 0, hh = 0;
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
@@ -928,23 +1177,44 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
     }
     if (limits.admit) {
         std::string why;
-        if (!limits.admit(size, why)) { error = "session file: " + why; return false; }
+        if (!limits.admit(session_read_peak_bytes(size), why)) {
+            st.error = SessionError::memory;
+            error = "session file: " + why;
+            return false;
+        }
     }
-    f.progress = limits.progress;
+    if (limits.progress) f.progress.emplace(limits.progress);
     f.expected = size;
     SavedConversation parsed;
     In in{&f, SessionHasher(0), payload, error, limits};
-    if (!get_payload(in, parsed)) return false;
+    if (!get_payload(in, parsed)) { st.error = in.kind; return false; }
     if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
     uint8_t t[kTrailer];
-    if (!f.read(t, kTrailer)) { error = "session file: trailer read error"; return false; }
+    if (!f.read(t, kTrailer)) { st.error = f.kind(); error = "session file: trailer read error: " + f.error(); return false; }
     uint64_t ph = 0;
     std::memcpy(&ph, t, 8);
     if (ph != in.hash.digest()) { error = "session file: payload checksum mismatch"; return false; }
     if (std::memcmp(t + 8, kEnd, 8) != 0) { error = "session file: bad end marker"; return false; }
     image = std::move(parsed);
     bytes = (size_t) size;
+    st.error = SessionError::none;
     return true;
+}
+} // namespace
+
+bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
+                       size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = read_impl(path, id, image, bytes, error, limits, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while reading " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
 }
 
 } // namespace strata::core
