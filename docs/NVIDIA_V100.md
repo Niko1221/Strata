@@ -29,14 +29,10 @@ select "old" kernels everywhere: which kernel runs is decided per architecture w
 | --- | --- |
 | MoE experts (ggml MMQ) | `dp4a` kernels (Volta has no int8 tensor cores) |
 | Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
-| BF16 projections (hyper-connection, router, indexer, ...) | FP16 tensor-core GEMMs on an FP16 copy of the operands (PR #593; `STRATA_BF16_VIA_F16=0`: cuBLAS BF16, which is an FP32 SIMT kernel on Volta) |
+| BF16 projections (hyper-connection, router, indexer, ...) | cuBLAS BF16, which runs as an FP32 SIMT kernel on Volta (`magma_sgemmEx`); #540 moves it onto the FP16 tensor cores |
 | QSA prompt attention, int8 / FP16 / K8V4 KV | `prompt_attn_v70_kernel` on `mma.m8n8k4` (`STRATA_PROMPT_ATTN_OLD=1`: the decode kernel, one query at a time) |
 | QSA prompt attention, Q4_0 KV | the decode kernel |
 | QSA block scores | the warp kernel (the tensor-core scorer needs sm_80) |
-
-Two details of the BF16 path (PR #593): the conversion is exact for every BF16 value inside FP16's range, and the FP16 copy of the activations
-is reserved with the prompt path's other buffers at start (T x the widest projection: 42 MB at a 2,048-token chunk, 168 MB at the 8,192-token chunk the server chose on the measuring PC), only on cards that need
-it. `STRATA_BF16_VIA_F16_CHECK=1` counts the values FP16 could not hold and prints the numbers at exit.
 
 ## Measured
 

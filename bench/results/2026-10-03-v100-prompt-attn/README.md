@@ -30,7 +30,7 @@ Decode is unchanged within the noise (38-51 tok/s, 48 tokens per request): it do
 ## Where the time went (nsys, one V100, 28,650-token prompt, GPU kernel time of the whole capture: prefill plus 128-193 decode tokens)
 
 `strata-1gpu-32k-*.nsys-rep`; the "before" capture is 0.1.35 (`d9ab843`), the "after" one is the same base with this change and the BF16 change
-of #593 (that one only removes `magma_sgemmEx`, which is not in this table).
+of #540 / the closed #593 (BF16 GEMMs through FP16; that one only removes `magma_sgemmEx`, which is not in this table).
 
 | | before | after |
 | --- | ---: | ---: |
