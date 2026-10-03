@@ -4,6 +4,7 @@
 #include "strata/kernels/qsa_select.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -34,7 +35,9 @@ bool check(Case c) {
         st[k::kStepNBid] = (int32_t)((pos + 1) / s.idx_block);
         st[k::kStepWidth] = (int32_t)k::qsa_selection_width(pos + 1, s);
         for (int64_t j = 0; j <= st[k::kStepNBid]; ++j)
-            scores[(size_t)(i * stride + j)] = c.mode == 1 ? 0.f : c.mode == 2 ? float(j % 7) : random(rng);
+            scores[(size_t)(i * stride + j)] = c.mode == 1 ? 0.f : c.mode == 2 ? float(j % 7)
+                               : c.mode == 5 ? (j % 5 == 0 ? std::nanf("") : random(rng))   // order_key maps NaN to 0
+                                             : random(rng);
         if ((pos + 1) % s.idx_block)
             scores[(size_t)(i * stride + st[k::kStepNBid])] += 1e9f;
     }
@@ -88,8 +91,9 @@ int main() {
         {131075, 255, 0}, {135164, 256, 0}, {135168, 256, 0}, {250022, 256, 0},
         {262144, 256, 0}, {131072, 1, 0}, {131072, 8, 0}, {131072, 257, 0},
         {131072, 256, 1}, {131072, 256, 2}, {131072, 256, 3}, {131072, 256, 4},
+        {135171, 256, 5}, {262144, 256, 5}, {5111, 8, 5},
     };
     for (const auto c : cases) if (!check(c)) return 1;
-    std::puts("PASS: 16 top-k active-bound cases, selected IDs bitwise identical");
+    std::puts("PASS: 19 top-k active-bound cases, selected IDs bitwise identical");
     return 0;
 }
