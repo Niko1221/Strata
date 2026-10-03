@@ -1093,7 +1093,9 @@ function renderUpdateState(s) {
   const fill = $("update-bar-fill");
   // percent is null outside a run (the check phase has one finished step, which would read 100% and
   // then snap back to 0%). While the download runs the server reports its own byte percent instead.
-  const downloading = s.active === "Download the engine";
+  // match on the step KEY, not the label: a label is English copy that can be reworded, and this panel
+  // must keep working when it is
+  const downloading = s.active_key === "download";
   const pct = downloading && d.percent != null ? d.percent : (s.percent == null ? 0 : s.percent);
   fill.style.width = `${pct}%`;
   bar.setAttribute("data-tone", s.state === "failed" ? "danger" : (s.state === "done" ? "" : "info"));

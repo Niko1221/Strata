@@ -291,6 +291,7 @@ class Updater:
             "total": len(steps),
             "percent": percent,
             "active": active.label if active else None,
+            "active_key": active.key if active else None,   # the panel matches on this, not the label
             "backup": str(backup) if backup else None,
         }
 
