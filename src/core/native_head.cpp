@@ -130,7 +130,8 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             bytes_ = 0;
             return false;
         }
-        if (cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        cudaError_t host_err = cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable);
+        if (host_err != cudaSuccess) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
             // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM
             // instead: it costs its size there and reads faster than over PCIe.
@@ -141,7 +142,8 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
                 cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
                 if (d) cudaFree(d);
                 cudaGetLastError();
-                err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
+                err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB: " +
+                      cudaGetErrorString(host_err) + ", nor place it in VRAM";
                 return false;
             }
             std::fprintf(stderr, "strata: native embedding: cannot pin %llu MiB, kept in VRAM instead\n",
