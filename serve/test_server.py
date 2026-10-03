@@ -2329,5 +2329,132 @@ class LostStep(unittest.TestCase):
         self.run_mode("stop", stream=False)
 
 
+class CountingEngine(MockEngine):
+    """Counts the tokens the engine was asked for, so a test can see it stopped early."""
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.yielded = 0
+        for t in super().generate(ids, max_new, sampling, cancel, embeddings):
+            self.yielded += 1
+            yield t
+
+
+class StopStrings(unittest.TestCase):
+    """OpenAI `stop` and Anthropic `stop_sequences`: the answer ends before the first stop string, which is not sent,
+    and the engine stops there.  The byte tokenizer gives one token per byte, so every stop string here is split
+    across tokens (and across streamed chunks)."""
+    ANSWER = "alpha END beta STOP gamma"
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = CountingEngine(tok, "</think>\n\n" + cls.ANSWER, max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, api, stream, **extra):
+        """-> (status, text, finish or stop_reason, stop_sequence, the streamed text pieces)"""
+        path = "/v1/chat/completions" if api == "openai" else "/v1/messages"
+        body = {"model": "x", "max_tokens": 200, "stream": stream, "messages": [{"role": "user", "content": "hi"}],
+                **extra}
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers={
+            "Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read()), None, None, None
+        if not stream:
+            b = json.loads(raw)
+            if api == "openai":
+                c = b["choices"][0]
+                return 200, c["message"]["content"] or "", c["finish_reason"], None, None
+            text = "".join(x.get("text", "") for x in b["content"] if x["type"] == "text")
+            return 200, text, b["stop_reason"], b["stop_sequence"], None
+        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        if api == "openai":
+            pieces = [e["choices"][0]["delta"].get("content") or "" for e in evs]
+            return 200, "".join(pieces), evs[-1]["choices"][0]["finish_reason"], None, [p for p in pieces if p]
+        pieces = [e["delta"]["text"] for e in evs if e["type"] == "content_block_delta"
+                  and e["delta"]["type"] == "text_delta"]
+        delta = [e for e in evs if e["type"] == "message_delta"][0]["delta"]
+        return 200, "".join(pieces), delta["stop_reason"], delta["stop_sequence"], pieces
+
+    def stop_field(self, api, stops):
+        return {"stop": stops} if api == "openai" else {"stop_sequences": stops}
+
+    def test_cut_at_the_stop_string(self):
+        for api in ("openai", "anthropic"):
+            for stream in (False, True):
+                with self.subTest(api=api, stream=stream):
+                    code, text, finish, seq, pieces = self.post(api, stream, **self.stop_field(api, ["END"]))
+                    self.assertEqual(code, 200, text)
+                    self.assertEqual(text, "alpha ")
+                    if api == "openai":
+                        self.assertEqual(finish, "stop")
+                    else:
+                        self.assertEqual((finish, seq), ("stop_sequence", "END"))
+                    if stream:
+                        self.assertFalse(any("E" in p for p in pieces), pieces)    # no part of it was sent
+                    # the engine stopped at the stop string, it did not run to the end of the answer
+                    self.assertLess(self.engine.yielded, len("</think>\n\n" + self.ANSWER))
+
+    def test_the_first_of_several(self):
+        for api in ("openai", "anthropic"):
+            for stream in (False, True):
+                with self.subTest(api=api, stream=stream):
+                    _, text, finish, seq, _ = self.post(api, stream, **self.stop_field(api, ["STOP", "beta", "zzz"]))
+                    self.assertEqual(text, "alpha END ")
+                    if api == "anthropic":
+                        self.assertEqual((finish, seq), ("stop_sequence", "beta"))
+
+    def test_openai_takes_a_string(self):
+        _, text, finish, _, _ = self.post("openai", False, stop="STOP")
+        self.assertEqual((text, finish), ("alpha END beta ", "stop"))
+
+    def test_a_prefix_that_is_not_a_stop_is_sent(self):
+        """"ENDX" begins like the answer's "END" but is not in it: the held tail goes out and nothing is lost."""
+        for api in ("openai", "anthropic"):
+            for stream in (False, True):
+                with self.subTest(api=api, stream=stream):
+                    _, text, finish, seq, _ = self.post(api, stream, **self.stop_field(api, ["ENDX", "gammaZ"]))
+                    self.assertEqual(text, self.ANSWER)
+                    self.assertEqual(finish, "stop" if api == "openai" else "end_turn")
+                    self.assertIsNone(seq)
+
+    def test_no_stop_and_an_empty_list(self):
+        for api in ("openai", "anthropic"):
+            for stream in (False, True):
+                for extra in ({}, self.stop_field(api, []), self.stop_field(api, ["nowhere"])):
+                    with self.subTest(api=api, stream=stream, extra=extra):
+                        _, text, finish, seq, _ = self.post(api, stream, **extra)
+                        self.assertEqual(text, self.ANSWER)
+                        self.assertEqual(finish, "stop" if api == "openai" else "end_turn")
+                        self.assertIsNone(seq)
+
+    def test_bad_values_are_a_400(self):
+        for api, extra in (("openai", {"stop": ["a", "b", "c", "d", "e"]}), ("openai", {"stop": 5}),
+                           ("anthropic", {"stop_sequences": "END"}), ("anthropic", {"stop_sequences": [1]})):
+            with self.subTest(api=api, extra=extra):
+                code, *_ = self.post(api, False, **extra)
+                self.assertEqual(code, 400)
+
+    def test_matcher_holds_back_only_a_possible_prefix(self):
+        from serve.server import StopMatcher
+        m = StopMatcher(["</s>"])
+        self.assertEqual(m.push("a <"), "a ")              # "<" may start "</s>"
+        self.assertEqual(m.push("b"), "<b")                # it did not
+        self.assertEqual(m.push("c </"), "c ")
+        self.assertEqual(m.push("s> d"), "")
+        self.assertEqual(m.hit, "</s>")
+        self.assertEqual(m.push("more"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

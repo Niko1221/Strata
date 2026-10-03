@@ -942,6 +942,63 @@ class Detokenizer:
         return delta
 
 
+OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
+
+
+def stop_strings(req: dict) -> list[str]:
+    """The request's stop strings: OpenAI's `stop` (a string or a list of up to 4) or Anthropic's `stop_sequences`
+    (a list).  Empty strings are left out.  A bad value is a ValueError, so a 400 before anything is generated."""
+    req = req or {}
+    if req.get("stop") is not None:
+        stop = req["stop"]
+        stop = [stop] if isinstance(stop, str) else stop
+        if not isinstance(stop, list) or not all(isinstance(x, str) for x in stop):
+            raise ValueError("stop must be a string or a list of strings")
+        if len(stop) > OPENAI_MAX_STOP:
+            raise ValueError(f"stop takes at most {OPENAI_MAX_STOP} strings")
+    elif req.get("stop_sequences") is not None:
+        stop = req["stop_sequences"]
+        if not isinstance(stop, list) or not all(isinstance(x, str) for x in stop):
+            raise ValueError("stop_sequences must be a list of strings")
+    else:
+        return []
+    return [x for x in stop if x]
+
+
+class StopMatcher:
+    """Cuts the answer's text at the first stop string.  Text that could still be the start of a stop string is held
+    back (only that tail, never more), so a stop string split across tokens or chunks is still found and never sent."""
+
+    def __init__(self, stops: list[str]):
+        self.stops, self.held, self.hit = stops, "", None
+
+    def push(self, text: str) -> str:
+        """-> the text that is safe to send now; after a match, self.hit is the stop string and nothing more comes."""
+        if self.hit is not None:
+            return ""
+        buf = self.held + text
+        first = None
+        for s in self.stops:
+            i = buf.find(s)
+            if i >= 0 and (first is None or i < first[0]):
+                first = (i, s)
+        if first is not None:
+            self.held, self.hit = "", first[1]
+            return buf[:first[0]]
+        keep = 0                                      # the longest end of buf that a stop string starts with
+        for s in self.stops:
+            for k in range(min(len(s) - 1, len(buf)), keep, -1):
+                if buf.endswith(s[:k]):
+                    keep = k
+                    break
+        self.held = buf[len(buf) - keep:] if keep else ""
+        return buf[:len(buf) - keep]
+
+    def flush(self) -> str:
+        held, self.held = self.held, ""
+        return held
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -1436,6 +1493,27 @@ class Service:
             sampling = {**defaults, **req_values}
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
+        stop_list = stop_strings(sampling)
+        stops = StopMatcher(stop_list) if stop_list else None
+
+        def cut(evs):
+            """The events with the answer's text cut at a stop string (OpenAI stop, Anthropic stop_sequences)."""
+            if stops is None:
+                return evs
+            out = []
+            for ev in evs:
+                if stops.hit is not None:
+                    break                               # nothing after the stop string is sent
+                if ev.kind == "content":
+                    text = stops.push(ev.text or "")
+                    if text:
+                        out.append(Event("content", text))
+                    continue
+                held = stops.flush()                    # a stop string does not run across a tool call or thinking
+                if held:
+                    out.append(Event("content", held))
+                out.append(ev)
+            return out
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
@@ -1485,11 +1563,14 @@ class Service:
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
-                                evs = parser.feed(detok.push(t))
+                                evs = cut(parser.feed(detok.push(t)))
                                 self._note(n, evs)
                                 last_print = self._progress(last_print)
                                 for ev in evs:
                                     yield "event", ev
+                                if stops is not None and stops.hit is not None:
+                                    finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
+                                    break
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
@@ -1531,10 +1612,13 @@ class Service:
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
-                            evs = parser.feed(detok.push(t))
+                            evs = cut(parser.feed(detok.push(t)))
                             self._note(n, evs)
                             for ev in evs:
                                 yield "event", ev
+                        if stops is not None and stops.hit is not None:
+                            finish = "stop"
+                            break
                         prompt = prompt + seg + extra
                     if cancel.is_set():
                         finish = "cancel"
@@ -1604,10 +1688,15 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
-        for ev in parser.finish():
+        for ev in cut(parser.finish()):
             yield "event", ev
-        yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings}
+        if stops is not None and stops.hit is None and stops.held:
+            yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
+        done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
+                "timings": timings}
+        if stops is not None and stops.hit is not None:
+            done["stop_sequence"] = stops.hit
+        yield "done", done
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -1925,12 +2014,14 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         else:
             if open_kind is not None:
                 yield close()
-            stop = "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
+            stop = "stop_sequence" if x.get("stop_sequence") is not None else \
+                "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
             # which is cache_read_input_tokens (message_start could only say the whole prompt)
             reused = min(x.get("reused") or 0, len(ids))
-            yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+            yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
+                                                                       "stop_sequence": x.get("stop_sequence")},
                                     "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
@@ -1962,6 +2053,7 @@ def anthropic_collect(events) -> dict:
                 blocks.pop()
         elif name == "message_delta":
             msg["stop_reason"] = e["delta"]["stop_reason"]
+            msg["stop_sequence"] = e["delta"].get("stop_sequence")
             msg["usage"].update(e["usage"])
     msg["content"] = blocks
     return msg
@@ -2428,6 +2520,7 @@ def make_handler(svc: Service):
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -2480,6 +2573,7 @@ def make_handler(svc: Service):
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
