@@ -19,8 +19,11 @@ why things are the way they are; this file holds the numbers. It has three parts
 - Unless a row says otherwise: a greedy run of the engine (INTEL.md, "How to run it by hand"), 256 new tokens,
   MTP draft layer on (`--spec 4 --spec-min-p 0.5 --mtp`), `--stream-experts`.
 - Prompts:
-  - "19-token prompt": "Write a Python function that returns the n-th Fibonacci number".
-  - "2,184-token prompt": a fixed code-and-prose text.
+  - The 20-token prompt (written "19 tokens" in older rows): "Write a Python function that returns the n-th
+    Fibonacci number".
+  - The 2,185-token prompt (written "2,184 tokens" in older rows: the engine reports 2,184 prompt tokens read): a
+    fixed code-and-prose text.
+  - Both are in `sycl/bench/v1`.
   - Long prompts: that same text repeated to length.
 - Decode with speculative decoding depends on the text: code drafts well, prose less so.
 - "Through the API" rows use the served model with its sampling defaults (temperature 0.6, top_p 0.95, top_k 20,
@@ -28,14 +31,84 @@ why things are the way they are; this file holds the numbers. It has three parts
 
 ## Current numbers (engine 0.1.38-sycl, 2026-10-03)
 
-### Speed by model
+### Benchy v1 on our B70 (the served configs, 2026-10-03)
+
+`sycl/benchy.sh`, unchanged ("Submitting numbers" below): each model with the serve config it is actually served
+with, from a cold page cache. Its report, as written:
+
+| Model / configuration | Input tokens | PP (tok/s) | TTFT (s) | TG (tok/s) | Drafts accepted | Actual output tokens | Completed requests |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m, 256K context | 20 | 13.44 | 1.7 | 76.40 | 74% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 2,185 | 478.60 | 4.9 | 73.56 | 73% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 8,000 | 818.88 | 10.1 | 71.18 | 73% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 40,000 | 1,006.09 | 40.1 | 65.30 | 70% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 128,000 | 910.09 | 140.9 | 62.61 | 74% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 256,000 | 779.43 | 328.8 | 54.29 | 68% | 256 | 1/1 |
+| iq2_xs, 128K context | 20 | 11.12 | 2.0 | 53.39 | 75% | 256 | 1/1 |
+| iq2_xs, 128K context | 2,185 | 297.12 | 7.7 | 63.51 | 78% | 256 | 1/1 |
+| iq2_xs, 128K context | 8,000 | 566.28 | 14.4 | 64.37 | 79% | 256 | 1/1 |
+| iq2_xs, 128K context | 40,000 | 706.51 | 56.9 | 59.38 | 70% | 256 | 1/1 |
+| iq2_xs, 128K context | 128,000 | 670.67 | 191.2 | 56.88 | 77% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 20 | 11.09 | 2.0 | 52.29 | 74% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 2,185 | 301.63 | 7.5 | 62.01 | 69% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 8,000 | 572.62 | 14.3 | 64.47 | 77% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 40,000 | 706.44 | 56.9 | 52.50 | 66% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 128,000 | 668.57 | 191.7 | 56.23 | 69% | 256 | 1/1 |
+
+| Model / configuration | Input tokens | Experts in VRAM | Offloaded to the RAM mirror | Slots lent to the prompt | Peak VRAM (GB) | RAM (GB) | SSD read at load (GB) | SSD read, request (GB) | PLE rows from SSD (MB) | Load (s) | Avg power (W) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m | 20 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 294 | 29.6 | 6.1 | 30.7 | 0.18 | 18 | 38 | 167 |
+| coder-iq1_m | 2,185 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 808 | 29.6 | 6.1 | 30.8 | 0.86 | 125 | 39 | 181 |
+| coder-iq1_m | 8,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.6 | 6.1 | 30.5 | 1.63 | 122 | 37 | 185 |
+| coder-iq1_m | 40,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.6 | 6.2 | 30.5 | 1.65 | 123 | 37 | 212 |
+| coder-iq1_m | 128,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.7 | 6.1 | 30.5 | 1.66 | 122 | 37 | 218 |
+| coder-iq1_m | 256,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.7 | 6.2 | 30.6 | 1.59 | 122 | 39 | 226 |
+| iq2_xs | 20 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 291 | 30.1 | 11.9 | 42.9 | 0.46 | 17 | 48 | 143 |
+| iq2_xs | 2,185 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 880 | 30.1 | 12.2 | 42.8 | 1.41 | 126 | 47 | 154 |
+| iq2_xs | 8,000 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 1,400 | 30.1 | 12.3 | 42.8 | 2.23 | 120 | 47 | 161 |
+| iq2_xs | 40,000 | 18,302 (24.6 GiB) | 6,274 (8.4 GiB) | 1,400 | 29.9 | 12.4 | 42.8 | 2.42 | 122 | 46 | 180 |
+| iq2_xs | 128,000 | 18,302 (24.6 GiB) | 6,274 (8.4 GiB) | 1,400 | 30.0 | 12.5 | 42.9 | 2.33 | 120 | 47 | 188 |
+| swift-iq2_xs | 20 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 291 | 30.1 | 12.0 | 42.9 | 0.36 | 18 | 47 | 159 |
+| swift-iq2_xs | 2,185 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 880 | 30.1 | 12.0 | 43.0 | 1.29 | 128 | 48 | 153 |
+| swift-iq2_xs | 8,000 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 1,400 | 30.1 | 12.2 | 43.0 | 2.19 | 121 | 49 | 167 |
+| swift-iq2_xs | 40,000 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 1,400 | 30.1 | 12.2 | 42.8 | 2.38 | 124 | 45 | 178 |
+| swift-iq2_xs | 128,000 | 18,487 (24.8 GiB) | 6,089 (8.2 GiB) | 1,400 | 30.3 | 12.3 | 42.8 | 2.34 | 122 | 45 | 188 |
+
+System and build:
+- Intel(R) Arc(TM) Pro B70 Graphics, 32 GB, PCIe Gen3 x8 (card max Gen5 x16).
+- AMD Ryzen 7 1700X Eight-Core Processor (16 threads), 23.4 GiB RAM; models on nvme0n1 (PCIe SSD).
+- Ubuntu 24.04.5 LTS, kernel 7.0.0-31-generic.
+- Engine 0.1.38-sycl, commit `f530f9f`, image `strata-sycl-dev 4c52c3a3d252`, `build-sycl-aot/strata`. Each configuration's engine args: `config-<name>.txt`.
+
+Caveats:
+- One run per row, greedy, 256 new tokens, a fresh engine each time; the page cache dropped before every run (cold start).
+- TG includes speculative decoding (the MTP draft layer): it depends on the text, and on how often drafts are accepted.
+- RAM is the drop in the host's available memory (pinned memory included); VRAM is every client's resident VRAM from fdinfo, less what was in use before.
+- Skipped (context too small): iq2_xs 256,000 (needs --max-context 256256), swift-iq2_xs 256,000 (needs --max-context 256256).
+
+The configs (`config-*.txt`):
+
+- `coder-iq1_m`: `--pack /work/Strata-data/packs/coder-iq1_m --native /work/models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf /work/models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile-coder.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 262144 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+- `iq2_xs`: `--pack /work/Strata-data/packs/iq2_xs --native /work/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf /work/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 131072 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+- `swift-iq2_xs`: `--pack /work/Strata-data/packs/swift-iq2_xs --native /work/models/SWIFT-IQ2_XS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf /work/models/SWIFT-IQ2_XS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 131072 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+
+- **Short prompts read slowly here, by design of the configs.** Above 32K context the prompt path borrows cache
+  slots (about a second per prompt), and every run starts cold, so the PLE rows come from the SSD. The 32K test
+  config reads the same 2,185 tokens at 784-799 tok/s (below).
+- **The Swift config's `--ple-gguf`** names shard 1 of its GGUF. Swift's shards split differently from the other two
+  models, and the engine finds its per-layer embedding table (320,001,536 rows) in shard 1.
+
+### At a 32K context (the engine's test config, 2026-10-03)
+
+The engine's own test runs ("How the engine numbers are measured" above): 32K context, `--vram-reserve-mib 1024`, no
+borrowing, warm page cache.
 
 | model | prompt | decode | prompt reading |
 |---|---|---|---|
-| Coder IQ1_M (32K, INT8 KV) | 19 tokens | **78.5 tok/s** | - |
-| Coder IQ1_M (32K, INT8 KV) | 2,184 tokens | **76.3 tok/s** | **784-799 tok/s** (three runs) |
-| original IQ2_XS (32K) | 19 tokens | 58.9 tok/s | - |
-| original IQ2_XS (32K) | 2,184 tokens | 64.3 tok/s | 557 tok/s |
+| Coder IQ1_M (32K, INT8 KV) | 20 tokens | **78.5 tok/s** | - |
+| Coder IQ1_M (32K, INT8 KV) | 2,185 tokens | **76.3 tok/s** | **784-799 tok/s** (three runs) |
+| original IQ2_XS (32K) | 20 tokens | 58.9 tok/s | - |
+| original IQ2_XS (32K) | 2,185 tokens | 64.3 tok/s | 557 tok/s |
 | Swift 1.5 IQ2_XS | short questions | 48 tok/s (raw decode, 2026-10-01) | - |
 
 - **Where the experts live:**
@@ -150,7 +223,7 @@ Sampling and the repetition penalty cost nothing measurable.
 
 This is the comparison point: llama.cpp's SYCL backend serving the same GGUF.
 
-| | llama.cpp SYCL | Strata SYCL port (current) |
+| | llama.cpp SYCL | Strata SYCL port (32K test config) |
 |---|---|---|
 | load | ~100 s | 26 s |
 | decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle | 76-78 tok/s |
