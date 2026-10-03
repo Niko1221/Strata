@@ -378,7 +378,7 @@ struct Options {
     /// Rows are bounded by the window: slots x rows <= 8.  Needs --mtp and --batch-groups 1.
     int batch_spec = 1;
     /// --batch-spec: windows carry drafts while at most this many slots are active (more: one row per slot)
-    int batch_spec_max_active = 2;
+    int batch_spec_max_active = 3;
     std::string spec_oracle;
     int spec_corrupt = 0;
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
