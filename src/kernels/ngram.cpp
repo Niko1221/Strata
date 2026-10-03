@@ -14,6 +14,9 @@
 #if !defined(_WIN32)
 #include <sys/mman.h>
 #endif
+#include <algorithm>
+#include <atomic>
+#include <thread>
 #include <vector>
 #include <stdexcept>
 
@@ -140,6 +143,8 @@ struct PleTable::Impl {
     const uint8_t* data = nullptr;
     uint64_t n_rows = 0;
     bool q5_0 = false;                // #296: Q5_0 rows (110 B), the mapped reader only
+    bool q5_1 = false;                // Q5_1 rows (120 B: a Q5_K_M GGUF)
+    bool q8_0 = false;                // Q8_0 rows (170 B: Unsloth's UD-Q6_K_XL, Swift-1.5 Q4_K_L)
     mutable uint64_t bytes_read = 0;
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
@@ -157,6 +162,10 @@ struct PleTable::Impl {
         if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
         else if (q5_0)
             for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
+        else if (q5_1)
+            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_1(row + (size_t) b * 24, out160 + b * 32);
+        else if (q8_0)
+            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q8_0(row + (size_t) b * 34, out160 + b * 32);
         else iq4nl_dequant_row(row, out160);
     }
 };
@@ -188,11 +197,17 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as
-    // shipped: I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
+    // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), Q5_1 (a Q5_K_M of
+    // a finetune), Q8_0 (Unsloth's UD-Q6_K_XL, Swift-1.5 Q4_K_L), or the FP8 table as shipped: I8 bytes marked
+    // strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
     impl_->fp8 = false;
     impl_->q5_0 = std::strcmp(t->type_name(), "Q5_0") == 0;
-    impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : PLE_ROW_BYTES;
+    impl_->q5_1 = std::strcmp(t->type_name(), "Q5_1") == 0;
+    impl_->q8_0 = std::strcmp(t->type_name(), "Q8_0") == 0;
+    impl_->rb = impl_->q5_0   ? (PLE_HEAD_DIM / 32) * 22
+                : impl_->q5_1 ? (PLE_HEAD_DIM / 32) * 24
+                : impl_->q8_0 ? PLE_ROW_BYTES_Q8
+                              : PLE_ROW_BYTES;
     if (std::strcmp(t->type_name(), "I8") == 0) {
         const MetaValue* f = impl_->file->get("strata.ple.format");
         const MetaValue* s = impl_->file->get("strata.ple.scale");
@@ -204,8 +219,9 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->fp8 = true;
         impl_->scale = (float) s->num();
         impl_->rb = PLE_ROW_BYTES_FP8;
-    } else if (!impl_->q5_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q5_0 or FP8 (I8)";
+    } else if (!impl_->q5_0 && !impl_->q5_1 && !impl_->q8_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() +
+              ", not IQ4_NL, Q5_0, Q5_1, Q8_0 or FP8 (I8)";
         close();
         return false;
     }
@@ -260,14 +276,30 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
         const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
         madvise((void*) a0, a1 - a0, MADV_WILLNEED);
+        // Fault the table in with several threads first: mlock (and a single toucher) brings it in one page at a time
+        // from one thread, ~0.5 GB/s from a cold file - 106 s for a 54 GB Q8_0 table.  The pages are then resident
+        // and mlock only pins them.
+        {
+            constexpr uintptr_t kPiece = 64ull << 20;
+            const uintptr_t pieces = (a1 - a0 + kPiece - 1) / kPiece;
+            const unsigned threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            std::atomic<uintptr_t> next{0};
+            auto touch = [&] {
+                volatile uint8_t sink = 0;
+                for (uintptr_t i; (i = next.fetch_add(1)) < pieces;)
+                    for (uintptr_t p = a0 + i * kPiece, e = std::min(a1, p + kPiece); p < e; p += page)
+                        sink = sink + *(const volatile uint8_t*) p;
+                (void) sink;
+            };
+            std::vector<std::thread> pool;
+            for (unsigned t = 0; t < threads; ++t) pool.emplace_back(touch);
+            for (auto& t : pool) t.join();
+        }
         if (mlock((const void*) a0, a1 - a0) == 0) {
             impl_->locked = true;
         } else {
-            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): touching its pages instead\n",
-                         std::strerror(errno));
-            volatile uint8_t sink = 0;
-            for (uintptr_t p = a0; p < a1; p += page) sink = sink + *(const volatile uint8_t*) p;
-            (void) sink;
+            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted in "
+                                 "but may be reclaimed\n", std::strerror(errno));
         }
 #endif
     }
@@ -286,12 +318,16 @@ void PleTable::close() {
     impl_->n_rows = 0;
     impl_->rb = PLE_ROW_BYTES;
     impl_->q5_0 = false;
+    impl_->q5_1 = false;
+    impl_->q8_0 = false;
     impl_->fp8 = false;
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL"; }
+const char* PleTable::format() const {
+    return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : impl_->q5_1 ? "Q5_1" : impl_->q8_0 ? "Q8_0" : "IQ4_NL";
+}
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
