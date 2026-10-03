@@ -114,6 +114,61 @@ bool under_wddm() {
 }
 
 // perf-review D-4: the lent slots are refilled with queued copies and one wait; STRATA_REFILL_BLOCKING=1 waits on each
+// A file-backed arena on AMD (STRATA_ARENA_MMAP; the engine raises ROCclr's pin-in-place threshold, see main): an
+// adaptive swap copies one expert straight from the mapped file.  Through ROCclr's staging that copy blocks the host
+// (decode windows of 150+ ms); instead the batch's pages are locked here for the async copies and unlocked when they
+// have landed (unpin_blobs), so the release that follows can hand them back.  Neighbouring experts share a page and
+// a copy from a range only PART of which is registered fails ("invalid argument"), so the page ranges are merged
+// first and each merged span is registered once.  A span that does not register is copied through the staging
+// path.  Portable: a layer split copies to either card.
+int pin_blobs(std::vector<std::pair<uintptr_t, uintptr_t>> r, std::vector<void*>& live) {
+    int failed = 0;   // ranges left pageable (a copy from them still works, through the driver's staging)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+    static const bool on = std::getenv("STRATA_ARENA_MMAP") && std::getenv("STRATA_ARENA_MMAP")[0] == '1';
+    if (!on || r.empty()) return 0;
+    for (auto& [a, e] : r) { a &= ~(uintptr_t) 4095; e = (e + 4095) & ~(uintptr_t) 4095; }
+    std::sort(r.begin(), r.end());
+    size_t k = 0;
+    for (size_t i = 1; i < r.size(); ++i) {
+        if (r[i].first <= r[k].second) r[k].second = std::max(r[k].second, r[i].second);
+        else r[++k] = r[i];
+    }
+    r.resize(k + 1);
+    for (const auto& [a, e] : r) {
+        if (cudaHostRegister((void*) a, (size_t) (e - a), cudaHostRegisterReadOnly | cudaHostRegisterPortable) ==
+            cudaSuccess)
+            live.push_back((void*) a);
+        else {
+            (void) cudaGetLastError();
+            ++failed;
+        }
+    }
+#else
+    (void) r; (void) live;
+#endif
+    return failed;
+}
+void unpin_blobs(std::vector<void*>& v) {
+    for (void* p : v) (void) cudaHostUnregister(p);
+    (void) cudaGetLastError();
+    v.clear();
+}
+
+// STRATA_RSS_TRACE=1: the process's mapped file pages (the arena) at a startup step - who reads the arena back
+void rss_probe(const char* where) {
+    static const bool on = std::getenv("STRATA_RSS_TRACE") != nullptr;
+    if (!on) return;
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[256];
+    long long kb = -1;
+    while (std::fgets(line, sizeof line, f))
+        if (std::strncmp(line, "RssFile:", 8) == 0) { kb = std::atoll(line + 8); break; }
+    std::fclose(f);
+    std::fprintf(stderr, "strata rss: %s: RssFile %.2f GiB\n", where, (double) kb / (1024.0 * 1024.0));
+    std::fflush(stderr);
+}
+
 bool refill_blocking() {
     static const bool v = std::getenv("STRATA_REFILL_BLOCKING") != nullptr;
     return v;
@@ -1066,6 +1121,15 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+    // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
+    // pages in place (a GPU userptr), and keeps them - so every expert the VRAM fill copied from the mapped
+    // experts.bin stayed resident, the release of the VRAM-held ones was undone by the driver at once, and a
+    // 32 GB PC ran with ~0.3 GB free: the kernel swapped, and a turn's checkpoint took 25-80 s.  Above this size
+    // ROCclr stages through its own pinned buffers instead; decode is unchanged (49.06 vs 49.16 ms/window).
+    if (std::getenv("STRATA_ARENA_MMAP") && std::getenv("STRATA_ARENA_MMAP")[0] == '1')
+        setenv("GPU_PINNED_MIN_XFER_SIZE", "1000000", 0);   // MiB; an explicit setting wins
+#endif
     // Load every CUDA kernel when the context is created, before the expert cache takes the free VRAM.  With the
     // default lazy loading, a kernel first used mid-prompt (MMQ for IQ3_XXS at 64K+ on a 12 GB card) found no VRAM
     // left for its code and the engine ended ("out of memory: cudaFuncSetAttribute").  Costs ~30 MB of VRAM.
@@ -3888,6 +3952,31 @@ int main(int argc, char** argv) {
         }
         thits.d_res = d_res;
         thits.n_expert = g.n_expert;
+        // a file-backed arena (STRATA_ARENA_MMAP): the experts no GPU holds are the ones the CPU pool and the
+        // prompt path will read - start reading them now instead of faulting them in 4 KB at a time mid-request
+        // ... and the ones a GPU holds are handed back first (STRATA_ARENA_RELEASE=0 keeps them): the fill read the
+        // whole arena, and left mapped and referenced it crowds every other allocation into swap
+        {
+            static const bool keep = std::getenv("STRATA_ARENA_RELEASE") && std::getenv("STRATA_ARENA_RELEASE")[0] == '0';
+            rss_probe("before the release");
+            uint64_t released = 0;
+            if (!keep)
+                for (size_t i = 0; i < host_res.size(); ++i)
+                    if (host_res[i] != strata::core::kNotResident)
+                        released += srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+            if (released > 0)
+                std::fprintf(stderr, "strata generate: expert arena: %.2f GiB of VRAM-held experts handed back to the OS\n",
+                             (double) released / (1024.0 * 1024.0 * 1024.0));
+            rss_probe("after the release");
+            int64_t pf = 0;
+            for (size_t i = 0; i < host_res.size(); ++i)
+                if (host_res[i] == strata::core::kNotResident) {
+                    srcp->prefetch((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+                    ++pf;
+                }
+            (void) pf;
+            rss_probe("after the prefetch hints");
+        }
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
             if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
@@ -4289,6 +4378,7 @@ int main(int argc, char** argv) {
         } else {
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
         }
+        rss_probe("the prompt path set up");
         // layer split across GPUs: a prompt path per stage, each handing its chunk's rows to the next.
         // THE CHUNK STEPS DOWN INSTEAD OF EXITING.  A split's stage caches are sized after the arena is registered, and
         // the prompt path's own buffers (no loan) are not priced into them: with the whole arena pinned (#253) a
@@ -4763,6 +4853,7 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        std::vector<void*> pin_live;   // the swaps' locked arena pages (pin_blob), unlocked once they have landed
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
@@ -4785,8 +4876,12 @@ int main(int argc, char** argv) {
                     else if (cudaEventQuery(st->adapt_ev) != cudaSuccess) return;
                 }
             for (auto& st : stages) st->adapt_live = false;
+            unpin_blobs(pin_live);
             src.commit_exchanges();   // the resident RAM mode: the evicted experts take their places in RAM
-            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
+            for (const auto& [i, slot] : pending) {
+                host_res[(size_t) i] = slot;
+                srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // in VRAM now: RAM not needed
+            }
             pending.clear();
             res_upload();
         };
@@ -4818,6 +4913,14 @@ int main(int argc, char** argv) {
             std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
             if (!resident_stage_swaps(src, xcache, host_res, g.n_expert, swaps, adapt_stream)) return false;
+            {   // lock the batch's source pages (a file-backed arena on AMD; see pin_blobs)
+                std::vector<std::pair<uintptr_t, uintptr_t>> spans;
+                for (const Swap& s : swaps)
+                    if (const uint8_t* b = srcp->blob(s.layer, s.in))
+                        spans.emplace_back((uintptr_t) b,
+                                           (uintptr_t) b + strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
+                pin_blobs(std::move(spans), pin_live);
+            }
             bool main_live = false;
             for (const Swap& s : swaps) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
@@ -4829,11 +4932,15 @@ int main(int argc, char** argv) {
                 if (slot < 0 || b == nullptr ||
                     cudaMemcpyAsync(gs ? gs->cache.device_slot(slot) : xcache.device_slot(slot), b,
                                     (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                    cudaMemcpyHostToDevice, gs ? gs->adapt_stream : adapt_stream) != cudaSuccess)
+                                    cudaMemcpyHostToDevice, gs ? gs->adapt_stream : adapt_stream) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: adaptive swap copy failed (layer %d, slot %d, pinned %d): %s\n",
+                                 (int) s.layer, (int) slot, pin_live.empty() ? 0 : 1, cudaGetErrorString(cudaGetLastError()));
                     return false;
+                }
                 if (gs) gs->adapt_live = true;
                 else main_live = true;
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
+                srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
@@ -4950,6 +5057,7 @@ int main(int argc, char** argv) {
             const int64_t free_mib = (int64_t) (free_b >> 20);
             if (free_mib >= 256) {
                 std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded\n", (long long) free_mib);
+                rss_probe("serving");
             } else if (reserve_adapted) {
                 // #496: the reserve was already lowered to make the cache fit - a bigger one would leave it no room
                 std::fprintf(stderr, "strata serve: WARNING: %lld MiB of VRAM free with everything loaded - this card "
@@ -6431,6 +6539,7 @@ int main(int argc, char** argv) {
         }
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
+        std::vector<void*> pin_live;   // the swaps' locked arena pages (pin_blob), unlocked once they have landed
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         int64_t adapt_rounds = 0;   // counted here: `rounds` is declared below the adapt lambda
@@ -6447,8 +6556,12 @@ int main(int argc, char** argv) {
             }
             if (trace_pending)
                 std::fprintf(stderr, "strata: PENDING landed, %zu experts become resident\n", pending.size());
+            unpin_blobs(pin_live);
             src.commit_exchanges();   // the resident RAM mode: the evicted experts take their places in RAM
-            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
+            for (const auto& [i, slot] : pending) {
+                host_res[(size_t) i] = slot;
+                srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // in VRAM now: RAM not needed
+            }
             pending.clear();
             if (d_res != nullptr)
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
@@ -6498,6 +6611,14 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: an adaptive refill failed (copying evicted experts back)\n");
                 return false;
             }
+            {   // lock the batch's source pages (a file-backed arena on AMD; see pin_blobs)
+                std::vector<std::pair<uintptr_t, uintptr_t>> spans;
+                for (const Swap& s : swaps)
+                    if (const uint8_t* b = srcp->blob(s.layer, s.in))
+                        spans.emplace_back((uintptr_t) b,
+                                           (uintptr_t) b + strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
+                pin_blobs(std::move(spans), pin_live);
+            }
             for (const Swap& s : swaps) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
@@ -6510,6 +6631,7 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
+                srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
