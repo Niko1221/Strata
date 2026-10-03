@@ -1,0 +1,14 @@
+// Strata HIP on Windows: found for <cmath> ahead of the Visual Studio C++ library (cmake/hip_backend.cmake puts
+// this folder on CMAKE_HIP_FLAGS), it declares clang's __device__ math functions, then continues to the real <cmath>.
+//
+// Visual Studio 2026's C++ library (MSVC 14.51 and newer) defines isgreater, isless & co. constexpr. The HIP SDK's
+// clang (7.2) includes <cmath> before its __device__ math declarations, and a constexpr function with no __device__
+// declaration before it becomes __host__ __device__: the HIP headers' own device overloads then fail in every HIP
+// compile, CMake's compiler check included ("__device__ function 'isgreater' cannot overload __host__ __device__
+// function 'isgreater'"). clang with llvm-project #201563 puts the declarations first itself; this gives the SDK's
+// clang the same order. With MSVC 14.50 or older, or a clang that already does it, it changes nothing: the
+// declarations header has an include guard.
+#if defined(__HIP__) && !defined(__HIPCC_RTC__)
+#include <__clang_cuda_math_forward_declares.h>
+#endif
+#include_next <cmath>

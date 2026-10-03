@@ -41,6 +41,14 @@ endif()
 # carried to a card it has no code for stops at startup with a clear message instead of "invalid device function".
 string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 
+if(WIN32)
+  # The HIP SDK's clang with Visual Studio 2026's C++ library (MSVC 14.51+) fails every HIP compile on <cmath>
+  # ("__device__ function 'isgreater' cannot overload __host__ __device__ function"); see
+  # include/strata/hip_compat/windows/cmath. The folder goes on the flags before enable_language so that CMake's
+  # compiler check compiles too; with MSVC 14.50 or older it changes nothing.
+  string(PREPEND CMAKE_HIP_FLAGS "-I\"${CMAKE_CURRENT_SOURCE_DIR}/include/strata/hip_compat/windows\" ")
+endif()
+
 enable_language(HIP)
 find_package(hip CONFIG REQUIRED)
 find_package(hipblas CONFIG REQUIRED)
