@@ -221,13 +221,44 @@ engine with `--short-read` covering the positions to compare; llama.cpp's side w
 | `STRATA_PARTIAL_PIN=1` | Registers the hottest part of the RAM budget (up to `STRATA_PARTIAL_PIN_GIB`, default 24) with the GPU driver, so the GPU computes a share of the misses over PCIe (`--pcie-frac`). Measured no faster on this PC, and it changes the numerics of those experts (GPU kernels instead of the CPU's), so off. |
 | `STRATA_FETCH_THREADS=N` | Threads that read the experts from the GGUF while it answers (default 8; 16 was no faster). The prompt path has its own: `STRATA_STAGER_THREADS` (default 32 here) and `STRATA_STAGER_RING` (128). |
 
+## Q4_0 files
+
+A plain `llama-quantize` Q4_0 file of this model runs the same way: pack shard 1 with `--compat-bf16` as above and
+point `--native` at it. Tested:
+[bartowski/Qwen3.8-Flash-Next-GGUF, `Qwen3.8-Flash-Next-Q4_0`, revision `928589f`](https://huggingface.co/bartowski/Qwen3.8-Flash-Next-GGUF/tree/928589fdb66c6ff07f22ac561e3fbce76553548f/Qwen3.8-Flash-Next-Q4_0)
+(3 shards, 100.6 GB). Its routed experts are Q4_0 for gate/up and for down, except down in layers 0-5, which is Q4_1;
+the PLE table and the token embedding are Q4_0. The pack serves 302 tensors from the GGUF as stored and converts 362
+(168 exact, 194 rounded to BF16, largest absolute error 0.0156; 1.23 GiB).
+
+The Q4_0 expert kernels centre the codes (q - 8) before the integer dot product, as ggml-cpu's Q4_0 x Q8_0 dot does,
+instead of llama.cpp's CUDA form (uncentred codes, minus 8 x the Q8_1 block sum in float); Q4_1 follows the Q5_1
+kernel without the fifth bit. `native_expert_parity` on this file (layers 0 and 5: Q4_0/Q4_1, layers 20 and 47:
+Q4_0/Q4_0): relative error against the float product 1.1-1.3e-2 on the CPU and the GPU alike, CPU vs GPU 1.1e-7 for
+Q4_0/Q4_0 and 5e-4 to 1.1e-3 with Q4_1 down.
+
+Measured on one RTX 3060 12 GB (PCIe 3.0 x16), Xeon E5-2696 v4, 121 GiB DDR4-2400, Linux, CUDA 12.4; every expert in
+RAM, `--max-context 131072 --kv int8 --kv-resident 20480`, expert cache `auto` (1,960 slots, 5.06 GiB), prompt chunk
+`auto` (6,144 tokens); greedy, `reasoning_effort` medium, one request at a time:
+
+| Prompt | Prompt read | Output |
+| --- | --- | --- |
+| 63 tokens (prose) | - | 25.4 tok/s |
+| 111 tokens (code) | - | 28.0 tok/s |
+| 24,461 tokens | 787 tok/s | 24.0 tok/s |
+| 67,934 tokens (a fact hidden in the middle: found) | 737 tok/s | 26.4 tok/s |
+
+A coding prompt was answered correctly. Not measured: agreement with llama.cpp on this file (as
+[above](#quality-against-llamacpp-on-the-same-file) for UD-Q4_K_XL), AMD, Windows, and bartowski's Swift-1.5 Q4_0,
+whose header shows the same formats.
+
 ## Scope and validation
 
-- Only UD-Q4_K_XL at revision `38bb39e` is targeted. Other Unsloth quantizations use formats this engine may not
-  have kernels for; the engine checks every layer's formats at start and refuses an unsupported one by name.
+- Targeted: UD-Q4_K_XL at revision `38bb39e` and plain Q4_0 files ([above](#q4_0-files)). Other quantizations use
+  formats this engine may not have kernels for; the engine checks every layer's formats at start and refuses an
+  unsupported one by name.
 - Tests: the packer's synthetic 4-shard and conversion tests (`.venv/bin/python -m unittest discover -s tools -p
   test_iq_pack.py`); CTests `gguf_split_test`, `expert_layout_test`, `native_expert_parity_*` (the three real expert
-  format pairs against ggml-cpu, the Q5_1 min term, Q8_0 rows), `prefill_mmq_kquant_test` (with `-DSTRATA_MMQ_KQUANTS=ON`: the
+  format pairs against ggml-cpu, the Q5_1 min term, Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1), `prefill_mmq_kquant_test` (with `-DSTRATA_MMQ_KQUANTS=ON`: the
   prompt path's MMQ products for Q4_K / Q5_K / Q5_1 / Q8_0 against ggml's dequantized weights); the in-place mode against `experts.bin` on the Coder
   (identical tokens and logits).
 - Real runs: greedy answers to a coding prompt (correct) at every budget and setting above, identical across them;
