@@ -581,9 +581,11 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
-The initial shared-core integration supports a single session GPU: combining
-enabled parking with `--layer-split` is rejected before model loading. Ordinary
-upstream layer-split checkpoints remain available with parking disabled. FP16,
+With `--layer-split` every GPU parks its own part of a conversation (its layers'
+running state, checkpoint states and K/V; the draft layer's K/V with the last stage)
+and restores it on its own GPU; every part is validated before any is restored. A
+split park is always a full capture (the retained-K/V reuse below is single-GPU), and
+the one-GPU check of the hand-off (`--split-device 0`) refuses parking. FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.

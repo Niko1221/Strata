@@ -512,7 +512,8 @@ void usage() {
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
                  "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
                  "                       of RAM each; 0 = read every prompt from the start)\n"
-                 "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
+                 "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off); works\n"
+                 "                       with --layer-split (every GPU parks and restores its own layers)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
                  "  --conversation-cache-min-free-mib N  --serve: physical RAM floor when parking (default 2560)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
@@ -1350,10 +1351,6 @@ int main(int argc, char** argv) {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
-    if (o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0 && !o.layer_split.empty()) {
-        std::fprintf(stderr, "strata serve: conversation parking does not yet support --layer-split; disable parking with --conversation-cache-mib 0\n");
-        return 2;
-    }
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  Across
     // GPUs, not yet: KV streaming, images, control vectors, the helper caches (--expert-cache-remote), and lending
@@ -1407,6 +1404,13 @@ int main(int argc, char** argv) {
         }
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
+    // a layer split parks one image per stage, each on its own GPU; the one-GPU check of the hand-off
+    // (--split-device 0) shares one session between its stages and is not covered
+    if (o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0 && split_same) {
+        std::fprintf(stderr, "strata serve: conversation parking does not support --split-device 0; disable parking "
+                             "with --conversation-cache-mib 0\n");
+        return 2;
+    }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
@@ -4563,8 +4567,124 @@ int main(int argc, char** argv) {
             (size_t) o.conversation_cache_slots);
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
+        // ---- a layer split parks one image per stage: stage 0's carries the token ids the matching reads, the later
+        // stages' ride in its stage_parts; each is captured and restored on its own GPU with its own carve's running
+        // state, checkpoint states and K/V, and the draft layer's K/V goes with the last stage, which holds it.  No
+        // retained K/V across parks here (every park is a full capture).
+        const size_t n_parts = stages.size() + 1;
+        auto part_ss = [&](size_t s) -> strata::core::SessionState& { return s == 0 ? ss : stages[s - 1]->ss; };
+        auto part_dev = [&](size_t s) { return s == 0 ? 0 : stages[s - 1]->dev; };
+        auto part_draft = [&](size_t s) -> const strata::core::QsaState* {
+            return s + 1 == n_parts ? &mtp.kv_state() : nullptr;
+        };
+        // the checkpoint chain as stage s holds it: its running state under the chain's token ids; false when a
+        // checkpoint lacks a stage's part
+        auto stage_checks = [&](size_t s, std::vector<ConvCheckpoint>& out) -> bool {
+            out.clear();
+            out.reserve(checks.size());
+            for (const ConvCheckpoint& c : checks) {
+                if (c.stage_parts.size() != stages.size()) return false;
+                ConvCheckpoint part = s == 0 ? c : c.stage_parts[s - 1];
+                if (s == 0) part.stage_parts.clear();
+                else { part.ids = c.ids; part.imgs = c.imgs; }
+                part.used = c.used;
+                out.push_back(std::move(part));
+            }
+            return true;
+        };
+        auto park_split = [&](size_t held) -> bool {
+            std::vector<std::vector<ConvCheckpoint>> views(n_parts);
+            size_t estimate = 0;
+            for (size_t s = 0; s < n_parts; ++s) {
+                size_t part = 0;
+                const strata::core::OnDevice on(part_dev(s));
+                if (!stage_checks(s, views[s]) ||
+                    !strata::core::conversation_snapshot_bytes({live, live_imgs, views[s], cvec_cached}, part_ss(s), g,
+                                                               part_draft(s), part, err)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage %zu: %s)\n", s,
+                                 err.empty() ? "a checkpoint without this stage's part" : err.c_str());
+                    err.clear();
+                    return true;
+                }
+                estimate += part;
+            }
+            if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
+                std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
+                             "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            if (!conversations.make_room(estimate, held)) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available "
+                                     "budget)\n", estimate >> 20);
+                return true;
+            }
+            const auto t0 = Clock::now();
+            try {
+                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), estimate,
+                                                             floor)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need "
+                                         "%zu MiB plus %lld MiB floor, or telemetry unavailable)\n", estimate >> 20,
+                                 (long long) o.conversation_cache_min_free_mib);
+                    return true;
+                }
+                strata::core::SavedConversation image;
+                for (size_t s = 0; s < n_parts; ++s) {
+                    const strata::core::OnDevice on(part_dev(s));
+                    strata::core::SavedConversation part;
+                    if (!strata::core::conversation_snapshot_save(part, {live, live_imgs, views[s], cvec_cached},
+                                                                  part_ss(s), g, part_draft(s), err)) return false;
+                    if (s == 0) image = std::move(part);
+                    else image.stage_parts.push_back(std::move(part));
+                }
+                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after "
+                                         "capture, or telemetry unavailable)\n");
+                    return true;
+                }
+                const size_t snapshot_bytes = image.bytes();
+                const bool stored = conversations.put(std::move(image), held);
+                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens (%zu stages) in %.1f ms; parked=%zu "
+                                     "bytes=%zu evictions=%zu snapshot_bytes=%zu\n", stored ? "parked" : "skipped",
+                             live.size(), n_parts, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                             conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes);
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
+            }
+            return true;
+        };
+        // a split image's parts, each checked against its stage before anything is restored
+        auto split_valid = [&](const strata::core::SavedConversation& image) -> bool {
+            if (image.stage_parts.size() != stages.size()) {
+                err = "the image has another stage count";
+                return false;
+            }
+            for (size_t s = 0; s < n_parts; ++s) {
+                const strata::core::OnDevice on(part_dev(s));
+                if (!strata::core::conversation_snapshot_validate(s == 0 ? image : image.stage_parts[s - 1],
+                                                                  part_ss(s), g, part_draft(s), err)) return false;
+            }
+            return true;
+        };
+        // restores every stage and returns the checkpoint chain with its stage parts put back together
+        auto split_restore = [&](strata::core::SavedConversation& image, std::vector<ConvCheckpoint>& chain) -> bool {
+            for (size_t s = 0; s < n_parts; ++s) {
+                const strata::core::OnDevice on(part_dev(s));
+                if (strata::core::conversation_snapshot_restore(s == 0 ? image : image.stage_parts[s - 1], part_ss(s), g,
+                                                                part_draft(s), err) !=
+                    strata::core::ConversationRestore::restored) return false;
+            }
+            chain = std::move(image.checkpoints);
+            for (size_t k = 0; k < chain.size(); ++k)
+                for (auto& part : image.stage_parts) {
+                    ConvCheckpoint c = std::move(part.checkpoints.at(k));
+                    c.ids.clear();
+                    c.imgs.clear();
+                    chain[k].stage_parts.push_back(std::move(c));
+                }
+            return true;
+        };
         auto park_current = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            if (!stages.empty()) return park_split(held);
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
             auto reuse = conversations.take_reuse();
             size_t estimate = 0;
@@ -5265,7 +5385,9 @@ int main(int argc, char** argv) {
             if (parked.tokens > resume) incoming.emplace(conversations.take(parked.index));
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
-            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), err)) {
+            if (incoming && !(stages.empty() ? strata::core::conversation_snapshot_validate(*incoming, ss, g,
+                                                                                             mtp.kv_state(), err)
+                                             : split_valid(*incoming))) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
@@ -5275,6 +5397,27 @@ int main(int argc, char** argv) {
             if ((!from_live || incoming) && !park_current(incoming ? incoming->bytes() : 0)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
+            }
+            if (incoming && !stages.empty()) {
+                const auto t0 = Clock::now();
+                std::vector<ConvCheckpoint> chain;
+                if (!split_restore(*incoming, chain)) {
+                    // Already prevalidated above: a failure here is fatal, never
+                    // permission to decode from a partially restored session.
+                    std::printf("ERR restoring parked conversation: %s\n", err.c_str());
+                    return 1;
+                }
+                live = std::move(incoming->live.ids);
+                live_imgs = std::move(incoming->live.imgs);
+                checks = std::move(chain);
+                cvec_cached = incoming->cvec;
+                resume = parked.tokens;
+                from_live = parked.live;
+                incoming.reset();
+                std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s, %zu stages) in %.1f ms; "
+                                     "parked=%zu bytes=%zu\n", (long long) resume, from_live ? "live" : "checkpoint",
+                             n_parts, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                             conversations.size(), conversations.bytes());
             }
             if (incoming) {
                 const auto t0 = Clock::now();
