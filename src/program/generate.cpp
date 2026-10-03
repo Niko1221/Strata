@@ -6382,6 +6382,27 @@ int main(int argc, char** argv) {
                         // from the authoritative pools straight into the file, without a full host capture
                         const auto disk_checks = strata::core::session_checkpoints_to_save(checks);
                         kept = disk_checks.size();
+                        // RAM PREFLIGHT for the save (not a reservation): the copied running state, the checkpoint
+                        // copies (this list and the one in `meta`) and the 16 MiB write buffer, above the parking floor
+                        {
+                            uint64_t need = (uint64_t) (17u << 20) + (uint64_t) live.size() * sizeof(int32_t);
+                            strata::core::ConversationStateSizes z;
+                            std::string why;
+                            if (strata::core::conversation_session_sizes(g, ss, z, why))
+                                need += z.gdn + z.ple + (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) *
+                                                            (z.tail + z.dead + z.block_pos);
+                            for (const auto& c : disk_checks) need += 2 * (uint64_t) c.bytes();
+                            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                            const auto avail = strata::core::conversation_available_memory();
+                            if (!strata::core::conversation_memory_admit(avail, need, floor)) {
+                                refuse("not enough RAM to save the session (" + std::to_string(need >> 20) +
+                                       " MiB plus a floor of " + std::to_string((long long) o.conversation_cache_min_free_mib) +
+                                       " MiB needed, " + (avail ? std::to_string(*avail >> 20) + " MiB available)"
+                                                                : "RAM telemetry unavailable)"),
+                                       strata::core::SessionError::memory);
+                                continue;
+                            }
+                        }
                         const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
