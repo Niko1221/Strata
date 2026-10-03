@@ -1056,7 +1056,11 @@ def pip_install(packages, what):
         ok(f"{what} already installed")
         return
     say(f"  Installing {what} ...")
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *need])
+    uv = shutil.which("uv")
+    if uv:
+        run([uv, "pip", "install", "--python", sys.executable, *need])
+    else:
+        run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *need])
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
     ok(f"{what} installed")
 
