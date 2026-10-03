@@ -1681,7 +1681,16 @@ def hip_card(eng: Path, gpu: dict, listed: list[dict]) -> dict:
     return {**gpu, "index": m["index"], "count": len(hip), "vram_gb": m["vram_gb"] or gpu["vram_gb"], "driver": "hip"}
 
 
-def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
+def hip_prebuilt_vision(meta: dict, eng: Path, gpu: dict, vision: str) -> bool:
+    """A GPU helper can also run on CPU; CPU-only helpers cannot satisfy GPU requests."""
+    if vision == "none":
+        return True
+    mode = meta.get("vision", "none")
+    return ((eng / VEXE).is_file() and mode in ("cpu", "gpu") and
+            (vision == "cpu" or (mode == "gpu" and gpu["arch"] in meta.get("vision_archs", []))))
+
+
+def get_prebuilt_hip(url_base, gpu, updating=False, vision="none") -> Path | None:
     """The ready-made Windows HIP engine (WIN_HIP_ASSET) in engine/, kept between runs; None when it cannot be had
     (not published for this version, no internet) or has no code for the card."""
     eng = ROOT / "engine"
@@ -1693,7 +1702,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
             meta = {}
         ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
         if meta.get("backend") == "hip" and meta.get("source") == "prebuilt" and ver >= WIN_HIP_MIN_ENGINE and \
-                gpu["arch"] in meta.get("archs", []) and not updating:
+                gpu["arch"] in meta.get("archs", []) and not updating and hip_prebuilt_vision(meta, eng, gpu, vision):
             ok("ready-made AMD engine already installed")
             return eng
     if not url_base:
@@ -1732,6 +1741,8 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
         why = f"it is version {meta.get('version')}; this setup needs {'.'.join(map(str, WIN_HIP_MIN_ENGINE))}"
     elif gpu["arch"] not in meta.get("archs", []):
         why = f"it is built for {', '.join(meta.get('archs', []))}; your GPU is {gpu['arch']}"
+    elif not hip_prebuilt_vision(meta, tmp, gpu, vision):
+        why = f"it has no {vision} image encoder for your GPU ({gpu['arch']})"
     if why:
         warn(f"the ready-made AMD engine at {base} cannot be used: {why}")
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1902,15 +1913,11 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
 
 
 def hip_vision(asked) -> str:
-    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304); a HIP (GPU) encoder build
-    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them."""
+    """Windows accepts image requests when the package supports them; Linux keeps the CPU-only build path."""
+    if WIN:
+        return {"yes": "gpu", "no": "none", None: "none"}.get(asked, asked)
     if asked in ("yes", "gpu"):
-        warn("the AMD backend has no GPU image encoder yet: images off"
-             + ("" if WIN else " (--vision cpu reads them on the CPU)"))
-    if asked == "cpu" and WIN:
-        warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
-             "image encoder): images off")
-        return "none"
+        warn("the Linux AMD build has no GPU image encoder yet: images off (--vision cpu reads them on the CPU)")
     return "cpu" if asked == "cpu" else "none"
 
 
@@ -2055,7 +2062,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                     raise RuntimeError("no supported AMD GPU found")
                 say(f"  Updating the ready-made AMD engine ({meta.get('version')} -> "
                     f"{'.'.join(map(str, WIN_HIP_MIN_ENGINE))} or newer) ...")
-                if get_prebuilt_hip(url_base, g, updating=True) is None:
+                if get_prebuilt_hip(url_base, g, updating=True, vision=meta.get("vision") or "none") is None:
                     raise RuntimeError("not published yet")
             except (Exception, SystemExit) as e:
                 warn(f"could not update the AMD engine{'' if isinstance(e, SystemExit) else f' ({e})'}: "
@@ -3732,7 +3739,7 @@ def main() -> int:
         say("  1) NVIDIA: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in found if gpu_problem(g) is None)
             + "   (recommended)")
         say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in amd_ok)
-            + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
+            + f"   ({'the ready-made AMD engine' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
@@ -4097,9 +4104,10 @@ def main() -> int:
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
     if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
-        eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
+        eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu, vision=vision)
         if eng is None:
-            fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
+            fail("no ready-made AMD engine with the requested image support for this Strata version"
+                 + (" (--build)" if a.build else ""),
                  "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
                  "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)

@@ -868,6 +868,9 @@ The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://
 "Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
 helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
 
+On AMD, Linux setup builds the CPU encoder. Windows AMD packages must include the optional CPU or HIP encoder
+to accept image requests; see [the Windows build and measured checks](AMD_HIP.md#windows).
+
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |
 | **GPU** (recommended) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |

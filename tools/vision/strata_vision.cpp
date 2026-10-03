@@ -81,8 +81,10 @@ int main(int argc, char** argv) {
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
     llama_log_set(quiet_log, nullptr);

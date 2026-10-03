@@ -235,7 +235,7 @@ class ExperimentalSm60(unittest.TestCase):
 class HipVision(unittest.TestCase):
     """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine."""
 
-    @mock.patch.object(setup, "WIN", False)            # Linux: compiled here (Windows has no AMD image encoder yet)
+    @mock.patch.object(setup, "WIN", False)            # Linux keeps the CPU-only source build path
     def test_the_choice(self):
         self.assertEqual(quiet(setup.hip_vision, "cpu"), ("cpu", ""))
         for asked in (None, "no", "none"):

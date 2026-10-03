@@ -15,6 +15,7 @@ rem   STRATA_HIP_ARCHS     gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030 (the 
 rem   STRATA_ROCM_VERSION  10.2.0a20260930        STRATA_ROCM_INDEX  https://nightly.repo.amd.com/rocm/whl-next/
 rem   ROCM_VENV            <repo>\.rocm-win       BUILD_DIR          <repo>\build-hip-win     DIST_DIR  <repo>\dist
 rem   STRATA_GGML_DIR      a llama.cpp checkout at the pinned commit (default: CMake fetches it)
+rem   STRATA_HIP_VISION    none (default), cpu or gpu: include the optional image encoder
 setlocal EnableDelayedExpansion
 for %%I in ("%~dp0..\..") do set "SRC=%%~fI"
 if not defined STRATA_HIP_ARCHS set "STRATA_HIP_ARCHS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030"
@@ -24,6 +25,12 @@ if not defined ROCM_VENV set "ROCM_VENV=%SRC%\.rocm-win"
 if not defined BUILD_DIR set "BUILD_DIR=%SRC%\build-hip-win"
 if not defined DIST_DIR set "DIST_DIR=%SRC%\dist"
 set "TESTS=OFF"
+if not defined STRATA_HIP_VISION set "STRATA_HIP_VISION=none"
+if not "%STRATA_HIP_VISION%"=="none" if not "%STRATA_HIP_VISION%"=="cpu" if not "%STRATA_HIP_VISION%"=="gpu" (
+  echo STRATA_HIP_VISION must be none, cpu or gpu
+  exit /b 1
+)
+set "PATH=%ROCM_VENV%\Scripts;%PATH%"
 if /i "%~1"=="tests" set "TESTS=ON"
 
 rem ---- 1. ROCm (TheRock wheels: the compiler, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, a device package per arch)
@@ -62,25 +69,46 @@ set "PATH=%ROCM%\bin;%ROCM%\lib\llvm\bin;%PATH%"
 
 rem ---- 3. configure + build (STRATA_PORTABLE: the CPU kernels for an AVX2 baseline, as in the NVIDIA zip)
 set "GGML="
-if defined STRATA_GGML_DIR set "GGML=-DSTRATA_GGML_DIR=%STRATA_GGML_DIR:\=/%"
-if not exist "%BUILD_DIR%\build.ninja" (
+if defined STRATA_GGML_DIR set "GGML=%STRATA_GGML_DIR:\=/%"
+rem Always reconfigure: the engine, encoder and package metadata must use the same requested architectures.
   cmake -G Ninja -S "%SRC%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release ^
     -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=%TESTS% -DSTRATA_PREFILL_MMQ=ON ^
     -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON "-DCMAKE_HIP_ARCHITECTURES=%STRATA_HIP_ARCHS%" ^
     "-DCMAKE_C_COMPILER=%ROCM_F%/lib/llvm/bin/clang.exe" "-DCMAKE_CXX_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" ^
     "-DCMAKE_HIP_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" "-DCMAKE_HIP_COMPILER_ROCM_ROOT=%ROCM_F%" ^
     "-DCMAKE_PREFIX_PATH=%ROCM_F%" "-DCMAKE_HIP_FLAGS=--rocm-path=%ROCM_F% --rocm-device-lib-path=%BITCODE%" ^
-    %GGML% || exit /b 1
-)
+    "-DSTRATA_GGML_DIR=%GGML%" || exit /b 1
 if "%TESTS%"=="ON" (
   cmake --build "%BUILD_DIR%" || exit /b 1
 ) else (
   cmake --build "%BUILD_DIR%" --target strata strata-device || exit /b 1
 )
 
-rem ---- 4. the zip: the two programs, the ROCm DLLs they load (+ rocBLAS/hipBLASLt kernels for these archs), licenses
+rem ---- 4. optional image encoder, using the engine's pinned llama.cpp checkout and ROCm toolchain
+set "VISION_ARGS="
+if not "%STRATA_HIP_VISION%"=="none" (
+  set "LLAMA=%BUILD_DIR%\_deps\strata_llamacpp-src"
+  if defined STRATA_GGML_DIR set "LLAMA=%STRATA_GGML_DIR%"
+  if not exist "!LLAMA!\tools\mtmd\CMakeLists.txt" (
+    echo Missing pinned llama.cpp checkout: !LLAMA!
+    exit /b 1
+  )
+  set "VISION_HIP=OFF"
+  if "%STRATA_HIP_VISION%"=="gpu" set "VISION_HIP=ON"
+  set "VISION_BUILD=%SRC%\build-vision-hip-win-%STRATA_HIP_VISION%"
+  cmake -G Ninja -S "%SRC%\tools\vision" -B "!VISION_BUILD!" -DCMAKE_BUILD_TYPE=Release ^
+    "-DLLAMA_DIR=!LLAMA:\=/!" -DSTRATA_PORTABLE=ON -DSTRATA_VISION_CUDA=OFF ^
+    "-DSTRATA_VISION_HIP=!VISION_HIP!" "-DCMAKE_HIP_ARCHITECTURES=%STRATA_HIP_ARCHS%" ^
+    "-DCMAKE_C_COMPILER=%ROCM_F%/lib/llvm/bin/clang.exe" "-DCMAKE_CXX_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" ^
+    "-DCMAKE_PREFIX_PATH=%ROCM_F%" ^
+    "-DCMAKE_CXX_FLAGS=--rocm-path=%ROCM_F% --rocm-device-lib-path=%BITCODE%" || exit /b 1
+  cmake --build "!VISION_BUILD!" --target strata-vision || exit /b 1
+  set VISION_ARGS=--vision-build "!VISION_BUILD!" --vision-mode %STRATA_HIP_VISION%
+)
+
+rem ---- 5. the zip: the programs, their ROCm DLLs (+ rocBLAS/hipBLASLt kernels for these archs), licenses
 "%ROCM_VENV%\Scripts\python.exe" "%SRC%\tools\hip\package_windows.py" --build "%BUILD_DIR%" --rocm "%ROCM%" ^
-  --archs "%STRATA_HIP_ARCHS%" --rocm-version "%STRATA_ROCM_VERSION%" --out "%DIST_DIR%" || exit /b 1
+  --archs "%STRATA_HIP_ARCHS%" --rocm-version "%STRATA_ROCM_VERSION%" --out "%DIST_DIR%" !VISION_ARGS! || exit /b 1
 echo.
 echo Done: %DIST_DIR%\strata-windows-x64-hip.zip
 endlocal
