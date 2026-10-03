@@ -42,6 +42,18 @@ endif()
 string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 
 enable_language(HIP)
+# CMake caches CMAKE_HIP_FLAGS_<CONFIG> while it enables HIP, before it tests the compiler.  A configure that stopped
+# there because HIP could not compile at all (Visual Studio 2026's <cmath> with the HIP SDK 7.2, a wrong ROCm path)
+# cached them empty, and every later configure of that build folder keeps them: setup's Release build then compiled
+# all kernels at -O0 (an RX 6800 decoded at 0.24-0.27 tok/s instead of 28).  Empty ones get what CMake gives a fresh
+# build folder.
+foreach(_cfg IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  string(STRIP "${CMAKE_HIP_FLAGS_${_cfg}_INIT}" _strata_init)
+  if("${CMAKE_HIP_FLAGS_${_cfg}}" STREQUAL "" AND NOT "${_strata_init}" STREQUAL "")
+    set(CMAKE_HIP_FLAGS_${_cfg} "${_strata_init}" CACHE STRING
+        "Flags used by the HIP compiler during ${_cfg} builds." FORCE)
+  endif()
+endforeach()
 find_package(hip CONFIG REQUIRED)
 find_package(hipblas CONFIG REQUIRED)
 find_package(hipblaslt CONFIG QUIET)
