@@ -1,0 +1,58 @@
+{
+  "id": "resp_6791217341f748fcaceabb464be41cde",
+  "object": "response",
+  "created_at": 1790996189,
+  "status": "completed",
+  "completed_at": 1790996189,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_c5eb33e1fc3041daa5cf7ebe07cc6289",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Synthetic UTF-8 text: 猫\n",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 43,
+    "output_tokens": 27,
+    "total_tokens": 70,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 32717,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

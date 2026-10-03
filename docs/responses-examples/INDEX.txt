@@ -1,0 +1,35 @@
+RESPONSES REQUEST EXAMPLES
+Pinned wire inventory: openai-python 3.23.0; Codex capture 0.160.0.
+Each JSON block is a synthetic documentation example unless explicitly marked REAL CAPTURE.
+This is a type/field inventory, not every infinite combination of values, and not universal compatibility.
+Read support labels: requested/in-progress and excluded cases are not certified working.
+
+01_text.txt: Supported
+02_stream.txt: Supported; typed SSE response
+03_messages.txt: Supported; instructions apply to this request only
+04_functions.txt: Supported non-strict, client-owned function workflow
+05_function_result_replay.txt: Supported; item ID and call_id have different roles
+06_namespace.txt: Supported non-strict functions; qualified names are preserved
+07_reasoning_effort.txt: Supported native effort mapping and visible reasoning_text
+08_reasoning_summary.txt: Supported; a bounded second service pass genuinely generates the summary
+09_encrypted_reasoning.txt: Supported authenticated Strata-issued replay tokens; deployment key survives restarts
+10_reasoning_replay.txt: Real encryption of synthetic data under a PUBLIC THROWAWAY EXAMPLE KEY; not accepted by your deployment
+11_json_schema_EXCLUDED.txt: Excluded; documentation example is not an implementation
+12_json_object_EXCLUDED.txt: Excluded
+13_strict_function_EXCLUDED.txt: Excluded; strict:true and omitted strict are rejected
+14_custom_lark_EXCLUDED.txt: Excluded; raw GBNF does not implement Lark custom tools
+15_storage_EXCLUDED.txt: Excluded; no response store
+16_previous_response_EXCLUDED.txt: Excluded; supply full input instead
+17_background_EXCLUDED.txt: Excluded; no background jobs or cancel endpoint
+18_image_EXCLUDED.txt: Excluded input modality
+19_hosted_tool_EXCLUDED.txt: Excluded; Strata MCP is not an OpenAI-hosted tool implementation
+20_visible_reasoning_replay.txt: Supported visible content replay without encryption
+21_diagnostics_and_cache_hint.txt: Supported diagnostic metadata and routing hint to Strata's sole engine
+
+CODEX_ACTUAL_REQUEST.txt: full sanitized real first request
+CODEX_ACTUAL_PARTS.txt: every field/subpiece in that real request
+ALL_CREATE_FIELDS_AND_PIECES.txt: every top-level field and all 170 nested SDK type definitions
+ALL_CREATE_PIECE_EXAMPLES.txt: a synthetic JSON illustration for every nested type and field
+ENCRYPTION_ROUNDTRIP.txt: public example key, plaintext, real ciphertext and restored data
+REST_AND_TRANSPORTS.txt: method/transport inventory
+REASONING_PIECES.txt: distinctions between raw text, summary and encrypted replay

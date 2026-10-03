@@ -1,0 +1,58 @@
+{"type":"thread.started","thread_id":"<CLIENT_ID_4>"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `qwen3.8-flash-next` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"The model planned to inspect the disposable file."}}
+{"type":"error","message":"{\"error\": {\"type\": \"invalid_request_error\", \"code\": \"invalid_parameter\", \"param\": \"input[5]\", \"message\": \"visible reasoning must precede an assistant message or function call\"}}"}
+{"type":"turn.failed","error":{"message":"{\"error\": {\"type\": \"invalid_request_error\", \"code\": \"invalid_parameter\", \"param\": \"input[5]\", \"message\": \"visible reasoning must precede an assistant message or function call\"}}"}}
+Reading additional input from stdin...
+2026-10-03T03:45:52.055349Z ERROR codex_core::util: ReasoningSummaryPartAdded without active item
+2026-10-03T03:45:52.055642Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.055675Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.055826Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.056318Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.056761Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.057182Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.057889Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.059292Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.060698Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.061876Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.064700Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068019Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068069Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068097Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068129Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068151Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068173Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068607Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.068908Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.069549Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.069716Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.069898Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.070172Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.070405Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.070759Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.071000Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.071353Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.071670Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.071867Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.072108Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.072534Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.072817Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.073041Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.073328Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.073585Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.073835Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.074257Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.074778Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.075256Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.075505Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.075943Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.077497Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.077817Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.078033Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.078296Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.078564Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.078825Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.079270Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.079726Z ERROR codex_core::util: ReasoningSummaryDelta without active item
+2026-10-03T03:45:52.281538Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"`\\\"C:\\\\\\\\WINDOWS\\\\\\\\System32\\\\\\\\WindowsPowerShell\\\\\\\\v1.0\\\\\\\\powershell.exe\\\" -Command 'Get-Content -LiteralPath example.txt -Raw'` rejected: blocked by policy\")" }

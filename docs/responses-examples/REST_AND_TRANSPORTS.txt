@@ -1,0 +1,12 @@
+PINNED RESPONSES METHOD/TRANSPORT INVENTORY
+
+POST /v1/responses -- implemented stateless JSON / stream:true SSE.
+GET /v1/responses/{response_id} -- excluded retrieval/storage.
+GET /v1/responses/{response_id}/input_items -- excluded retained input pagination.
+DELETE /v1/responses/{response_id} -- excluded response deletion.
+POST /v1/responses/{response_id}/cancel -- excluded background cancellation.
+POST /v1/responses/compact -- excluded compaction.
+POST /v1/responses/input_tokens -- not implemented in this adapter.
+WebSocket /v1/responses, response.create -- excluded; HTTP profile only.
+
+No background worker, conversation DB, hosted tools or JSON-constraint frontend is implied.

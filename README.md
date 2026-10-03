@@ -136,6 +136,9 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can 
 
 More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
 
+This contribution also offers an [experimental stateless Responses adapter](docs/RESPONSES.md).
+It is off by default; the guide shows how to enable it and lists its supported client profile and limitations.
+
 ## Something went wrong?
 
 - **My PC froze the first time Strata started.** Normal while it loads the model: wait, don't close the window.

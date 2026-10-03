@@ -1,0 +1,717 @@
+[
+  {
+    "request": {
+      "input": "Hello",
+      "model": "qwen3.8-flash-next",
+      "store": false
+    },
+    "response": {
+      "id": "resp_900b82e2eb6b4ee38f01e3a6c602d715",
+      "object": "response",
+      "created_at": 1790999468,
+      "status": "completed",
+      "completed_at": 1790999468,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "model": "qwen3.8-flash-next",
+      "output": [
+        {
+          "id": "msg_94a5f797c5c041e59c1f4ec4447bb987",
+          "type": "message",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Hello, SDK.",
+              "annotations": [],
+              "logprobs": []
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 43,
+        "output_tokens": 12,
+        "total_tokens": 55,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 43
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "store": false,
+      "background": false,
+      "previous_response_id": null,
+      "max_output_tokens": 32717,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tools": [],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "none",
+        "summary": null
+      },
+      "truncation": "disabled",
+      "metadata": {}
+    }
+  },
+  {
+    "request": {
+      "input": "Hello",
+      "model": "qwen3.8-flash-next",
+      "store": false,
+      "stream": true
+    },
+    "response": {
+      "id": "resp_30ee21b0cf4d46ab96768016bb6e1afd",
+      "object": "response",
+      "created_at": 1790999469,
+      "status": "completed",
+      "completed_at": 1790999469,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "model": "qwen3.8-flash-next",
+      "output": [
+        {
+          "id": "msg_7ea7902627804bf48d40495f472fcd96",
+          "type": "message",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Hello, SDK.",
+              "annotations": [],
+              "logprobs": []
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 43,
+        "output_tokens": 12,
+        "total_tokens": 55,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 43
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "store": false,
+      "background": false,
+      "previous_response_id": null,
+      "max_output_tokens": 32717,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tools": [],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "none",
+        "summary": null
+      },
+      "truncation": "disabled",
+      "metadata": {}
+    }
+  },
+  {
+    "request": {
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "input": [
+        {
+          "role": "user",
+          "content": "Inspect example.txt and replace before with after."
+        }
+      ],
+      "max_output_tokens": 1024,
+      "model": "qwen3.8-flash-next",
+      "reasoning": {
+        "summary": "auto"
+      },
+      "store": false,
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "response": {
+      "id": "resp_80849009af224c8dbf4024aeaa42c8ba",
+      "object": "response",
+      "created_at": 1790999470,
+      "status": "completed",
+      "completed_at": 1790999470,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "model": "qwen3.8-flash-next",
+      "output": [
+        {
+          "id": "rs_542ed1f64ddd43a18dce39aa1df12293",
+          "type": "reasoning",
+          "status": "completed",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The model planned to read the file."
+            }
+          ],
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "Inspect the file first."
+            }
+          ],
+          "encrypted_content": "strata-r1.gAAAAABqwHuugh6iBnyYzBUJTNxtlV8u6DTsirUSOxLx6zOZA9YX_260NuK7h_nAarBPfg-y4iE11Sx0TfKkF5ewviRaqEm1cYx6ItH904omqPXdvnVQsmgcN5ChU5EM_wBcxQ1rec2UkCwJ7ew-rWWEFmH20wcukXdgjgc1W0jtX9ICVSBnMb4FwpLrYwWBS5LOPEk7GeZKITxUFvVU4vdKxSMJYkU9hLEtFv5p7Yi4dlsDl6lgK_BekYlWFl0DJLL38pmofstEEx6iJS-wcjdRMe3R1MYBGvrcedKCHcrW1pAaIvQk4QI5ewWHRWm5cR-Iqk1MTDt-LzJBaxNbNXGslm3neA9n-4T7wU8UXCucjTHWSbR3F6vRLFVXAVR1WhsKqGdIH47Zh0CSpPxJt3gurk52NRRUnWGUNYyNYxtb--1iNbfYm98="
+        },
+        {
+          "id": "fc_d06da7c99d584507b2a8c0dc77ea68ae",
+          "type": "function_call",
+          "status": "completed",
+          "call_id": "call_999047f357394412a53d5712",
+          "name": "read_file",
+          "arguments": "{\"path\":\"example.txt\"}",
+          "namespace": "files"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1659,
+        "output_tokens": 167,
+        "total_tokens": 1826,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 1659
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 31
+        }
+      },
+      "store": false,
+      "background": false,
+      "previous_response_id": null,
+      "max_output_tokens": 1024,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "summary": "auto",
+        "effort": "medium"
+      },
+      "truncation": "disabled",
+      "metadata": {}
+    }
+  },
+  {
+    "request": {
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "input": [
+        {
+          "role": "user",
+          "content": "Inspect example.txt and replace before with after."
+        },
+        {
+          "id": "rs_542ed1f64ddd43a18dce39aa1df12293",
+          "summary": [
+            {
+              "text": "The model planned to read the file.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "encrypted_content": "strata-r1.gAAAAABqwHuugh6iBnyYzBUJTNxtlV8u6DTsirUSOxLx6zOZA9YX_260NuK7h_nAarBPfg-y4iE11Sx0TfKkF5ewviRaqEm1cYx6ItH904omqPXdvnVQsmgcN5ChU5EM_wBcxQ1rec2UkCwJ7ew-rWWEFmH20wcukXdgjgc1W0jtX9ICVSBnMb4FwpLrYwWBS5LOPEk7GeZKITxUFvVU4vdKxSMJYkU9hLEtFv5p7Yi4dlsDl6lgK_BekYlWFl0DJLL38pmofstEEx6iJS-wcjdRMe3R1MYBGvrcedKCHcrW1pAaIvQk4QI5ewWHRWm5cR-Iqk1MTDt-LzJBaxNbNXGslm3neA9n-4T7wU8UXCucjTHWSbR3F6vRLFVXAVR1WhsKqGdIH47Zh0CSpPxJt3gurk52NRRUnWGUNYyNYxtb--1iNbfYm98=",
+          "status": "completed"
+        },
+        {
+          "arguments": "{\"path\":\"example.txt\"}",
+          "call_id": "call_999047f357394412a53d5712",
+          "name": "read_file",
+          "type": "function_call",
+          "id": "fc_d06da7c99d584507b2a8c0dc77ea68ae",
+          "namespace": "files",
+          "status": "completed"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_999047f357394412a53d5712",
+          "output": "before\n"
+        }
+      ],
+      "max_output_tokens": 1024,
+      "model": "qwen3.8-flash-next",
+      "reasoning": {
+        "summary": "auto"
+      },
+      "store": false,
+      "stream": true,
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "response": {
+      "id": "resp_753e1d7f4c9544aeb9e89ddae912facc",
+      "object": "response",
+      "created_at": 1790999470,
+      "status": "completed",
+      "completed_at": 1790999470,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "model": "qwen3.8-flash-next",
+      "output": [
+        {
+          "id": "rs_0150a32d82f1430a8d1ea3f49d50d573",
+          "type": "reasoning",
+          "status": "completed",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The model planned the requested edit."
+            }
+          ],
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "Replace the line after reading it."
+            }
+          ],
+          "encrypted_content": "strata-r1.gAAAAABqwHuuF_-dmzaLcJuvTGEPD9vC_wY88SEHO-d9ZxyOp0D0ULplq6uNp6q21W-hkgDyajz2cR24Kk9frxT1r46xm5ec4S1uFtCgDpalZYd9_FTbo_kDfqMbZdhaPz_7GCuPl3Dy6WZUxucyfi2G-dhIOt7ykG99HeEv0d-teDnxREq2Rb-mfr5ZlQKH32wp50SjdWzDdBb6vGWfsbf-3QQDlEnGkhmaOCvMxATwuAA1ATPm3EzZ6dkNW9EgYdOLtYyjem0RZ7wi4dE4pVLxqam69CghFvb0DesQhCRonB4d9BZEkpFFILYRLazuXm19aybpgn1HAWCpuWm9Y78ked1fK2nNA4DYLdcwl5N2C4WjTtF04Py43W4HJUc9JHEO1SGE2QMJznfo8FlfHBQah1LF_XMXzyF6lcUz28RAQzyIsdK3IuA="
+        },
+        {
+          "id": "fc_b2a16d29587441bea5e229fa6a4735ec",
+          "type": "function_call",
+          "status": "completed",
+          "call_id": "call_fe299949f3554fecbfbe6476",
+          "name": "write_file",
+          "arguments": "{\"path\":\"example.txt\",\"content\":\"after\\n\"}",
+          "namespace": "files"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1877,
+        "output_tokens": 219,
+        "total_tokens": 2096,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 1877
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 42
+        }
+      },
+      "store": false,
+      "background": false,
+      "previous_response_id": null,
+      "max_output_tokens": 1024,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "summary": "auto",
+        "effort": "medium"
+      },
+      "truncation": "disabled",
+      "metadata": {}
+    }
+  },
+  {
+    "request": {
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "input": [
+        {
+          "role": "user",
+          "content": "Inspect example.txt and replace before with after."
+        },
+        {
+          "id": "rs_542ed1f64ddd43a18dce39aa1df12293",
+          "summary": [
+            {
+              "text": "The model planned to read the file.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "encrypted_content": "strata-r1.gAAAAABqwHuugh6iBnyYzBUJTNxtlV8u6DTsirUSOxLx6zOZA9YX_260NuK7h_nAarBPfg-y4iE11Sx0TfKkF5ewviRaqEm1cYx6ItH904omqPXdvnVQsmgcN5ChU5EM_wBcxQ1rec2UkCwJ7ew-rWWEFmH20wcukXdgjgc1W0jtX9ICVSBnMb4FwpLrYwWBS5LOPEk7GeZKITxUFvVU4vdKxSMJYkU9hLEtFv5p7Yi4dlsDl6lgK_BekYlWFl0DJLL38pmofstEEx6iJS-wcjdRMe3R1MYBGvrcedKCHcrW1pAaIvQk4QI5ewWHRWm5cR-Iqk1MTDt-LzJBaxNbNXGslm3neA9n-4T7wU8UXCucjTHWSbR3F6vRLFVXAVR1WhsKqGdIH47Zh0CSpPxJt3gurk52NRRUnWGUNYyNYxtb--1iNbfYm98=",
+          "status": "completed"
+        },
+        {
+          "arguments": "{\"path\":\"example.txt\"}",
+          "call_id": "call_999047f357394412a53d5712",
+          "name": "read_file",
+          "type": "function_call",
+          "id": "fc_d06da7c99d584507b2a8c0dc77ea68ae",
+          "namespace": "files",
+          "status": "completed"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_999047f357394412a53d5712",
+          "output": "before\n"
+        },
+        {
+          "id": "rs_0150a32d82f1430a8d1ea3f49d50d573",
+          "summary": [
+            {
+              "text": "The model planned the requested edit.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "encrypted_content": "strata-r1.gAAAAABqwHuuF_-dmzaLcJuvTGEPD9vC_wY88SEHO-d9ZxyOp0D0ULplq6uNp6q21W-hkgDyajz2cR24Kk9frxT1r46xm5ec4S1uFtCgDpalZYd9_FTbo_kDfqMbZdhaPz_7GCuPl3Dy6WZUxucyfi2G-dhIOt7ykG99HeEv0d-teDnxREq2Rb-mfr5ZlQKH32wp50SjdWzDdBb6vGWfsbf-3QQDlEnGkhmaOCvMxATwuAA1ATPm3EzZ6dkNW9EgYdOLtYyjem0RZ7wi4dE4pVLxqam69CghFvb0DesQhCRonB4d9BZEkpFFILYRLazuXm19aybpgn1HAWCpuWm9Y78ked1fK2nNA4DYLdcwl5N2C4WjTtF04Py43W4HJUc9JHEO1SGE2QMJznfo8FlfHBQah1LF_XMXzyF6lcUz28RAQzyIsdK3IuA=",
+          "status": "completed"
+        },
+        {
+          "arguments": "{\"path\":\"example.txt\",\"content\":\"after\\n\"}",
+          "call_id": "call_fe299949f3554fecbfbe6476",
+          "name": "write_file",
+          "type": "function_call",
+          "id": "fc_b2a16d29587441bea5e229fa6a4735ec",
+          "namespace": "files",
+          "status": "completed"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_fe299949f3554fecbfbe6476",
+          "output": "written"
+        }
+      ],
+      "max_output_tokens": 1024,
+      "model": "qwen3.8-flash-next",
+      "reasoning": {
+        "summary": "auto"
+      },
+      "store": false,
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "response": {
+      "id": "resp_c960f9c1ef0645508a384abb9cbc66f0",
+      "object": "response",
+      "created_at": 1790999470,
+      "status": "completed",
+      "completed_at": 1790999470,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "model": "qwen3.8-flash-next",
+      "output": [
+        {
+          "id": "rs_260fe925856947fdadd25aedab1ff7bf",
+          "type": "reasoning",
+          "status": "completed",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The model checked the client's write result."
+            }
+          ],
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "The client confirmed the write."
+            }
+          ],
+          "encrypted_content": "strata-r1.gAAAAABqwHuuvWLK3dVqSNJ8lJ1lCxWhtccDo7CtBdCKWEjH5zXvyMLwu_jZM8MKaaH7S9qAw6Yf46UPgXCK_2_yVA9N_UHGZHuBRxtedXUMyXUfMPha-DD4hOtOndUskqV4XgbUjEmWLh6ap4E7dZuZVqrRYdZRVwoD4pQop32AxsN29APR7j-OrNnurFx2cHJeY-YxA7YVgPmezE_Y0Jl6iB91CbBq4l1fDJ7kubX6verQc2hLwbL-C1rZ-2CaC09FZky9LUNnjeEBrPG4HCPi_qmYfxfF6r8eO4QUeAERAR8ZvG-U2gQ6u9qN1p3zoshnosgu2ynRcOxzU_gD-XUedkEOWmQdJbb8EC6B7E1O5saLAWVwCrfjvr4hM2YFt9Cvt1Lt02wIQfb7uBV_Xij_2njT9KwHsJ3dLSl9eJp6vCZSde0X56ThEOdhp24YFl7lpJfatoCZ"
+        },
+        {
+          "id": "msg_4ca1654052954f5d8ce6dc5e81ee7e5f",
+          "type": "message",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Edited example.txt.",
+              "annotations": [],
+              "logprobs": []
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 2134,
+        "output_tokens": 104,
+        "total_tokens": 2238,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 2134
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 39
+        }
+      },
+      "store": false,
+      "background": false,
+      "previous_response_id": null,
+      "max_output_tokens": 1024,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "files",
+          "description": "Client-owned file helpers.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "name": "write_file",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "summary": "auto",
+        "effort": "medium"
+      },
+      "truncation": "disabled",
+      "metadata": {}
+    }
+  }
+]

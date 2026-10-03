@@ -1,0 +1,9 @@
+{
+  "branch": "work/responses-api",
+  "worktree": "C:/Users/dflanag3/Documents/fleet/strata-responses-stateless",
+  "source_commit": "82587463b81c9787f69b72b5f73e008a983d18f9",
+  "result": "pass",
+  "python_regression_tests": 195,
+  "native_coding_run_in_this_worktree": false,
+  "combined_native_source_commit": "36e9035ec4fa789eb5ba1cec5988b8d4ffb889cf"
+}

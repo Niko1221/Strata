@@ -51,3 +51,6 @@ build-vision.bat
 /third_party/*.zip
 
 /.rocm-win/
+
+# Isolated Responses client binaries, profiles, temporary workspaces and runtime logs.
+/.responses-runtime/

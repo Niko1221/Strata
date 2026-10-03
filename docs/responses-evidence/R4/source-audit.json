@@ -1,0 +1,19 @@
+{
+  "original_author_base": "99f3dbd0b21d1401b3769e0c0d963913607f380b",
+  "native_source_changes": [],
+  "inference_mode_tested": "existing MockEngine + ByteTokenizer; synthetic model outputs",
+  "native_model_quality_tested": false,
+  "remote_hosts_contacted": [],
+  "code_sha256": {
+    "serve/responses.py": "fe450a8882042bba975559f76881ac494c7d5fd5db0cd53c55a77391938ee0cc",
+    "serve/response_replay.py": "7c8ff39c3481d48957e0e36b4bce7d08dacd452ed741c843815a545cbb7ca231",
+    "serve/server.py": "6d5b500238cbae530a137f82db930452915997c1fd2a9d50398ab17a8a9faf58",
+    "serve/test_responses.py": "eb2a1fa20b406f88827736bf13f96ad68f1b965196878d24b13c06a7e8e3a012",
+    "tools/responses_codex_probe.py": "62ccec74b8556d4d5bc73a7c94f661bd7fa21f03ac92b0d0a5c56c8e6802ca6c",
+    "tools/responses_sdk_probe.py": "21075cd81d1ab5a1109db35d00557be07a1d4f58d07e50448c475050f8d7bbe6",
+    "tools/responses_restart_probe.py": "92ac2cc35043ee3f093856c47368ae42c25e5cc45e843c8be2ec9c0c39ebda15",
+    "serve/test_security.py": "71307e07df36c5342eadd7c37281c69be0d78a915ebaf855685308ea62a11ed1"
+  },
+  "tested_code_parent_commit": "5cb57467d79fb30d3b53ff249fbf2baef1e3b5c5",
+  "uncommitted_at_test": "R4 control-body transport fix and environment-only replay-key revision; hashes bind tested source"
+}

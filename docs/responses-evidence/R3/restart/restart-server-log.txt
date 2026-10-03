@@ -1,0 +1,6 @@
+{"base": "http://127.0.0.1:51479", "pid": 18208}
+[strata] done: 56 tokens in 0 s (6456.5 tok/s) (stop, cancel=False)
+{"prompt_contains_earlier_reasoning": false, "response_store_exists": false}
+{"base": "http://127.0.0.1:61957", "pid": 7452}
+[strata] done: 18 tokens in 0 s (33554.4 tok/s) (stop, cancel=False)
+{"prompt_contains_earlier_reasoning": true, "response_store_exists": false}

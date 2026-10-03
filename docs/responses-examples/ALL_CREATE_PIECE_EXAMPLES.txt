@@ -1,0 +1,1958 @@
+SYNTHETIC STRUCTURAL EXAMPLES, pinned openai-python 3.23.0
+One illustration per field and nested type. All optional fields are shown where possible.
+Union examples select one alternative; the companion field inventory lists EVERY alternative and enum.
+Placeholder values are explanatory. These are not all valid Strata requests: use INDEX.txt for support.
+
+
+CREATE FIELD: access_programs
+{
+  "access_programs": {
+    "cyber": "standard"
+  }
+}
+
+CREATE FIELD: background
+{
+  "background": false
+}
+
+CREATE FIELD: context_management
+{
+  "context_management": [
+    {
+      "type": "<example text>",
+      "compact_threshold": 1
+    }
+  ]
+}
+
+CREATE FIELD: conversation
+{
+  "conversation": "<example text>"
+}
+
+CREATE FIELD: include
+{
+  "include": [
+    "file_search_call.results"
+  ]
+}
+
+CREATE FIELD: input
+{
+  "input": "<example text>"
+}
+
+CREATE FIELD: instructions
+{
+  "instructions": "<example text>"
+}
+
+CREATE FIELD: max_output_tokens
+{
+  "max_output_tokens": 1
+}
+
+CREATE FIELD: max_tool_calls
+{
+  "max_tool_calls": 1
+}
+
+CREATE FIELD: metadata
+{
+  "metadata": {}
+}
+
+CREATE FIELD: model
+{
+  "model": "<example text>"
+}
+
+CREATE FIELD: moderation
+{
+  "moderation": {
+    "model": "<example text>",
+    "policy": {
+      "input": {
+        "mode": "score"
+      },
+      "output": {
+        "mode": "score"
+      }
+    }
+  }
+}
+
+CREATE FIELD: parallel_tool_calls
+{
+  "parallel_tool_calls": false
+}
+
+CREATE FIELD: previous_response_id
+{
+  "previous_response_id": "<example text>"
+}
+
+CREATE FIELD: prompt
+{
+  "prompt": {
+    "id": "<example text>",
+    "variables": {},
+    "version": "<example text>"
+  }
+}
+
+CREATE FIELD: prompt_cache_key
+{
+  "prompt_cache_key": "<example text>"
+}
+
+CREATE FIELD: prompt_cache_options
+{
+  "prompt_cache_options": {
+    "comparison_response_id": "<example text>",
+    "mode": "implicit",
+    "prewarm": false,
+    "ttl": "30m"
+  }
+}
+
+CREATE FIELD: prompt_cache_retention
+{
+  "prompt_cache_retention": "in_memory"
+}
+
+CREATE FIELD: reasoning
+{
+  "reasoning": {
+    "context": "auto",
+    "effort": "none",
+    "generate_summary": "auto",
+    "mode": "<example text>",
+    "summary": "auto"
+  }
+}
+
+CREATE FIELD: safety_identifier
+{
+  "safety_identifier": "<example text>"
+}
+
+CREATE FIELD: service_tier
+{
+  "service_tier": "auto"
+}
+
+CREATE FIELD: store
+{
+  "store": false
+}
+
+CREATE FIELD: stream_options
+{
+  "stream_options": {
+    "include_obfuscation": false
+  }
+}
+
+CREATE FIELD: temperature
+{
+  "temperature": 0.5
+}
+
+CREATE FIELD: text
+{
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "low"
+  }
+}
+
+CREATE FIELD: tool_choice
+{
+  "tool_choice": "none"
+}
+
+CREATE FIELD: tools
+{
+  "tools": [
+    {
+      "async": false,
+      "name": "<example text>",
+      "parameters": {},
+      "strict": false,
+      "type": "function",
+      "allowed_callers": [
+        "direct"
+      ],
+      "defer_loading": false,
+      "description": "<example text>",
+      "output_schema": {}
+    }
+  ]
+}
+
+CREATE FIELD: top_logprobs
+{
+  "top_logprobs": 1
+}
+
+CREATE FIELD: top_p
+{
+  "top_p": 0.5
+}
+
+CREATE FIELD: truncation
+{
+  "truncation": "auto"
+}
+
+CREATE FIELD: user
+{
+  "user": "<example text>"
+}
+
+CREATE FIELD: stream
+{
+  "stream": false
+}
+
+PIECE: AccessPrograms
+{
+  "cyber": "standard"
+}
+
+PIECE: ActionClick
+{
+  "button": "left",
+  "type": "click",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: ActionDoubleClick
+{
+  "keys": [
+    "<example text>"
+  ],
+  "type": "double_click",
+  "x": 1,
+  "y": 1
+}
+
+PIECE: ActionDrag
+{
+  "path": [
+    {
+      "x": 1,
+      "y": 1
+    }
+  ],
+  "type": "drag",
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: ActionDragPath
+{
+  "x": 1,
+  "y": 1
+}
+
+PIECE: ActionFind
+{
+  "pattern": "<example text>",
+  "type": "find_in_page",
+  "url": "<example text>"
+}
+
+PIECE: ActionKeypress
+{
+  "keys": [
+    "<example text>"
+  ],
+  "type": "keypress"
+}
+
+PIECE: ActionMove
+{
+  "type": "move",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: ActionOpenPage
+{
+  "type": "open_page",
+  "url": "<example text>"
+}
+
+PIECE: ActionScreenshot
+{
+  "type": "screenshot"
+}
+
+PIECE: ActionScroll
+{
+  "scroll_x": 1,
+  "scroll_y": 1,
+  "type": "scroll",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: ActionSearch
+{
+  "type": "search",
+  "queries": [
+    "<example text>"
+  ],
+  "query": "<example text>",
+  "sources": [
+    {
+      "type": "url",
+      "url": "<example text>"
+    }
+  ]
+}
+
+PIECE: ActionSearchSource
+{
+  "type": "url",
+  "url": "<example text>"
+}
+
+PIECE: ActionType
+{
+  "text": "<example text>",
+  "type": "type"
+}
+
+PIECE: ActionWait
+{
+  "type": "wait"
+}
+
+PIECE: AdditionalTools
+{
+  "role": "developer",
+  "tools": [
+    {
+      "async": false,
+      "name": "<example text>",
+      "parameters": {},
+      "strict": false,
+      "type": "function",
+      "allowed_callers": [
+        "direct"
+      ],
+      "defer_loading": false,
+      "description": "<example text>",
+      "output_schema": {}
+    }
+  ],
+  "type": "additional_tools",
+  "id": "<example text>"
+}
+
+PIECE: AnnotationContainerFileCitation
+{
+  "container_id": "<example text>",
+  "end_index": 1,
+  "file_id": "<example text>",
+  "filename": "<example text>",
+  "start_index": 1,
+  "type": "container_file_citation"
+}
+
+PIECE: AnnotationFileCitation
+{
+  "file_id": "<example text>",
+  "filename": "<example text>",
+  "index": 1,
+  "type": "file_citation"
+}
+
+PIECE: AnnotationFilePath
+{
+  "file_id": "<example text>",
+  "index": 1,
+  "type": "file_path"
+}
+
+PIECE: AnnotationURLCitation
+{
+  "end_index": 1,
+  "start_index": 1,
+  "title": "<example text>",
+  "type": "url_citation",
+  "url": "<example text>"
+}
+
+PIECE: ApplyPatchCall
+{
+  "call_id": "<example text>",
+  "operation": {
+    "diff": "<example text>",
+    "path": "<example text>",
+    "type": "create_file"
+  },
+  "status": "in_progress",
+  "type": "apply_patch_call",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  }
+}
+
+PIECE: ApplyPatchCallCallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: ApplyPatchCallCallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: ApplyPatchCallOperationCreateFile
+{
+  "diff": "<example text>",
+  "path": "<example text>",
+  "type": "create_file"
+}
+
+PIECE: ApplyPatchCallOperationDeleteFile
+{
+  "path": "<example text>",
+  "type": "delete_file"
+}
+
+PIECE: ApplyPatchCallOperationUpdateFile
+{
+  "diff": "<example text>",
+  "path": "<example text>",
+  "type": "update_file"
+}
+
+PIECE: ApplyPatchCallOutput
+{
+  "call_id": "<example text>",
+  "status": "completed",
+  "type": "apply_patch_call_output",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "output": "<example text>"
+}
+
+PIECE: ApplyPatchCallOutputCallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: ApplyPatchCallOutputCallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: ApplyPatchToolParam
+{
+  "type": "apply_patch",
+  "allowed_callers": [
+    "direct"
+  ]
+}
+
+PIECE: CallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: CallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: Click
+{
+  "button": "left",
+  "type": "click",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: CodeInterpreter
+{
+  "container": "<example text>",
+  "type": "code_interpreter",
+  "allowed_callers": [
+    "direct"
+  ]
+}
+
+PIECE: CodeInterpreterContainerCodeInterpreterToolAuto
+{
+  "type": "auto",
+  "file_ids": [
+    "<example text>"
+  ],
+  "memory_limit": "1g",
+  "network_policy": {
+    "type": "disabled"
+  }
+}
+
+PIECE: CompactionTrigger
+{
+  "type": "compaction_trigger"
+}
+
+PIECE: ComparisonFilter
+{
+  "key": "<example text>",
+  "type": "eq",
+  "value": "<example text>"
+}
+
+PIECE: CompoundFilter
+{
+  "filters": [
+    {
+      "key": "<example text>",
+      "type": "eq",
+      "value": "<example text>"
+    }
+  ],
+  "type": "and"
+}
+
+PIECE: ComputerCallOutput
+{
+  "call_id": "<example text>",
+  "output": {
+    "type": "computer_screenshot",
+    "file_id": "<example text>",
+    "image_url": "<example text>"
+  },
+  "type": "computer_call_output",
+  "id": "<example text>",
+  "acknowledged_safety_checks": [
+    {
+      "id": "<example text>",
+      "code": "<example text>",
+      "message": "<example text>"
+    }
+  ],
+  "status": "in_progress"
+}
+
+PIECE: ComputerCallOutputAcknowledgedSafetyCheck
+{
+  "id": "<example text>",
+  "code": "<example text>",
+  "message": "<example text>"
+}
+
+PIECE: ComputerToolParam
+{
+  "type": "computer"
+}
+
+PIECE: ComputerUsePreviewToolParam
+{
+  "display_height": 1,
+  "display_width": 1,
+  "environment": "windows",
+  "type": "computer_use_preview"
+}
+
+PIECE: ContainerAutoParam
+{
+  "type": "container_auto",
+  "file_ids": [
+    "<example text>"
+  ],
+  "memory_limit": "1g",
+  "network_policy": {
+    "type": "disabled"
+  },
+  "skills": [
+    {
+      "skill_id": "<example text>",
+      "type": "skill_reference",
+      "version": "<example text>"
+    }
+  ]
+}
+
+PIECE: ContainerNetworkPolicyAllowlistParam
+{
+  "allowed_domains": [
+    "<example text>"
+  ],
+  "type": "allowlist",
+  "domain_secrets": [
+    {
+      "domain": "<example text>",
+      "name": "<example text>",
+      "value": "<example text>"
+    }
+  ]
+}
+
+PIECE: ContainerNetworkPolicyDisabledParam
+{
+  "type": "disabled"
+}
+
+PIECE: ContainerNetworkPolicyDomainSecretParam
+{
+  "domain": "<example text>",
+  "name": "<example text>",
+  "value": "<example text>"
+}
+
+PIECE: ContainerReferenceParam
+{
+  "container_id": "<example text>",
+  "type": "container_reference"
+}
+
+PIECE: Content
+{
+  "text": "<example text>",
+  "type": "reasoning_text"
+}
+
+PIECE: ContextManagement
+{
+  "type": "<example text>",
+  "compact_threshold": 1
+}
+
+PIECE: CustomToolParam
+{
+  "async": false,
+  "name": "<example text>",
+  "type": "custom",
+  "allowed_callers": [
+    "direct"
+  ],
+  "defer_loading": false,
+  "description": "<example text>",
+  "format": {
+    "type": "text"
+  }
+}
+
+PIECE: DoubleClick
+{
+  "keys": [
+    "<example text>"
+  ],
+  "type": "double_click",
+  "x": 1,
+  "y": 1
+}
+
+PIECE: Drag
+{
+  "path": [
+    {
+      "x": 1,
+      "y": 1
+    }
+  ],
+  "type": "drag",
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: DragPath
+{
+  "x": 1,
+  "y": 1
+}
+
+PIECE: EasyInputMessageParam
+{
+  "content": "<example text>",
+  "role": "user",
+  "phase": "commentary",
+  "type": "message"
+}
+
+PIECE: FileSearchToolParam
+{
+  "type": "file_search",
+  "vector_store_ids": [
+    "<example text>"
+  ],
+  "filters": {
+    "key": "<example text>",
+    "type": "eq",
+    "value": "<example text>"
+  },
+  "max_num_results": 1,
+  "ranking_options": {
+    "hybrid_search": {
+      "embedding_weight": 0.5,
+      "text_weight": 0.5
+    },
+    "ranker": "auto",
+    "score_threshold": 0.5
+  }
+}
+
+PIECE: Filters
+{
+  "allowed_domains": [
+    "<example text>"
+  ]
+}
+
+PIECE: FunctionCallOutput
+{
+  "output": "<example text>",
+  "type": "function_call_output",
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "name": "<example text>",
+  "namespace": "<example text>",
+  "status": "in_progress"
+}
+
+PIECE: FunctionCallOutputCallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: FunctionCallOutputCallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: FunctionShellToolParam
+{
+  "type": "shell",
+  "allowed_callers": [
+    "direct"
+  ],
+  "environment": {
+    "type": "container_auto",
+    "file_ids": [
+      "<example text>"
+    ],
+    "memory_limit": "1g",
+    "network_policy": {
+      "type": "disabled"
+    },
+    "skills": [
+      {
+        "skill_id": "<example text>",
+        "type": "skill_reference",
+        "version": "<example text>"
+      }
+    ]
+  }
+}
+
+PIECE: FunctionToolParam
+{
+  "async": false,
+  "name": "<example text>",
+  "parameters": {},
+  "strict": false,
+  "type": "function",
+  "allowed_callers": [
+    "direct"
+  ],
+  "defer_loading": false,
+  "description": "<example text>",
+  "output_schema": {}
+}
+
+PIECE: Grammar
+{
+  "definition": "<example text>",
+  "syntax": "lark",
+  "type": "grammar"
+}
+
+PIECE: HTTPError
+{
+  "code": 1,
+  "message": "<example text>",
+  "type": "http_error"
+}
+
+PIECE: ImageGeneration
+{
+  "type": "image_generation",
+  "action": "generate",
+  "background": "transparent",
+  "input_fidelity": "high",
+  "input_image_mask": {
+    "file_id": "<example text>",
+    "image_url": "<example text>"
+  },
+  "model": "<example text>",
+  "moderation": "auto",
+  "output_compression": 1,
+  "output_format": "png",
+  "partial_images": 1,
+  "quality": "low",
+  "size": "<example text>"
+}
+
+PIECE: ImageGenerationCall
+{
+  "id": "<example text>",
+  "result": "<example text>",
+  "status": "in_progress",
+  "type": "image_generation_call",
+  "action": "generate",
+  "background": "transparent",
+  "output_format": "png",
+  "quality": "low",
+  "revised_prompt": "<example text>",
+  "size": "<example text>"
+}
+
+PIECE: ImageGenerationInputImageMask
+{
+  "file_id": "<example text>",
+  "image_url": "<example text>"
+}
+
+PIECE: InlineSkillParam
+{
+  "description": "<example text>",
+  "name": "<example text>",
+  "source": {
+    "data": "<example text>",
+    "media_type": "application/zip",
+    "type": "base64"
+  },
+  "type": "inline"
+}
+
+PIECE: InlineSkillSourceParam
+{
+  "data": "<example text>",
+  "media_type": "application/zip",
+  "type": "base64"
+}
+
+PIECE: ItemReference
+{
+  "id": "<example text>",
+  "type": "item_reference"
+}
+
+PIECE: Keypress
+{
+  "keys": [
+    "<example text>"
+  ],
+  "type": "keypress"
+}
+
+PIECE: LocalEnvironmentParam
+{
+  "type": "local",
+  "skills": [
+    {
+      "description": "<example text>",
+      "name": "<example text>",
+      "path": "<example text>"
+    }
+  ]
+}
+
+PIECE: LocalShell
+{
+  "type": "local_shell"
+}
+
+PIECE: LocalShellCall
+{
+  "id": "<example text>",
+  "action": {
+    "command": [
+      "<example text>"
+    ],
+    "env": {},
+    "type": "exec",
+    "timeout_ms": 1,
+    "user": "<example text>",
+    "working_directory": "<example text>"
+  },
+  "call_id": "<example text>",
+  "status": "in_progress",
+  "type": "local_shell_call"
+}
+
+PIECE: LocalShellCallAction
+{
+  "command": [
+    "<example text>"
+  ],
+  "env": {},
+  "type": "exec",
+  "timeout_ms": 1,
+  "user": "<example text>",
+  "working_directory": "<example text>"
+}
+
+PIECE: LocalShellCallOutput
+{
+  "id": "<example text>",
+  "output": "<example text>",
+  "type": "local_shell_call_output",
+  "status": "in_progress"
+}
+
+PIECE: LocalSkillParam
+{
+  "description": "<example text>",
+  "name": "<example text>",
+  "path": "<example text>"
+}
+
+PIECE: Logprob
+{
+  "token": "<example text>",
+  "bytes": [
+    1
+  ],
+  "logprob": 0.5,
+  "top_logprobs": [
+    {
+      "token": "<example text>",
+      "bytes": [
+        1
+      ],
+      "logprob": 0.5
+    }
+  ]
+}
+
+PIECE: LogprobTopLogprob
+{
+  "token": "<example text>",
+  "bytes": [
+    1
+  ],
+  "logprob": 0.5
+}
+
+PIECE: Mcp
+{
+  "server_label": "<example text>",
+  "type": "mcp",
+  "allowed_callers": [
+    "direct"
+  ],
+  "allowed_tools": [
+    "<example text>"
+  ],
+  "authorization": "<example text>",
+  "connector_id": "connector_dropbox",
+  "defer_loading": false,
+  "headers": {},
+  "require_approval": {
+    "always": {
+      "read_only": false,
+      "tool_names": [
+        "<example text>"
+      ]
+    },
+    "never": {
+      "read_only": false,
+      "tool_names": [
+        "<example text>"
+      ]
+    }
+  },
+  "server_description": "<example text>",
+  "server_url": "<example text>",
+  "tunnel_id": "<example text>"
+}
+
+PIECE: McpAllowedToolsMcpToolFilter
+{
+  "read_only": false,
+  "tool_names": [
+    "<example text>"
+  ]
+}
+
+PIECE: McpApprovalRequest
+{
+  "id": "<example text>",
+  "arguments": "<example text>",
+  "name": "<example text>",
+  "server_label": "<example text>",
+  "type": "mcp_approval_request"
+}
+
+PIECE: McpApprovalResponse
+{
+  "approval_request_id": "<example text>",
+  "approve": false,
+  "type": "mcp_approval_response",
+  "id": "<example text>",
+  "reason": "<example text>"
+}
+
+PIECE: McpCall
+{
+  "id": "<example text>",
+  "arguments": "<example text>",
+  "name": "<example text>",
+  "server_label": "<example text>",
+  "type": "mcp_call",
+  "approval_request_id": "<example text>",
+  "error": {
+    "code": 1,
+    "message": "<example text>",
+    "type": "mcp_protocol_error"
+  },
+  "output": "<example text>",
+  "status": "in_progress"
+}
+
+PIECE: McpListTools
+{
+  "id": "<example text>",
+  "server_label": "<example text>",
+  "tools": [
+    {
+      "input_schema": "<value>",
+      "name": "<example text>",
+      "annotations": "<value>",
+      "description": "<example text>"
+    }
+  ],
+  "type": "mcp_list_tools",
+  "error": "<example text>"
+}
+
+PIECE: McpListToolsTool
+{
+  "input_schema": "<value>",
+  "name": "<example text>",
+  "annotations": "<value>",
+  "description": "<example text>"
+}
+
+PIECE: McpProtocolError
+{
+  "code": 1,
+  "message": "<example text>",
+  "type": "mcp_protocol_error"
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilter
+{
+  "always": {
+    "read_only": false,
+    "tool_names": [
+      "<example text>"
+    ]
+  },
+  "never": {
+    "read_only": false,
+    "tool_names": [
+      "<example text>"
+    ]
+  }
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilterAlways
+{
+  "read_only": false,
+  "tool_names": [
+    "<example text>"
+  ]
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilterNever
+{
+  "read_only": false,
+  "tool_names": [
+    "<example text>"
+  ]
+}
+
+PIECE: McpToolExecutionError
+{
+  "content": "<value>",
+  "type": "mcp_tool_execution_error"
+}
+
+PIECE: Message
+{
+  "content": [
+    {
+      "text": "<example text>",
+      "type": "input_text",
+      "prompt_cache_breakpoint": {
+        "mode": "explicit"
+      }
+    }
+  ],
+  "role": "user",
+  "status": "in_progress",
+  "type": "message"
+}
+
+PIECE: Moderation
+{
+  "model": "<example text>",
+  "policy": {
+    "input": {
+      "mode": "score"
+    },
+    "output": {
+      "mode": "score"
+    }
+  }
+}
+
+PIECE: ModerationPolicy
+{
+  "input": {
+    "mode": "score"
+  },
+  "output": {
+    "mode": "score"
+  }
+}
+
+PIECE: ModerationPolicyInput
+{
+  "mode": "score"
+}
+
+PIECE: ModerationPolicyOutput
+{
+  "mode": "score"
+}
+
+PIECE: Move
+{
+  "type": "move",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: NamespaceToolParam
+{
+  "description": "<example text>",
+  "name": "<example text>",
+  "tools": [
+    {
+      "async": false,
+      "name": "<example text>",
+      "type": "function",
+      "allowed_callers": [
+        "direct"
+      ],
+      "defer_loading": false,
+      "description": "<example text>",
+      "output_schema": {},
+      "parameters": "<value>",
+      "strict": false
+    }
+  ],
+  "type": "namespace"
+}
+
+PIECE: OutcomeExit
+{
+  "exit_code": 1,
+  "type": "exit"
+}
+
+PIECE: OutcomeTimeout
+{
+  "type": "timeout"
+}
+
+PIECE: OutputImage
+{
+  "type": "image",
+  "url": "<example text>"
+}
+
+PIECE: OutputLogs
+{
+  "logs": "<example text>",
+  "type": "logs"
+}
+
+PIECE: PendingSafetyCheck
+{
+  "id": "<example text>",
+  "code": "<example text>",
+  "message": "<example text>"
+}
+
+PIECE: Program
+{
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "code": "<example text>",
+  "fingerprint": "<example text>",
+  "type": "program"
+}
+
+PIECE: ProgramOutput
+{
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "result": "<example text>",
+  "status": "completed",
+  "type": "program_output"
+}
+
+PIECE: ProgrammaticToolCalling
+{
+  "type": "programmatic_tool_calling"
+}
+
+PIECE: PromptCacheBreakpoint
+{
+  "mode": "explicit"
+}
+
+PIECE: PromptCacheOptions
+{
+  "comparison_response_id": "<example text>",
+  "mode": "implicit",
+  "prewarm": false,
+  "ttl": "30m"
+}
+
+PIECE: RankingOptions
+{
+  "hybrid_search": {
+    "embedding_weight": 0.5,
+    "text_weight": 0.5
+  },
+  "ranker": "auto",
+  "score_threshold": 0.5
+}
+
+PIECE: RankingOptionsHybridSearch
+{
+  "embedding_weight": 0.5,
+  "text_weight": 0.5
+}
+
+PIECE: ResponseCodeInterpreterToolCallParam
+{
+  "id": "<example text>",
+  "code": "<example text>",
+  "container_id": "<example text>",
+  "outputs": [
+    {
+      "logs": "<example text>",
+      "type": "logs"
+    }
+  ],
+  "status": "in_progress",
+  "type": "code_interpreter_call"
+}
+
+PIECE: ResponseCompactionItemParamParam
+{
+  "encrypted_content": "<example text>",
+  "type": "compaction",
+  "id": "<example text>"
+}
+
+PIECE: ResponseComputerToolCallOutputScreenshotParam
+{
+  "type": "computer_screenshot",
+  "file_id": "<example text>",
+  "image_url": "<example text>"
+}
+
+PIECE: ResponseComputerToolCallParam
+{
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "pending_safety_checks": [
+    {
+      "id": "<example text>",
+      "code": "<example text>",
+      "message": "<example text>"
+    }
+  ],
+  "status": "in_progress",
+  "type": "computer_call",
+  "action": {
+    "button": "left",
+    "type": "click",
+    "x": 1,
+    "y": 1,
+    "keys": [
+      "<example text>"
+    ]
+  },
+  "actions": [
+    {
+      "button": "left",
+      "type": "click",
+      "x": 1,
+      "y": 1,
+      "keys": [
+        "<example text>"
+      ]
+    }
+  ]
+}
+
+PIECE: ResponseConfigurationUpdateItemParamParam
+{
+  "type": "configuration_update",
+  "id": "<example text>",
+  "reasoning": {
+    "effort": "none"
+  }
+}
+
+PIECE: ResponseConversationParamParam
+{
+  "id": "<example text>"
+}
+
+PIECE: ResponseCustomToolCallOutputParam
+{
+  "call_id": "<example text>",
+  "output": "<example text>",
+  "type": "custom_tool_call_output",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  }
+}
+
+PIECE: ResponseCustomToolCallParam
+{
+  "async": false,
+  "call_id": "<example text>",
+  "input": "<example text>",
+  "name": "<example text>",
+  "type": "custom_tool_call",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "namespace": "<example text>"
+}
+
+PIECE: ResponseFileSearchToolCallParam
+{
+  "id": "<example text>",
+  "queries": [
+    "<example text>"
+  ],
+  "status": "in_progress",
+  "type": "file_search_call",
+  "results": [
+    {
+      "attributes": {},
+      "file_id": "<example text>",
+      "filename": "<example text>",
+      "score": 0.5,
+      "text": "<example text>"
+    }
+  ]
+}
+
+PIECE: ResponseFormatJSONObject
+{
+  "type": "json_object"
+}
+
+PIECE: ResponseFormatText
+{
+  "type": "text"
+}
+
+PIECE: ResponseFormatTextJSONSchemaConfigParam
+{
+  "name": "<example text>",
+  "schema": {},
+  "type": "json_schema",
+  "description": "<example text>",
+  "strict": false
+}
+
+PIECE: ResponseFunctionShellCallOutputContentParam
+{
+  "outcome": {
+    "type": "timeout"
+  },
+  "stderr": "<example text>",
+  "stdout": "<example text>"
+}
+
+PIECE: ResponseFunctionToolCallParam
+{
+  "async": false,
+  "arguments": "<example text>",
+  "call_id": "<example text>",
+  "name": "<example text>",
+  "type": "function_call",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "namespace": "<example text>",
+  "status": "in_progress"
+}
+
+PIECE: ResponseFunctionWebSearchParam
+{
+  "id": "<example text>",
+  "action": {
+    "type": "search",
+    "queries": [
+      "<example text>"
+    ],
+    "query": "<example text>",
+    "sources": [
+      {
+        "type": "url",
+        "url": "<example text>"
+      }
+    ]
+  },
+  "status": "in_progress",
+  "type": "web_search_call"
+}
+
+PIECE: ResponseInputFileContentParam
+{
+  "type": "input_file",
+  "detail": "auto",
+  "file_data": "<example text>",
+  "file_id": "<example text>",
+  "file_url": "<example text>",
+  "filename": "<example text>",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseInputFileParam
+{
+  "type": "input_file",
+  "detail": "auto",
+  "file_data": "<example text>",
+  "file_id": "<example text>",
+  "file_url": "<example text>",
+  "filename": "<example text>",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseInputImageContentParam
+{
+  "type": "input_image",
+  "detail": "low",
+  "file_id": "<example text>",
+  "image_url": "<example text>",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseInputImageParam
+{
+  "detail": "low",
+  "type": "input_image",
+  "file_id": "<example text>",
+  "image_url": "<example text>",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseInputTextContentParam
+{
+  "text": "<example text>",
+  "type": "input_text",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseInputTextParam
+{
+  "text": "<example text>",
+  "type": "input_text",
+  "prompt_cache_breakpoint": {
+    "mode": "explicit"
+  }
+}
+
+PIECE: ResponseOutputMessageParam
+{
+  "id": "<example text>",
+  "content": [
+    {
+      "annotations": [
+        {
+          "file_id": "<example text>",
+          "filename": "<example text>",
+          "index": 1,
+          "type": "file_citation"
+        }
+      ],
+      "text": "<example text>",
+      "type": "output_text",
+      "logprobs": [
+        {
+          "token": "<example text>",
+          "bytes": [
+            1
+          ],
+          "logprob": 0.5,
+          "top_logprobs": [
+            {
+              "token": "<example text>",
+              "bytes": [
+                1
+              ],
+              "logprob": 0.5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "role": "assistant",
+  "status": "in_progress",
+  "type": "message",
+  "phase": "commentary"
+}
+
+PIECE: ResponseOutputRefusalParam
+{
+  "refusal": "<example text>",
+  "type": "refusal"
+}
+
+PIECE: ResponseOutputTextParam
+{
+  "annotations": [
+    {
+      "file_id": "<example text>",
+      "filename": "<example text>",
+      "index": 1,
+      "type": "file_citation"
+    }
+  ],
+  "text": "<example text>",
+  "type": "output_text",
+  "logprobs": [
+    {
+      "token": "<example text>",
+      "bytes": [
+        1
+      ],
+      "logprob": 0.5,
+      "top_logprobs": [
+        {
+          "token": "<example text>",
+          "bytes": [
+            1
+          ],
+          "logprob": 0.5
+        }
+      ]
+    }
+  ]
+}
+
+PIECE: ResponsePromptParam
+{
+  "id": "<example text>",
+  "variables": {},
+  "version": "<example text>"
+}
+
+PIECE: ResponseReasoningItemParam
+{
+  "id": "<example text>",
+  "summary": [
+    {
+      "text": "<example text>",
+      "type": "summary_text"
+    }
+  ],
+  "type": "reasoning",
+  "content": [
+    {
+      "text": "<example text>",
+      "type": "reasoning_text"
+    }
+  ],
+  "encrypted_content": "<example text>",
+  "status": "in_progress"
+}
+
+PIECE: ResponseTextConfigParam
+{
+  "format": {
+    "type": "text"
+  },
+  "verbosity": "low"
+}
+
+PIECE: ResponseToolSearchOutputItemParamParam
+{
+  "tools": [
+    {
+      "async": false,
+      "name": "<example text>",
+      "parameters": {},
+      "strict": false,
+      "type": "function",
+      "allowed_callers": [
+        "direct"
+      ],
+      "defer_loading": false,
+      "description": "<example text>",
+      "output_schema": {}
+    }
+  ],
+  "type": "tool_search_output",
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "execution": "server",
+  "status": "in_progress"
+}
+
+PIECE: Result
+{
+  "attributes": {},
+  "file_id": "<example text>",
+  "filename": "<example text>",
+  "score": 0.5,
+  "text": "<example text>"
+}
+
+PIECE: Screenshot
+{
+  "type": "screenshot"
+}
+
+PIECE: Scroll
+{
+  "scroll_x": 1,
+  "scroll_y": 1,
+  "type": "scroll",
+  "x": 1,
+  "y": 1,
+  "keys": [
+    "<example text>"
+  ]
+}
+
+PIECE: ShellCall
+{
+  "action": {
+    "commands": [
+      "<example text>"
+    ],
+    "max_output_length": 1,
+    "timeout_ms": 1
+  },
+  "call_id": "<example text>",
+  "type": "shell_call",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "environment": {
+    "type": "local",
+    "skills": [
+      {
+        "description": "<example text>",
+        "name": "<example text>",
+        "path": "<example text>"
+      }
+    ]
+  },
+  "status": "in_progress"
+}
+
+PIECE: ShellCallAction
+{
+  "commands": [
+    "<example text>"
+  ],
+  "max_output_length": 1,
+  "timeout_ms": 1
+}
+
+PIECE: ShellCallCallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: ShellCallCallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: ShellCallOutput
+{
+  "call_id": "<example text>",
+  "output": [
+    {
+      "outcome": {
+        "type": "timeout"
+      },
+      "stderr": "<example text>",
+      "stdout": "<example text>"
+    }
+  ],
+  "type": "shell_call_output",
+  "id": "<example text>",
+  "caller": {
+    "type": "direct"
+  },
+  "max_output_length": 1,
+  "status": "in_progress"
+}
+
+PIECE: ShellCallOutputCallerDirect
+{
+  "type": "direct"
+}
+
+PIECE: ShellCallOutputCallerProgram
+{
+  "caller_id": "<example text>",
+  "type": "program"
+}
+
+PIECE: SkillReferenceParam
+{
+  "skill_id": "<example text>",
+  "type": "skill_reference",
+  "version": "<example text>"
+}
+
+PIECE: StreamOptions
+{
+  "include_obfuscation": false
+}
+
+PIECE: Summary
+{
+  "text": "<example text>",
+  "type": "summary_text"
+}
+
+PIECE: Text
+{
+  "type": "text"
+}
+
+PIECE: ToolChoiceAllowedParam
+{
+  "mode": "auto",
+  "tools": [
+    {}
+  ],
+  "type": "allowed_tools"
+}
+
+PIECE: ToolChoiceApplyPatchParam
+{
+  "type": "apply_patch"
+}
+
+PIECE: ToolChoiceCustomParam
+{
+  "name": "<example text>",
+  "type": "custom"
+}
+
+PIECE: ToolChoiceFunctionParam
+{
+  "name": "<example text>",
+  "type": "function"
+}
+
+PIECE: ToolChoiceMcpParam
+{
+  "server_label": "<example text>",
+  "type": "mcp",
+  "name": "<example text>"
+}
+
+PIECE: ToolChoiceShellParam
+{
+  "type": "shell"
+}
+
+PIECE: ToolChoiceSpecificProgrammaticToolCallingParam
+{
+  "type": "programmatic_tool_calling"
+}
+
+PIECE: ToolChoiceTypesParam
+{
+  "type": "file_search"
+}
+
+PIECE: ToolFunction
+{
+  "async": false,
+  "name": "<example text>",
+  "type": "function",
+  "allowed_callers": [
+    "direct"
+  ],
+  "defer_loading": false,
+  "description": "<example text>",
+  "output_schema": {},
+  "parameters": "<value>",
+  "strict": false
+}
+
+PIECE: ToolSearchCall
+{
+  "arguments": "<value>",
+  "type": "tool_search_call",
+  "id": "<example text>",
+  "call_id": "<example text>",
+  "execution": "server",
+  "status": "in_progress"
+}
+
+PIECE: ToolSearchToolParam
+{
+  "type": "tool_search",
+  "description": "<example text>",
+  "execution": "server",
+  "parameters": "<value>"
+}
+
+PIECE: Type
+{
+  "text": "<example text>",
+  "type": "type"
+}
+
+PIECE: Wait
+{
+  "type": "wait"
+}
+
+PIECE: WebSearchPreviewToolParam
+{
+  "type": "web_search_preview",
+  "search_content_types": [
+    "text"
+  ],
+  "search_context_size": "low",
+  "user_location": {
+    "type": "approximate",
+    "city": "<example text>",
+    "country": "<example text>",
+    "region": "<example text>",
+    "timezone": "<example text>"
+  }
+}
+
+PIECE: WebSearchToolParam
+{
+  "type": "web_search",
+  "external_web_access": false,
+  "filters": {
+    "allowed_domains": [
+      "<example text>"
+    ]
+  },
+  "search_context_size": "low",
+  "user_location": {
+    "city": "<example text>",
+    "country": "<example text>",
+    "region": "<example text>",
+    "timezone": "<example text>",
+    "type": "approximate"
+  }
+}
+
+PIECE: openai__types__responses__response_configuration_update_item_param_param__Reasoning
+{
+  "effort": "none"
+}
+
+PIECE: openai__types__responses__web_search_preview_tool_param__UserLocation
+{
+  "type": "approximate",
+  "city": "<example text>",
+  "country": "<example text>",
+  "region": "<example text>",
+  "timezone": "<example text>"
+}
+
+PIECE: openai__types__responses__web_search_tool_param__UserLocation
+{
+  "city": "<example text>",
+  "country": "<example text>",
+  "region": "<example text>",
+  "timezone": "<example text>",
+  "type": "approximate"
+}
+
+PIECE: openai__types__shared_params__reasoning__Reasoning
+{
+  "context": "auto",
+  "effort": "none",
+  "generate_summary": "auto",
+  "mode": "<example text>",
+  "summary": "auto"
+}

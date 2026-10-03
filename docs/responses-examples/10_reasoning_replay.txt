@@ -1,0 +1,40 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Real encryption of synthetic data under a PUBLIC THROWAWAY EXAMPLE KEY; not accepted by your deployment
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": [
+    {
+      "role": "user",
+      "content": "Earlier question."
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_example",
+      "status": "completed",
+      "summary": [],
+      "encrypted_content": "strata-r1.gAAAAABqwHnO3KhSC8jXaz-lc8J9HKUxq3OmgpT-4qK2s6Cbr9bGLwkTJCwlfvaIhclL0A0E4ku3suANllqBMNg56k6j9R3TtgkfwlU-8APGL5JgUgW1SJm8uE0NCruN0k87kIWb4yZfuWyk4fxUwOIr4Lu8ihLSBbgH0dwzHptiJnK0MCzBwRk9wekYxV4b6sKVrjae6-EZ8csuIequLUlbXoKo0EaJmshc4dqbCtcA-pTFCV8wWJ8aKjMrj4p1chAKWSGn6sV7ZZ9shuX0Zk1F1pgzfAhIMUcIRC0P8K0ERA7rGv5YNOtC1YnMqnGQv4pa0hOr4VRDJ1gQd2jfd7YsvaUUOHDkvg=="
+    },
+    {
+      "type": "message",
+      "id": "msg_example",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Earlier answer.",
+          "annotations": []
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Continue."
+    }
+  ]
+}

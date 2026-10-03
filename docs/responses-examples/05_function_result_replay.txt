@@ -1,0 +1,45 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported; item ID and call_id have different roles
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": [
+    {
+      "role": "user",
+      "content": "Read example.txt."
+    },
+    {
+      "type": "function_call",
+      "id": "fc_example",
+      "call_id": "call_example",
+      "name": "read_file",
+      "arguments": "{\"path\":\"example.txt\"}",
+      "status": "completed"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_example",
+      "output": "before\n"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "Read a client-owned file.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

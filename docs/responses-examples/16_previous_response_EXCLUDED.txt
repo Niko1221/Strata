@@ -1,0 +1,12 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Excluded; supply full input instead
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "previous_response_id": "resp_example"
+}

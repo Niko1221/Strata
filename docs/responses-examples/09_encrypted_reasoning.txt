@@ -1,0 +1,17 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported authenticated Strata-issued replay tokens; deployment key survives restarts
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "reasoning": {
+    "effort": "low"
+  },
+  "include": [
+    "reasoning.encrypted_content"
+  ]
+}

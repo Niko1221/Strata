@@ -1,0 +1,5 @@
+# Optional encrypted reasoning replay for --experimental-responses.
+# Existing server installation stays unchanged when the experiment is disabled.
+cryptography==50.0.2
+cffi==2.1.1; platform_python_implementation != "PyPy"
+pycparser==3.0; platform_python_implementation != "PyPy"

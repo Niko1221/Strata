@@ -1,0 +1,33 @@
+{
+  "result": "pass",
+  "client": "openai-python",
+  "version": "3.23.0",
+  "transport": "real loopback HTTP/SSE",
+  "server": "Strata Service + MockEngine",
+  "model_output_provenance": "synthetic scripts listed in tools/responses_sdk_probe.py",
+  "native_model_test": false,
+  "codex_test": false,
+  "client_tool_effects": [
+    {
+      "name": "read_file",
+      "path": "example.txt"
+    },
+    {
+      "name": "write_file",
+      "path": "example.txt"
+    }
+  ],
+  "final_file": "after\n",
+  "checks": [
+    "text",
+    "typed SSE",
+    "SDK stream assembly",
+    "SDK response model validation",
+    "client-owned namespaced read/write/result loop",
+    "manual full-item replay",
+    "visible reasoning and genuine summaries",
+    "authenticated encrypted-only replay",
+    "strict SDK event model validation"
+  ],
+  "exchanges": 5
+}

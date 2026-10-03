@@ -1,0 +1,37 @@
+test_h3_schema_success_and_stream_with_reasoning (serve.test_structured.Structured.test_h3_schema_success_and_stream_with_reasoning) ... [strata] done: 255 tokens in 0 s (9895.2 tok/s) (stop, cancel=False)
+[strata] done: 282 tokens in 0 s (8786.5 tok/s) (stop, cancel=False)
+ok
+test_invalid_generation_is_an_error_and_never_streams_content (serve.test_structured.Structured.test_invalid_generation_is_an_error_and_never_streams_content) ... [strata] done: 26 tokens in 0 s (41058.7 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (40812.8 tok/s) (stop, cancel=False)
+[strata] done: 25 tokens in 0 s (35947.1 tok/s) (stop, cancel=False)
+[strata] done: 25 tokens in 0 s (36070.7 tok/s) (stop, cancel=False)
+[strata] done: 270 tokens in 0 s (6710.4 tok/s) (stop, cancel=False)
+[strata] done: 270 tokens in 0 s (7772.1 tok/s) (stop, cancel=False)
+[strata] done: 257 tokens in 0 s (4126.8 tok/s) (stop, cancel=False)
+[strata] done: 257 tokens in 0 s (10389.6 tok/s) (stop, cancel=False)
+ok
+test_invalid_schema_is_400_and_local_refs_work (serve.test_structured.Structured.test_invalid_schema_is_400_and_local_refs_work) ... [strata] done: 13 tokens in 0 s (20811.4 tok/s) (stop, cancel=False)
+ok
+test_malformed_formats_and_tools_are_rejected_before_loading (serve.test_structured.Structured.test_malformed_formats_and_tools_are_rejected_before_loading) ... ok
+test_object_mode_strict_json_and_truncation (serve.test_structured.Structured.test_object_mode_strict_json_and_truncation) ... [strata] done: 13 tokens in 0 s (47290.5 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (44939.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49754.5 tok/s) (stop, cancel=False)
+[strata] done: 14 tokens in 0 s (47089.2 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (28484.2 tok/s) (stop, cancel=False)
+[strata] done: 15 tokens in 0 s (48507.8 tok/s) (stop, cancel=False)
+[strata] done: 5 tokens in 0 s (23020.3 tok/s) (length, cancel=False)
+[strata] done: 7 tokens in 0 s (35674.5 tok/s) (stop, cancel=False)
+ok
+test_rejected_schema_does_not_load_the_engine_or_retry (serve.test_structured.Structured.test_rejected_schema_does_not_load_the_engine_or_retry) ... [strata] done: 21 tokens in 0 s (57644.2 tok/s) (stop, cancel=False)
+ok
+test_the_server_does_not_import_jsonschema_at_start (serve.test_structured.Structured.test_the_server_does_not_import_jsonschema_at_start) ... ok
+test_without_jsonschema_an_object_is_still_required (serve.test_structured.Structured.test_without_jsonschema_an_object_is_still_required) ... [strata] done: 255 tokens in 0 s (10534.0 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (47725.1 tok/s) (stop, cancel=False)
+[strata] done: 7 tokens in 0 s (54981.5 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (56386.7 tok/s) (stop, cancel=False)
+ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 6.350s
+
+OK

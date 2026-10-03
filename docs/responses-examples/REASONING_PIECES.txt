@@ -1,0 +1,42 @@
+SYNTHETIC SHAPE EXAMPLES -- placeholders are not generated text or usable ciphertext.
+Raw thinking is not a summary. Encrypted replay is not a base64 label or fabricated token.
+A namespace groups client functions; it does not authorize the server to execute them.
+The function item's id identifies the output item; call_id connects a client result to its call.
+
+{
+  "raw_reasoning_piece": {
+    "type": "reasoning_text",
+    "text": "<ACTUAL_MODEL_REASONING_TEXT>"
+  },
+  "summary_piece": {
+    "type": "summary_text",
+    "text": "<SEPARATELY_GENERATED_FAITHFUL_SUMMARY>"
+  },
+  "reasoning_item": {
+    "type": "reasoning",
+    "id": "rs_example",
+    "status": "completed",
+    "summary": [],
+    "content": [
+      {
+        "type": "reasoning_text",
+        "text": "<ACTUAL_MODEL_REASONING_TEXT>"
+      }
+    ],
+    "encrypted_content": "<OPAQUE_REASONING_REPLAY_STATE; see ENCRYPTION_ROUNDTRIP.txt>"
+  },
+  "namespaced_function_call": {
+    "type": "function_call",
+    "id": "fc_example",
+    "call_id": "call_example",
+    "namespace": "files",
+    "name": "read_file",
+    "arguments": "{\"path\":\"example.txt\"}",
+    "status": "completed"
+  },
+  "function_result": {
+    "type": "function_call_output",
+    "call_id": "call_example",
+    "output": "before\n"
+  }
+}

@@ -1,0 +1,13 @@
+test_constant_cost (serve.test_detok.Detok.test_constant_cost) ... skipped 'no pack tokenizer here'
+test_random_ids_and_broken_bytes (serve.test_detok.Detok.test_random_ids_and_broken_bytes) ... skipped 'no pack tokenizer here'
+test_text_with_split_characters (serve.test_detok.Detok.test_text_with_split_characters) ... skipped 'no pack tokenizer here'
+test_pack_vocab (serve.test_detok.HeapBpe.test_pack_vocab) ... skipped 'no pack tokenizer here'
+test_speed_pack (serve.test_detok.HeapBpe.test_speed_pack) ... skipped 'no pack tokenizer here'
+test_speed_synthetic (serve.test_detok.HeapBpe.test_speed_synthetic) ... ok
+test_synthetic_vocab (serve.test_detok.HeapBpe.test_synthetic_vocab) ... ok
+test_words_directly (serve.test_detok.HeapBpe.test_words_directly) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 14.097s
+
+OK (skipped=5)

@@ -368,7 +368,8 @@ class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
-    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False):
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 parse_tools: bool = True):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -378,6 +379,7 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        self.parse_tools = parse_tools
         self._reset_scan()
 
     def _reset_scan(self):
@@ -523,6 +525,12 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
+                if not self.parse_tools:
+                    # A text-only pass may quote tool syntax without invoking it.
+                    if self.buf:
+                        out.append(Event("content", self.buf))
+                        self.buf = ""
+                    return out
                 i = self.buf.find(CALL_START)
                 if i < 0:
                     # Hold a partial tag AND the newlines before it: if a tool call follows, they are dropped,
@@ -534,6 +542,20 @@ class OutputParser:
                         out.append(Event("content", self.buf[:j]))
                         self.buf = self.buf[j:]
                     return out
+                body = self.buf[i + len(CALL_START):].lstrip()
+                if not body.startswith("<function="):
+                    if "<function=".startswith(body):
+                        # Decide after the preamble arrives; retain separator
+                        # newlines until we know whether this is a real call.
+                        safe = len(self.buf[:i].rstrip("\n"))
+                        if safe:
+                            out.append(Event("content", self.buf[:safe]))
+                            self.buf = self.buf[safe:]
+                        return out
+                    end = i + len(CALL_START)
+                    out.append(Event("content", self.buf[:end]))
+                    self.buf = self.buf[end:]
+                    continue
                 if i and self.buf[:i].strip():
                     out.append(Event("content", self.buf[:i].rstrip("\n")))
                 self.buf = self.buf[i + len(CALL_START):]

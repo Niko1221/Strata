@@ -1,0 +1,14 @@
+[
+  {
+    "module": "serve.test_responses",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_responses",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_responses.txt"
+  }
+]

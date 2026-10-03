@@ -1,0 +1,26 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported; instructions apply to this request only
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": [
+    {
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Use plain language."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Hello."
+    }
+  ],
+  "instructions": "Be concise."
+}

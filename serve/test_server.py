@@ -271,6 +271,35 @@ class ToolCallTerminators(unittest.TestCase):
     SCHEMA = [{"name": "write", "parameters": {"properties": {"path": {"type": "string"},
                                                               "content": {"type": "string"}}}}]
 
+    def test_literal_call_markers_preserve_text_at_every_boundary(self):
+        from serve.frontend import OutputParser
+        texts = ['Literal <tool_call>{"x":"a=b"}</tool_call> is data. \u732b\n',
+                 '\n\n<tool_call>\n<funhouse>not a function</tool_call>\n',
+                 'Trailing\n\n<tool_call>', 'Trailing\n\n<tool_call>\n<func']
+        for text in texts:
+            for cut in range(len(text) + 1):
+                with self.subTest(text=text, cut=cut):
+                    parser = OutputParser(thinking=False, tools=self.SCHEMA, stream_tools=True)
+                    events = parser.feed(text[:cut]) + parser.feed(text[cut:]) + parser.finish()
+                    self.assertTrue(all(e.kind == "content" for e in events))
+                    self.assertEqual("".join(e.text for e in events), text)
+
+    def test_literal_marker_then_real_call(self):
+        from serve.frontend import OutputParser
+        literal = 'Example <tool_call>{"x":1}</tool_call>.'
+        text = literal + '\n\n<tool_call>\n<function=write><parameter=path>a.txt</parameter></function></tool_call>'
+        for step in (1, 2, 7, len(text)):
+            parser = OutputParser(thinking=False, tools=self.SCHEMA, stream_tools=True)
+            events = []
+            for i in range(0, len(text), step):
+                events.extend(parser.feed(text[i:i + step]))
+            events.extend(parser.finish())
+            self.assertEqual("".join(e.text for e in events if e.kind == "content"), literal)
+            calls = [e.call for e in events if e.kind == "tool_call"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0].arguments, {"path": "a.txt"})
+            self.assertEqual(json.loads("".join(e.text for e in events if e.kind == "tool_args")), {"path": "a.txt"})
+
     def run_parser(self, stream_tools, step):
         from serve.frontend import OutputParser
         text = ("</think>\n\n<tool_call>\n<function=write>\n<parameter=path>\ndoc.md\n</parameter>\n"

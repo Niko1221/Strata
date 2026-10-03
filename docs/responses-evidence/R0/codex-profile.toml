@@ -1,0 +1,12 @@
+model = "qwen3.8-flash-next"
+model_provider = "strata-local"
+web_search = "disabled"
+
+[model_providers.strata-local]
+name = "Strata loopback fixture"
+base_url = "http://127.0.0.1:8095/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0

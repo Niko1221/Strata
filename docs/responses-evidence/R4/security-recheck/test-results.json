@@ -1,0 +1,14 @@
+[
+  {
+    "module": "serve.test_security",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_security",
+      "-v"
+    ],
+    "return_code": 1,
+    "evidence": "serve-test_security.txt"
+  }
+]

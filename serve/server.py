@@ -970,6 +970,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        self.experimental_responses = False             # stateless protocol adapter; no store or workers
+        self.responses_replay = None                     # deployment key, never a response store
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -1427,15 +1429,17 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, *, lifecycle=False,
+            parse_tools=True) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
         budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, parse_tools=parse_tools)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
+        reasoning_tokens = 0  # Responses usage: tokens consumed in the parser's reasoning region.
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
@@ -1454,6 +1458,9 @@ class Service:
                             trace["queue_s"] += round(time.perf_counter() - waiting, 3)
                             trace["state"] = "generating"
                         self.status["queued"] -= 1
+                    if lifecycle and cancel.is_set():
+                        yield "done", {"finish": "cancel", "completion_tokens": 0}
+                        return
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
                     with self.status_lock:
@@ -1462,6 +1469,8 @@ class Service:
                                            max_tokens=max_new)
                         self.last_request_at = time.time()
                         self.rate.clear()               # the previous request's samples must not leak into this one
+                    if lifecycle:
+                        yield "start", None
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
@@ -1485,6 +1494,8 @@ class Service:
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
+                                if lifecycle and parser.state == "reasoning":
+                                    reasoning_tokens += 1
                                 evs = parser.feed(detok.push(t))
                                 self._note(n, evs)
                                 last_print = self._progress(last_print)
@@ -1531,6 +1542,8 @@ class Service:
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
+                            if lifecycle and parser.state == "reasoning":
+                                reasoning_tokens += 1
                             evs = parser.feed(detok.push(t))
                             self._note(n, evs)
                             for ev in evs:
@@ -1607,7 +1620,7 @@ class Service:
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings}
+                       "timings": timings, **({"reasoning_tokens": reasoning_tokens} if lifecycle else {})}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -2223,8 +2236,13 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
                 return
+            if path == "/v1/responses" and not svc.experimental_responses:
+                self._json(404, {"error": {"message": "not found"}})
+                return
             if path == "/settings":
                 self._settings()
+                return
+            if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
@@ -2245,7 +2263,18 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
-                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if path == "/v1/responses":
+                    from serve.responses import MAX_REQUEST_BYTES, RequestError, strict_json
+                    try:
+                        size = int(self.headers.get("Content-Length", 0))
+                        if not 0 < size <= MAX_REQUEST_BYTES:
+                            raise RequestError("expected a JSON body of at most 4 MiB", "body", status=413)
+                        req = strict_json(self.rfile.read(size))
+                    except RequestError as exc:
+                        self._json(exc.status, exc.wire())
+                        return
+                else:
+                    req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
                 if path in ("/v1/load", "/v1/unload"):
@@ -2272,9 +2301,11 @@ def make_handler(svc: Service):
                         result = "loaded"
                     self._json(200, {"status": result, **svc.v1_status()})
                     return
-                if path in ("/v1/chat/completions", "/v1/messages"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
-                if path == "/v1/chat/completions":
+                if path == "/v1/responses":
+                    self._responses(req)
+                elif path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
@@ -2334,6 +2365,28 @@ def make_handler(svc: Service):
             if version:
                 props["build_info"] = "Strata " + str(version)
             self._json(200, props)
+
+        def _control_body(self) -> bool:
+            """Consume the unused control body before replying/closing (Windows otherwise sends a TCP reset)."""
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._json(400, {"error": {"message": "invalid Content-Length"}})
+                return False
+            if not 0 <= length <= 65536:
+                self._json(413, {"error": {"message": "control request body is limited to 64 KiB"}})
+                return False
+            timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(2.0)
+                complete = len(self.rfile.read(length)) == length
+            except OSError:
+                complete = False
+            finally:
+                self.connection.settimeout(timeout)
+            if not complete:
+                self._json(400, {"error": {"message": "incomplete control request body"}})
+            return complete
 
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
@@ -2409,6 +2462,49 @@ def make_handler(svc: Service):
                     yield item
             finally:
                 items.close()
+
+        def _responses(self, req):
+            from serve.responses import RequestError, create_response, execute_response
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            events = None
+            try:
+                prepared = create_response(svc, req)
+                events = execute_response(svc, prepared, cancel)
+                if req.get("stream"):
+                    self._sse()
+                for event in events:
+                    if cancel.is_set() and prepared.assembler.response["status"] != "failed":
+                        return
+                    if event is not None and "response" in event:
+                        self._note(response_status=event["response"]["status"])
+                    if req.get("stream"):
+                        frame = b": keep-alive\n\n" if event is None else (
+                            f"event: {event['type']}\n".encode() + b"data: " +
+                            json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                if cancel.is_set() and prepared.assembler.response["status"] != "failed":
+                    return
+                result = prepared.assembler.snapshot()
+                self._note(outcome=result["status"])
+                if req.get("stream"):
+                    if self.record is not None:
+                        raw = json.dumps(result, ensure_ascii=False)
+                        self._note(response=raw[:262144], response_truncated=len(raw) > 262144,
+                                   usage=result["usage"], error=result["error"])
+                else:
+                    self._json(500 if result["status"] == "failed" else 200, result)
+            except RequestError as exc:
+                self._json(exc.status, exc.wire())
+            except (EngineDied, EngineStarting, EngineStuck, GpuBusy) as exc:
+                self._json(503, {"error": {"type": "server_error", "message": str(exc)}})
+            except OSError:
+                self._note(outcome="disconnected")
+                cancel.set()
+            finally:
+                if events is not None:
+                    events.close()
 
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
@@ -2856,6 +2952,8 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--experimental-responses", action="store_true",
+                    help="enable stateless POST /v1/responses (also experimental_responses:true in config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -2867,6 +2965,19 @@ def main() -> int:
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if type(cfg.get("experimental_responses", False)) is not bool:
+        ap.error("experimental_responses must be true or false")
+    experimental_responses = a.experimental_responses or cfg.get("experimental_responses", False)
+    responses_replay = None
+    if experimental_responses:
+        try:
+            from serve.response_replay import ReplayCodec
+        except ImportError:
+            ap.error("encrypted Responses replay needs: python -m pip install -r requirements-responses.txt")
+        try:
+            responses_replay = ReplayCodec.load()
+        except (OSError, ValueError) as exc:
+            ap.error(f"cannot load the Responses deployment key: {exc}")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -2961,6 +3072,8 @@ def main() -> int:
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    svc.experimental_responses = experimental_responses
+    svc.responses_replay = responses_replay
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),

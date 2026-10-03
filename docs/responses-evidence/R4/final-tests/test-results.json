@@ -1,0 +1,98 @@
+[
+  {
+    "module": "serve.test_security",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_security",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_security.txt"
+  },
+  {
+    "module": "serve.test_responses",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_responses",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_responses.txt"
+  },
+  {
+    "module": "serve.test_server",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_server",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_server.txt"
+  },
+  {
+    "module": "serve.test_lifecycle",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_lifecycle",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_lifecycle.txt"
+  },
+  {
+    "module": "serve.test_structured",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_structured",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_structured.txt"
+  },
+  {
+    "module": "serve.test_monitor",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_monitor",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_monitor.txt"
+  },
+  {
+    "module": "serve.test_mcp",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_mcp",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_mcp.txt"
+  },
+  {
+    "module": "serve.test_detok",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_detok",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_detok.txt"
+  }
+]

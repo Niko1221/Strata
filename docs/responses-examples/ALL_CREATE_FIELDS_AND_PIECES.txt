@@ -1,0 +1,7375 @@
+COMPLETE PINNED CREATE-REQUEST FIELD/PIECE INVENTORY
+Source: openai-python 3.23.0 TypedDict definitions, rendered by Pydantic TypeAdapter.
+This describes WIRE TYPES only. It adds no JSON Schema output support to Strata.
+anyOf/oneOf list alternative shapes; they must not all be combined into one request.
+References resolve to the named pieces below. Required lists and enum choices are included.
+The root covers stream:false; stream:true selects SSE without changing these request pieces.
+
+ROOT CREATE REQUEST
+{
+  "properties": {
+    "access_programs": {
+      "$ref": "#/$defs/AccessPrograms"
+    },
+    "background": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Background"
+    },
+    "context_management": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ContextManagement"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Context Management"
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ResponseConversationParamParam"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Conversation"
+    },
+    "include": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "file_search_call.results",
+              "web_search_call.results",
+              "web_search_call.action.sources",
+              "message.input_image.image_url",
+              "computer_call_output.output.image_url",
+              "code_interpreter_call.outputs",
+              "reasoning.encrypted_content",
+              "message.output_text.logprobs"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Include"
+    },
+    "input": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/EasyInputMessageParam"
+              },
+              {
+                "$ref": "#/$defs/Message"
+              },
+              {
+                "$ref": "#/$defs/ResponseOutputMessageParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseFileSearchToolCallParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseComputerToolCallParam"
+              },
+              {
+                "$ref": "#/$defs/ComputerCallOutput"
+              },
+              {
+                "$ref": "#/$defs/ResponseFunctionWebSearchParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseFunctionToolCallParam"
+              },
+              {
+                "$ref": "#/$defs/FunctionCallOutput"
+              },
+              {
+                "$ref": "#/$defs/ToolSearchCall"
+              },
+              {
+                "$ref": "#/$defs/ResponseToolSearchOutputItemParamParam"
+              },
+              {
+                "$ref": "#/$defs/AdditionalTools"
+              },
+              {
+                "$ref": "#/$defs/ResponseConfigurationUpdateItemParamParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseReasoningItemParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseCompactionItemParamParam"
+              },
+              {
+                "$ref": "#/$defs/ImageGenerationCall"
+              },
+              {
+                "$ref": "#/$defs/ResponseCodeInterpreterToolCallParam"
+              },
+              {
+                "$ref": "#/$defs/LocalShellCall"
+              },
+              {
+                "$ref": "#/$defs/LocalShellCallOutput"
+              },
+              {
+                "$ref": "#/$defs/ShellCall"
+              },
+              {
+                "$ref": "#/$defs/ShellCallOutput"
+              },
+              {
+                "$ref": "#/$defs/ApplyPatchCall"
+              },
+              {
+                "$ref": "#/$defs/ApplyPatchCallOutput"
+              },
+              {
+                "$ref": "#/$defs/McpListTools"
+              },
+              {
+                "$ref": "#/$defs/McpApprovalRequest"
+              },
+              {
+                "$ref": "#/$defs/McpApprovalResponse"
+              },
+              {
+                "$ref": "#/$defs/McpCall"
+              },
+              {
+                "$ref": "#/$defs/ResponseCustomToolCallOutputParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseCustomToolCallParam"
+              },
+              {
+                "$ref": "#/$defs/CompactionTrigger"
+              },
+              {
+                "$ref": "#/$defs/ItemReference"
+              },
+              {
+                "$ref": "#/$defs/Program"
+              },
+              {
+                "$ref": "#/$defs/ProgramOutput"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "title": "Input"
+    },
+    "instructions": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Instructions"
+    },
+    "max_output_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Output Tokens"
+    },
+    "max_tool_calls": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Tool Calls"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Metadata"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.5-2026-04-23",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-mini-2026-03-17",
+            "gpt-5.4-nano-2026-03-17",
+            "gpt-5.3-chat-latest",
+            "gpt-5.2",
+            "gpt-5.2-2025-12-11",
+            "gpt-5.2-chat-latest",
+            "gpt-5.2-pro",
+            "gpt-5.2-pro-2025-12-11",
+            "gpt-5.1",
+            "gpt-5.1-2025-11-13",
+            "gpt-5.1-codex",
+            "gpt-5.1-mini",
+            "gpt-5.1-chat-latest",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5-2025-08-07",
+            "gpt-5-mini-2025-08-07",
+            "gpt-5-nano-2025-08-07",
+            "gpt-5-chat-latest",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "gpt-4.1-2025-04-14",
+            "gpt-4.1-mini-2025-04-14",
+            "gpt-4.1-nano-2025-04-14",
+            "o4-mini",
+            "o4-mini-2025-04-16",
+            "o3",
+            "o3-2025-04-16",
+            "o3-mini",
+            "o3-mini-2025-01-31",
+            "o1",
+            "o1-2024-12-17",
+            "o1-preview",
+            "o1-preview-2024-09-12",
+            "o1-mini",
+            "o1-mini-2024-09-12",
+            "gpt-4o",
+            "gpt-4o-2024-11-20",
+            "gpt-4o-2024-08-06",
+            "gpt-4o-2024-05-13",
+            "gpt-audio-mini",
+            "gpt-audio-mini-2025-12-15",
+            "gpt-4o-audio-preview",
+            "gpt-4o-audio-preview-2024-10-01",
+            "gpt-4o-audio-preview-2024-12-17",
+            "gpt-4o-audio-preview-2025-06-03",
+            "gpt-4o-mini-audio-preview",
+            "gpt-4o-mini-audio-preview-2024-12-17",
+            "gpt-4o-search-preview",
+            "gpt-4o-mini-search-preview",
+            "gpt-4o-search-preview-2025-03-11",
+            "gpt-4o-mini-search-preview-2025-03-11",
+            "chatgpt-4o-latest",
+            "codex-mini-latest",
+            "gpt-4o-mini",
+            "gpt-4o-mini-2024-07-18",
+            "gpt-4-turbo",
+            "gpt-4-turbo-2024-04-09",
+            "gpt-4-0125-preview",
+            "gpt-4-turbo-preview",
+            "gpt-4-1106-preview",
+            "gpt-4-vision-preview",
+            "gpt-4",
+            "gpt-4-0314",
+            "gpt-4-0613",
+            "gpt-4-32k",
+            "gpt-4-32k-0314",
+            "gpt-4-32k-0613",
+            "gpt-3.5-turbo",
+            "gpt-3.5-turbo-16k",
+            "gpt-3.5-turbo-0301",
+            "gpt-3.5-turbo-0613",
+            "gpt-3.5-turbo-1106",
+            "gpt-3.5-turbo-0125",
+            "gpt-3.5-turbo-16k-0613"
+          ],
+          "type": "string"
+        },
+        {
+          "enum": [
+            "o1-pro",
+            "o1-pro-2025-03-19",
+            "o3-pro",
+            "o3-pro-2025-06-10",
+            "o3-deep-research",
+            "o3-deep-research-2025-06-26",
+            "o4-mini-deep-research",
+            "o4-mini-deep-research-2025-06-26",
+            "computer-use-preview",
+            "computer-use-preview-2025-03-11",
+            "gpt-5.5-pro",
+            "gpt-5.5-pro-2026-04-23",
+            "gpt-5-codex",
+            "gpt-5-pro",
+            "gpt-5-pro-2025-10-06",
+            "gpt-5.1-codex-max",
+            "gpt-daybreak-blue-latest",
+            "gpt-daybreak-red-latest",
+            "gpt-5.6-cyber",
+            "gpt-rosalind-research"
+          ],
+          "type": "string"
+        }
+      ],
+      "title": "Model"
+    },
+    "moderation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Moderation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parallel_tool_calls": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parallel Tool Calls"
+    },
+    "previous_response_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Previous Response Id"
+    },
+    "prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResponsePromptParam"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prompt_cache_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Prompt Cache Key"
+    },
+    "prompt_cache_options": {
+      "$ref": "#/$defs/PromptCacheOptions"
+    },
+    "prompt_cache_retention": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_memory",
+            "24h"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Prompt Cache Retention"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/openai__types__shared_params__reasoning__Reasoning"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "safety_identifier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Safety Identifier"
+    },
+    "service_tier": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "default",
+            "flex",
+            "scale",
+            "priority",
+            "fast",
+            "ultrafast"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Service Tier"
+    },
+    "store": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Store"
+    },
+    "stream_options": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamOptions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "temperature": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Temperature"
+    },
+    "text": {
+      "$ref": "#/$defs/ResponseTextConfigParam"
+    },
+    "tool_choice": {
+      "anyOf": [
+        {
+          "enum": [
+            "none",
+            "auto",
+            "required"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceAllowedParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceTypesParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceFunctionParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceMcpParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceCustomParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceSpecificProgrammaticToolCallingParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceApplyPatchParam"
+        },
+        {
+          "$ref": "#/$defs/ToolChoiceShellParam"
+        }
+      ],
+      "title": "Tool Choice"
+    },
+    "tools": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FunctionToolParam"
+          },
+          {
+            "$ref": "#/$defs/FileSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerUsePreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/Mcp"
+          },
+          {
+            "$ref": "#/$defs/CodeInterpreter"
+          },
+          {
+            "$ref": "#/$defs/ProgrammaticToolCalling"
+          },
+          {
+            "$ref": "#/$defs/ImageGeneration"
+          },
+          {
+            "$ref": "#/$defs/LocalShell"
+          },
+          {
+            "$ref": "#/$defs/FunctionShellToolParam"
+          },
+          {
+            "$ref": "#/$defs/CustomToolParam"
+          },
+          {
+            "$ref": "#/$defs/NamespaceToolParam"
+          },
+          {
+            "$ref": "#/$defs/ToolSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchPreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/ApplyPatchToolParam"
+          }
+        ]
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "top_logprobs": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Top Logprobs"
+    },
+    "top_p": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Top P"
+    },
+    "truncation": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Truncation"
+    },
+    "user": {
+      "title": "User",
+      "type": "string"
+    },
+    "stream": {
+      "anyOf": [
+        {
+          "const": false,
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stream"
+    }
+  },
+  "title": "ResponseCreateParamsNonStreaming",
+  "type": "object"
+}
+
+PIECE: AccessPrograms
+{
+  "description": "Domain-specific access programs to use for this request.",
+  "properties": {
+    "cyber": {
+      "enum": [
+        "standard",
+        "daybreak_blue",
+        "daybreak_red"
+      ],
+      "title": "Cyber",
+      "type": "string"
+    }
+  },
+  "title": "AccessPrograms",
+  "type": "object"
+}
+
+PIECE: ActionClick
+{
+  "description": "A click action.",
+  "properties": {
+    "button": {
+      "enum": [
+        "left",
+        "right",
+        "wheel",
+        "back",
+        "forward"
+      ],
+      "title": "Button",
+      "type": "string"
+    },
+    "type": {
+      "const": "click",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "button",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "ActionClick",
+  "type": "object"
+}
+
+PIECE: ActionDoubleClick
+{
+  "description": "A double click action.",
+  "properties": {
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    },
+    "type": {
+      "const": "double_click",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "keys",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "ActionDoubleClick",
+  "type": "object"
+}
+
+PIECE: ActionDrag
+{
+  "description": "A drag action.",
+  "properties": {
+    "path": {
+      "items": {
+        "$ref": "#/$defs/ActionDragPath"
+      },
+      "title": "Path",
+      "type": "array"
+    },
+    "type": {
+      "const": "drag",
+      "title": "Type",
+      "type": "string"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "path",
+    "type"
+  ],
+  "title": "ActionDrag",
+  "type": "object"
+}
+
+PIECE: ActionDragPath
+{
+  "description": "An x/y coordinate pair, e.g. `{ x: 100, y: 200 }`.",
+  "properties": {
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "x",
+    "y"
+  ],
+  "title": "ActionDragPath",
+  "type": "object"
+}
+
+PIECE: ActionFind
+{
+  "description": "Action type \"find_in_page\": Searches for a pattern within a loaded page.",
+  "properties": {
+    "pattern": {
+      "title": "Pattern",
+      "type": "string"
+    },
+    "type": {
+      "const": "find_in_page",
+      "title": "Type",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "pattern",
+    "type",
+    "url"
+  ],
+  "title": "ActionFind",
+  "type": "object"
+}
+
+PIECE: ActionKeypress
+{
+  "description": "A collection of keypresses the model would like to perform.",
+  "properties": {
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Keys",
+      "type": "array"
+    },
+    "type": {
+      "const": "keypress",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "keys",
+    "type"
+  ],
+  "title": "ActionKeypress",
+  "type": "object"
+}
+
+PIECE: ActionMove
+{
+  "description": "A mouse move action.",
+  "properties": {
+    "type": {
+      "const": "move",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "ActionMove",
+  "type": "object"
+}
+
+PIECE: ActionOpenPage
+{
+  "description": "Action type \"open_page\" - Opens a specific URL from search results.",
+  "properties": {
+    "type": {
+      "const": "open_page",
+      "title": "Type",
+      "type": "string"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Url"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ActionOpenPage",
+  "type": "object"
+}
+
+PIECE: ActionScreenshot
+{
+  "description": "A screenshot action.",
+  "properties": {
+    "type": {
+      "const": "screenshot",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ActionScreenshot",
+  "type": "object"
+}
+
+PIECE: ActionScroll
+{
+  "description": "A scroll action.",
+  "properties": {
+    "scroll_x": {
+      "title": "Scroll X",
+      "type": "integer"
+    },
+    "scroll_y": {
+      "title": "Scroll Y",
+      "type": "integer"
+    },
+    "type": {
+      "const": "scroll",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "scroll_x",
+    "scroll_y",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "ActionScroll",
+  "type": "object"
+}
+
+PIECE: ActionSearch
+{
+  "description": "Action type \"search\" - Performs a web search query.",
+  "properties": {
+    "type": {
+      "const": "search",
+      "title": "Type",
+      "type": "string"
+    },
+    "queries": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Queries",
+      "type": "array"
+    },
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/ActionSearchSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ActionSearch",
+  "type": "object"
+}
+
+PIECE: ActionSearchSource
+{
+  "description": "A source used in the search.",
+  "properties": {
+    "type": {
+      "const": "url",
+      "title": "Type",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "url"
+  ],
+  "title": "ActionSearchSource",
+  "type": "object"
+}
+
+PIECE: ActionType
+{
+  "description": "An action to type in text.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "type",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "ActionType",
+  "type": "object"
+}
+
+PIECE: ActionWait
+{
+  "description": "A wait action.",
+  "properties": {
+    "type": {
+      "const": "wait",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ActionWait",
+  "type": "object"
+}
+
+PIECE: AdditionalTools
+{
+  "properties": {
+    "role": {
+      "const": "developer",
+      "title": "Role",
+      "type": "string"
+    },
+    "tools": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FunctionToolParam"
+          },
+          {
+            "$ref": "#/$defs/FileSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerUsePreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/Mcp"
+          },
+          {
+            "$ref": "#/$defs/CodeInterpreter"
+          },
+          {
+            "$ref": "#/$defs/ProgrammaticToolCalling"
+          },
+          {
+            "$ref": "#/$defs/ImageGeneration"
+          },
+          {
+            "$ref": "#/$defs/LocalShell"
+          },
+          {
+            "$ref": "#/$defs/FunctionShellToolParam"
+          },
+          {
+            "$ref": "#/$defs/CustomToolParam"
+          },
+          {
+            "$ref": "#/$defs/NamespaceToolParam"
+          },
+          {
+            "$ref": "#/$defs/ToolSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchPreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/ApplyPatchToolParam"
+          }
+        ]
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "type": {
+      "const": "additional_tools",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    }
+  },
+  "required": [
+    "role",
+    "tools",
+    "type"
+  ],
+  "title": "AdditionalTools",
+  "type": "object"
+}
+
+PIECE: AnnotationContainerFileCitation
+{
+  "description": "A citation for a container file used to generate a model response.",
+  "properties": {
+    "container_id": {
+      "title": "Container Id",
+      "type": "string"
+    },
+    "end_index": {
+      "title": "End Index",
+      "type": "integer"
+    },
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "start_index": {
+      "title": "Start Index",
+      "type": "integer"
+    },
+    "type": {
+      "const": "container_file_citation",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "container_id",
+    "end_index",
+    "file_id",
+    "filename",
+    "start_index",
+    "type"
+  ],
+  "title": "AnnotationContainerFileCitation",
+  "type": "object"
+}
+
+PIECE: AnnotationFileCitation
+{
+  "description": "A citation to a file.",
+  "properties": {
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "type": {
+      "const": "file_citation",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "file_id",
+    "filename",
+    "index",
+    "type"
+  ],
+  "title": "AnnotationFileCitation",
+  "type": "object"
+}
+
+PIECE: AnnotationFilePath
+{
+  "description": "A path to a file.",
+  "properties": {
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "type": {
+      "const": "file_path",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "file_id",
+    "index",
+    "type"
+  ],
+  "title": "AnnotationFilePath",
+  "type": "object"
+}
+
+PIECE: AnnotationURLCitation
+{
+  "description": "A citation for a web resource used to generate a model response.",
+  "properties": {
+    "end_index": {
+      "title": "End Index",
+      "type": "integer"
+    },
+    "start_index": {
+      "title": "Start Index",
+      "type": "integer"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "type": {
+      "const": "url_citation",
+      "title": "Type",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "end_index",
+    "start_index",
+    "title",
+    "type",
+    "url"
+  ],
+  "title": "AnnotationURLCitation",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCall
+{
+  "description": "A tool call representing a request to create, delete, or update files using diff patches.",
+  "properties": {
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApplyPatchCallOperationCreateFile"
+        },
+        {
+          "$ref": "#/$defs/ApplyPatchCallOperationDeleteFile"
+        },
+        {
+          "$ref": "#/$defs/ApplyPatchCallOperationUpdateFile"
+        }
+      ],
+      "title": "Operation"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "apply_patch_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApplyPatchCallCallerDirect"
+        },
+        {
+          "$ref": "#/$defs/ApplyPatchCallCallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    }
+  },
+  "required": [
+    "call_id",
+    "operation",
+    "status",
+    "type"
+  ],
+  "title": "ApplyPatchCall",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallCallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ApplyPatchCallCallerDirect",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallCallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "ApplyPatchCallCallerProgram",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOperationCreateFile
+{
+  "description": "Instruction for creating a new file via the apply_patch tool.",
+  "properties": {
+    "diff": {
+      "title": "Diff",
+      "type": "string"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "type": {
+      "const": "create_file",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "diff",
+    "path",
+    "type"
+  ],
+  "title": "ApplyPatchCallOperationCreateFile",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOperationDeleteFile
+{
+  "description": "Instruction for deleting an existing file via the apply_patch tool.",
+  "properties": {
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "type": {
+      "const": "delete_file",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "type"
+  ],
+  "title": "ApplyPatchCallOperationDeleteFile",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOperationUpdateFile
+{
+  "description": "Instruction for updating an existing file via the apply_patch tool.",
+  "properties": {
+    "diff": {
+      "title": "Diff",
+      "type": "string"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "type": {
+      "const": "update_file",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "diff",
+    "path",
+    "type"
+  ],
+  "title": "ApplyPatchCallOperationUpdateFile",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOutput
+{
+  "description": "The streamed output emitted by an apply patch tool call.",
+  "properties": {
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "apply_patch_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApplyPatchCallOutputCallerDirect"
+        },
+        {
+          "$ref": "#/$defs/ApplyPatchCallOutputCallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output"
+    }
+  },
+  "required": [
+    "call_id",
+    "status",
+    "type"
+  ],
+  "title": "ApplyPatchCallOutput",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOutputCallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ApplyPatchCallOutputCallerDirect",
+  "type": "object"
+}
+
+PIECE: ApplyPatchCallOutputCallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "ApplyPatchCallOutputCallerProgram",
+  "type": "object"
+}
+
+PIECE: ApplyPatchToolParam
+{
+  "description": "Allows the assistant to create, delete, or update files using unified diffs.",
+  "properties": {
+    "type": {
+      "const": "apply_patch",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ApplyPatchToolParam",
+  "type": "object"
+}
+
+PIECE: CallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "CallerDirect",
+  "type": "object"
+}
+
+PIECE: CallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "CallerProgram",
+  "type": "object"
+}
+
+PIECE: Click
+{
+  "description": "A click action.",
+  "properties": {
+    "button": {
+      "enum": [
+        "left",
+        "right",
+        "wheel",
+        "back",
+        "forward"
+      ],
+      "title": "Button",
+      "type": "string"
+    },
+    "type": {
+      "const": "click",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "button",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "Click",
+  "type": "object"
+}
+
+PIECE: CodeInterpreter
+{
+  "description": "A tool that runs Python code to help generate a response to a prompt.",
+  "properties": {
+    "container": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/CodeInterpreterContainerCodeInterpreterToolAuto"
+        }
+      ],
+      "title": "Container"
+    },
+    "type": {
+      "const": "code_interpreter",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    }
+  },
+  "required": [
+    "container",
+    "type"
+  ],
+  "title": "CodeInterpreter",
+  "type": "object"
+}
+
+PIECE: CodeInterpreterContainerCodeInterpreterToolAuto
+{
+  "description": "Configuration for a code interpreter container.\n\nOptionally specify the IDs of the files to run the code on.",
+  "properties": {
+    "type": {
+      "const": "auto",
+      "title": "Type",
+      "type": "string"
+    },
+    "file_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "File Ids",
+      "type": "array"
+    },
+    "memory_limit": {
+      "anyOf": [
+        {
+          "enum": [
+            "1g",
+            "4g",
+            "16g",
+            "64g"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Memory Limit"
+    },
+    "network_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContainerNetworkPolicyDisabledParam"
+        },
+        {
+          "$ref": "#/$defs/ContainerNetworkPolicyAllowlistParam"
+        }
+      ],
+      "title": "Network Policy"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "CodeInterpreterContainerCodeInterpreterToolAuto",
+  "type": "object"
+}
+
+PIECE: CompactionTrigger
+{
+  "description": "Compacts the current context. Must be the final input item.",
+  "properties": {
+    "type": {
+      "const": "compaction_trigger",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "CompactionTrigger",
+  "type": "object"
+}
+
+PIECE: ComparisonFilter
+{
+  "description": "A filter used to compare a specified attribute key to a given value using a defined comparison operation.",
+  "properties": {
+    "key": {
+      "title": "Key",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "title": "Value"
+    }
+  },
+  "required": [
+    "key",
+    "type",
+    "value"
+  ],
+  "title": "ComparisonFilter",
+  "type": "object"
+}
+
+PIECE: CompoundFilter
+{
+  "description": "Combine multiple filters using `and` or `or`.",
+  "properties": {
+    "filters": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComparisonFilter"
+          },
+          {}
+        ]
+      },
+      "title": "Filters",
+      "type": "array"
+    },
+    "type": {
+      "enum": [
+        "and",
+        "or"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "filters",
+    "type"
+  ],
+  "title": "CompoundFilter",
+  "type": "object"
+}
+
+PIECE: ComputerCallOutput
+{
+  "description": "The output of a computer tool call.",
+  "properties": {
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "output": {
+      "$ref": "#/$defs/ResponseComputerToolCallOutputScreenshotParam"
+    },
+    "type": {
+      "const": "computer_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "acknowledged_safety_checks": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ComputerCallOutputAcknowledgedSafetyCheck"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Acknowledged Safety Checks"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "call_id",
+    "output",
+    "type"
+  ],
+  "title": "ComputerCallOutput",
+  "type": "object"
+}
+
+PIECE: ComputerCallOutputAcknowledgedSafetyCheck
+{
+  "description": "A pending safety check for the computer call.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Code"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Message"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ComputerCallOutputAcknowledgedSafetyCheck",
+  "type": "object"
+}
+
+PIECE: ComputerToolParam
+{
+  "description": "A tool that controls a virtual computer.\n\nLearn more about the [computer tool](https://developers.openai.com/api/docs/guides/tools-computer-use).",
+  "properties": {
+    "type": {
+      "const": "computer",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ComputerToolParam",
+  "type": "object"
+}
+
+PIECE: ComputerUsePreviewToolParam
+{
+  "description": "A tool that controls a virtual computer.\n\nLearn more about the [computer tool](https://developers.openai.com/api/docs/guides/tools-computer-use).",
+  "properties": {
+    "display_height": {
+      "title": "Display Height",
+      "type": "integer"
+    },
+    "display_width": {
+      "title": "Display Width",
+      "type": "integer"
+    },
+    "environment": {
+      "enum": [
+        "windows",
+        "mac",
+        "linux",
+        "ubuntu",
+        "browser"
+      ],
+      "title": "Environment",
+      "type": "string"
+    },
+    "type": {
+      "const": "computer_use_preview",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "display_height",
+    "display_width",
+    "environment",
+    "type"
+  ],
+  "title": "ComputerUsePreviewToolParam",
+  "type": "object"
+}
+
+PIECE: ContainerAutoParam
+{
+  "properties": {
+    "type": {
+      "const": "container_auto",
+      "title": "Type",
+      "type": "string"
+    },
+    "file_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "File Ids",
+      "type": "array"
+    },
+    "memory_limit": {
+      "anyOf": [
+        {
+          "enum": [
+            "1g",
+            "4g",
+            "16g",
+            "64g"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Memory Limit"
+    },
+    "network_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContainerNetworkPolicyDisabledParam"
+        },
+        {
+          "$ref": "#/$defs/ContainerNetworkPolicyAllowlistParam"
+        }
+      ],
+      "title": "Network Policy"
+    },
+    "skills": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SkillReferenceParam"
+          },
+          {
+            "$ref": "#/$defs/InlineSkillParam"
+          }
+        ]
+      },
+      "title": "Skills",
+      "type": "array"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ContainerAutoParam",
+  "type": "object"
+}
+
+PIECE: ContainerNetworkPolicyAllowlistParam
+{
+  "properties": {
+    "allowed_domains": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Domains",
+      "type": "array"
+    },
+    "type": {
+      "const": "allowlist",
+      "title": "Type",
+      "type": "string"
+    },
+    "domain_secrets": {
+      "items": {
+        "$ref": "#/$defs/ContainerNetworkPolicyDomainSecretParam"
+      },
+      "title": "Domain Secrets",
+      "type": "array"
+    }
+  },
+  "required": [
+    "allowed_domains",
+    "type"
+  ],
+  "title": "ContainerNetworkPolicyAllowlistParam",
+  "type": "object"
+}
+
+PIECE: ContainerNetworkPolicyDisabledParam
+{
+  "properties": {
+    "type": {
+      "const": "disabled",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ContainerNetworkPolicyDisabledParam",
+  "type": "object"
+}
+
+PIECE: ContainerNetworkPolicyDomainSecretParam
+{
+  "properties": {
+    "domain": {
+      "title": "Domain",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "value": {
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "domain",
+    "name",
+    "value"
+  ],
+  "title": "ContainerNetworkPolicyDomainSecretParam",
+  "type": "object"
+}
+
+PIECE: ContainerReferenceParam
+{
+  "properties": {
+    "container_id": {
+      "title": "Container Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "container_reference",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "container_id",
+    "type"
+  ],
+  "title": "ContainerReferenceParam",
+  "type": "object"
+}
+
+PIECE: Content
+{
+  "description": "Reasoning text from the model.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "reasoning_text",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "Content",
+  "type": "object"
+}
+
+PIECE: ContextManagement
+{
+  "properties": {
+    "type": {
+      "title": "Type",
+      "type": "string"
+    },
+    "compact_threshold": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Compact Threshold"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ContextManagement",
+  "type": "object"
+}
+
+PIECE: CustomToolParam
+{
+  "description": "A custom tool that processes input using a specified format.\n\nLearn more about   [custom tools](https://developers.openai.com/api/docs/guides/function-calling#custom-tools)",
+  "properties": {
+    "async": {
+      "title": "Async",
+      "type": "boolean"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "custom",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    },
+    "defer_loading": {
+      "title": "Defer Loading",
+      "type": "boolean"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "format": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Text"
+        },
+        {
+          "$ref": "#/$defs/Grammar"
+        }
+      ],
+      "title": "Format"
+    }
+  },
+  "required": [
+    "name",
+    "type"
+  ],
+  "title": "CustomToolParam",
+  "type": "object"
+}
+
+PIECE: DoubleClick
+{
+  "description": "A double click action.",
+  "properties": {
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    },
+    "type": {
+      "const": "double_click",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "keys",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "DoubleClick",
+  "type": "object"
+}
+
+PIECE: Drag
+{
+  "description": "A drag action.",
+  "properties": {
+    "path": {
+      "items": {
+        "$ref": "#/$defs/DragPath"
+      },
+      "title": "Path",
+      "type": "array"
+    },
+    "type": {
+      "const": "drag",
+      "title": "Type",
+      "type": "string"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "path",
+    "type"
+  ],
+  "title": "Drag",
+  "type": "object"
+}
+
+PIECE: DragPath
+{
+  "description": "An x/y coordinate pair, e.g. `{ x: 100, y: 200 }`.",
+  "properties": {
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "x",
+    "y"
+  ],
+  "title": "DragPath",
+  "type": "object"
+}
+
+PIECE: EasyInputMessageParam
+{
+  "description": "A message input to the model with a role indicating instruction following\nhierarchy. Instructions given with the `developer` or `system` role take\nprecedence over instructions given with the `user` role. Messages with the\n`assistant` role are presumed to have been generated by the model in previous\ninteractions.",
+  "properties": {
+    "content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ResponseInputTextParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputImageParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputFileParam"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "title": "Content"
+    },
+    "role": {
+      "enum": [
+        "user",
+        "assistant",
+        "system",
+        "developer"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "commentary",
+            "final_answer"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Phase"
+    },
+    "type": {
+      "const": "message",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content",
+    "role"
+  ],
+  "title": "EasyInputMessageParam",
+  "type": "object"
+}
+
+PIECE: FileSearchToolParam
+{
+  "description": "A tool that searches for relevant content from uploaded files.\n\nLearn more about the [file search tool](https://developers.openai.com/api/docs/guides/tools-file-search).",
+  "properties": {
+    "type": {
+      "const": "file_search",
+      "title": "Type",
+      "type": "string"
+    },
+    "vector_store_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Vector Store Ids",
+      "type": "array"
+    },
+    "filters": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComparisonFilter"
+        },
+        {
+          "$ref": "#/$defs/CompoundFilter"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Filters"
+    },
+    "max_num_results": {
+      "title": "Max Num Results",
+      "type": "integer"
+    },
+    "ranking_options": {
+      "$ref": "#/$defs/RankingOptions"
+    }
+  },
+  "required": [
+    "type",
+    "vector_store_ids"
+  ],
+  "title": "FileSearchToolParam",
+  "type": "object"
+}
+
+PIECE: Filters
+{
+  "description": "Filters for the search.",
+  "properties": {
+    "allowed_domains": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Domains"
+    }
+  },
+  "title": "Filters",
+  "type": "object"
+}
+
+PIECE: FunctionCallOutput
+{
+  "description": "The output of a function tool call.",
+  "properties": {
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ResponseInputTextContentParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputImageContentParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputFileContentParam"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "title": "Output"
+    },
+    "type": {
+      "const": "function_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Call Id"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FunctionCallOutputCallerDirect"
+        },
+        {
+          "$ref": "#/$defs/FunctionCallOutputCallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Name"
+    },
+    "namespace": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Namespace"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "output",
+    "type"
+  ],
+  "title": "FunctionCallOutput",
+  "type": "object"
+}
+
+PIECE: FunctionCallOutputCallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "FunctionCallOutputCallerDirect",
+  "type": "object"
+}
+
+PIECE: FunctionCallOutputCallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "FunctionCallOutputCallerProgram",
+  "type": "object"
+}
+
+PIECE: FunctionShellToolParam
+{
+  "description": "A tool that allows the model to execute shell commands.",
+  "properties": {
+    "type": {
+      "const": "shell",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContainerAutoParam"
+        },
+        {
+          "$ref": "#/$defs/LocalEnvironmentParam"
+        },
+        {
+          "$ref": "#/$defs/ContainerReferenceParam"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Environment"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "FunctionShellToolParam",
+  "type": "object"
+}
+
+PIECE: FunctionToolParam
+{
+  "description": "Defines a function in your own code the model can choose to call.\n\nLearn more about [function calling](https://developers.openai.com/api/docs/guides/function-calling).",
+  "properties": {
+    "async": {
+      "title": "Async",
+      "type": "boolean"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "parameters": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parameters"
+    },
+    "strict": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Strict"
+    },
+    "type": {
+      "const": "function",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    },
+    "defer_loading": {
+      "title": "Defer Loading",
+      "type": "boolean"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Description"
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output Schema"
+    }
+  },
+  "required": [
+    "name",
+    "parameters",
+    "strict",
+    "type"
+  ],
+  "title": "FunctionToolParam",
+  "type": "object"
+}
+
+PIECE: Grammar
+{
+  "description": "A grammar defined by the user.",
+  "properties": {
+    "definition": {
+      "title": "Definition",
+      "type": "string"
+    },
+    "syntax": {
+      "enum": [
+        "lark",
+        "regex"
+      ],
+      "title": "Syntax",
+      "type": "string"
+    },
+    "type": {
+      "const": "grammar",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "definition",
+    "syntax",
+    "type"
+  ],
+  "title": "Grammar",
+  "type": "object"
+}
+
+PIECE: HTTPError
+{
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "integer"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "type": {
+      "const": "http_error",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "type"
+  ],
+  "title": "HTTPError",
+  "type": "object"
+}
+
+PIECE: ImageGeneration
+{
+  "description": "A tool that generates images using the GPT image models.",
+  "properties": {
+    "type": {
+      "const": "image_generation",
+      "title": "Type",
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "generate",
+        "edit",
+        "auto"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "background": {
+      "enum": [
+        "transparent",
+        "opaque",
+        "auto"
+      ],
+      "title": "Background",
+      "type": "string"
+    },
+    "input_fidelity": {
+      "anyOf": [
+        {
+          "enum": [
+            "high",
+            "low"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Input Fidelity"
+    },
+    "input_image_mask": {
+      "$ref": "#/$defs/ImageGenerationInputImageMask"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "gpt-image-1",
+            "gpt-image-1-mini",
+            "gpt-image-2",
+            "gpt-image-2-2026-04-21",
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-sunburst-2026-09-08",
+            "gpt-image-2.5-flare",
+            "gpt-image-2.5-flare-2026-09-08",
+            "gpt-image-1.5",
+            "chatgpt-image-latest"
+          ],
+          "type": "string"
+        }
+      ],
+      "title": "Model"
+    },
+    "moderation": {
+      "enum": [
+        "auto",
+        "low"
+      ],
+      "title": "Moderation",
+      "type": "string"
+    },
+    "output_compression": {
+      "title": "Output Compression",
+      "type": "integer"
+    },
+    "output_format": {
+      "enum": [
+        "png",
+        "webp",
+        "jpeg"
+      ],
+      "title": "Output Format",
+      "type": "string"
+    },
+    "partial_images": {
+      "title": "Partial Images",
+      "type": "integer"
+    },
+    "quality": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "auto"
+      ],
+      "title": "Quality",
+      "type": "string"
+    },
+    "size": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "1024x1024",
+            "1024x1536",
+            "1536x1024",
+            "auto"
+          ],
+          "type": "string"
+        }
+      ],
+      "title": "Size"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ImageGeneration",
+  "type": "object"
+}
+
+PIECE: ImageGenerationCall
+{
+  "description": "An image generation request made by the model.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Result"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "generating",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "image_generation_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "action": {
+      "anyOf": [
+        {
+          "enum": [
+            "generate",
+            "edit",
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Action"
+    },
+    "background": {
+      "anyOf": [
+        {
+          "enum": [
+            "transparent",
+            "opaque",
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Background"
+    },
+    "output_format": {
+      "anyOf": [
+        {
+          "enum": [
+            "png",
+            "webp",
+            "jpeg"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output Format"
+    },
+    "quality": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Quality"
+    },
+    "revised_prompt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Revised Prompt"
+    },
+    "size": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "1024x1024",
+            "1024x1536",
+            "1536x1024"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Size"
+    }
+  },
+  "required": [
+    "id",
+    "result",
+    "status",
+    "type"
+  ],
+  "title": "ImageGenerationCall",
+  "type": "object"
+}
+
+PIECE: ImageGenerationInputImageMask
+{
+  "description": "Optional mask for inpainting.\n\nContains `image_url`\n(string, optional) and `file_id` (string, optional).",
+  "properties": {
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "image_url": {
+      "title": "Image Url",
+      "type": "string"
+    }
+  },
+  "title": "ImageGenerationInputImageMask",
+  "type": "object"
+}
+
+PIECE: InlineSkillParam
+{
+  "properties": {
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/InlineSkillSourceParam"
+    },
+    "type": {
+      "const": "inline",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "name",
+    "source",
+    "type"
+  ],
+  "title": "InlineSkillParam",
+  "type": "object"
+}
+
+PIECE: InlineSkillSourceParam
+{
+  "description": "Inline skill payload",
+  "properties": {
+    "data": {
+      "title": "Data",
+      "type": "string"
+    },
+    "media_type": {
+      "const": "application/zip",
+      "title": "Media Type",
+      "type": "string"
+    },
+    "type": {
+      "const": "base64",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "data",
+    "media_type",
+    "type"
+  ],
+  "title": "InlineSkillSourceParam",
+  "type": "object"
+}
+
+PIECE: ItemReference
+{
+  "description": "An internal identifier for an item to reference.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "type": {
+      "anyOf": [
+        {
+          "const": "item_reference",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Type"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ItemReference",
+  "type": "object"
+}
+
+PIECE: Keypress
+{
+  "description": "A collection of keypresses the model would like to perform.",
+  "properties": {
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Keys",
+      "type": "array"
+    },
+    "type": {
+      "const": "keypress",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "keys",
+    "type"
+  ],
+  "title": "Keypress",
+  "type": "object"
+}
+
+PIECE: LocalEnvironmentParam
+{
+  "properties": {
+    "type": {
+      "const": "local",
+      "title": "Type",
+      "type": "string"
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/LocalSkillParam"
+      },
+      "title": "Skills",
+      "type": "array"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "LocalEnvironmentParam",
+  "type": "object"
+}
+
+PIECE: LocalShell
+{
+  "description": "A tool that allows the model to execute shell commands in a local environment.",
+  "properties": {
+    "type": {
+      "const": "local_shell",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "LocalShell",
+  "type": "object"
+}
+
+PIECE: LocalShellCall
+{
+  "description": "A tool call to run a command on the local shell.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "action": {
+      "$ref": "#/$defs/LocalShellCallAction"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "local_shell_call",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "action",
+    "call_id",
+    "status",
+    "type"
+  ],
+  "title": "LocalShellCall",
+  "type": "object"
+}
+
+PIECE: LocalShellCallAction
+{
+  "description": "Execute a shell command on the server.",
+  "properties": {
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Command",
+      "type": "array"
+    },
+    "env": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Env",
+      "type": "object"
+    },
+    "type": {
+      "const": "exec",
+      "title": "Type",
+      "type": "string"
+    },
+    "timeout_ms": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timeout Ms"
+    },
+    "user": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "User"
+    },
+    "working_directory": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Working Directory"
+    }
+  },
+  "required": [
+    "command",
+    "env",
+    "type"
+  ],
+  "title": "LocalShellCallAction",
+  "type": "object"
+}
+
+PIECE: LocalShellCallOutput
+{
+  "description": "The output of a local shell tool call.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "output": {
+      "title": "Output",
+      "type": "string"
+    },
+    "type": {
+      "const": "local_shell_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "id",
+    "output",
+    "type"
+  ],
+  "title": "LocalShellCallOutput",
+  "type": "object"
+}
+
+PIECE: LocalSkillParam
+{
+  "properties": {
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "name",
+    "path"
+  ],
+  "title": "LocalSkillParam",
+  "type": "object"
+}
+
+PIECE: Logprob
+{
+  "description": "The log probability of a token.",
+  "properties": {
+    "token": {
+      "title": "Token",
+      "type": "string"
+    },
+    "bytes": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Bytes",
+      "type": "array"
+    },
+    "logprob": {
+      "title": "Logprob",
+      "type": "number"
+    },
+    "top_logprobs": {
+      "items": {
+        "$ref": "#/$defs/LogprobTopLogprob"
+      },
+      "title": "Top Logprobs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "token",
+    "bytes",
+    "logprob",
+    "top_logprobs"
+  ],
+  "title": "Logprob",
+  "type": "object"
+}
+
+PIECE: LogprobTopLogprob
+{
+  "description": "The top log probability of a token.",
+  "properties": {
+    "token": {
+      "title": "Token",
+      "type": "string"
+    },
+    "bytes": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Bytes",
+      "type": "array"
+    },
+    "logprob": {
+      "title": "Logprob",
+      "type": "number"
+    }
+  },
+  "required": [
+    "token",
+    "bytes",
+    "logprob"
+  ],
+  "title": "LogprobTopLogprob",
+  "type": "object"
+}
+
+PIECE: Mcp
+{
+  "description": "Give the model access to additional tools via remote Model Context Protocol\n(MCP) servers. [Learn more about MCP](https://developers.openai.com/api/docs/guides/tools-connectors-mcp).",
+  "properties": {
+    "server_label": {
+      "title": "Server Label",
+      "type": "string"
+    },
+    "type": {
+      "const": "mcp",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    },
+    "allowed_tools": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/McpAllowedToolsMcpToolFilter"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Tools"
+    },
+    "authorization": {
+      "title": "Authorization",
+      "type": "string"
+    },
+    "connector_id": {
+      "enum": [
+        "connector_dropbox",
+        "connector_gmail",
+        "connector_googlecalendar",
+        "connector_googledrive",
+        "connector_microsoftteams",
+        "connector_outlookcalendar",
+        "connector_outlookemail",
+        "connector_sharepoint"
+      ],
+      "title": "Connector Id",
+      "type": "string"
+    },
+    "defer_loading": {
+      "title": "Defer Loading",
+      "type": "boolean"
+    },
+    "headers": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Headers"
+    },
+    "require_approval": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpRequireApprovalMcpToolApprovalFilter"
+        },
+        {
+          "enum": [
+            "always",
+            "never"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Require Approval"
+    },
+    "server_description": {
+      "title": "Server Description",
+      "type": "string"
+    },
+    "server_url": {
+      "title": "Server Url",
+      "type": "string"
+    },
+    "tunnel_id": {
+      "title": "Tunnel Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "server_label",
+    "type"
+  ],
+  "title": "Mcp",
+  "type": "object"
+}
+
+PIECE: McpAllowedToolsMcpToolFilter
+{
+  "description": "A filter object to specify which tools are allowed.",
+  "properties": {
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "tool_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tool Names",
+      "type": "array"
+    }
+  },
+  "title": "McpAllowedToolsMcpToolFilter",
+  "type": "object"
+}
+
+PIECE: McpApprovalRequest
+{
+  "description": "A request for human approval of a tool invocation.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "server_label": {
+      "title": "Server Label",
+      "type": "string"
+    },
+    "type": {
+      "const": "mcp_approval_request",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "arguments",
+    "name",
+    "server_label",
+    "type"
+  ],
+  "title": "McpApprovalRequest",
+  "type": "object"
+}
+
+PIECE: McpApprovalResponse
+{
+  "description": "A response to an MCP approval request.",
+  "properties": {
+    "approval_request_id": {
+      "title": "Approval Request Id",
+      "type": "string"
+    },
+    "approve": {
+      "title": "Approve",
+      "type": "boolean"
+    },
+    "type": {
+      "const": "mcp_approval_response",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reason"
+    }
+  },
+  "required": [
+    "approval_request_id",
+    "approve",
+    "type"
+  ],
+  "title": "McpApprovalResponse",
+  "type": "object"
+}
+
+PIECE: McpCall
+{
+  "description": "An invocation of a tool on an MCP server.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "server_label": {
+      "title": "Server Label",
+      "type": "string"
+    },
+    "type": {
+      "const": "mcp_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "approval_request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Approval Request Id"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpProtocolError"
+        },
+        {
+          "$ref": "#/$defs/McpToolExecutionError"
+        },
+        {
+          "$ref": "#/$defs/HTTPError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete",
+        "calling",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "arguments",
+    "name",
+    "server_label",
+    "type"
+  ],
+  "title": "McpCall",
+  "type": "object"
+}
+
+PIECE: McpListTools
+{
+  "description": "A list of tools available on an MCP server.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "server_label": {
+      "title": "Server Label",
+      "type": "string"
+    },
+    "tools": {
+      "items": {
+        "$ref": "#/$defs/McpListToolsTool"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "type": {
+      "const": "mcp_list_tools",
+      "title": "Type",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    }
+  },
+  "required": [
+    "id",
+    "server_label",
+    "tools",
+    "type"
+  ],
+  "title": "McpListTools",
+  "type": "object"
+}
+
+PIECE: McpListToolsTool
+{
+  "description": "A tool available on an MCP server.",
+  "properties": {
+    "input_schema": {
+      "title": "Input Schema"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "annotations": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Annotations"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Description"
+    }
+  },
+  "required": [
+    "input_schema",
+    "name"
+  ],
+  "title": "McpListToolsTool",
+  "type": "object"
+}
+
+PIECE: McpProtocolError
+{
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "integer"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "type": {
+      "const": "mcp_protocol_error",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "type"
+  ],
+  "title": "McpProtocolError",
+  "type": "object"
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilter
+{
+  "description": "Specify which of the MCP server's tools require approval.\n\nCan be\n`always`, `never`, or a filter object associated with tools\nthat require approval.",
+  "properties": {
+    "always": {
+      "$ref": "#/$defs/McpRequireApprovalMcpToolApprovalFilterAlways"
+    },
+    "never": {
+      "$ref": "#/$defs/McpRequireApprovalMcpToolApprovalFilterNever"
+    }
+  },
+  "title": "McpRequireApprovalMcpToolApprovalFilter",
+  "type": "object"
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilterAlways
+{
+  "description": "A filter object to specify which tools are allowed.",
+  "properties": {
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "tool_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tool Names",
+      "type": "array"
+    }
+  },
+  "title": "McpRequireApprovalMcpToolApprovalFilterAlways",
+  "type": "object"
+}
+
+PIECE: McpRequireApprovalMcpToolApprovalFilterNever
+{
+  "description": "A filter object to specify which tools are allowed.",
+  "properties": {
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "tool_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tool Names",
+      "type": "array"
+    }
+  },
+  "title": "McpRequireApprovalMcpToolApprovalFilterNever",
+  "type": "object"
+}
+
+PIECE: McpToolExecutionError
+{
+  "properties": {
+    "content": {
+      "title": "Content"
+    },
+    "type": {
+      "const": "mcp_tool_execution_error",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content",
+    "type"
+  ],
+  "title": "McpToolExecutionError",
+  "type": "object"
+}
+
+PIECE: Message
+{
+  "description": "A message input to the model with a role indicating instruction following\nhierarchy. Instructions given with the `developer` or `system` role take\nprecedence over instructions given with the `user` role.",
+  "properties": {
+    "content": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ResponseInputTextParam"
+          },
+          {
+            "$ref": "#/$defs/ResponseInputImageParam"
+          },
+          {
+            "$ref": "#/$defs/ResponseInputFileParam"
+          }
+        ]
+      },
+      "title": "Content",
+      "type": "array"
+    },
+    "role": {
+      "enum": [
+        "user",
+        "system",
+        "developer"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "message",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content",
+    "role"
+  ],
+  "title": "Message",
+  "type": "object"
+}
+
+PIECE: Moderation
+{
+  "description": "Configuration for running moderation on the input and output of this response.",
+  "properties": {
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModerationPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "model"
+  ],
+  "title": "Moderation",
+  "type": "object"
+}
+
+PIECE: ModerationPolicy
+{
+  "description": "The policy to apply to moderated response input and output.",
+  "properties": {
+    "input": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModerationPolicyInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModerationPolicyOutput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "ModerationPolicy",
+  "type": "object"
+}
+
+PIECE: ModerationPolicyInput
+{
+  "description": "The moderation policy for the response input.",
+  "properties": {
+    "mode": {
+      "enum": [
+        "score",
+        "block"
+      ],
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode"
+  ],
+  "title": "ModerationPolicyInput",
+  "type": "object"
+}
+
+PIECE: ModerationPolicyOutput
+{
+  "description": "The moderation policy for the response output.",
+  "properties": {
+    "mode": {
+      "enum": [
+        "score",
+        "block"
+      ],
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode"
+  ],
+  "title": "ModerationPolicyOutput",
+  "type": "object"
+}
+
+PIECE: Move
+{
+  "description": "A mouse move action.",
+  "properties": {
+    "type": {
+      "const": "move",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "Move",
+  "type": "object"
+}
+
+PIECE: NamespaceToolParam
+{
+  "description": "Groups function/custom tools under a shared namespace.",
+  "properties": {
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "tools": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ToolFunction"
+          },
+          {
+            "$ref": "#/$defs/CustomToolParam"
+          }
+        ]
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "type": {
+      "const": "namespace",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "name",
+    "tools",
+    "type"
+  ],
+  "title": "NamespaceToolParam",
+  "type": "object"
+}
+
+PIECE: OutcomeExit
+{
+  "description": "Indicates that the shell commands finished and returned an exit code.",
+  "properties": {
+    "exit_code": {
+      "title": "Exit Code",
+      "type": "integer"
+    },
+    "type": {
+      "const": "exit",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "exit_code",
+    "type"
+  ],
+  "title": "OutcomeExit",
+  "type": "object"
+}
+
+PIECE: OutcomeTimeout
+{
+  "description": "Indicates that the shell call exceeded its configured time limit.",
+  "properties": {
+    "type": {
+      "const": "timeout",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "OutcomeTimeout",
+  "type": "object"
+}
+
+PIECE: OutputImage
+{
+  "description": "The image output from the code interpreter.",
+  "properties": {
+    "type": {
+      "const": "image",
+      "title": "Type",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "url"
+  ],
+  "title": "OutputImage",
+  "type": "object"
+}
+
+PIECE: OutputLogs
+{
+  "description": "The logs output from the code interpreter.",
+  "properties": {
+    "logs": {
+      "title": "Logs",
+      "type": "string"
+    },
+    "type": {
+      "const": "logs",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "logs",
+    "type"
+  ],
+  "title": "OutputLogs",
+  "type": "object"
+}
+
+PIECE: PendingSafetyCheck
+{
+  "description": "A pending safety check for the computer call.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Code"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Message"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "PendingSafetyCheck",
+  "type": "object"
+}
+
+PIECE: Program
+{
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "call_id",
+    "code",
+    "fingerprint",
+    "type"
+  ],
+  "title": "Program",
+  "type": "object"
+}
+
+PIECE: ProgramOutput
+{
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "result": {
+      "title": "Result",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "program_output",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "call_id",
+    "result",
+    "status",
+    "type"
+  ],
+  "title": "ProgramOutput",
+  "type": "object"
+}
+
+PIECE: ProgrammaticToolCalling
+{
+  "properties": {
+    "type": {
+      "const": "programmatic_tool_calling",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ProgrammaticToolCalling",
+  "type": "object"
+}
+
+PIECE: PromptCacheBreakpoint
+{
+  "description": "Marks the exact end of a reusable prompt prefix.\n\nThe breakpoint inherits its TTL from the request's `prompt_cache_options.ttl`; the boundary is not rounded to a token block.",
+  "properties": {
+    "mode": {
+      "const": "explicit",
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode"
+  ],
+  "title": "PromptCacheBreakpoint",
+  "type": "object"
+}
+
+PIECE: PromptCacheOptions
+{
+  "description": "Options for prompt caching.\n\nSupported for `gpt-5.6` and later models. By default, OpenAI automatically chooses one implicit cache breakpoint. You can add explicit breakpoints to content blocks with `prompt_cache_breakpoint`. Each request can write up to four breakpoints. For cache matching, OpenAI considers up to the latest 80 breakpoints in the conversation, without a content-block lookback limit. Set `mode` to `explicit` to disable the implicit breakpoint. The `ttl` defaults to `30m`, which is currently the only supported value. See the [prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) for current details.",
+  "properties": {
+    "comparison_response_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Comparison Response Id"
+    },
+    "mode": {
+      "enum": [
+        "implicit",
+        "explicit"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "prewarm": {
+      "title": "Prewarm",
+      "type": "boolean"
+    },
+    "ttl": {
+      "const": "30m",
+      "title": "Ttl",
+      "type": "string"
+    }
+  },
+  "title": "PromptCacheOptions",
+  "type": "object"
+}
+
+PIECE: RankingOptions
+{
+  "description": "Ranking options for search.",
+  "properties": {
+    "hybrid_search": {
+      "$ref": "#/$defs/RankingOptionsHybridSearch"
+    },
+    "ranker": {
+      "enum": [
+        "auto",
+        "default-2024-11-15"
+      ],
+      "title": "Ranker",
+      "type": "string"
+    },
+    "score_threshold": {
+      "title": "Score Threshold",
+      "type": "number"
+    }
+  },
+  "title": "RankingOptions",
+  "type": "object"
+}
+
+PIECE: RankingOptionsHybridSearch
+{
+  "description": "Weights that control how reciprocal rank fusion balances semantic embedding matches versus sparse keyword matches when hybrid search is enabled.",
+  "properties": {
+    "embedding_weight": {
+      "title": "Embedding Weight",
+      "type": "number"
+    },
+    "text_weight": {
+      "title": "Text Weight",
+      "type": "number"
+    }
+  },
+  "required": [
+    "embedding_weight",
+    "text_weight"
+  ],
+  "title": "RankingOptionsHybridSearch",
+  "type": "object"
+}
+
+PIECE: ResponseCodeInterpreterToolCallParam
+{
+  "description": "A tool call to run code.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Code"
+    },
+    "container_id": {
+      "title": "Container Id",
+      "type": "string"
+    },
+    "outputs": {
+      "anyOf": [
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OutputLogs"
+              },
+              {
+                "$ref": "#/$defs/OutputImage"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Outputs"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete",
+        "interpreting",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "code_interpreter_call",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "code",
+    "container_id",
+    "outputs",
+    "status",
+    "type"
+  ],
+  "title": "ResponseCodeInterpreterToolCallParam",
+  "type": "object"
+}
+
+PIECE: ResponseCompactionItemParamParam
+{
+  "description": "A compaction item generated by the [`v1/responses/compact` API](https://developers.openai.com/api/reference/resources/responses/methods/compact).",
+  "properties": {
+    "encrypted_content": {
+      "title": "Encrypted Content",
+      "type": "string"
+    },
+    "type": {
+      "const": "compaction",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    }
+  },
+  "required": [
+    "encrypted_content",
+    "type"
+  ],
+  "title": "ResponseCompactionItemParamParam",
+  "type": "object"
+}
+
+PIECE: ResponseComputerToolCallOutputScreenshotParam
+{
+  "description": "A computer screenshot image used with the computer use tool.",
+  "properties": {
+    "type": {
+      "const": "computer_screenshot",
+      "title": "Type",
+      "type": "string"
+    },
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "image_url": {
+      "title": "Image Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseComputerToolCallOutputScreenshotParam",
+  "type": "object"
+}
+
+PIECE: ResponseComputerToolCallParam
+{
+  "description": "A tool call to a computer use tool.\n\nSee the\n[computer use guide](https://developers.openai.com/api/docs/guides/tools-computer-use) for more information.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "pending_safety_checks": {
+      "items": {
+        "$ref": "#/$defs/PendingSafetyCheck"
+      },
+      "title": "Pending Safety Checks",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "computer_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "action": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ActionClick"
+        },
+        {
+          "$ref": "#/$defs/ActionDoubleClick"
+        },
+        {
+          "$ref": "#/$defs/ActionDrag"
+        },
+        {
+          "$ref": "#/$defs/ActionKeypress"
+        },
+        {
+          "$ref": "#/$defs/ActionMove"
+        },
+        {
+          "$ref": "#/$defs/ActionScreenshot"
+        },
+        {
+          "$ref": "#/$defs/ActionScroll"
+        },
+        {
+          "$ref": "#/$defs/ActionType"
+        },
+        {
+          "$ref": "#/$defs/ActionWait"
+        }
+      ],
+      "title": "Action"
+    },
+    "actions": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Click"
+          },
+          {
+            "$ref": "#/$defs/DoubleClick"
+          },
+          {
+            "$ref": "#/$defs/Drag"
+          },
+          {
+            "$ref": "#/$defs/Keypress"
+          },
+          {
+            "$ref": "#/$defs/Move"
+          },
+          {
+            "$ref": "#/$defs/Screenshot"
+          },
+          {
+            "$ref": "#/$defs/Scroll"
+          },
+          {
+            "$ref": "#/$defs/Type"
+          },
+          {
+            "$ref": "#/$defs/Wait"
+          }
+        ]
+      },
+      "title": "Actions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "call_id",
+    "pending_safety_checks",
+    "status",
+    "type"
+  ],
+  "title": "ResponseComputerToolCallParam",
+  "type": "object"
+}
+
+PIECE: ResponseConfigurationUpdateItemParamParam
+{
+  "description": "An update to the conversation's response configuration.\n\nThe configuration\nremains in effect for subsequent responses until it is replaced by another\nconfiguration update.",
+  "properties": {
+    "type": {
+      "const": "configuration_update",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "reasoning": {
+      "$ref": "#/$defs/openai__types__responses__response_configuration_update_item_param_param__Reasoning"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseConfigurationUpdateItemParamParam",
+  "type": "object"
+}
+
+PIECE: ResponseConversationParamParam
+{
+  "description": "The conversation that this response belongs to.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ResponseConversationParamParam",
+  "type": "object"
+}
+
+PIECE: ResponseCustomToolCallOutputParam
+{
+  "description": "The output of a custom tool call from your code, being sent back to the model.",
+  "properties": {
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ResponseInputTextParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputImageParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputFileParam"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "title": "Output"
+    },
+    "type": {
+      "const": "custom_tool_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CallerDirect"
+        },
+        {
+          "$ref": "#/$defs/CallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    }
+  },
+  "required": [
+    "call_id",
+    "output",
+    "type"
+  ],
+  "title": "ResponseCustomToolCallOutputParam",
+  "type": "object"
+}
+
+PIECE: ResponseCustomToolCallParam
+{
+  "description": "A call to a custom tool created by the model.",
+  "properties": {
+    "async": {
+      "title": "Async",
+      "type": "boolean"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "input": {
+      "title": "Input",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "custom_tool_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CallerDirect"
+        },
+        {
+          "$ref": "#/$defs/CallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "namespace": {
+      "title": "Namespace",
+      "type": "string"
+    }
+  },
+  "required": [
+    "call_id",
+    "input",
+    "name",
+    "type"
+  ],
+  "title": "ResponseCustomToolCallParam",
+  "type": "object"
+}
+
+PIECE: ResponseFileSearchToolCallParam
+{
+  "description": "The results of a file search tool call.\n\nSee the\n[file search guide](https://developers.openai.com/api/docs/guides/tools-file-search) for more information.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "queries": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Queries",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "searching",
+        "completed",
+        "incomplete",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "file_search_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "results": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Result"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Results"
+    }
+  },
+  "required": [
+    "id",
+    "queries",
+    "status",
+    "type"
+  ],
+  "title": "ResponseFileSearchToolCallParam",
+  "type": "object"
+}
+
+PIECE: ResponseFormatJSONObject
+{
+  "description": "JSON object response format.\n\nAn older method of generating JSON responses.\nUsing `json_schema` is recommended for models that support it. Note that the\nmodel will not generate JSON without a system or user message instructing it\nto do so.",
+  "properties": {
+    "type": {
+      "const": "json_object",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseFormatJSONObject",
+  "type": "object"
+}
+
+PIECE: ResponseFormatText
+{
+  "description": "Default response format. Used to generate text responses.",
+  "properties": {
+    "type": {
+      "const": "text",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseFormatText",
+  "type": "object"
+}
+
+PIECE: ResponseFormatTextJSONSchemaConfigParam
+{
+  "description": "JSON Schema response format.\n\nUsed to generate structured JSON responses.\nLearn more about [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "schema": {
+      "additionalProperties": true,
+      "title": "Schema",
+      "type": "object"
+    },
+    "type": {
+      "const": "json_schema",
+      "title": "Type",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "strict": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Strict"
+    }
+  },
+  "required": [
+    "name",
+    "schema",
+    "type"
+  ],
+  "title": "ResponseFormatTextJSONSchemaConfigParam",
+  "type": "object"
+}
+
+PIECE: ResponseFunctionShellCallOutputContentParam
+{
+  "description": "Captured stdout and stderr for a portion of a shell tool call output.",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OutcomeTimeout"
+        },
+        {
+          "$ref": "#/$defs/OutcomeExit"
+        }
+      ],
+      "title": "Outcome"
+    },
+    "stderr": {
+      "title": "Stderr",
+      "type": "string"
+    },
+    "stdout": {
+      "title": "Stdout",
+      "type": "string"
+    }
+  },
+  "required": [
+    "outcome",
+    "stderr",
+    "stdout"
+  ],
+  "title": "ResponseFunctionShellCallOutputContentParam",
+  "type": "object"
+}
+
+PIECE: ResponseFunctionToolCallParam
+{
+  "description": "A tool call to run a function.\n\nSee the\n[function calling guide](https://developers.openai.com/api/docs/guides/function-calling) for more information.",
+  "properties": {
+    "async": {
+      "title": "Async",
+      "type": "boolean"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "string"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "function_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CallerDirect"
+        },
+        {
+          "$ref": "#/$defs/CallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "namespace": {
+      "title": "Namespace",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "arguments",
+    "call_id",
+    "name",
+    "type"
+  ],
+  "title": "ResponseFunctionToolCallParam",
+  "type": "object"
+}
+
+PIECE: ResponseFunctionWebSearchParam
+{
+  "description": "The results of a web search tool call.\n\nSee the\n[web search guide](https://developers.openai.com/api/docs/guides/tools-web-search) for more information.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "action": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ActionSearch"
+        },
+        {
+          "$ref": "#/$defs/ActionOpenPage"
+        },
+        {
+          "$ref": "#/$defs/ActionFind"
+        }
+      ],
+      "title": "Action"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "searching",
+        "completed",
+        "incomplete",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "web_search_call",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "action",
+    "status",
+    "type"
+  ],
+  "title": "ResponseFunctionWebSearchParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputFileContentParam
+{
+  "description": "A file input to the model.",
+  "properties": {
+    "type": {
+      "const": "input_file",
+      "title": "Type",
+      "type": "string"
+    },
+    "detail": {
+      "enum": [
+        "auto",
+        "low",
+        "high"
+      ],
+      "title": "Detail",
+      "type": "string"
+    },
+    "file_data": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Data"
+    },
+    "file_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Id"
+    },
+    "file_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Url"
+    },
+    "filename": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Filename"
+    },
+    "prompt_cache_breakpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptCacheBreakpoint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseInputFileContentParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputFileParam
+{
+  "description": "A file input to the model.",
+  "properties": {
+    "type": {
+      "const": "input_file",
+      "title": "Type",
+      "type": "string"
+    },
+    "detail": {
+      "enum": [
+        "auto",
+        "low",
+        "high"
+      ],
+      "title": "Detail",
+      "type": "string"
+    },
+    "file_data": {
+      "title": "File Data",
+      "type": "string"
+    },
+    "file_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Id"
+    },
+    "file_url": {
+      "title": "File Url",
+      "type": "string"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "prompt_cache_breakpoint": {
+      "$ref": "#/$defs/PromptCacheBreakpoint"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseInputFileParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputImageContentParam
+{
+  "description": "An image input to the model.\n\nLearn about [image inputs](https://developers.openai.com/api/docs/guides/images-vision)",
+  "properties": {
+    "type": {
+      "const": "input_image",
+      "title": "Type",
+      "type": "string"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "high",
+            "auto",
+            "original"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Detail"
+    },
+    "file_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Id"
+    },
+    "image_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Image Url"
+    },
+    "prompt_cache_breakpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptCacheBreakpoint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ResponseInputImageContentParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputImageParam
+{
+  "description": "An image input to the model.\n\nLearn about [image inputs](https://developers.openai.com/api/docs/guides/images-vision).",
+  "properties": {
+    "detail": {
+      "enum": [
+        "low",
+        "high",
+        "auto",
+        "original"
+      ],
+      "title": "Detail",
+      "type": "string"
+    },
+    "type": {
+      "const": "input_image",
+      "title": "Type",
+      "type": "string"
+    },
+    "file_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "File Id"
+    },
+    "image_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Image Url"
+    },
+    "prompt_cache_breakpoint": {
+      "$ref": "#/$defs/PromptCacheBreakpoint"
+    }
+  },
+  "required": [
+    "detail",
+    "type"
+  ],
+  "title": "ResponseInputImageParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputTextContentParam
+{
+  "description": "A text input to the model.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "input_text",
+      "title": "Type",
+      "type": "string"
+    },
+    "prompt_cache_breakpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptCacheBreakpoint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "ResponseInputTextContentParam",
+  "type": "object"
+}
+
+PIECE: ResponseInputTextParam
+{
+  "description": "A text input to the model.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "input_text",
+      "title": "Type",
+      "type": "string"
+    },
+    "prompt_cache_breakpoint": {
+      "$ref": "#/$defs/PromptCacheBreakpoint"
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "ResponseInputTextParam",
+  "type": "object"
+}
+
+PIECE: ResponseOutputMessageParam
+{
+  "description": "An output message from the model.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "content": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ResponseOutputTextParam"
+          },
+          {
+            "$ref": "#/$defs/ResponseOutputRefusalParam"
+          }
+        ]
+      },
+      "title": "Content",
+      "type": "array"
+    },
+    "role": {
+      "const": "assistant",
+      "title": "Role",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "type": {
+      "const": "message",
+      "title": "Type",
+      "type": "string"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "commentary",
+            "final_answer"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Phase"
+    }
+  },
+  "required": [
+    "id",
+    "content",
+    "role",
+    "status",
+    "type"
+  ],
+  "title": "ResponseOutputMessageParam",
+  "type": "object"
+}
+
+PIECE: ResponseOutputRefusalParam
+{
+  "description": "A refusal from the model.",
+  "properties": {
+    "refusal": {
+      "title": "Refusal",
+      "type": "string"
+    },
+    "type": {
+      "const": "refusal",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "refusal",
+    "type"
+  ],
+  "title": "ResponseOutputRefusalParam",
+  "type": "object"
+}
+
+PIECE: ResponseOutputTextParam
+{
+  "description": "A text output from the model.",
+  "properties": {
+    "annotations": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AnnotationFileCitation"
+          },
+          {
+            "$ref": "#/$defs/AnnotationURLCitation"
+          },
+          {
+            "$ref": "#/$defs/AnnotationContainerFileCitation"
+          },
+          {
+            "$ref": "#/$defs/AnnotationFilePath"
+          }
+        ]
+      },
+      "title": "Annotations",
+      "type": "array"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "output_text",
+      "title": "Type",
+      "type": "string"
+    },
+    "logprobs": {
+      "items": {
+        "$ref": "#/$defs/Logprob"
+      },
+      "title": "Logprobs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "annotations",
+    "text",
+    "type"
+  ],
+  "title": "ResponseOutputTextParam",
+  "type": "object"
+}
+
+PIECE: ResponsePromptParam
+{
+  "description": "Reference to a prompt template and its variables.\n[Learn more](https://developers.openai.com/api/docs/guides/text?api-mode=responses#version-prompts-in-code).",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "variables": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputTextParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputImageParam"
+              },
+              {
+                "$ref": "#/$defs/ResponseInputFileParam"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Variables"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Version"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ResponsePromptParam",
+  "type": "object"
+}
+
+PIECE: ResponseReasoningItemParam
+{
+  "description": "A description of the chain of thought used by a reasoning model while generating\na response. Be sure to include these items in your `input` to the Responses API\nfor subsequent turns of a conversation if you are manually\n[managing context](https://developers.openai.com/api/docs/guides/conversation-state).",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "summary": {
+      "items": {
+        "$ref": "#/$defs/Summary"
+      },
+      "title": "Summary",
+      "type": "array"
+    },
+    "type": {
+      "const": "reasoning",
+      "title": "Type",
+      "type": "string"
+    },
+    "content": {
+      "items": {
+        "$ref": "#/$defs/Content"
+      },
+      "title": "Content",
+      "type": "array"
+    },
+    "encrypted_content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Encrypted Content"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "incomplete"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "summary",
+    "type"
+  ],
+  "title": "ResponseReasoningItemParam",
+  "type": "object"
+}
+
+PIECE: ResponseTextConfigParam
+{
+  "description": "Configuration options for a text response from the model.\n\nCan be plain\ntext or structured JSON data. Learn more:\n- [Text inputs and outputs](https://developers.openai.com/api/docs/guides/text)\n- [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)",
+  "properties": {
+    "format": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResponseFormatText"
+        },
+        {
+          "$ref": "#/$defs/ResponseFormatTextJSONSchemaConfigParam"
+        },
+        {
+          "$ref": "#/$defs/ResponseFormatJSONObject"
+        }
+      ],
+      "title": "Format"
+    },
+    "verbosity": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Verbosity"
+    }
+  },
+  "title": "ResponseTextConfigParam",
+  "type": "object"
+}
+
+PIECE: ResponseToolSearchOutputItemParamParam
+{
+  "properties": {
+    "tools": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FunctionToolParam"
+          },
+          {
+            "$ref": "#/$defs/FileSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerToolParam"
+          },
+          {
+            "$ref": "#/$defs/ComputerUsePreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/Mcp"
+          },
+          {
+            "$ref": "#/$defs/CodeInterpreter"
+          },
+          {
+            "$ref": "#/$defs/ProgrammaticToolCalling"
+          },
+          {
+            "$ref": "#/$defs/ImageGeneration"
+          },
+          {
+            "$ref": "#/$defs/LocalShell"
+          },
+          {
+            "$ref": "#/$defs/FunctionShellToolParam"
+          },
+          {
+            "$ref": "#/$defs/CustomToolParam"
+          },
+          {
+            "$ref": "#/$defs/NamespaceToolParam"
+          },
+          {
+            "$ref": "#/$defs/ToolSearchToolParam"
+          },
+          {
+            "$ref": "#/$defs/WebSearchPreviewToolParam"
+          },
+          {
+            "$ref": "#/$defs/ApplyPatchToolParam"
+          }
+        ]
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "type": {
+      "const": "tool_search_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Call Id"
+    },
+    "execution": {
+      "enum": [
+        "server",
+        "client"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "tools",
+    "type"
+  ],
+  "title": "ResponseToolSearchOutputItemParamParam",
+  "type": "object"
+}
+
+PIECE: Result
+{
+  "properties": {
+    "attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Attributes"
+    },
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "score": {
+      "title": "Score",
+      "type": "number"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "title": "Result",
+  "type": "object"
+}
+
+PIECE: Screenshot
+{
+  "description": "A screenshot action.",
+  "properties": {
+    "type": {
+      "const": "screenshot",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Screenshot",
+  "type": "object"
+}
+
+PIECE: Scroll
+{
+  "description": "A scroll action.",
+  "properties": {
+    "scroll_x": {
+      "title": "Scroll X",
+      "type": "integer"
+    },
+    "scroll_y": {
+      "title": "Scroll Y",
+      "type": "integer"
+    },
+    "type": {
+      "const": "scroll",
+      "title": "Type",
+      "type": "string"
+    },
+    "x": {
+      "title": "X",
+      "type": "integer"
+    },
+    "y": {
+      "title": "Y",
+      "type": "integer"
+    },
+    "keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Keys"
+    }
+  },
+  "required": [
+    "scroll_x",
+    "scroll_y",
+    "type",
+    "x",
+    "y"
+  ],
+  "title": "Scroll",
+  "type": "object"
+}
+
+PIECE: ShellCall
+{
+  "description": "A tool representing a request to execute one or more shell commands.",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ShellCallAction"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "shell_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShellCallCallerDirect"
+        },
+        {
+          "$ref": "#/$defs/ShellCallCallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocalEnvironmentParam"
+        },
+        {
+          "$ref": "#/$defs/ContainerReferenceParam"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Environment"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "action",
+    "call_id",
+    "type"
+  ],
+  "title": "ShellCall",
+  "type": "object"
+}
+
+PIECE: ShellCallAction
+{
+  "description": "The shell commands and limits that describe how to run the tool call.",
+  "properties": {
+    "commands": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Commands",
+      "type": "array"
+    },
+    "max_output_length": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Output Length"
+    },
+    "timeout_ms": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timeout Ms"
+    }
+  },
+  "required": [
+    "commands"
+  ],
+  "title": "ShellCallAction",
+  "type": "object"
+}
+
+PIECE: ShellCallCallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ShellCallCallerDirect",
+  "type": "object"
+}
+
+PIECE: ShellCallCallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "ShellCallCallerProgram",
+  "type": "object"
+}
+
+PIECE: ShellCallOutput
+{
+  "description": "The streamed output items emitted by a shell tool call.",
+  "properties": {
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "output": {
+      "items": {
+        "$ref": "#/$defs/ResponseFunctionShellCallOutputContentParam"
+      },
+      "title": "Output",
+      "type": "array"
+    },
+    "type": {
+      "const": "shell_call_output",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "caller": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShellCallOutputCallerDirect"
+        },
+        {
+          "$ref": "#/$defs/ShellCallOutputCallerProgram"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Caller"
+    },
+    "max_output_length": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Output Length"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "call_id",
+    "output",
+    "type"
+  ],
+  "title": "ShellCallOutput",
+  "type": "object"
+}
+
+PIECE: ShellCallOutputCallerDirect
+{
+  "properties": {
+    "type": {
+      "const": "direct",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ShellCallOutputCallerDirect",
+  "type": "object"
+}
+
+PIECE: ShellCallOutputCallerProgram
+{
+  "properties": {
+    "caller_id": {
+      "title": "Caller Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "program",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "caller_id",
+    "type"
+  ],
+  "title": "ShellCallOutputCallerProgram",
+  "type": "object"
+}
+
+PIECE: SkillReferenceParam
+{
+  "properties": {
+    "skill_id": {
+      "title": "Skill Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "skill_reference",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "skill_id",
+    "type"
+  ],
+  "title": "SkillReferenceParam",
+  "type": "object"
+}
+
+PIECE: StreamOptions
+{
+  "description": "Options for streaming responses. Only set this when you set `stream: true`.",
+  "properties": {
+    "include_obfuscation": {
+      "title": "Include Obfuscation",
+      "type": "boolean"
+    }
+  },
+  "title": "StreamOptions",
+  "type": "object"
+}
+
+PIECE: Summary
+{
+  "description": "A summary text from the model.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "summary_text",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "Summary",
+  "type": "object"
+}
+
+PIECE: Text
+{
+  "description": "Unconstrained free-form text.",
+  "properties": {
+    "type": {
+      "const": "text",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Text",
+  "type": "object"
+}
+
+PIECE: ToolChoiceAllowedParam
+{
+  "description": "Constrains the tools available to the model to a pre-defined set.",
+  "properties": {
+    "mode": {
+      "enum": [
+        "auto",
+        "required"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "tools": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "type": {
+      "const": "allowed_tools",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode",
+    "tools",
+    "type"
+  ],
+  "title": "ToolChoiceAllowedParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceApplyPatchParam
+{
+  "description": "Forces the model to call the apply_patch tool when executing a tool call.",
+  "properties": {
+    "type": {
+      "const": "apply_patch",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ToolChoiceApplyPatchParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceCustomParam
+{
+  "description": "Use this option to force the model to call a specific custom tool.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "custom",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "type"
+  ],
+  "title": "ToolChoiceCustomParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceFunctionParam
+{
+  "description": "Use this option to force the model to call a specific function.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "function",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "type"
+  ],
+  "title": "ToolChoiceFunctionParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceMcpParam
+{
+  "description": "Use this option to force the model to call a specific tool on a remote MCP server.",
+  "properties": {
+    "server_label": {
+      "title": "Server Label",
+      "type": "string"
+    },
+    "type": {
+      "const": "mcp",
+      "title": "Type",
+      "type": "string"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Name"
+    }
+  },
+  "required": [
+    "server_label",
+    "type"
+  ],
+  "title": "ToolChoiceMcpParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceShellParam
+{
+  "description": "Forces the model to call the shell tool when a tool call is required.",
+  "properties": {
+    "type": {
+      "const": "shell",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ToolChoiceShellParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceSpecificProgrammaticToolCallingParam
+{
+  "properties": {
+    "type": {
+      "const": "programmatic_tool_calling",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ToolChoiceSpecificProgrammaticToolCallingParam",
+  "type": "object"
+}
+
+PIECE: ToolChoiceTypesParam
+{
+  "description": "Indicates that the model should use a built-in tool to generate a response.\n[Learn more about built-in tools](https://developers.openai.com/api/docs/guides/tools).",
+  "properties": {
+    "type": {
+      "enum": [
+        "file_search",
+        "web_search_preview",
+        "computer",
+        "computer_use_preview",
+        "computer_use",
+        "web_search_preview_2025_03_11",
+        "image_generation",
+        "code_interpreter"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ToolChoiceTypesParam",
+  "type": "object"
+}
+
+PIECE: ToolFunction
+{
+  "properties": {
+    "async": {
+      "title": "Async",
+      "type": "boolean"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "const": "function",
+      "title": "Type",
+      "type": "string"
+    },
+    "allowed_callers": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "direct",
+              "programmatic"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Allowed Callers"
+    },
+    "defer_loading": {
+      "title": "Defer Loading",
+      "type": "boolean"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Description"
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output Schema"
+    },
+    "parameters": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parameters"
+    },
+    "strict": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Strict"
+    }
+  },
+  "required": [
+    "name",
+    "type"
+  ],
+  "title": "ToolFunction",
+  "type": "object"
+}
+
+PIECE: ToolSearchCall
+{
+  "properties": {
+    "arguments": {
+      "title": "Arguments"
+    },
+    "type": {
+      "const": "tool_search_call",
+      "title": "Type",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Call Id"
+    },
+    "execution": {
+      "enum": [
+        "server",
+        "client"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "in_progress",
+            "completed",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "required": [
+    "arguments",
+    "type"
+  ],
+  "title": "ToolSearchCall",
+  "type": "object"
+}
+
+PIECE: ToolSearchToolParam
+{
+  "description": "Hosted or BYOT tool search configuration for deferred tools.",
+  "properties": {
+    "type": {
+      "const": "tool_search",
+      "title": "Type",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Description"
+    },
+    "execution": {
+      "enum": [
+        "server",
+        "client"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "parameters": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parameters"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ToolSearchToolParam",
+  "type": "object"
+}
+
+PIECE: Type
+{
+  "description": "An action to type in text.",
+  "properties": {
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "type": {
+      "const": "type",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "type"
+  ],
+  "title": "Type",
+  "type": "object"
+}
+
+PIECE: Wait
+{
+  "description": "A wait action.",
+  "properties": {
+    "type": {
+      "const": "wait",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Wait",
+  "type": "object"
+}
+
+PIECE: WebSearchPreviewToolParam
+{
+  "description": "This tool searches the web for relevant results to use in a response.\n\nLearn more about the [web search tool](https://developers.openai.com/api/docs/guides/tools-web-search).",
+  "properties": {
+    "type": {
+      "enum": [
+        "web_search_preview",
+        "web_search_preview_2025_03_11"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "search_content_types": {
+      "items": {
+        "enum": [
+          "text",
+          "image"
+        ],
+        "type": "string"
+      },
+      "title": "Search Content Types",
+      "type": "array"
+    },
+    "search_context_size": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Search Context Size",
+      "type": "string"
+    },
+    "user_location": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/openai__types__responses__web_search_preview_tool_param__UserLocation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "WebSearchPreviewToolParam",
+  "type": "object"
+}
+
+PIECE: WebSearchToolParam
+{
+  "description": "Search the Internet for sources related to the prompt.\n\nLearn more about the\n[web search tool](https://developers.openai.com/api/docs/guides/tools-web-search).",
+  "properties": {
+    "type": {
+      "enum": [
+        "web_search",
+        "web_search_2025_08_26"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "external_web_access": {
+      "title": "External Web Access",
+      "type": "boolean"
+    },
+    "filters": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Filters"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "search_context_size": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Search Context Size",
+      "type": "string"
+    },
+    "user_location": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/openai__types__responses__web_search_tool_param__UserLocation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "WebSearchToolParam",
+  "type": "object"
+}
+
+PIECE: openai__types__responses__response_configuration_update_item_param_param__Reasoning
+{
+  "description": "Updates to reasoning configuration. Only effort is supported.",
+  "properties": {
+    "effort": {
+      "anyOf": [
+        {
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Effort"
+    }
+  },
+  "title": "Reasoning",
+  "type": "object"
+}
+
+PIECE: openai__types__responses__web_search_preview_tool_param__UserLocation
+{
+  "description": "The approximate location of the user.\n\nIf omitted or null, defaults to the United States. To avoid this fallback, pass `{\"type\": \"approximate\"}` without location fields. To localize results, provide the relevant location fields.",
+  "properties": {
+    "type": {
+      "const": "approximate",
+      "title": "Type",
+      "type": "string"
+    },
+    "city": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "City"
+    },
+    "country": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Country"
+    },
+    "region": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Region"
+    },
+    "timezone": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timezone"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "UserLocation",
+  "type": "object"
+}
+
+PIECE: openai__types__responses__web_search_tool_param__UserLocation
+{
+  "description": "The approximate location of the user.\n\nIf omitted or null, defaults to the\nUnited States. To avoid this fallback, pass `{\"type\": \"approximate\"}` without\nlocation fields. To localize results, provide the relevant location fields.",
+  "properties": {
+    "city": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "City"
+    },
+    "country": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Country"
+    },
+    "region": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Region"
+    },
+    "timezone": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timezone"
+    },
+    "type": {
+      "const": "approximate",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "UserLocation",
+  "type": "object"
+}
+
+PIECE: openai__types__shared_params__reasoning__Reasoning
+{
+  "description": "Configuration options for\n[reasoning models](https://developers.openai.com/api/docs/guides/reasoning).",
+  "properties": {
+    "context": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "current_turn",
+            "all_turns"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Context"
+    },
+    "effort": {
+      "anyOf": [
+        {
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Effort"
+    },
+    "generate_summary": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "concise",
+            "detailed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Generate Summary"
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "standard",
+            "pro"
+          ],
+          "type": "string"
+        }
+      ],
+      "title": "Mode"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "concise",
+            "detailed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Summary"
+    }
+  },
+  "title": "Reasoning",
+  "type": "object"
+}

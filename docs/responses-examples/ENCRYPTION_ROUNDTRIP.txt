@@ -1,0 +1,46 @@
+EXECUTED ENCRYPTION ROUND TRIP, SYNTHETIC PUBLIC FIXTURE
+Purpose: opaque reasoning replay state (the model's earlier reasoning, not a hidden instruction).
+Fernet authenticated encryption using serve/response_replay.py; this file shows the actual payload.
+This public key is for this example only. A real deployment supplies its private key in the environment.
+No private payload or another provider's encrypted blob was inspected.
+
+PUBLIC THROWAWAY KEY
+t3pj0UY3BN5Lz1alOk_2QoaeVzWOPEaO14p1KkDFGgE=
+
+PLAINTEXT ITEM
+{
+  "type": "reasoning",
+  "id": "rs_example",
+  "status": "completed",
+  "summary": [],
+  "content": [
+    {
+      "type": "reasoning_text",
+      "text": "Synthetic example: compare the two supplied numbers."
+    }
+  ]
+}
+
+WIRE ITEM (encrypted-only replay)
+{
+  "type": "reasoning",
+  "id": "rs_example",
+  "status": "completed",
+  "summary": [],
+  "encrypted_content": "strata-r1.gAAAAABqwHnO3KhSC8jXaz-lc8J9HKUxq3OmgpT-4qK2s6Cbr9bGLwkTJCwlfvaIhclL0A0E4ku3suANllqBMNg56k6j9R3TtgkfwlU-8APGL5JgUgW1SJm8uE0NCruN0k87kIWb4yZfuWyk4fxUwOIr4Lu8ihLSBbgH0dwzHptiJnK0MCzBwRk9wekYxV4b6sKVrjae6-EZ8csuIequLUlbXoKo0EaJmshc4dqbCtcA-pTFCV8wWJ8aKjMrj4p1chAKWSGn6sV7ZZ9shuX0Zk1F1pgzfAhIMUcIRC0P8K0ERA7rGv5YNOtC1YnMqnGQv4pa0hOr4VRDJ1gQd2jfd7YsvaUUOHDkvg=="
+}
+
+RESTORED ITEM
+{
+  "type": "reasoning",
+  "id": "rs_example",
+  "status": "completed",
+  "summary": [],
+  "encrypted_content": "strata-r1.gAAAAABqwHnO3KhSC8jXaz-lc8J9HKUxq3OmgpT-4qK2s6Cbr9bGLwkTJCwlfvaIhclL0A0E4ku3suANllqBMNg56k6j9R3TtgkfwlU-8APGL5JgUgW1SJm8uE0NCruN0k87kIWb4yZfuWyk4fxUwOIr4Lu8ihLSBbgH0dwzHptiJnK0MCzBwRk9wekYxV4b6sKVrjae6-EZ8csuIequLUlbXoKo0EaJmshc4dqbCtcA-pTFCV8wWJ8aKjMrj4p1chAKWSGn6sV7ZZ9shuX0Zk1F1pgzfAhIMUcIRC0P8K0ERA7rGv5YNOtC1YnMqnGQv4pa0hOr4VRDJ1gQd2jfd7YsvaUUOHDkvg==",
+  "content": [
+    {
+      "type": "reasoning_text",
+      "text": "Synthetic example: compare the two supplied numbers."
+    }
+  ]
+}
