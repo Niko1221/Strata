@@ -140,6 +140,7 @@ struct PleTable::Impl {
     const uint8_t* data = nullptr;
     uint64_t n_rows = 0;
     bool q5_0 = false;                // #296: Q5_0 rows (110 B), the mapped reader only
+    bool q4_0 = false;                // Q4_0 rows (90 B, as IQ4_NL): plain llama-quantize Q4_0 files
     mutable uint64_t bytes_read = 0;
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
@@ -157,6 +158,8 @@ struct PleTable::Impl {
         if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
         else if (q5_0)
             for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
+        else if (q4_0)
+            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q4_0(row + (size_t) b * 18, out160 + b * 32);
         else iq4nl_dequant_row(row, out160);
     }
 };
@@ -192,6 +195,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // shipped: I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
     impl_->fp8 = false;
     impl_->q5_0 = std::strcmp(t->type_name(), "Q5_0") == 0;
+    impl_->q4_0 = std::strcmp(t->type_name(), "Q4_0") == 0;   // 90 B rows like IQ4_NL: PLE_ROW_BYTES below
     impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : PLE_ROW_BYTES;
     if (std::strcmp(t->type_name(), "I8") == 0) {
         const MetaValue* f = impl_->file->get("strata.ple.format");
@@ -204,8 +208,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->fp8 = true;
         impl_->scale = (float) s->num();
         impl_->rb = PLE_ROW_BYTES_FP8;
-    } else if (!impl_->q5_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
-        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q5_0 or FP8 (I8)";
+    } else if (!impl_->q5_0 && !impl_->q4_0 && std::strcmp(t->type_name(), "IQ4_NL") != 0) {
+        err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not IQ4_NL, Q4_0, Q5_0 or FP8 (I8)";
         close();
         return false;
     }
@@ -286,12 +290,15 @@ void PleTable::close() {
     impl_->n_rows = 0;
     impl_->rb = PLE_ROW_BYTES;
     impl_->q5_0 = false;
+    impl_->q4_0 = false;
     impl_->fp8 = false;
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL"; }
+const char* PleTable::format() const {
+    return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : impl_->q4_0 ? "Q4_0" : "IQ4_NL";
+}
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
