@@ -19,9 +19,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate  # noqa: E402
+from serve.frontend import ChatTemplate, anthropic_to_messages, images_of  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
-                          engine_args, prompt_tokens_seen, request_timings, serve, start_failure_hint)
+                          Vision, engine_args, prompt_tokens_seen, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +239,90 @@ class ImageMarkers(unittest.TestCase):
                     self.assertEqual(ids.count(pad), 3)          # the image's three rows, nothing else
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
+
+
+class ToolResultImages(unittest.TestCase):
+    """A tool's result can BE an image - Claude Code's Read on a picture, a screenshot or a browser tool.  The
+    Anthropic dialect flattened the result through `_text_of`, which keeps the text parts only: the image went in
+    silence, the model received an empty tool result, and it answered anyway - describing a picture it had never
+    been given.  A wrong answer that looks confident is worse than a refusal, so this is a test, not a comment."""
+
+    # one pixel of PNG; the bytes never matter here, only that the source reaches the encoder
+    SOURCE = {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+    URL = "data:image/png;base64,iVBORw0KGgo="
+
+    @staticmethod
+    def request(tool_content):
+        return {"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "read /tmp/x.png"}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                               "input": {"file_path": "/tmp/x.png"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}]}]}
+
+    def test_an_image_result_survives_and_is_encoded(self):
+        out, _, _ = anthropic_to_messages(self.request([{"type": "image", "source": dict(self.SOURCE)}]))
+        self.assertEqual([m["content"] for m in out if m["role"] == "tool"],
+                         [[{"type": "image", "source": self.URL}]])
+        self.assertEqual(images_of(out), [self.URL])              # and so the server encodes it
+
+    def test_a_text_result_is_unchanged(self):
+        out, _, _ = anthropic_to_messages(self.request([{"type": "text", "text": "a file"}]))
+        self.assertEqual([m["content"] for m in out if m["role"] == "tool"], ["a file"])
+        self.assertEqual(images_of(out), [])                      # a str result, rendered as before
+
+    def test_an_image_beside_a_tool_result_survives(self):
+        # the message holds both, so it never took the all-image branch and the picture was dropped there too
+        out, _, _ = anthropic_to_messages({"messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "url", "url": "http://h/x.png"}},
+            {"type": "text", "text": "and this one"}]}]})
+        self.assertEqual(images_of(out), ["http://h/x.png"])
+
+    def test_the_prompt_gets_the_rows(self):
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=ImageMarkers.FakeVision(d))
+            msgs, tools, kw = anthropic_to_messages(self.request([{"type": "image", "source": dict(self.SOURCE)}]))
+            ids, _, _ = svc.prepare(msgs, tools, kw)
+            self.assertEqual(ids.count(tok.encode("<|image_pad|>", parse_special=True)[0]), 3)   # the encoder's rows
+            svc.embeddings.path.unlink(missing_ok=True)
+
+
+class BadImageSource(unittest.TestCase):
+    """A source the encoder cannot read must come back as a 400, not as no reply at all.
+
+    The request dispatcher maps ValueError to a status and nothing else, so an OSError escaping out of
+    `Vision.load` (a 404, a refused connection, an unknown host - HTTPError and URLError are both
+    OSError) closed the client's connection without a reply: `curl: (52) Empty reply from server`."""
+
+    def test_a_fetch_that_fails_is_a_value_error(self):
+        for err in (urllib.error.HTTPError("http://h/x.png", 404, "Not Found", None, None),
+                    urllib.error.URLError("connection refused"),
+                    urllib.error.URLError("[Errno -2] Name or service not known")):
+            with mock.patch("urllib.request.urlopen", side_effect=err):
+                with self.assertRaises(ValueError):
+                    Vision.load("http://h/x.png")
+
+    def test_a_data_url_that_is_not_base64_is_a_value_error(self):
+        for source in ("data:image/png;base64",                     # no comma: nothing after it
+                       "data:image/png;base64,not base64!!"):       # binascii.Error, a ValueError
+            with self.assertRaises(ValueError):
+                Vision.load(source)
+
+    def test_a_file_that_cannot_be_read_is_a_value_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.png"
+            p.write_bytes(b"\x89PNG\r\n\x1a\n")
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("permission denied")):
+                with self.assertRaises(ValueError):
+                    Vision.load(str(p))
+
+    def test_a_readable_source_still_loads(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.png"
+            p.write_bytes(b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(Vision.load(str(p)), b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(Vision.load("data:image/png;base64,aGk="), b"hi")
 
 
 class StatusNeedsTheKey(unittest.TestCase):
